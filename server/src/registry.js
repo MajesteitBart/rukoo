@@ -23,7 +23,8 @@ const CLAIM_TIME = 60 * 1000;
 // email; address the hash of the address; code the hash of the six digits, which also binds the purpose, the challenge
 // and the address. The six digits work until codeUntil and for `attempts` misses; the long code until `until`, when
 // the row goes. failures counts wrong passwords or recovery keys sent with either, and ends both at `attempts`.
-// claim and claimedUntil hold the code for one request at a time. code_sends: when codes of a purpose were asked for
+// claim and claimedUntil hold the code for one request at a time. sent, a column added later, marks a code whose
+// email Resend took. code_sends: when codes of a purpose were asked for
 // an address in the last day, newest last, under the hash codes.js counts it by (sendsHash: the mailbox for sign-up
 // codes, the address itself for unlock codes). code_mail: how many sign-up emails went out in the hour that started at
 // hour * HOUR.
@@ -55,9 +56,10 @@ const CODE_TABLES = `
 
 // signup_domains: how many accounts were made today with an emailed code at a domain (signups.js), by the hash of the
 // domain, for the day that started at day * DAY. tallies: counts for the whole server in the period that started at
-// slot times the period: 'verified', sign-ups with an emailed code this hour; 'unlock', unlock emails today past each
-// mailbox's first; 'alert', 1 for the day the operator was last mailed (signups.js). unlock_mail: when unlock emails
-// went out to a mailbox in the last day, newest last, by the hash of the mailbox (codes.js). locks: the lock on
+// slot times the period: 'verified', sign-ups with an emailed code this hour; 'unlock', counted unlock emails today;
+// 'alert', 1 for the day the operator was last mailed (signups.js). unlock_mail: when counted unlock
+// emails went out to a mailbox in the last day, oldest first, by the hash of the mailbox (codes.js), and, under
+// "free\n" and the hash of an address, when the free ones went to that address (chargeUnlock). locks: the lock on
 // sign-ins and recovery for an address (lock.js), by the hash of the address: the wrong attempts since failedAt, the
 // attempts still running as [ticket, start] pairs, and lockedUntil; until is when the row can go. released: the
 // expired accounts whose places were given back, by a hash of each one's lifetime, so a retry gives none back twice.
@@ -81,6 +83,10 @@ const GUARD_TABLES = `
 // then on it counts as a wrong one.
 const IN_FLIGHT = 60 * 1000;
 const RELEASED_FOR = 7 * DAY;
+// Unlock emails (chargeUnlock): how long a long code must still work to count as one its owner holds, and how many
+// emails one address gets a day past the mailbox's limit and the budget.
+const UNLOCK_MARGIN = HOUR;
+const FREE_UNLOCK = 2;
 
 // A place taken for a workspace that was never confirmed made or called off is settled after this long, by asking
 // the workspace.
@@ -108,6 +114,16 @@ export class Registry extends DurableObject {
     }
     this.sql.exec(CODE_TABLES);
     this.sql.exec(GUARD_TABLES);
+    // Columns that came after their tables: sent, when Resend took a code's email (markSent); pending, the sign-in
+    // attempts still running (lockAttempt).
+    const has = (table, column) => this.sql.exec(`PRAGMA table_info(${table})`).toArray().some((c) => c.name === column);
+    if (!has('codes', 'sent')) this.sql.exec('ALTER TABLE codes ADD COLUMN sent INTEGER NOT NULL DEFAULT 0');
+    if (!has('locks', 'pending')) this.sql.exec("ALTER TABLE locks ADD COLUMN pending TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  // Resend took the email with this code: its long code is in the owner's mailbox (chargeUnlock).
+  async markSent(challenge) {
+    this.sql.exec('UPDATE codes SET sent = 1 WHERE challenge = ?', challenge);
   }
 
   // Keeps a new code, unless the server is full (for a sign-up code, max > 0), the address's domain made its accounts
@@ -177,58 +193,71 @@ export class Registry extends DurableObject {
     this.sql.exec('UPDATE code_mail SET count = MAX(0, count - 1) WHERE purpose = ? AND hour = ?', purpose, slot);
   }
 
-  // Counts an unlock email about to go out to a mailbox (codes.js). { ok: true, at, slot } lets it go: at is when it
-  // was counted, and slot the day of the server's budget it counted in, or null for an email the limits don't hold
-  // back. That is one for an account address (address, the hash codes.js keys codes by) that has no long code left to
-  // use: none that went out by email, is unused, unexpired and has tries left, other than this one (id). Only the owner
-  // can use up a long code, so a stranger gets the address one such email at most until the owner used its code or a
-  // day went by, and however the stranger spends the limits, the owner always holds a code that gets them in. The
-  // others count toward the mailbox's `daily` unlock emails in the last day and today's `budget` (0 for none).
-  // { ok: false, reason } stops the email: 'mailbox' or 'budget'.
+  // Counts an unlock email about to go out to a mailbox (codes.js). { ok: true, at, slot, free } lets it go: at is when
+  // it was counted, slot the day of the server's budget it counted in, and free whether the limits let it through
+  // without counting it. { ok: false, reason } stops it: 'mailbox' when the mailbox had `daily` counted unlock emails in
+  // the last day, 'budget' when today's `budget` (0 for none) is used up.
+  //
+  // Free is an email to an account address (address, the hash codes.js keys codes by) that has no long code left to
+  // use, as long as the address had fewer than FREE_UNLOCK free ones in the last day. A long code counts as left when
+  // Resend took its email (sent), it is unused, has tries left and works for at least another UNLOCK_MARGIN, as long as
+  // the limit per hour can make its owner wait for a new one; this request's own code (id) doesn't count. Only the owner can use up a long code, so a stranger gets an address one free email until its owner used
+  // the code or it ran out, and however the stranger spends the limits, the owner holds a code that gets them in, or
+  // gets one with their next request. The cap of FREE_UNLOCK keeps someone who reads the mailbox from using up codes
+  // and asking again without limit.
   async chargeUnlock(mailbox, { address, id, daily, budget, attempts }) {
     const now = Date.now();
-    const row = this.sql.exec('SELECT times FROM unlock_mail WHERE mailbox = ?', mailbox).toArray()[0];
-    const times = sendTimes(row?.times).filter((t) => now - t < DAY);
-    // A row whose email didn't go out was cut to its six digits' 10 minutes (shortenCode), so until > codeUntil marks
-    // one whose long code did, or is going out right now.
+    const times = this.#unlockTimes(mailbox, now);
+    const freeKey = `free\n${address}`;
+    const freeTimes = this.#unlockTimes(freeKey, now);
     const usable = this.sql
       .exec(
-        `SELECT COUNT(*) AS n FROM codes WHERE address = ? AND purpose = 'unlock' AND challenge != ? AND until > ?
-           AND until > codeUntil AND failures < ?`,
+        `SELECT COUNT(*) AS n FROM codes WHERE address = ? AND purpose = 'unlock' AND challenge != ? AND sent = 1
+           AND until > ? AND failures < ?`,
         address,
         id,
-        now,
+        now + UNLOCK_MARGIN,
         attempts
       )
       .one().n;
+    const free = usable === 0 && freeTimes.length < FREE_UNLOCK;
     let slot = null;
-    if (usable > 0) {
+    if (!free) {
       if (times.length >= daily) return { ok: false, reason: 'mailbox' };
       slot = this.#charge('unlock', DAY, budget, now);
       if (slot === null) return { ok: false, reason: 'budget' };
+      this.#saveUnlockTimes(mailbox, [...times, now], now);
+    } else {
+      this.#saveUnlockTimes(freeKey, [...freeTimes, now], now);
     }
-    times.push(now);
-    this.sql.exec(
-      `INSERT INTO unlock_mail (mailbox, times, until) VALUES (?, ?, ?)
-       ON CONFLICT (mailbox) DO UPDATE SET times = excluded.times, until = excluded.until`,
-      mailbox,
-      JSON.stringify(times.slice(-daily)),
-      now + DAY
-    );
     await this.#armCodes(now + DAY);
-    return { ok: true, at: now, slot };
+    return { ok: true, at: now, slot, free };
   }
 
   // Gives back what chargeUnlock counted, when Resend refused the email.
-  async refundUnlock(mailbox, { at, slot }) {
-    const row = this.sql.exec('SELECT times FROM unlock_mail WHERE mailbox = ?', mailbox).toArray()[0];
-    if (row) {
-      const times = sendTimes(row.times);
-      const i = times.lastIndexOf(at);
-      if (i >= 0) times.splice(i, 1);
-      this.sql.exec('UPDATE unlock_mail SET times = ? WHERE mailbox = ?', JSON.stringify(times), mailbox);
-    }
+  async refundUnlock(mailbox, { at, slot, free }, address) {
+    const key = free ? `free\n${address}` : mailbox;
+    const times = this.#unlockTimes(key, Date.now());
+    const i = times.lastIndexOf(at);
+    if (i >= 0) times.splice(i, 1);
+    this.#saveUnlockTimes(key, times, Date.now());
     if (slot !== null) this.#refund('unlock', slot);
+  }
+
+  // When counted unlock emails went to a mailbox, or free ones to an address, in the last day, oldest first.
+  #unlockTimes(key, now) {
+    const row = this.sql.exec('SELECT times FROM unlock_mail WHERE mailbox = ?', key).toArray()[0];
+    return sendTimes(row?.times).filter((t) => now - t < DAY);
+  }
+
+  #saveUnlockTimes(key, times, now) {
+    this.sql.exec(
+      `INSERT INTO unlock_mail (mailbox, times, until) VALUES (?, ?, ?)
+       ON CONFLICT (mailbox) DO UPDATE SET times = excluded.times, until = excluded.until`,
+      key,
+      JSON.stringify(times),
+      now + DAY
+    );
   }
 
   // A count for the whole server in the period that holds now: the slot it counted in, or null when limit (0 for none)
@@ -326,8 +355,9 @@ export class Registry extends DurableObject {
 
   // How the attempt with this ticket ended. A right one resets the count of wrong ones, as a success always did; a
   // wrong one adds to it, and the one that makes `max` locks the address and answers 'locked', as the tenth wrong
-  // attempt always has. An attempt that came back after IN_FLIGHT was counted as wrong already, and isn't again.
-  // { result } is 'ok', 'wrong' or 'locked' with retryAfter.
+  // attempt always has. An attempt whose ticket is no longer running, because it came back after IN_FLIGHT and was
+  // counted as wrong, or was settled already, changes nothing. { result } is 'ok', 'wrong' or 'locked' with
+  // retryAfter.
   async lockSettle(address, ticket, right, rules) {
     const now = Date.now();
     const state = this.#lockState(address, now, rules, ticket);
@@ -335,7 +365,7 @@ export class Registry extends DurableObject {
     if (mine >= 0) state.pending.splice(mine, 1);
     let answer = { result: right ? 'ok' : 'wrong' };
     if (right) {
-      state.failures = 0;
+      if (mine >= 0) state.failures = 0;
     } else if (state.lockedUntil > now) {
       answer = { result: 'locked', retryAfter: seconds(state.lockedUntil - now) };
     } else {
@@ -353,30 +383,36 @@ export class Registry extends DurableObject {
     return answer;
   }
 
-  // An address's lock as of now: a window older than `window` starts again, and attempts running longer than IN_FLIGHT,
-  // apart from `keep`, count as wrong.
-  #lockState(address, now, { window }, keep = null) {
+  // An address's lock as of now. Attempts running longer than IN_FLIGHT, apart from `keep`, count as wrong from the
+  // moment they ran out, oldest first, and the one that makes `max` locks the address from that moment, whenever this
+  // is asked. Then a window that started `window` ago starts again, with the attempts that are still running.
+  #lockState(address, now, { max, window, lockTime }, keep = null) {
     const row = this.sql.exec('SELECT * FROM locks WHERE address = ?', address).toArray()[0];
-    if (!row || (row.lockedUntil <= now && now - row.failedAt >= window)) {
-      return { failures: 0, failedAt: now, pending: [], lockedUntil: 0 };
-    }
+    if (!row) return { failures: 0, failedAt: now, pending: [], lockedUntil: 0 };
     let pending = [];
     try {
       pending = JSON.parse(row.pending).filter((p) => Array.isArray(p) && typeof p[0] === 'string' && Number.isFinite(p[1]));
     } catch {
       pending = [];
     }
-    const lost = pending.filter(([t, at]) => t !== keep && now - at >= IN_FLIGHT);
-    return {
-      failures: row.failures + lost.length,
-      failedAt: row.failedAt,
-      pending: pending.filter((p) => !lost.includes(p)),
-      lockedUntil: row.lockedUntil
-    };
+    let { failures, lockedUntil } = row;
+    const lost = pending.filter(([t, at]) => t !== keep && now - at >= IN_FLIGHT).sort((a, b) => a[1] - b[1]);
+    for (const [, at] of lost) {
+      if (lockedUntil > at + IN_FLIGHT) continue;
+      failures += 1;
+      if (failures >= max) {
+        lockedUntil = at + IN_FLIGHT + lockTime;
+        failures = 0;
+      }
+    }
+    pending = pending.filter((p) => !lost.includes(p));
+    if (lockedUntil <= now && now - row.failedAt >= window) return { failures: 0, failedAt: now, pending, lockedUntil: 0 };
+    return { failures, failedAt: row.failedAt, pending, lockedUntil };
   }
 
-  async #saveLock(address, { failures, failedAt, pending, lockedUntil }, { window }) {
-    const until = Math.max(failedAt + window, lockedUntil, ...pending.map(([, at]) => at + IN_FLIGHT));
+  // A row stays as long as its window, its lock, or the lock an attempt still running could start once it runs out.
+  async #saveLock(address, { failures, failedAt, pending, lockedUntil }, { window, lockTime }) {
+    const until = Math.max(failedAt + window, lockedUntil, ...pending.map(([, at]) => at + IN_FLIGHT + lockTime));
     this.sql.exec(
       `INSERT INTO locks (address, failures, failedAt, pending, lockedUntil, until) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (address) DO UPDATE SET failures = excluded.failures, failedAt = excluded.failedAt,

@@ -63,16 +63,60 @@ export const PUBLIC_PROVIDERS = new Set([
   'hetnet.nl'
 ]);
 
-// Second-level names that country domains hand out names under, as in example.co.uk, example.com.au or
-// example.ne.jp.
-const SECOND_LEVEL = new Set([
-  'ac', 'biz', 'co', 'com', 'edu', 'gen', 'go', 'gob', 'gov', 'info', 'ltd', 'me', 'mil', 'ne', 'net', 'nom', 'or', 'org', 'plc', 'sch'
-]);
+// Public suffixes of two labels that people register names under, as in example.co.uk, example.com.au or
+// example.ne.jp, from the ICANN part of the public suffix list (https://publicsuffix.org). Only real suffixes belong
+// here: one that isn't would let its owner count each subdomain as a domain of its own.
+const PUBLIC_SECOND_LEVEL = new Set(
+  [
+    'uk: co org me ltd plc net ac gov sch nhs police',
+    'au: com net org edu gov asn id',
+    'nz: co net org ac govt school geek gen kiwi',
+    'jp: co ne or ac ad ed go gr lg',
+    'za: co org net gov ac edu web',
+    'br: com net org gov edu',
+    'mx: com net org gob edu',
+    'ar: com net org gob edu',
+    'tr: com net org gen edu gov biz info',
+    'cn: com net org gov edu ac',
+    'hk: com net org edu gov idv',
+    'sg: com net org edu gov per',
+    'tw: com net org edu gov idv',
+    'in: co net org firm gen ind ac edu gov res',
+    'kr: co or ne ac go re pe',
+    'il: co org net ac gov muni',
+    'id: co or web ac go net my biz',
+    'my: com net org edu gov',
+    'th: co in or ac go net',
+    'ph: com net org edu gov',
+    'pk: com net org edu gov',
+    'ng: com org edu gov net',
+    'ke: co or ac go ne',
+    'eg: com edu gov net org',
+    'sa: com edu gov net org',
+    'pl: com net org',
+    'at: co or ac gv',
+    'es: com org nom edu gob',
+    'pt: com org edu gov',
+    'gr: com net org edu gov',
+    'ua: com net org edu gov',
+    'co: com net org edu gov',
+    'pe: com net org edu gob',
+    'ec: com net org',
+    'uy: com net org edu',
+    've: com net org',
+    'vn: com net org edu gov'
+  ].flatMap((line) => {
+    const [top, names] = line.split(': ');
+    return names.split(' ').map((name) => `${name}.${top}`);
+  })
+);
 
 // The registrable domain of an address: its domain as mailbox() reads it, in ASCII (an internationalized name as
-// punycode) and without a trailing dot, cut to the last two labels, or three under a second-level name of a country
-// domain such as co.uk. Without the public suffix list this is an estimate: what matters is that sub.example.com and
-// other.example.com count as one, so a domain that delivers mail to any subdomain is one domain here.
+// punycode) and without a trailing dot, cut to the last two labels, or three under a suffix in PUBLIC_SECOND_LEVEL.
+// Without the whole public suffix list this is an estimate, which errs one way only: a suffix it doesn't know, such
+// as pvt.k12.ma.us, puts everyone under it in one count (ma.us here), and never splits one domain into several. What
+// matters is that sub.example.com and other.example.com count as one, so a domain that delivers mail to any
+// subdomain is one domain here.
 export function registrableDomain(email) {
   const box = mailbox(email);
   let domain = box.slice(box.lastIndexOf('@') + 1).replace(/\.+$/, '');
@@ -83,8 +127,7 @@ export function registrableDomain(email) {
   }
   const labels = domain.split('.').filter(Boolean);
   if (labels.length <= 2) return labels.join('.');
-  const [second, top] = labels.slice(-2);
-  return labels.slice(top.length === 2 && SECOND_LEVEL.has(second) ? -3 : -2).join('.');
+  return labels.slice(PUBLIC_SECOND_LEVEL.has(labels.slice(-2).join('.')) ? -3 : -2).join('.');
 }
 
 export function domainCap(env) {

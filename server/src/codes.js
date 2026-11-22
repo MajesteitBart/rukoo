@@ -122,9 +122,9 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   }
   let unlock = null;
   if (kind === 'unlock') {
-    unlock = { box: await unlockHash(env, email) };
+    unlock = { box: await unlockHash(env, email), address: await addressHash(env, email) };
     const charged = await registry.chargeUnlock(unlock.box, {
-      address: await addressHash(env, email),
+      address: unlock.address,
       id,
       daily: CODE_RULES.daily,
       budget: unlockBudget(env),
@@ -144,11 +144,14 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   const operator = typeof env.OPERATOR_NAME === 'string' && env.OPERATOR_NAME.trim() ? env.OPERATOR_NAME.trim() : null;
   const codes = kind === 'exists' ? {} : { code, token };
   const sent = await sendMail(env, { to: email, ...codeMail(kind, { ...codes, host, operator, lang }) });
+  // Resend took it: the long code is in the mailbox, which the limits on unlock emails go by. With no answer it may or
+  // may not be, and the next unlock email isn't held back by it.
+  if (sent === 'sent' && kind !== 'exists') await registry.markSent(id);
   // Resend refused it for good, so the long code went nowhere: the row goes with the six digits, as above.
   if (sent === 'refused') {
     await registry.shortenCode(id);
     if (slot !== null) await registry.refundMail('signup', slot);
-    if (unlock) await registry.refundUnlock(unlock.box, unlock.ticket);
+    if (unlock) await registry.refundUnlock(unlock.box, unlock.ticket, unlock.address);
   }
 }
 

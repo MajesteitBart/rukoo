@@ -113,6 +113,11 @@ describe('the limit on verified sign-ups per domain', () => {
     expect(registrableDomain('a@sub.bücher.de')).toBe('xn--bcher-kva.de');
     // A country domain's own two labels stay two.
     expect(registrableDomain('a@co.uk')).toBe('co.uk');
+    // A name that isn't a public suffix is a domain someone owns, so its subdomains count as that one domain.
+    expect(registrableDomain('a@a.biz.nl')).toBe('biz.nl');
+    expect(registrableDomain('b@b.biz.nl')).toBe('biz.nl');
+    // A suffix the list doesn't know pools its registrants in one count rather than splitting anyone's domain.
+    expect(registrableDomain('a@school.pvt.k12.ma.us')).toBe('ma.us');
   });
 
   it('lets a domain make DOMAIN_SIGNUPS_PER_DAY accounts with emailed codes a day, its subdomains included', async () => {
@@ -307,6 +312,44 @@ describe('accounts that are never used', () => {
     expect(await registry.accounts()).toBe(before - 1);
     await registry.reserve(0);
   });
+
+  // What a check leaves when giving the place back failed: the account's tables are gone, and the alarm finishes.
+  async function leaveExpired(email, key) {
+    await runInDurableObject(await accountStub(email), async (instance, state) => {
+      state.storage.sql.exec('CREATE TABLE IF NOT EXISTS expired (id INTEGER PRIMARY KEY CHECK (id = 1), key TEXT NOT NULL, released INTEGER NOT NULL)');
+      state.storage.sql.exec('INSERT INTO expired (id, key, released) VALUES (1, ?, 0)', key);
+      await state.storage.setAlarm(Date.now() + 60 * 1000);
+    });
+  }
+
+  it('finishes an expiry that failed halfway from its alarm, giving the place back once and never the account', async () => {
+    const registry = registryObject(env);
+    const email = newEmail();
+    const key = toBase64url(random(16));
+    const before = await registry.accounts();
+    await leaveExpired(email, key);
+    expect(await runDurableObjectAlarm(await accountStub(email))).toBe(true);
+    expect(await tables(email)).toEqual([]);
+    expect(await registry.accounts()).toBe(before - 1);
+    // The same key again, as from a retry after the registry answered but before the object noted it: nothing more.
+    await leaveExpired(email, key);
+    await runDurableObjectAlarm(await accountStub(email));
+    expect(await registry.accounts()).toBe(before - 1);
+    expect(await tables(email)).toEqual([]);
+    await registry.reserve(0);
+  });
+
+  it('leaves an account made at the address since alone when it finishes', async () => {
+    const who = await signup();
+    const before = await registryObject(env).accounts();
+    await leaveExpired(who.email, toBase64url(random(16)));
+    expect(await runDurableObjectAlarm(await accountStub(who.email))).toBe(true);
+    expect(await tables(who.email)).toContain('account');
+    expect(await tables(who.email)).not.toContain('expired');
+    expect((await call('GET', '/v1/account', { token: who.token })).status).toBe(200);
+    expect(await registryObject(env).accounts()).toBe(before - 1);
+    await registryObject(env).reserve(0);
+  });
 });
 
 describe('giving back a failed sign-up', () => {
@@ -415,6 +458,31 @@ describe('unlock emails', () => {
       expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
       expect(resend.to(who.email)).toHaveLength(2);
       expect((await signIn(resend.token(who.email))).status).toBe(200);
+      // Two a day go past the limits like that; someone who reads the mailbox can't use them up and ask again forever.
+      later(MINUTE + 1000);
+      expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
+      expect(resend.to(who.email)).toHaveLength(2);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('sends a new code past the budget when the last one has less than an hour left', async () => {
+    freshDay();
+    const vars = { ...MAIL_VARS, UNLOCK_EMAILS_PER_DAY: '1' };
+    await setTally('unlock', Math.floor(Date.now() / DAY), 1);
+    const who = await lockedAccount();
+    expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      later(HOUR);
+      await askCode(who.email, 'unlock', vars);
+      expect(resend.to(who.email)).toHaveLength(1);
+      // The first code runs out within the hour the limits can make its owner wait, so a new one goes.
+      later(22 * HOUR + MINUTE);
+      await setTally('unlock', Math.floor(Date.now() / DAY), 1);
+      expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
+      expect(resend.to(who.email)).toHaveLength(2);
     } finally {
       errors.mockRestore();
     }
@@ -480,15 +548,21 @@ describe('unlock emails', () => {
       }
       expect(resend.to(plain.email)).toHaveLength(5);
       expect(resend.to(tagged.email)).toHaveLength(5);
-      // Each address may ask again within its own ten a day, but the mailbox had its ten.
+      // Each address's first went past the count, as neither had a code; the other eight counted. Each address may ask
+      // again within its own ten a day, but after two more the mailbox had its ten.
       later(HOUR);
+      for (let i = 0; i < 2; i++) {
+        expect((await askCode(plain.email, 'unlock', MAIL_VARS)).status).toBe(202);
+        later(MINUTE + 1000);
+      }
+      expect(resend.to(plain.email)).toHaveLength(7);
       expect((await askCode(plain.email, 'unlock', MAIL_VARS)).status).toBe(202);
-      expect(resend.to(plain.email)).toHaveLength(5);
+      expect(resend.to(plain.email)).toHaveLength(7);
       expect(JSON.stringify(errors.mock.calls)).toContain('its mailbox had ten today');
       // A day after the first, they go again.
       later(DAY);
       expect((await askCode(plain.email, 'unlock', MAIL_VARS)).status).toBe(202);
-      expect(resend.to(plain.email)).toHaveLength(6);
+      expect(resend.to(plain.email)).toHaveLength(8);
     } finally {
       errors.mockRestore();
     }
@@ -595,7 +669,21 @@ describe('the lock on sign-ins', () => {
     later(61 * 1000);
     const lost = await signIn();
     expect(lost.status).toBe(429);
-    expect(lost.headers.get('retry-after')).toBe('900');
+    // The lock started when they ran out, a minute after they came in, not when someone next asked.
+    expect(Number(lost.headers.get('retry-after'))).toBe(15 * 60 - 1);
+  });
+
+  it('carries attempts still running over into the next window', async () => {
+    const who = await signup();
+    const address = await lockHash(who.email);
+    // Nine attempts come in just before the window that the first wrong one started is over.
+    expect((await wrongLogin(who.email)).status).toBe(401);
+    later(15 * MINUTE - 5000);
+    for (let i = 0; i < 9; i++) expect((await registryObject(env).lockAttempt(address, RULES)).result).toBe('ok');
+    later(10 * 1000);
+    // A new window starts, and the nine still running hold nine of its ten.
+    expect((await wrongLogin(who.email)).status).toBe(401);
+    expect((await wrongLogin(who.email)).status).toBe(429);
   });
 
   it('never lets an owner’s right attempt that is still running help a stranger lock the address', async () => {
