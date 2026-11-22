@@ -103,12 +103,15 @@ class AccountService(
     private var pushJob: Job? = null
     private var saveJob: Job? = null
 
-    /** A code asked for by email ([requestCode]): where and for whom, the challenge, and until when its six digits work. */
-    private class HeldCode(val server: String, val email: String, val challenge: String, val until: Long)
+    /** A code asked for by email ([requestCode]): where, the challenge, and until when its six digits work. */
+    private class HeldCode(val server: String, val challenge: String, val until: Long)
 
-    // The last code asked for, by purpose. Only in memory: the challenge is what the six digits count with, and only
-    // this phone got it.
-    private val codes = HashMap<String, HeldCode>()
+    // The last code asked for, by purpose and address (codeKey), a few at most, oldest first. Only in memory: the
+    // challenge is what the six digits count with, and only this phone got it. A late answer for another address
+    // leaves this address's alone.
+    private val codes = LinkedHashMap<String, HeldCode>()
+
+    private fun codeKey(purpose: String, address: String) = "$purpose\n$address"
 
     private val _status = MutableStateFlow(AccountStatus())
     val status: StateFlow<AccountStatus> = _status.asStateFlow()
@@ -343,7 +346,12 @@ class AccountService(
         val challenge = (res?.get("challenge") as? JsonPrimitive)?.takeIf { it.isString && CODE_TOKEN.matches(it.content) }?.content
             ?: throw fail("server")
         val expiresIn = (res["expiresIn"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()?.takeIf { it > 0 }?.coerceAtMost(3600) ?: 600
-        synchronized(lock) { codes[purpose] = HeldCode(at, address, challenge, clock.now() + expiresIn * 1000) }
+        synchronized(lock) {
+            val key = codeKey(purpose, address)
+            codes.remove(key)
+            codes[key] = HeldCode(at, challenge, clock.now() + expiresIn * 1000)
+            while (codes.size > MAX_HELD_CODES) codes.remove(codes.keys.first())
+        }
         return CodeSent(address, expiresIn)
     }
 
@@ -359,8 +367,8 @@ class AccountService(
         if (CODE_TOKEN.matches(text)) return buildJsonObject { put("token", text) }
         val digits = text.replace("-", "")
         if (!DIGITS.matches(digits)) throw fail("code_format")
-        val held = synchronized(lock) { codes[purpose] }
-        if (held == null || held.email != address || held.server != at || held.until <= clock.now()) throw fail("code_expired")
+        val held = synchronized(lock) { codes[codeKey(purpose, address)] }
+        if (held == null || held.server != at || held.until <= clock.now()) throw fail("code_expired")
         return buildJsonObject {
             put("challenge", held.challenge)
             put("code", digits)
@@ -371,31 +379,38 @@ class AccountService(
      * After a request that carried [emailCode]: a code the server took is used up, and six digits that no longer work
      * (`code_expired`, or wrong for the last time) leave nothing worth keeping.
      */
-    private fun settleCode(purpose: String, emailCode: JsonObject?, error: Throwable? = null) {
+    private fun settleCode(purpose: String, address: String, emailCode: JsonObject?, error: Throwable? = null) {
         if (emailCode == null) return
+        val key = codeKey(purpose, address)
         synchronized(lock) {
             if (error == null) {
-                codes.remove(purpose)
+                codes.remove(key)
                 return
             }
-            val held = codes[purpose] ?: return
+            val held = codes[key] ?: return
             if ((emailCode["challenge"] as? JsonPrimitive)?.content != held.challenge) return
             val e = error as? AccountError ?: return
-            if (e.code == "code_expired" || (e.code == "code_wrong" && e.attemptsLeft == 0)) codes.remove(purpose)
+            if (e.code == "code_expired" || (e.code == "code_wrong" && e.attemptsLeft == 0)) codes.remove(key)
         }
     }
 
-    /** Runs [request] with [emailCode] and settles the code by how it went. */
-    private suspend fun <T> withCode(purpose: String, emailCode: JsonObject?, request: suspend () -> T): T {
+    /** Runs [request] with [emailCode] and settles the code by how it went; [mapError] picks the error to throw. */
+    private suspend fun <T> withCode(
+        purpose: String,
+        address: String,
+        emailCode: JsonObject?,
+        mapError: (Exception) -> Exception = { it },
+        request: suspend () -> T,
+    ): T {
         val result = try {
             request()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            settleCode(purpose, emailCode, e)
-            throw e
+            settleCode(purpose, address, emailCode, e)
+            throw mapError(e)
         }
-        settleCode(purpose, emailCode)
+        settleCode(purpose, address, emailCode)
         return result
     }
 
@@ -420,7 +435,16 @@ class AccountService(
         if (workspaceInvite != null && workspaceInvite.server !in InviteLink.sameServers(at)) throw fail("invalid")
         val plain = if (workspaceInvite == null) invite.trim() else ""
         val info = serverInfo(at)
-        val code = emailCodeFor("signup", address, at, emailCode)
+        // With an invite code, a typed code that can't be sent doesn't stop the sign-up; its error comes back only when
+        // the server still asks for a code (desktop's signUp).
+        var unusable: AccountError? = null
+        val code = try {
+            emailCodeFor("signup", address, at, emailCode)
+        } catch (e: AccountError) {
+            if (plain.isEmpty()) throw e
+            unusable = e
+            null
+        }
         if (code == null && plain.isEmpty() && info.codesFor("signup")) throw fail("code_required", 403)
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
@@ -428,7 +452,8 @@ class AccountService(
         val dataKey = AccountKeys.randomBytes(32)
         val recoveryKey = AccountKeys.randomBytes(20)
         val recovery = recoveryKeys(recoveryKey, at)
-        val res = withCode("signup", code) {
+        val held = unusable
+        val res = withCode("signup", address, code, mapError = { e -> if (held != null && e is AccountError && e.code == "code_required") held else e }) {
             call(
                 "POST",
                 "/v1/signup",
@@ -491,7 +516,7 @@ class AccountService(
         val code = emailCodeFor("unlock", address, at, emailCode)
         serverInfo(at)
         val keys = authFor(address, password, at)
-        val res = withCode("unlock", code) {
+        val res = withCode("unlock", address, code) {
             call("POST", "/v1/login", buildJsonObject {
                 put("email", address)
                 put("authKey", AccountKeys.b64u(keys.authKey))
@@ -527,7 +552,7 @@ class AccountService(
                 if (code != null) put("emailCode", code)
             }, server = at) as? JsonObject
         } catch (e: AccountError) {
-            settleCode("unlock", code, e)
+            settleCode("unlock", address, code, e)
             throw e
         }
         val dataKey = try {
@@ -538,7 +563,7 @@ class AccountService(
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
         val keys = passwordKeys(password, salt, kdf, at)
-        val res = withCode("unlock", code) {
+        val res = withCode("unlock", address, code) {
             call("POST", "/v1/recover/finish", buildJsonObject {
                 put("email", address)
                 put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
@@ -1149,6 +1174,7 @@ class AccountService(
         // Codes by email: what one is for, the shape of a challenge and of the email's long code (32 random bytes in
         // base64url), and the six digits.
         val CODE_PURPOSES = setOf("signup", "unlock")
+        private const val MAX_HELD_CODES = 8
         private val CODE_TOKEN = Regex("[A-Za-z0-9_-]{43}")
         private val DIGITS = Regex("[0-9]{6}")
 

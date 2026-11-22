@@ -231,6 +231,26 @@ class AccountCodesTest {
         assertEquals(token, bodies(srv, "POST /v1/recover/finish").last()["emailCode"]!!.jsonObject.str("token"))
     }
 
+    @Test
+    fun `a typed code that can't be sent doesn't stop an invite code, and comes back when the server still wants one`() = runBlocking<Unit> {
+        val srv = server(signups = "verified", invites = listOf("welcome"))
+        val phone = device(srv)
+        phone.signUp("inv@example.com", PASSWORD, "welcome", emailCode = "123456")
+        assertTrue(phone.signedIn)
+        assertNull(bodies(srv, "POST /v1/signup").last()["emailCode"])
+        rejects("code_format") { device(srv, "other").signUp("inv2@example.com", PASSWORD, "nope", emailCode = "abc") }
+    }
+
+    @Test
+    fun `a late answer for another address leaves the code of this one alone`() = runBlocking<Unit> {
+        val srv = server(signups = "verified")
+        val phone = device(srv)
+        phone.requestCode("b@example.com", "signup")
+        phone.requestCode("a@example.com", "signup")
+        phone.signUp("b@example.com", PASSWORD, emailCode = srv.codeFor("b@example.com")!!)
+        assertTrue(phone.signedIn)
+    }
+
     private companion object {
         const val PASSWORD = "a long enough password"
     }

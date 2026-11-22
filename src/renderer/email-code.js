@@ -59,6 +59,8 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
   let timer = null;
   // Goes up with each request for a code and each reset, so only the answer to the newest request counts.
   let requests = 0;
+  // Whether the step shows for a code that went out, or for one the server's limit held back.
+  let delivered = true;
 
   const input = () => el && el.querySelector('[name="emailCode"]');
   const resendButton = () => el && el.querySelector('[data-code-resend]');
@@ -107,6 +109,7 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
 
   // sent: false when the server sent no new code (its limit): the line then says an earlier email's long code works.
   function draw(email, { sent = true } = {}) {
+    delivered = sent;
     const help = esc(t('settings.rukoo.code.help'));
     const field = compact
       ? `<input class="wn-input wide" name="emailCode" type="text" placeholder="${esc(t('settings.rukoo.code.label'))}" aria-label="${esc(t('settings.rukoo.code.label'))}" autocomplete="one-time-code" spellcheck="false" maxlength="200">
@@ -169,11 +172,14 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
 
   const resend = () => (sentTo ? send(sentTo) : Promise.resolve(false));
 
-  // The step for an address a code already went to, as the What's new guide draws its page again; no new request.
-  function restore(email) {
+  // The step as it stands, for restore(): the address, whether a code went out, and when a new one may be asked for.
+  const snapshot = () => (active() ? { email: sentTo, sent: delivered, until } : null);
+
+  // The step again from a snapshot(), as the What's new guide draws its page again; no new request.
+  function restore({ email, sent = true, until: resendAt = 0 }) {
     sentTo = email;
-    draw(email);
-    if (until > Date.now()) wait((until - Date.now()) / 1000);
+    draw(email, { sent });
+    if (resendAt > Date.now()) wait((resendAt - Date.now()) / 1000);
   }
 
   function reset() {
@@ -249,6 +255,7 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
     focus,
     send,
     submit,
+    snapshot,
     restore,
     reset
   };

@@ -362,3 +362,54 @@ test.describe('Setup page', () => {
     await expect(dialog.locator('[name="link"]')).toHaveValue(link);
   });
 });
+
+test.describe("What's new", () => {
+  let server;
+
+  test.beforeEach(async () => {
+    server = await startAccountServer({ signups: 'verified', codes: true });
+    await launch(server.url);
+  });
+
+  test.afterEach(async () => {
+    await finish();
+    await server.close();
+  });
+
+  test('the account step keeps its code step, held-back code and wait when the guide goes back and forth', async ({}, testInfo) => {
+    const guide = win.locator('.wn');
+    const next = () => guide.locator('[data-wn="next"]').click();
+    await win.click('[data-action="settings"]');
+    await win.locator('.page.settings [data-a="whats-new"]').click();
+    await next();
+    await next();
+    await expect(guide.locator('h2')).toHaveText('Keep them the same on every device');
+    await expect(guide.locator('[name="invite"]')).toHaveAttribute('placeholder', 'Invite code (optional)');
+    // Another device asked a moment ago, so the server holds this guide's code back.
+    await win.evaluate(() => window.mail.invoke('accountEmailCode', { email: 'guide@example.com', purpose: 'signup' }));
+    const fill = async () => {
+      await guide.locator('[name="email"]').fill('guide@example.com');
+      await guide.locator('[name="password"]').fill(PASSWORD);
+      await guide.locator('[name="understand"]').check();
+    };
+    await fill();
+    await next();
+    await expect(guide.locator('[data-code-sent]')).toHaveText('No new code went to guide@example.com yet. The long code from an earlier email works too.', { timeout: 15000 });
+    await expect(guide.locator('[data-code-resend]')).toBeDisabled();
+    await shot(testInfo, 'whats-new-code-held-dark-en');
+
+    // Back a page and forward again: the same step, still held back and still waiting.
+    await guide.locator('[data-wn="back"]').click();
+    await expect(guide.locator('h2')).toHaveText('Choose your categories');
+    await next();
+    await expect(guide.locator('[data-code-sent]')).toHaveText('No new code went to guide@example.com yet. The long code from an earlier email works too.');
+    await expect(guide.locator('[data-code-resend]')).toBeDisabled();
+
+    await guide.locator('[name="password"]').fill(PASSWORD);
+    await guide.locator('[name="understand"]').check();
+    await guide.locator('[name="emailCode"]').fill(server.tokenFor('guide@example.com'));
+    await next();
+    await expect(guide.locator('h2')).toHaveText('Save your recovery key', { timeout: 20000 });
+    expect(server.accounts.has('guide@example.com')).toBe(true);
+  });
+});

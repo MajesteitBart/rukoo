@@ -54,6 +54,10 @@ const ERRORS = new Set([
 // What a code is for, and the shape of a challenge and of the email's long code (32 random bytes in base64url).
 const CODE_PURPOSES = ['signup', 'unlock'];
 const CODE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+// Codes asked for are kept by purpose and address, a few at most (desktop's codeKey).
+const codeKey = (purpose, address) => `${purpose}
+${address}`;
+const MAX_HELD_CODES = 8;
 
 // Whether the server mails codes for purpose (desktop's codesFor, src/main/account/index.js).
 const codesFor = (info, purpose) =>
@@ -206,8 +210,8 @@ class WebAccountService extends Emitter {
     this.t = typeof t === 'function' ? t : null;
     // The page's language, for the email a code comes in.
     this.language = typeof language === 'function' ? language : () => 'en';
-    // The last code asked for, by purpose, as on desktop: { server, email, challenge, until }, in this page's memory
-    // only. A reload drops it; the long code in the email still works then.
+    // The last code asked for, by purpose and address, as on desktop: { server, challenge, until }, in this page's
+    // memory only. A reload drops it; the long code in the email still works then.
     this.codes = new Map();
     const ua = userAgent !== undefined ? userAgent : globalThis.navigator && globalThis.navigator.userAgent;
     this.deviceName = String(deviceName || browserDevice(ua)).slice(0, 100);
@@ -421,7 +425,10 @@ class WebAccountService extends Emitter {
     const challenge = res && typeof res.challenge === 'string' && CODE_TOKEN.test(res.challenge) ? res.challenge : null;
     if (!challenge) throw fail('server');
     const expiresIn = Number.isSafeInteger(res.expiresIn) && res.expiresIn > 0 ? Math.min(res.expiresIn, 3600) : 600;
-    this.codes.set(purpose, { server: at, email: address, challenge, until: this.now() + expiresIn * 1000 });
+    const key = codeKey(purpose, address);
+    this.codes.delete(key);
+    this.codes.set(key, { server: at, challenge, until: this.now() + expiresIn * 1000 });
+    while (this.codes.size > MAX_HELD_CODES) this.codes.delete(this.codes.keys().next().value);
     return { email: address, expiresIn };
   }
 
@@ -433,22 +440,23 @@ class WebAccountService extends Emitter {
     if (CODE_TOKEN.test(text)) return { token: text };
     const digits = text.replace(/-/g, '');
     if (!/^\d{6}$/.test(digits)) throw fail('code_format');
-    const held = this.codes.get(purpose);
-    if (!held || held.email !== address || held.server !== at || held.until <= this.now()) throw fail('code_expired');
+    const held = this.codes.get(codeKey(purpose, address));
+    if (!held || held.server !== at || held.until <= this.now()) throw fail('code_expired');
     return { challenge: held.challenge, code: digits };
   }
 
   // After a request that carried emailCode: a used code, or six digits that no longer work, leave nothing to keep.
-  settleCode(purpose, emailCode, err = null) {
+  settleCode(purpose, address, emailCode, err = null) {
     if (!emailCode) return;
+    const key = codeKey(purpose, address);
     if (!err) {
-      this.codes.delete(purpose);
+      this.codes.delete(key);
       return;
     }
-    const held = this.codes.get(purpose);
+    const held = this.codes.get(key);
     if (!held || held.challenge !== emailCode.challenge) return;
     const last = err.code === 'code_wrong' && err.details && err.details.attemptsLeft === 0;
-    if (err.code === 'code_expired' || last) this.codes.delete(purpose);
+    if (err.code === 'code_expired' || last) this.codes.delete(key);
   }
 
   // workspaceInvite: { workspace, invite } from a team chat invitation link, which a server that takes accounts by
@@ -467,7 +475,16 @@ class WebAccountService extends Emitter {
     const at = this.server;
     if (!at) throw fail('no_server');
     const info = await this.serverInfo(at);
-    const emailCode = this.emailCodeFor('signup', address, at, typed);
+    // With an invite code, a typed code that can't be sent doesn't stop the sign-up; its error comes back only when the
+    // server still asks for a code (desktop's signUp).
+    let emailCode = null;
+    let unusable = null;
+    try {
+      emailCode = this.emailCodeFor('signup', address, at, typed);
+    } catch (err) {
+      if (!plain) throw err;
+      unusable = err;
+    }
     if (!emailCode && !plain && codesFor(info, 'signup')) throw fail('code_required', 403);
     const k = this.keys;
     const salt = k.randomBytes(16);
@@ -497,10 +514,10 @@ class WebAccountService extends Emitter {
     try {
       res = await this.call('POST', '/v1/signup', body);
     } catch (err) {
-      this.settleCode('signup', emailCode, err);
-      throw err;
+      this.settleCode('signup', address, emailCode, err);
+      throw unusable && err && err.code === 'code_required' ? unusable : err;
     }
-    this.settleCode('signup', emailCode);
+    this.settleCode('signup', address, emailCode);
     await this.attach(address, res && res.token, at);
     const text = formatRecoveryKey(recoveryKey);
     recoveryKey.fill(0);
@@ -541,10 +558,10 @@ class WebAccountService extends Emitter {
       try {
         res = await this.call('POST', '/v1/login', { email: address, authKey: b64u(authKey), device: this.device(), ...(emailCode ? { emailCode } : {}) });
       } catch (err) {
-        this.settleCode('unlock', emailCode, err);
+        this.settleCode('unlock', address, emailCode, err);
         throw err;
       }
-      this.settleCode('unlock', emailCode);
+      this.settleCode('unlock', address, emailCode);
       // The data key isn't kept, but it has to open: a wrappedKey that doesn't is a server that can't be trusted with
       // the session either.
       try {
@@ -581,7 +598,7 @@ class WebAccountService extends Emitter {
     try {
       start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: b64u(recoveryAuth), ...code });
     } catch (err) {
-      this.settleCode('unlock', emailCode, err);
+      this.settleCode('unlock', address, emailCode, err);
       throw err;
     }
     let dataKey;
@@ -615,10 +632,10 @@ class WebAccountService extends Emitter {
     try {
       res = await this.call('POST', '/v1/recover/finish', body);
     } catch (err) {
-      this.settleCode('unlock', emailCode, err);
+      this.settleCode('unlock', address, emailCode, err);
       throw err;
     }
-    this.settleCode('unlock', emailCode);
+    this.settleCode('unlock', address, emailCode);
     await this.attach(address, res && res.token, at);
     return { account: res.account };
   }

@@ -44,8 +44,8 @@ async function run() {
     jev: cats && cats.jev.on ? 'use' : 'rules',
     hasKey: Boolean(cats && cats.jev.hasKey),
     jevKey: '',
-    // The code sent for the account step (email-code.js): { purpose, email }, so the step shows again when the page is
-    // drawn again.
+    // The code step of the account step (email-code.js): { purpose, email, sent, until }, so it shows again as it was
+    // when the page is drawn again, also when the server held a code back and how long it asked to wait.
     code: null
   };
 
@@ -266,8 +266,8 @@ async function run() {
       if (!fields || st.signedIn || st.choice === 'local') return;
       const purpose = st.choice === 'create' ? 'signup' : 'unlock';
       code = { purpose, step: codeStep({ host: fields, purpose, emailField: fields.querySelector('[name="email"]'), errorEl: $('[data-wn-error]'), compact: true }) };
-      const sent = st.code && st.code.purpose === purpose && st.code.email.toLowerCase() === st.email.trim().toLowerCase() ? st.code.email : null;
-      if (sent) code.step.restore(sent);
+      const saved = st.code && st.code.purpose === purpose && st.code.email.toLowerCase() === st.email.trim().toLowerCase() ? st.code : null;
+      if (saved) code.step.restore(saved);
     }
 
     async function submitAccount() {
@@ -289,7 +289,8 @@ async function run() {
       const { step, purpose } = code;
       // The form stays: the step showed, or the error line says what to do.
       const stay = () => {
-        st.code = step.active ? { purpose, email: step.email } : null;
+        const snap = step.snapshot();
+        st.code = snap ? { purpose, ...snap } : null;
         btn.disabled = false;
         btn.textContent = view.next.label;
       };

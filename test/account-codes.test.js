@@ -279,6 +279,48 @@ test('an account made at the former default signs in past the lock there, with t
   await after.signIn({ email: 'former@example.com', password: PASSWORD, emailCode: srv.codeFor('former@example.com') });
   assert.equal(after.status().signedIn, true);
   assert.equal(after.status().server, OLD_DEFAULT, 'the account stays at the address it was made at');
-  const logins = routes(srv, 'POST /v1/login').slice(-2).map((c) => c.body.emailCode && c.body.emailCode.code);
-  assert.deepEqual(logins, [srv.codeFor('former@example.com'), srv.codeFor('former@example.com')], 'the code went with both tries');
+  assert.equal(routes(srv, 'POST /v1/login').at(-1).body.emailCode.code, srv.codeFor('former@example.com'));
+});
+
+test('with one try left on the code, the right password at the former default still signs in', async (t) => {
+  const srv = await server(t, { signups: 'open', codes: true });
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'lasttry@example.com', password: PASSWORD });
+  before.close();
+  const after = release(t, srv, NEW_DEFAULT, dir);
+  await after.signOut();
+  srv.lock('lasttry@example.com');
+  await after.requestCode({ email: 'lasttry@example.com', purpose: 'unlock' });
+  const code = srv.codeFor('lasttry@example.com');
+  // Two wrong passwords, each tried at both addresses: four of the code's five tries.
+  for (let i = 0; i < 2; i++) {
+    await assert.rejects(after.signIn({ email: 'lasttry@example.com', password: 'not the password at all', emailCode: code }), fails('unauthorized'));
+  }
+  // The former address goes first for this account, so its right password uses the last try there.
+  await after.signIn({ email: 'lasttry@example.com', password: PASSWORD, emailCode: code });
+  assert.equal(after.status().signedIn, true);
+  assert.equal(after.status().server, OLD_DEFAULT);
+});
+
+test("a typed code that can't be sent doesn't stop an invite code, and comes back when the server still wants a code", async (t) => {
+  const srv = await server(t, { signups: 'verified', codes: true, invites: ['welcome'] });
+  const desk = device(t, srv);
+  // Six digits without a request here, beside the operator's invite code: the invite code goes, and works.
+  await desk.signUp({ email: 'inv@example.com', password: PASSWORD, invite: 'welcome', emailCode: '123456' });
+  assert.equal(desk.status().signedIn, true);
+  assert.equal(routes(srv, 'POST /v1/signup').at(-1).body.emailCode, undefined);
+  // With a wrong invite code the server still asks for a code, and the code's own problem is what the form says.
+  const other = device(t, srv, 'other');
+  await assert.rejects(other.signUp({ email: 'inv2@example.com', password: PASSWORD, invite: 'nope', emailCode: 'abc' }), fails('code_format'));
+});
+
+test('a late answer for another address leaves the code of this one alone', async (t) => {
+  const srv = await server(t, { signups: 'verified', codes: true });
+  const desk = device(t, srv);
+  await desk.requestCode({ email: 'b@example.com', purpose: 'signup' });
+  // The answer for an address typed before comes after it.
+  await desk.requestCode({ email: 'a@example.com', purpose: 'signup' });
+  await desk.signUp({ email: 'b@example.com', password: PASSWORD, emailCode: srv.codeFor('b@example.com') });
+  assert.equal(desk.status().signedIn, true);
 });
