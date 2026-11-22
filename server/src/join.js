@@ -21,10 +21,8 @@ const TEXT = {
     install: (rukoo) => `Install Rukoo from ${rukoo} and open it. The link opens in a new tab, so this page stays open.`,
     then: 'Then, in Rukoo:',
     member: 'If you have a Rukoo account on this server: open Chat, choose Join with an invitation link, and paste the address you copied.',
-    newWithInvite:
-      'If you don’t: open Settings, Rukoo account, Create account, and paste the address you copied where it asks for an invite code. Chat then opens the invitation.',
-    newOpen:
-      'If you don’t: open Settings, Rukoo account, Create account, and make an account on this server. Then open Chat, choose Join with an invitation link, and paste the address you copied.',
+    newAccount: (code) =>
+      `If you don’t: choose Join with an invitation link in Chat or on Rukoo’s first screen, where the choice is called Join your team’s chat on a phone. Paste the address you copied and create your account.${code ? ' Rukoo emails you a code to confirm your address.' : ''} Rukoo opens the invitation once your account is made.`,
     newClosed:
       'If you don’t: this server makes new accounts only with an invite code from whoever runs it. Ask the person who invited you.',
     newNone: 'If you don’t: this server doesn’t take new accounts. Ask the person who invited you.',
@@ -42,10 +40,8 @@ const TEXT = {
     install: (rukoo) => `Installeer Rukoo via ${rukoo} en open het. De link opent in een nieuw tabblad, dus deze pagina blijft open.`,
     then: 'Daarna, in Rukoo:',
     member: 'Heb je een Rukoo-account op deze server? Open Chat, kies Deelnemen met een uitnodigingslink en plak het adres dat je kopieerde.',
-    newWithInvite:
-      'Heb je dat niet? Open Instellingen, Rukoo-account, Account maken, en plak het adres dat je kopieerde waar om een uitnodigingscode wordt gevraagd. Chat opent daarna de uitnodiging.',
-    newOpen:
-      'Heb je dat niet? Open Instellingen, Rukoo-account, Account maken, en maak een account op deze server. Open daarna Chat, kies Deelnemen met een uitnodigingslink en plak het adres dat je kopieerde.',
+    newAccount: (code) =>
+      `Heb je dat niet? Kies Deelnemen met een uitnodigingslink in Chat of op het eerste scherm van Rukoo, waar die keuze op een telefoon Deelnemen aan de teamchat heet. Plak het adres dat je kopieerde en maak je account.${code ? ' Rukoo mailt je een code om je adres te bevestigen.' : ''} Rukoo opent de uitnodiging zodra je account er is.`,
     newClosed:
       'Heb je dat niet? Deze server maakt alleen nieuwe accounts met een uitnodigingscode van de beheerder. Vraag het aan degene die je uitnodigde.',
     newNone: 'Heb je dat niet? Deze server neemt geen nieuwe accounts aan. Vraag het aan degene die je uitnodigde.',
@@ -59,10 +55,12 @@ const TEXT = {
 export function joinPage({ operator, signups, host, inviteSignups }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const runBy = operator.name ? T.runBy(link(operator.url, operator.name)) : escape(T.unnamed);
-  const newcomer = inviteSignups
-    ? T.newWithInvite
-    : signups === 'open'
-      ? T.newOpen
+  // Rukoo 2.4 and later take the link before the account form, on the first screen and in Chat, and join once the
+  // account is made, so a sign-up with the invitation and one on an open server read the same. A verified server asks
+  // for a code from the address first (signups is only verified here while it can send one).
+  const newcomer =
+    inviteSignups || signups === 'open' || signups === 'verified'
+      ? T.newAccount(signups === 'verified')
       : signups === 'closed'
         ? T.newNone
         : T.newClosed;

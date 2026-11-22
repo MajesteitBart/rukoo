@@ -214,7 +214,12 @@ describe('the join page', () => {
     expect(steps).toContain('The link opens in a new tab, so this page stays open.');
     const cases = res.text.match(/<ul>([\s\S]*?)<\/ul>/)[1];
     expect(cases).toContain('If you have a Rukoo account on this server: open Chat, choose Join with an invitation link, and paste the address you copied.');
-    expect(cases).toContain('paste the address you copied where it asks for an invite code. Chat then opens the invitation.');
+    // Rukoo 2.4 takes the link before the account form, so a newcomer starts where a member does.
+    expect(cases).toContain(
+      'If you don’t: choose Join with an invitation link in Chat or on Rukoo’s first screen, where the choice is called Join your team’s chat on a phone. Paste the address you copied and create your account. Rukoo opens the invitation once your account is made.'
+    );
+    expect(cases).not.toContain('Settings');
+    expect(cases).not.toContain('emails you a code');
     expect(res.text).toContain('after one day unless the person who invited you chose another time.');
     expect(res.text).not.toMatch(/<script|<form|<img|<iframe|src=/i);
     // No language switch: a link would leave the invitation in the fragment behind.
@@ -245,10 +250,20 @@ describe('the join page', () => {
     expect(closed).toContain('this server doesn’t take new accounts. Ask the person who invited you.');
     expect(closed).not.toContain('invite code from whoever runs it');
     expect(await text({ SIGNUPS: 'closed' }, 'nl')).toContain('Deze server neemt geen nieuwe accounts aan.');
-    expect(await text({ SIGNUPS: 'open' })).toContain(
-      'make an account on this server. Then open Chat, choose Join with an invitation link, and paste the address you copied.'
-    );
-    expect(await text({ SIGNUPS: 'open' }, 'nl')).toContain('Open daarna Chat, kies Deelnemen met een uitnodigingslink');
+    // An open server reads the same as a sign-up with the invitation, also with workspace sign-ups off.
+    for (const vars of [{ SIGNUPS: 'open' }, { SIGNUPS: 'open', WORKSPACE_SIGNUPS: 'off' }]) {
+      expect(await text(vars)).toContain('Paste the address you copied and create your account. Rukoo opens the invitation');
+      expect(await text(vars, 'nl')).toContain('Plak het adres dat je kopieerde en maak je account. Rukoo opent de uitnodiging');
+    }
+    expect(await text({ SIGNUPS: 'open' }, 'nl')).toContain('waar die keuze op een telefoon Deelnemen aan de teamchat heet');
+    // A verified server mails a code first, with or without the invitation standing in for an invite code.
+    for (const vars of [{ ...MAIL_VARS, SIGNUPS: 'verified' }, { ...MAIL_VARS, SIGNUPS: 'verified', WORKSPACE_SIGNUPS: 'off' }]) {
+      expect(await text(vars)).toContain('create your account. Rukoo emails you a code to confirm your address. Rukoo opens the invitation');
+      expect(await text(vars, 'nl')).toContain('maak je account. Rukoo mailt je een code om je adres te bevestigen. Rukoo opent');
+    }
+    // Set to verified without a way to send codes, the server takes invite codes only, and the page says so.
+    expect(await text({ SIGNUPS: 'verified', WORKSPACE_SIGNUPS: 'off' })).toContain('only with an invite code from whoever runs it');
+    expect(await text({ SIGNUPS: 'verified' })).not.toContain('emails you a code');
   });
 
   it('answers HEAD without a body, and nothing while team chat is off', async () => {
@@ -270,7 +285,8 @@ describe('the join page', () => {
     const moved = await call('GET', '/join', {
       vars: { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://meet.example', BOOKING_FORMER_ROOTS: 'https://accounts.example' }
     });
-    expect(moved.status).toBe(301);
+    // A former root redirects only the booking pages' addresses, and /join with no page under that handle isn't one.
+    expect(moved.status).toBe(404);
     expect(moved.headers.get('x-rukoo-workspace-invite')).toBeNull();
     expect((await call('GET', '/', { vars: ON })).headers.get('x-rukoo-workspace-invite')).toBeNull();
   });
