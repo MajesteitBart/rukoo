@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
-const { t } = require('../../i18n');
+const { t, getLanguage } = require('../../i18n');
 const keys = require('./crypto');
 const { AccountError, serverUrl, request: httpRequest } = require('./client');
 
@@ -53,10 +53,34 @@ const ERRORS = new Set([
   'invalid', 'unauthorized', 'locked', 'rate_limited', 'exists', 'signups_closed', 'invite_required', 'quota', 'too_large',
   'not_configured', 'network', 'server', 'invalid_email', 'weak_password', 'recovery_key', 'weak_kdf', 'no_server', 'protocol',
   'signed_in', 'signed_out', 'wrong_password',
+  // Codes sent by email (server/PROTOCOL.md, POST /v1/email-code), and code_format, a typed code that is neither the
+  // six digits nor the long code.
+  'code_required', 'code_wrong', 'code_expired', 'code_in_use', 'mail_unavailable', 'code_format',
   // The booking routes (server/PROTOCOL.md, Owner errors).
   'handle_taken', 'handle_reserved', 'handle_lost', 'handle_changes', 'has_bookings', 'other_device', 'not_found', 'slot_taken',
   'stale_version', 'not_active'
 ]);
+// What a code is for: a sign-up on a server that checks addresses, or a sign-in or recovery past the account's lock.
+const CODE_PURPOSES = ['signup', 'unlock'];
+// A challenge, and the long code in the email: 32 random bytes in base64url.
+const CODE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+// Codes asked for are kept by purpose, address and server, a few at most: a code one server sent works only there.
+const codeKey = (purpose, address, server) => `${purpose}
+${address}
+${server}`;
+const MAX_HELD_CODES = 8;
+
+// Whether the server mails codes for purpose: email-codes in its features and the purpose in emailCodes.purposes
+// (server/PROTOCOL.md, GET /v1/info). Without both, sign-up and sign-in work as they did before codes.
+const codesFor = (info, purpose) =>
+  Boolean(
+    info &&
+      Array.isArray(info.features) &&
+      info.features.includes('email-codes') &&
+      info.emailCodes &&
+      Array.isArray(info.emailCodes.purposes) &&
+      info.emailCodes.purposes.includes(purpose)
+  );
 
 function readJson(file, fallback) {
   try {
@@ -119,6 +143,11 @@ class AccountService extends EventEmitter {
     // Runs before the account is deleted on the server and stops the deletion when it throws: the booking service
     // turns the booking page off first (main.js).
     this.beforeDelete = null;
+    // The last code asked for, by purpose, address and server (codeKey): { challenge, until, seq }. Only in memory:
+    // the challenge is what the six digits count with, and only this device got it (requestCode). seq counts the
+    // requests, so an older one answered late can't replace a newer one's challenge.
+    this.codes = new Map();
+    this.codeSeq = 0;
   }
 
   file(name) {
@@ -270,6 +299,7 @@ class AccountService extends EventEmitter {
     this.state.server = server && server !== this.defaultServer ? server : null;
     this.state.info = null;
     delete this.state.formerServer;
+    delete this.state.formerEmail;
     this.saveState();
     this.changedStatus();
     return this.status();
@@ -293,29 +323,114 @@ class AccountService extends EventEmitter {
     this.secrets.encrypt('rukoo');
   }
 
+  // ---- codes by email ----
+
+  // POST /v1/email-code: the server mails a code to email for purpose, 'signup' or 'unlock'. The challenge it answers,
+  // which the six digits count only with and which only this device gets, stays here in memory for the sign-up,
+  // sign-in or recovery that follows (emailCodeFor); the window gets the address and how long the six digits work. A
+  // new request for the same purpose, address and server replaces the one before, so the newest email's six digits
+  // are the ones that work here. An answer that comes late leaves a newer request's challenge alone, also one for
+  // another address, or from the server this device used before it changed.
+  async requestCode({ email, purpose }) {
+    const address = keys.normalizeEmail(email);
+    if (this.signedIn) throw fail('signed_in');
+    if (!validEmail(address)) throw fail('invalid_email');
+    if (!CODE_PURPOSES.includes(purpose)) throw fail('invalid');
+    const at = this.server;
+    const seq = ++this.codeSeq;
+    const lang = getLanguage() === 'nl' ? 'nl' : 'en';
+    const res = await this.call('POST', '/v1/email-code', { email: address, purpose, lang }, { server: at });
+    const challenge = res && typeof res.challenge === 'string' && CODE_TOKEN.test(res.challenge) ? res.challenge : null;
+    if (!challenge) throw fail('server');
+    const expiresIn = Number.isSafeInteger(res.expiresIn) && res.expiresIn > 0 ? Math.min(res.expiresIn, 3600) : 600;
+    const key = codeKey(purpose, address, at);
+    const newer = this.codes.get(key);
+    if (newer && newer.seq > seq) return { email: address, expiresIn };
+    this.codes.delete(key);
+    this.codes.set(key, { challenge, until: this.now() + expiresIn * 1000, seq });
+    // A few addresses at most are worth keeping: the oldest go first.
+    while (this.codes.size > MAX_HELD_CODES) this.codes.delete(this.codes.keys().next().value);
+    return { email: address, expiresIn };
+  }
+
+  // emailCode for a request to the server at, from what the person typed: null when nothing was typed, { token } for
+  // the long code, { challenge, code } for six digits with the challenge this device got for the same address, purpose
+  // and server. Spaces, line breaks and dashes are left out, as people paste them. Six digits without such a challenge
+  // (asked for on another device, before Rukoo restarted, or expired here) can't work: code_expired, whose message
+  // says to ask again or paste the long code.
+  emailCodeFor(purpose, address, at, typed) {
+    const text = typeof typed === 'string' ? typed.replace(/\s+/g, '') : '';
+    if (!text) return null;
+    if (CODE_TOKEN.test(text)) return { token: text };
+    const digits = text.replace(/-/g, '');
+    if (!/^\d{6}$/.test(digits)) throw fail('code_format');
+    const held = this.codes.get(codeKey(purpose, address, at));
+    if (!held || held.until <= this.now()) throw fail('code_expired');
+    return { challenge: held.challenge, code: digits };
+  }
+
+  // After a request that carried emailCode: a code the server took is used up, and six digits that no longer work
+  // (code_expired, or wrong for the last time) leave nothing worth keeping. A long code that failed leaves the six
+  // digits alone: they may be of another email.
+  settleCode(purpose, address, at, emailCode, err = null) {
+    if (!emailCode) return;
+    const key = codeKey(purpose, address, at);
+    const held = this.codes.get(key);
+    if (!err) {
+      this.codes.delete(key);
+      return;
+    }
+    if (!held || held.challenge !== emailCode.challenge) return;
+    const code = err && err.code;
+    const last = code === 'code_wrong' && err.details && err.details.attemptsLeft === 0;
+    if (code === 'code_expired' || last) this.codes.delete(key);
+  }
+
   // workspaceInvite: { workspace, invite } from a team chat invitation link, which a server that takes accounts by
   // invite code accepts in place of one (contract 2.12). Sent instead of invite.
   //
+  // emailCode: what the person typed of a signup code (requestCode). A server that checks addresses
+  // (codesFor(info, 'signup')) needs one for every sign-up without the operator's invite code, also one with a
+  // workspace invitation (workspace.inviteSignupsNeedCode); without it this stops with code_required before the
+  // password's keys are made, and the window asks for a code. A wrong invite code gets code_required from the server.
+  // With an invite code, a typed code that can't be sent (code_format, code_expired here) doesn't stop the sign-up:
+  // the invite code may do without it, and only when the server still asks for a code does that error come back.
+  // There, an invite code that has been used up gets invite_required, and the server doesn't look at the emailed code
+  // beside it: the sign-up goes once more without the invite code, so a working emailed code always does. Without
+  // an emailed code, that answer reads as code_required, and the window sends one.
+  //
   // Sign-up, sign-in and recovery read the server once and use that address for every call and key: the server can
   // still change while they wait (only a session stops it), and attach() refuses the session when it did.
-  async signUp({ email, password, invite, workspaceInvite }) {
+  async signUp({ email, password, invite, workspaceInvite, emailCode: typed }) {
     const address = keys.normalizeEmail(email);
     this.checkNew(address, password);
     const linked =
       workspaceInvite && typeof workspaceInvite === 'object' && typeof workspaceInvite.workspace === 'string' && typeof workspaceInvite.invite === 'string'
         ? { workspace: workspaceInvite.workspace.slice(0, 100), invite: workspaceInvite.invite.slice(0, 100) }
         : null;
+    const plain = !linked && invite ? String(invite).trim() : '';
     const at = this.server;
-    await this.serverInfo(at);
+    const info = await this.serverInfo(at);
+    let emailCode = null;
+    let unusable = null;
+    try {
+      emailCode = this.emailCodeFor('signup', address, at, typed);
+    } catch (err) {
+      if (!plain) throw err;
+      unusable = err;
+    }
+    const codes = codesFor(info, 'signup');
+    if (!emailCode && !plain && codes) throw fail('code_required', 403);
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
     const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, at);
     const dataKey = crypto.randomBytes(32);
     const recoveryKey = crypto.randomBytes(20);
     const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, at);
-    const res = await this.call('POST', '/v1/signup', {
+    const body = {
       email: address,
-      ...(linked ? { workspaceInvite: linked } : invite ? { invite: String(invite).trim() } : {}),
+      ...(linked ? { workspaceInvite: linked } : plain ? { invite: plain } : {}),
+      ...(emailCode ? { emailCode } : {}),
       kdf,
       salt: keys.b64u(salt),
       authKey: keys.b64u(authKey),
@@ -323,7 +438,26 @@ class AccountService extends EventEmitter {
       recoveryAuth: keys.b64u(recoveryAuth),
       recoveryWrappedKey: keys.b64u(keys.wrapDataKey(recoveryWrap, dataKey)),
       device: this.device()
-    }, { server: at });
+    };
+    // The operator's invite code didn't work on a server that checks addresses: used up (invite_required) or wrong
+    // (code_required).
+    const inviteFailed = (err) => Boolean(codes && plain && err && (err.code === 'invite_required' || err.code === 'code_required'));
+    let res;
+    try {
+      try {
+        res = await this.call('POST', '/v1/signup', body, { server: at });
+      } catch (err) {
+        if (!emailCode || err.code !== 'invite_required' || !inviteFailed(err)) throw err;
+        const without = { ...body };
+        delete without.invite;
+        res = await this.call('POST', '/v1/signup', without, { server: at });
+      }
+    } catch (err) {
+      this.settleCode('signup', address, at, emailCode, err);
+      if (!inviteFailed(err)) throw unusable && err && err.code === 'code_required' ? unusable : err;
+      throw unusable || (err.code === 'code_required' ? err : fail('code_required', 403));
+    }
+    this.settleCode('signup', address, at, emailCode);
     this.attach(address, res.token, dataKey, at);
     return { recoveryKey: keys.formatRecoveryKey(recoveryKey), account: res.account };
   }
@@ -346,7 +480,8 @@ class AccountService extends EventEmitter {
     return keys.passwordKeys(password, salt, kdf, at);
   }
 
-  async signIn({ email, password }) {
+  // emailCode: what the person typed of an unlock code (requestCode), which lets the sign-in past the account's lock.
+  async signIn({ email, password, emailCode: typed }) {
     const address = keys.normalizeEmail(email);
     if (this.signedIn) throw fail('signed_in');
     if (!validEmail(address)) throw fail('invalid_email');
@@ -354,30 +489,58 @@ class AccountService extends EventEmitter {
     this.checkStorage();
     const at = this.server;
     const former = this.state.server ? null : this.state.formerServer;
-    try {
-      return await this.login(address, password, at);
-    } catch (err) {
-      // This device went back to the default from a former one (forget()). An account made there signs in only
-      // there, as the password proofs include the address: try it once, and keep it when it works. The address stays
-      // with this attempt until attach() commits it, and only while the attempt is still current: nobody signed in
-      // meanwhile and the server is still the one it began at. A session made meanwhile keeps its own address.
-      if (!former || !err || err.code !== 'unauthorized') throw err;
-      if (this.signedIn || this.server !== at || this.state.formerServer !== former) throw err;
+    const emailCode = this.emailCodeFor('unlock', address, at, typed);
+    // This device went back to the default from a former one (forget()). An account made there signs in only there,
+    // as the password proofs include the address: it is tried once, and kept when it works. The address stays with
+    // this attempt until attach() commits it, and only while the attempt is still current: nobody signed in meanwhile
+    // and the server is still the one it began at. A session made meanwhile keeps its own address.
+    //
+    // An unlock code goes to both: a former address reaches the same server (FORMER_SERVERS), whose codes don't depend
+    // on the address they were asked at. Each wrong proof costs the code a try, so for the account that was signed in
+    // at the former address (formerEmail) that address goes first, and its right password doesn't spend the code's
+    // tries at the default first. The default comes after it unless the code or another sign-in stopped the attempt
+    // there: the former address may not answer at all any more, and then the default's answer is the one shown, also
+    // a wrong password. Otherwise the second address is tried only after a wrong password at the first.
+    const formerFirst = Boolean(former && emailCode && this.state.formerEmail === address);
+    const hosts = !former ? [at] : formerFirst ? [former, at] : [at, former];
+    let first = null;
+    for (const host of hosts) {
+      if (first) {
+        const goOn = formerFirst ? !/^code_/.test(first.code || '') && first.code !== 'signed_in' : first.code === 'unauthorized';
+        if (!goOn) throw first;
+        if (this.signedIn || this.server !== at || this.state.formerServer !== former) throw first;
+      }
       try {
-        return await this.login(address, password, former, at);
-      } catch (later) {
-        // The former address took the password, but another sign-in got here first: that one says why.
-        throw later && later.code === 'signed_in' ? later : err;
+        const res = await this.login(address, password, host, at, emailCode);
+        this.settleCode('unlock', address, at, emailCode);
+        return res;
+      } catch (err) {
+        this.settleCode('unlock', address, at, emailCode, err);
+        if (!first) {
+          first = err || fail('server');
+          continue;
+        }
+        // The second address took the password, but another sign-in got here first, or the code didn't do there:
+        // that one says why. So does the default after a former address that didn't answer (network, also a
+        // timeout): that address can't sign anyone in, and its silence doesn't tell where the account lives, while a
+        // wrong password read as a network error would have each retry spend one of the code's tries at the default.
+        // Otherwise the first answer does: a former address that answered, for an account that lives there, says
+        // more than the default's wrong password.
+        const second = err && (err.code === 'signed_in' || (emailCode && /^code_|^locked$/.test(err.code)) || (formerFirst && first.code === 'network'));
+        throw second ? err : first;
       }
     }
+    throw first;
   }
 
   // A sign-in at the address at. from: the server this device uses that the attempt began at, which differs from at
   // only for the former-address try of signIn(); attach() takes the session only while the device still uses from.
-  async login(address, password, at = this.server, from = at) {
+  // emailCode: an unlock code for at, from emailCodeFor.
+  async login(address, password, at = this.server, from = at, emailCode = null) {
     const info = await this.serverInfo(at);
     const { authKey, wrapKey } = await this.authFor(address, password, at);
-    const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() }, { server: at });
+    const body = { email: address, authKey: keys.b64u(authKey), device: this.device(), ...(emailCode ? { emailCode } : {}) };
+    const res = await this.call('POST', '/v1/login', body, { server: at });
     let dataKey;
     try {
       dataKey = keys.unwrapDataKey(wrapKey, keys.unb64u(res.wrappedKey));
@@ -388,36 +551,49 @@ class AccountService extends EventEmitter {
     return { account: res.account };
   }
 
-  // A forgotten password: the recovery key opens the data key, and a new password takes over.
-  async recover({ email, recoveryKey, password }) {
+  // A forgotten password: the recovery key opens the data key, and a new password takes over. emailCode: what the
+  // person typed of an unlock code, which goes with both steps: recover/start leaves the code for recover/finish.
+  async recover({ email, recoveryKey, password, emailCode: typed }) {
     const address = keys.normalizeEmail(email);
     this.checkNew(address, password);
     const key = keys.parseRecoveryKey(recoveryKey);
     if (!key) throw fail('recovery_key');
     const at = this.server;
-    await this.serverInfo(at);
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key, at);
-    const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: keys.b64u(recoveryAuth) }, { server: at });
-    let dataKey;
+    const emailCode = this.emailCodeFor('unlock', address, at, typed);
+    const code = emailCode ? { emailCode } : {};
+    let settled = false;
     try {
-      dataKey = keys.unwrapDataKey(recoveryWrap, keys.unb64u(start.recoveryWrappedKey));
-    } catch (_) {
-      throw fail('server');
+      await this.serverInfo(at);
+      const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key, at);
+      const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: keys.b64u(recoveryAuth), ...code }, { server: at });
+      let dataKey;
+      try {
+        dataKey = keys.unwrapDataKey(recoveryWrap, keys.unb64u(start.recoveryWrappedKey));
+      } catch (_) {
+        throw fail('server');
+      }
+      const salt = crypto.randomBytes(16);
+      const kdf = { ...keys.DEFAULT_KDF };
+      const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, at);
+      const res = await this.call('POST', '/v1/recover/finish', {
+        email: address,
+        recoveryAuth: keys.b64u(recoveryAuth),
+        kdf,
+        salt: keys.b64u(salt),
+        authKey: keys.b64u(authKey),
+        wrappedKey: keys.b64u(keys.wrapDataKey(wrapKey, dataKey)),
+        device: this.device(),
+        ...code
+      }, { server: at });
+      // The server used the code up with the new password, also when attach() refuses the session below.
+      this.settleCode('unlock', address, at, emailCode);
+      settled = true;
+      this.attach(address, res.token, dataKey, at);
+      return { account: res.account };
+    } catch (err) {
+      if (!settled) this.settleCode('unlock', address, at, emailCode, err);
+      throw err;
     }
-    const salt = crypto.randomBytes(16);
-    const kdf = { ...keys.DEFAULT_KDF };
-    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, at);
-    const res = await this.call('POST', '/v1/recover/finish', {
-      email: address,
-      recoveryAuth: keys.b64u(recoveryAuth),
-      kdf,
-      salt: keys.b64u(salt),
-      authKey: keys.b64u(authKey),
-      wrappedKey: keys.b64u(keys.wrapDataKey(wrapKey, dataKey)),
-      device: this.device()
-    }, { server: at });
-    this.attach(address, res.token, dataKey, at);
-    return { account: res.account };
   }
 
   // Only the session this was asked for: a slow answer must not sign out one made meanwhile.
@@ -592,6 +768,7 @@ class AccountService extends EventEmitter {
       error: null
     };
     delete this.state.formerServer;
+    delete this.state.formerEmail;
     const acct = bookingAcct(email);
     for (const e of this.entries.values()) {
       delete e.seq;
@@ -630,11 +807,15 @@ class AccountService extends EventEmitter {
     }
     // A device pinned to a former default goes back to the default: signed out here, deleted, or ended elsewhere, as
     // when another device deleted the account to make it again at the default.
-    // signIn() tries the former address once more, for an account still there (formerServer).
+    // signIn() tries the former address once more, for an account still there (formerServer), first for the address
+    // that was signed in there (formerEmail) when it carries an unlock code.
     const former = FORMER_SERVERS.includes(this.state.server);
     const { server, info, error, handleKey } = this.state;
     const kept = handleKey ? { handleKey } : {};
-    this.state = former ? { server: null, info: null, error, formerServer: server, ...kept } : { server, info, error, ...(this.state.formerServer ? { formerServer: this.state.formerServer } : {}), ...kept };
+    const formerEmail = former ? this.state.email : this.state.formerEmail;
+    const remembered = former ? { formerServer: server } : this.state.formerServer ? { formerServer: this.state.formerServer } : {};
+    if (remembered.formerServer && formerEmail) remembered.formerEmail = formerEmail;
+    this.state = former ? { server: null, info: null, error, ...remembered, ...kept } : { server, info, error, ...remembered, ...kept };
     this.saveState();
   }
 
@@ -947,4 +1128,4 @@ class AccountService extends EventEmitter {
   }
 }
 
-module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES, PULL_DATA, bookingAcct };
+module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES, PULL_DATA, bookingAcct, codesFor };

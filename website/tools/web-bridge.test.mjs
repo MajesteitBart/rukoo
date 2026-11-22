@@ -524,11 +524,11 @@ test('a browser too old for team chat gets every call refused as browser_old, wo
 
 // The calls the renderer modules the web app loads make, by name: each must reach a handler. The desktop-only rows of
 // rukoo-account.js (hidden on the web) and ui.js's nativeEdit (for a desktop menu event the web never sends) get the
-// "not in the browser" answer.
+// "not in the browser" answer. email-code.js is the account forms' code step.
 test('every method the chat, account, ui, i18n, diag and web shell modules call has an answer', async (t) => {
   const files = fs
     .readdirSync(path.join(root, 'src', 'renderer'))
-    .filter((f) => /^chat.*\.js$/.test(f) || ['rukoo-account.js', 'ui.js', 'i18n.js', 'diag.js', 'web-shell.js'].includes(f));
+    .filter((f) => /^chat.*\.js$/.test(f) || ['rukoo-account.js', 'email-code.js', 'ui.js', 'i18n.js', 'diag.js', 'web-shell.js'].includes(f));
   assert.ok(files.includes('chat.js') && files.includes('rukoo-account.js'));
   const called = new Set();
   for (const file of files) {

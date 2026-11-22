@@ -17,9 +17,22 @@ data class ServerOperator(val name: String? = null, val url: String? = null, val
 data class ServerHosting(val provider: String? = null, val company: String? = null, val country: String? = null, val jurisdiction: String? = null)
 
 /**
+ * `emailCodes` in `GET /v1/info`: what the server mails codes for (`signup`, `unlock`), and how long the six digits
+ * ([expiresIn]) and the long code ([tokenExpiresIn]) work, in seconds.
+ */
+@Serializable
+data class EmailCodesInfo(
+    val purposes: List<String> = emptyList(),
+    val digits: Int = 6,
+    val expiresIn: Long = 600,
+    val tokenExpiresIn: Long = 86_400,
+)
+
+/**
  * What `GET /v1/info` says: who runs the server and where it keeps data, shown before anyone signs up. [features]
- * lists what the server offers beyond records, such as `booking` and `workspaces-v1`; [workspace] is there while the
- * operator has team chat on. Older servers leave both out.
+ * lists what the server offers beyond records, such as `booking`, `email-codes` and `workspaces-v1`; [workspace] is
+ * there while the operator has team chat on, and [emailCodes] while the server sends codes by email. Older servers
+ * leave them out.
  */
 @Serializable
 data class ServerInfo(
@@ -27,13 +40,24 @@ data class ServerInfo(
     val version: String = "",
     val operator: ServerOperator? = null,
     val hosting: ServerHosting? = null,
-    /** `open`, `invite` or `closed`. */
+    /** `open`, `invite` or `closed`. A server that checks addresses with a code reports `invite`. */
     val signups: String = "open",
     val features: List<String> = emptyList(),
     val workspace: WorkspaceServerInfo? = null,
+    val emailCodes: EmailCodesInfo? = null,
 ) {
     /** Whether this server has team chat in a version this build speaks: Chat shows only then (contract 3.1). */
     val teamChat: Boolean get() = WORKSPACES_FEATURE in features && workspace?.versions?.contains(WORKSPACE_VERSION) == true
+
+    /**
+     * Whether the server mails codes for [purpose], `signup` or `unlock` (server/PROTOCOL.md, GET /v1/info). Without
+     * it, sign-up and sign-in work as they did before codes.
+     */
+    fun codesFor(purpose: String): Boolean = EMAIL_CODES_FEATURE in features && emailCodes?.purposes?.contains(purpose) == true
+
+    companion object {
+        const val EMAIL_CODES_FEATURE = "email-codes"
+    }
 }
 
 @Serializable

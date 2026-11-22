@@ -42,12 +42,33 @@ const ERRORS = new Set([
   'invalid', 'unauthorized', 'locked', 'rate_limited', 'exists', 'signups_closed', 'invite_required', 'quota', 'too_large',
   'not_configured', 'network', 'server', 'invalid_email', 'weak_password', 'recovery_key', 'weak_kdf', 'no_server', 'protocol',
   'signed_in', 'signed_out', 'wrong_password',
+  // Codes sent by email, as on desktop (src/main/account/index.js ERRORS).
+  'code_required', 'code_wrong', 'code_expired', 'code_in_use', 'mail_unavailable', 'code_format',
   // The page's own: another tab changed the account while a sign-out or delete dialog was open (src/web/host.js).
   'account_changed',
   // The booking routes (server/PROTOCOL.md, Owner errors), kept so the codes read the same as on desktop.
   'handle_taken', 'handle_reserved', 'handle_lost', 'handle_changes', 'has_bookings', 'other_device', 'not_found', 'slot_taken',
   'stale_version', 'not_active'
 ]);
+
+// What a code is for, and the shape of a challenge and of the email's long code (32 random bytes in base64url).
+const CODE_PURPOSES = ['signup', 'unlock'];
+const CODE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+// Codes asked for are kept by purpose and address, a few at most (desktop's codeKey).
+const codeKey = (purpose, address) => `${purpose}
+${address}`;
+const MAX_HELD_CODES = 8;
+
+// Whether the server mails codes for purpose (desktop's codesFor, src/main/account/index.js).
+const codesFor = (info, purpose) =>
+  Boolean(
+    info &&
+      Array.isArray(info.features) &&
+      info.features.includes('email-codes') &&
+      info.emailCodes &&
+      Array.isArray(info.emailCodes.purposes) &&
+      info.emailCodes.purposes.includes(purpose)
+  );
 
 // An error with a code for the bridge to word. Server codes Rukoo doesn't know read as 'server'.
 function fail(code, status = 0, details = null) {
@@ -179,7 +200,7 @@ class Emitter {
 }
 
 class WebAccountService extends Emitter {
-  constructor({ server, fetch, storage, subtle, argon2, now = Date.now, t = null, deviceName, userAgent, randomBytes, timeout }) {
+  constructor({ server, fetch, storage, subtle, argon2, now = Date.now, t = null, language = null, deviceName, userAgent, randomBytes, timeout }) {
     super();
     this.address = serverUrl(server) || '';
     this.http = createRequest({ fetch, now, timeout });
@@ -187,6 +208,13 @@ class WebAccountService extends Emitter {
     this.store = sessionStore(storage);
     this.now = now;
     this.t = typeof t === 'function' ? t : null;
+    // The page's language, for the email a code comes in.
+    this.language = typeof language === 'function' ? language : () => 'en';
+    // The last code asked for, by purpose and address, as on desktop: { server, challenge, until, seq }, in this
+    // page's memory only. A reload drops it; the long code in the email still works then. seq counts the requests, so
+    // an older one answered late can't replace a newer one's challenge.
+    this.codes = new Map();
+    this.codeSeq = 0;
     const ua = userAgent !== undefined ? userAgent : globalThis.navigator && globalThis.navigator.userAgent;
     this.deviceName = String(deviceName || browserDevice(ua)).slice(0, 100);
     this.platform = PLATFORM;
@@ -383,19 +411,89 @@ class WebAccountService extends Emitter {
     if (typeof password !== 'string' || [...password].length < MIN_PASSWORD) throw fail('weak_password');
   }
 
+  // ---- codes by email (desktop's requestCode, emailCodeFor and settleCode) ----
+
+  // POST /v1/email-code for purpose, 'signup' or 'unlock'. The challenge stays in this page's memory; the renderer
+  // gets the address and how long the six digits work.
+  async requestCode({ email, purpose }) {
+    const address = normalizeEmail(email);
+    if (this.signedIn) throw fail('signed_in');
+    if (!validEmail(address)) throw fail('invalid_email');
+    if (!CODE_PURPOSES.includes(purpose)) throw fail('invalid');
+    const at = this.server;
+    if (!at) throw fail('no_server');
+    const seq = ++this.codeSeq;
+    const lang = this.language() === 'nl' ? 'nl' : 'en';
+    const res = await this.call('POST', '/v1/email-code', { email: address, purpose, lang });
+    const challenge = res && typeof res.challenge === 'string' && CODE_TOKEN.test(res.challenge) ? res.challenge : null;
+    if (!challenge) throw fail('server');
+    const expiresIn = Number.isSafeInteger(res.expiresIn) && res.expiresIn > 0 ? Math.min(res.expiresIn, 3600) : 600;
+    const key = codeKey(purpose, address);
+    const newer = this.codes.get(key);
+    if (newer && newer.seq > seq) return { email: address, expiresIn };
+    this.codes.delete(key);
+    this.codes.set(key, { server: at, challenge, until: this.now() + expiresIn * 1000, seq });
+    while (this.codes.size > MAX_HELD_CODES) this.codes.delete(this.codes.keys().next().value);
+    return { email: address, expiresIn };
+  }
+
+  // emailCode for a request, from what was typed: null, { token } for the long code, or { challenge, code } for six
+  // digits with this page's challenge for the same address, purpose and server; code_expired without one.
+  emailCodeFor(purpose, address, at, typed) {
+    const text = typeof typed === 'string' ? typed.replace(/\s+/g, '') : '';
+    if (!text) return null;
+    if (CODE_TOKEN.test(text)) return { token: text };
+    const digits = text.replace(/-/g, '');
+    if (!/^\d{6}$/.test(digits)) throw fail('code_format');
+    const held = this.codes.get(codeKey(purpose, address));
+    if (!held || held.server !== at || held.until <= this.now()) throw fail('code_expired');
+    return { challenge: held.challenge, code: digits };
+  }
+
+  // After a request that carried emailCode: a used code, or six digits that no longer work, leave nothing to keep.
+  settleCode(purpose, address, emailCode, err = null) {
+    if (!emailCode) return;
+    const key = codeKey(purpose, address);
+    if (!err) {
+      this.codes.delete(key);
+      return;
+    }
+    const held = this.codes.get(key);
+    if (!held || held.challenge !== emailCode.challenge) return;
+    const last = err.code === 'code_wrong' && err.details && err.details.attemptsLeft === 0;
+    if (err.code === 'code_expired' || last) this.codes.delete(key);
+  }
+
   // workspaceInvite: { workspace, invite } from a team chat invitation link, which a server that takes accounts by
   // invite code accepts in place of one (contract 2.12). Sent instead of invite. The account is made first; only
-  // then does the recovery key come back to be shown, as on desktop.
-  async signUp({ email, password, invite, workspaceInvite }) {
+  // then does the recovery key come back to be shown, as on desktop. emailCode: what was typed of a signup code; a
+  // server that checks addresses needs one without the operator's invite code, also with workspaceInvite, so this
+  // stops with code_required before the password's keys are made. There, an invite code that has been used up gets
+  // invite_required, and the server doesn't look at the emailed code beside it: the sign-up goes once more without
+  // the invite code. Without an emailed code, that answer reads as code_required (desktop's signUp).
+  async signUp({ email, password, invite, workspaceInvite, emailCode: typed }) {
     const address = normalizeEmail(email);
     this.checkNew(address, password);
     const linked =
       workspaceInvite && typeof workspaceInvite === 'object' && typeof workspaceInvite.workspace === 'string' && typeof workspaceInvite.invite === 'string'
         ? { workspace: workspaceInvite.workspace.slice(0, 100), invite: workspaceInvite.invite.slice(0, 100) }
         : null;
+    const plain = !linked && invite ? String(invite).trim() : '';
     const at = this.server;
     if (!at) throw fail('no_server');
-    await this.serverInfo(at);
+    const info = await this.serverInfo(at);
+    // With an invite code, a typed code that can't be sent doesn't stop the sign-up; its error comes back only when the
+    // server still asks for a code (desktop's signUp).
+    let emailCode = null;
+    let unusable = null;
+    try {
+      emailCode = this.emailCodeFor('signup', address, at, typed);
+    } catch (err) {
+      if (!plain) throw err;
+      unusable = err;
+    }
+    const codes = codesFor(info, 'signup');
+    if (!emailCode && !plain && codes) throw fail('code_required', 403);
     const k = this.keys;
     const salt = k.randomBytes(16);
     const kdf = { ...DEFAULT_KDF };
@@ -407,7 +505,8 @@ class WebAccountService extends Emitter {
     try {
       body = {
         email: address,
-        ...(linked ? { workspaceInvite: linked } : invite ? { invite: String(invite).trim() } : {}),
+        ...(linked ? { workspaceInvite: linked } : plain ? { invite: plain } : {}),
+        ...(emailCode ? { emailCode } : {}),
         kdf,
         salt: b64u(salt),
         authKey: b64u(authKey),
@@ -419,7 +518,25 @@ class WebAccountService extends Emitter {
     } finally {
       for (const key of [dataKey, authKey, wrapKey, recoveryAuth, recoveryWrap]) key.fill(0);
     }
-    const res = await this.call('POST', '/v1/signup', body);
+    // The operator's invite code didn't work on a server that checks addresses: used up (invite_required) or wrong
+    // (code_required).
+    const inviteFailed = (err) => Boolean(codes && plain && err && (err.code === 'invite_required' || err.code === 'code_required'));
+    let res;
+    try {
+      try {
+        res = await this.call('POST', '/v1/signup', body);
+      } catch (err) {
+        if (!emailCode || err.code !== 'invite_required' || !inviteFailed(err)) throw err;
+        const without = { ...body };
+        delete without.invite;
+        res = await this.call('POST', '/v1/signup', without);
+      }
+    } catch (err) {
+      this.settleCode('signup', address, emailCode, err);
+      if (!inviteFailed(err)) throw unusable && err && err.code === 'code_required' ? unusable : err;
+      throw unusable || (err.code === 'code_required' ? err : fail('code_required', 403));
+    }
+    this.settleCode('signup', address, emailCode);
     await this.attach(address, res && res.token, at);
     const text = formatRecoveryKey(recoveryKey);
     recoveryKey.fill(0);
@@ -444,18 +561,26 @@ class WebAccountService extends Emitter {
     return this.keys.passwordKeys(password, salt, kdf, at);
   }
 
-  async signIn({ email, password }) {
+  // emailCode: what was typed of an unlock code, which lets the sign-in past the account's lock.
+  async signIn({ email, password, emailCode: typed }) {
     const address = normalizeEmail(email);
     if (this.signedIn) throw fail('signed_in');
     if (!validEmail(address)) throw fail('invalid_email');
     if (typeof password !== 'string' || !password) throw fail('unauthorized');
     const at = this.server;
     if (!at) throw fail('no_server');
+    const emailCode = this.emailCodeFor('unlock', address, at, typed);
     await this.serverInfo(at);
     const { authKey, wrapKey } = await this.authFor(address, password, at);
     let res;
     try {
-      res = await this.call('POST', '/v1/login', { email: address, authKey: b64u(authKey), device: this.device() });
+      try {
+        res = await this.call('POST', '/v1/login', { email: address, authKey: b64u(authKey), device: this.device(), ...(emailCode ? { emailCode } : {}) });
+      } catch (err) {
+        this.settleCode('unlock', address, emailCode, err);
+        throw err;
+      }
+      this.settleCode('unlock', address, emailCode);
       // The data key isn't kept, but it has to open: a wrappedKey that doesn't is a server that can't be trusted with
       // the session either.
       try {
@@ -473,19 +598,28 @@ class WebAccountService extends Emitter {
     return { account: res.account };
   }
 
-  // A forgotten password: the recovery key opens the data key, and a new password takes over.
-  async recover({ email, recoveryKey, password }) {
+  // A forgotten password: the recovery key opens the data key, and a new password takes over. emailCode: what was
+  // typed of an unlock code; it goes with both steps, as recover/start leaves it for recover/finish.
+  async recover({ email, recoveryKey, password, emailCode: typed }) {
     const address = normalizeEmail(email);
     this.checkNew(address, password);
     const key = parseRecoveryKey(recoveryKey);
     if (!key) throw fail('recovery_key');
     const at = this.server;
     if (!at) throw fail('no_server');
+    const emailCode = this.emailCodeFor('unlock', address, at, typed);
+    const code = emailCode ? { emailCode } : {};
     await this.serverInfo(at);
     const k = this.keys;
     const { recoveryAuth, recoveryWrap } = await k.recoveryKeys(key, at);
     key.fill(0);
-    const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: b64u(recoveryAuth) });
+    let start;
+    try {
+      start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: b64u(recoveryAuth), ...code });
+    } catch (err) {
+      this.settleCode('unlock', address, emailCode, err);
+      throw err;
+    }
     let dataKey;
     try {
       dataKey = await k.unwrapDataKey(recoveryWrap, unb64u(start && start.recoveryWrappedKey));
@@ -506,13 +640,21 @@ class WebAccountService extends Emitter {
         salt: b64u(salt),
         authKey: b64u(authKey),
         wrappedKey: b64u(await k.wrapDataKey(wrapKey, dataKey)),
-        device: this.device()
+        device: this.device(),
+        ...code
       };
       wrapKey.fill(0);
     } finally {
       dataKey.fill(0);
     }
-    const res = await this.call('POST', '/v1/recover/finish', body);
+    let res;
+    try {
+      res = await this.call('POST', '/v1/recover/finish', body);
+    } catch (err) {
+      this.settleCode('unlock', address, emailCode, err);
+      throw err;
+    }
+    this.settleCode('unlock', address, emailCode);
     await this.attach(address, res && res.token, at);
     return { account: res.account };
   }
@@ -616,20 +758,33 @@ class WebAccountService extends Emitter {
       email: accountText(i.email, 320),
       password: accountText(i.password, 1000),
       invite: accountText(i.invite, 200),
-      workspaceInvite: typeof w.workspace === 'string' && typeof w.invite === 'string' ? { workspace: w.workspace, invite: w.invite } : undefined
+      workspaceInvite: typeof w.workspace === 'string' && typeof w.invite === 'string' ? { workspace: w.workspace, invite: w.invite } : undefined,
+      emailCode: accountText(i.emailCode, 200)
     });
+  }
+
+  // A code by email (main.js accountEmailCode): { email, purpose } with purpose 'signup' or 'unlock'.
+  async accountEmailCode(input) {
+    await this.init();
+    const i = plainObject(input);
+    return this.requestCode({ email: accountText(i.email, 320), purpose: accountText(i.purpose, 20) });
   }
 
   async accountSignIn(input) {
     await this.init();
     const i = plainObject(input);
-    return this.signIn({ email: accountText(i.email, 320), password: accountText(i.password, 1000) });
+    return this.signIn({ email: accountText(i.email, 320), password: accountText(i.password, 1000), emailCode: accountText(i.emailCode, 200) });
   }
 
   async accountRecover(input) {
     await this.init();
     const i = plainObject(input);
-    return this.recover({ email: accountText(i.email, 320), recoveryKey: accountText(i.recoveryKey, 200), password: accountText(i.password, 1000) });
+    return this.recover({
+      email: accountText(i.email, 320),
+      recoveryKey: accountText(i.recoveryKey, 200),
+      password: accountText(i.password, 1000),
+      emailCode: accountText(i.emailCode, 200)
+    });
   }
 
   async accountSignOut() {
@@ -661,4 +816,4 @@ function createAccountService(deps = {}) {
   return new WebAccountService(deps);
 }
 
-module.exports = { createAccountService, WebAccountService, AccountError, SESSION_KEY, browserDevice, ERRORS, WORKSPACE_VERSIONS };
+module.exports = { createAccountService, WebAccountService, AccountError, SESSION_KEY, browserDevice, ERRORS, WORKSPACE_VERSIONS, codesFor };

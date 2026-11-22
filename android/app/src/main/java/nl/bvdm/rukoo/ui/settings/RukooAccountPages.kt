@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.toggleable
@@ -25,11 +26,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -44,15 +47,18 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.account.AccountDevice
 import nl.bvdm.rukoo.account.AccountError
 import nl.bvdm.rukoo.account.AccountStatus
 import nl.bvdm.rukoo.account.ServerInfo
+import nl.bvdm.rukoo.ui.components.Hairline
 import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.RkButton
 import nl.bvdm.rukoo.ui.components.RkButtonKind
 import nl.bvdm.rukoo.ui.components.RkButtonSize
+import nl.bvdm.rukoo.ui.components.RkLinkButton
 import nl.bvdm.rukoo.ui.components.RkTextField
 import nl.bvdm.rukoo.ui.components.SectionTitle
 import nl.bvdm.rukoo.ui.components.SettingsCard
@@ -95,7 +101,24 @@ fun accountErrorRes(code: String?): Int = when (AccountError.known(code)) {
     "protocol" -> R.string.account_errors_protocol
     "signed_in" -> R.string.account_errors_signed_in
     "signed_out" -> R.string.account_errors_signed_out
+    "code_required" -> R.string.account_errors_code_required
+    "code_wrong" -> R.string.account_errors_code_wrong
+    "code_expired" -> R.string.account_errors_code_expired
+    "code_in_use" -> R.string.account_errors_code_in_use
+    "mail_unavailable" -> R.string.account_errors_mail_unavailable
+    "code_format" -> R.string.account_errors_code_format
     else -> R.string.account_errors_server
+}
+
+/** "You can ask for a new code in 5 minutes": [seconds] as seconds, minutes or hours, rounded up (desktop's waitText). */
+@Composable
+private fun waitText(seconds: Long): String {
+    val s = seconds.coerceAtLeast(1)
+    return when {
+        s < 60 -> pluralStringResource(R.plurals.settings_rukoo_code_wait_seconds, s.toInt(), s.toInt())
+        s < 3600 -> ((s + 59) / 60).toInt().let { pluralStringResource(R.plurals.settings_rukoo_code_wait_minutes, it, it) }
+        else -> ((s + 3599) / 3600).toInt().let { pluralStringResource(R.plurals.settings_rukoo_code_wait_hours, it, it) }
+    }
 }
 
 /** The server by its address: `rukoo.io`, or `10.0.2.2:8790`. */
@@ -514,6 +537,69 @@ private fun CheckRow(text: String, checked: Boolean, enabled: Boolean, onChange:
     }
 }
 
+/**
+ * The code step of a form (desktop's src/renderer/email-code.js): where the code went, under a hairline, the field for
+ * the six digits or the long code, and Send a new code, which counts down the server's minute between two codes.
+ */
+@Composable
+private fun CodeStepFields(
+    step: RukooAccountModel.CodeStep,
+    value: String,
+    onValueChange: (String) -> Unit,
+    resendAt: Long,
+    working: Boolean,
+    onResend: () -> Unit,
+    onDone: () -> Unit,
+) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(resendAt) {
+        now = System.currentTimeMillis()
+        while (now < resendAt) {
+            delay(1000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val left = ((resendAt - now + 999) / 1000).coerceAtLeast(0).toInt()
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(step) { runCatching { focus.requestFocus() } }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Hairline()
+        Text(
+            stringResource(
+                when {
+                    step.notSent -> R.string.settings_rukoo_code_not_sent
+                    step.inviteFailed -> R.string.settings_rukoo_code_invite_failed
+                    step.resent -> R.string.settings_rukoo_code_resent
+                    else -> R.string.settings_rukoo_code_sent
+                },
+                step.email,
+            ),
+            Modifier.padding(top = 4.dp),
+            style = Rk.type.text13.copy(lineHeight = Rk.type.text13.fontSize * 1.45f),
+            color = Rk.colors.text2,
+        )
+        RkTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = stringResource(R.string.settings_rukoo_code_label),
+            help = stringResource(R.string.settings_rukoo_code_help),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done, autoCorrectEnabled = false),
+            keyboardActions = KeyboardActions(onDone = { onDone() }),
+            enabled = !working,
+            focusRequester = focus,
+        )
+        RkLinkButton(
+            if (left in 1..CODE_COUNTDOWN) pluralStringResource(R.plurals.settings_rukoo_code_resend_in, left, left) else stringResource(R.string.settings_rukoo_code_resend),
+            onResend,
+            Modifier.offset(x = (-4).dp),
+            enabled = left <= 0 && !working,
+        )
+    }
+}
+
+/** Up to this wait, in seconds, Send a new code counts down; a longer one (the hourly or daily limit) is said in the error line. */
+private const val CODE_COUNTDOWN = 90
+
 /** Create an account, Sign in and Forgot your password?: one form each, as desktop has them. */
 @Composable
 fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.Form) {
@@ -528,10 +614,9 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
         RukooAccountModel.Form.SIGN_IN -> SettingsRoutes.RUKOO_SIGNIN
         RukooAccountModel.Form.RECOVER -> SettingsRoutes.RUKOO_RECOVER
     }
-    LaunchedEffect(Unit) {
-        model.clearFormError()
-        model.fill(route)
-    }
+    // When a visit to the form starts and ends comes from the settings stack (SettingsScreen, RukooAccountModel.pageShown),
+    // as folding composes this page again in the other layout within the same visit.
+    LaunchedEffect(Unit) { model.fill(route) }
     val info = ui.info ?: status.info
     val working = ui.working
     fun field(name: String) = model.fields[name].orEmpty()
@@ -539,7 +624,10 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
         model.fields[name] = value
     }
     val carried by app.carriedJoin.collectAsStateWithLifecycle()
-    fun submit() = model.submit(form, carried) { text ->
+    // The language the app shows, which a code's email comes in.
+    val lang = currentLocale().language
+    val code = ui.code?.takeIf { it.form == form && it.server == status.server }
+    fun submit() = model.submit(form, carried, lang) { text ->
         // A new account shows its recovery key first; the page goes back, and says so, once it is saved.
         if (form != RukooAccountModel.Form.SIGN_UP) {
             // A sign-in that carried an invitation link closes Settings back to Chat, which opens Join (RUK-234).
@@ -585,7 +673,10 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
         ) {
             RkTextField(
                 value = field("email"),
-                onValueChange = { set("email", it) },
+                onValueChange = {
+                    set("email", it)
+                    model.emailChanged(it)
+                },
                 label = stringResource(R.string.settings_setup_fields_email),
                 placeholder = stringResource(R.string.settings_setup_fields_email_example),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next, autoCorrectEnabled = false),
@@ -623,14 +714,20 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
                 )
             }
             // A workspace invitation link works here too, where the server takes one (contract §2.12, §3.3); a
-            // carried link already does, so the field asks for nothing then.
+            // carried link already does, so the field asks for nothing then. A server that checks addresses takes the
+            // invite code as an alternative to a code by email, so there the field is optional.
             val linkWorks = info?.let { it.teamChat && it.workspace?.inviteSignups == true } == true
+            val verified = info?.codesFor("signup") == true
             if (form == RukooAccountModel.Form.SIGN_UP && info?.signups == "invite" && !(carried != null && linkWorks)) {
+                val helps = listOfNotNull(
+                    if (verified) stringResource(R.string.settings_rukoo_invite_optional_help) else null,
+                    if (linkWorks) stringResource(R.string.settings_rukoo_invite_chat_help) else null,
+                )
                 RkTextField(
                     value = field("invite"),
                     onValueChange = { set("invite", it) },
-                    label = stringResource(R.string.settings_rukoo_invite),
-                    help = if (linkWorks) stringResource(R.string.settings_rukoo_invite_chat_help) else null,
+                    label = stringResource(if (verified) R.string.settings_rukoo_invite_optional else R.string.settings_rukoo_invite),
+                    help = helps.takeIf { it.isNotEmpty() }?.joinToString(" "),
                     keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
                     enabled = !working,
                 )
@@ -638,14 +735,43 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
             if (form == RukooAccountModel.Form.SIGN_UP) {
                 CheckRow(stringResource(R.string.settings_rukoo_understand), field("understand") == "on", enabled = !working) { set("understand", if (it) "on" else "") }
             }
-            ui.formError?.let { e ->
-                ErrorLine(
-                    when (e) {
-                        is RukooAccountModel.FormError.Code -> stringResource(accountErrorRes(e.code))
-                        is RukooAccountModel.FormError.Text -> stringResource(e.res)
-                        is RukooAccountModel.FormError.OtherServer -> stringResource(R.string.chat_join_other_host, e.host, hostOf(status.server))
-                    },
+            if (code != null) {
+                CodeStepFields(
+                    step = code,
+                    value = field("emailCode"),
+                    onValueChange = { set("emailCode", it) },
+                    resendAt = ui.resendAt,
+                    working = working,
+                    onResend = { model.sendCode(form, lang) },
+                    onDone = { submit() },
                 )
+            }
+            ui.formError?.let { e ->
+                when (e) {
+                    is RukooAccountModel.FormError.Locked -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        ErrorLine(stringResource(R.string.settings_rukoo_code_locked))
+                        RkLinkButton(
+                            stringResource(R.string.settings_rukoo_code_email_me),
+                            { model.sendCode(form, lang) },
+                            Modifier.offset(x = (-4).dp),
+                            enabled = !working,
+                        )
+                    }
+                    else -> ErrorLine(
+                        when (e) {
+                            is RukooAccountModel.FormError.Code -> when {
+                                e.code == "code_wrong" && (e.attemptsLeft ?: 0) > 0 ->
+                                    pluralStringResource(R.plurals.settings_rukoo_code_wrong, e.attemptsLeft!!, e.attemptsLeft)
+                                e.code == "code_wrong" -> stringResource(R.string.settings_rukoo_code_wrong_last)
+                                else -> stringResource(accountErrorRes(e.code))
+                            }
+                            is RukooAccountModel.FormError.Text -> stringResource(e.res)
+                            is RukooAccountModel.FormError.OtherServer -> stringResource(R.string.chat_join_other_host, e.host, hostOf(status.server))
+                            is RukooAccountModel.FormError.Wait -> waitText(e.seconds)
+                            RukooAccountModel.FormError.Locked -> ""
+                        },
+                    )
+                }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))

@@ -22,6 +22,8 @@ data class WorkspaceServerInfo(
     val retention: WorkspaceRetention? = null,
     /** True when a workspace invitation works as the invite code at sign-up (§2.12). */
     val inviteSignups: Boolean = false,
+    /** True when such a sign-up also needs a code emailed to the address, as on a server that checks addresses. */
+    val inviteSignupsNeedCode: Boolean = false,
 )
 
 @Serializable

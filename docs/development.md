@@ -57,6 +57,8 @@ Each test file starts its own server with its own storage in a temporary folder,
 
 The rest of that range has fixed uses: Android's live tests and the emulator use 38850, and `wrangler dev` by hand uses 38811.
 
+Codes by email need a server that sends mail. `startRealServer({ vars: { SIGNUPS: 'verified' }, mail: true })` gives the Worker an entry that sends its requests to Resend to a mail stand-in on 127.0.0.1 instead, which keeps every message and mails nothing; `server.mail.code(address)` and `server.mail.token(address)` read the six digits and the long code of the newest message to an address. `test/account-codes-live.test.js` runs the desktop's account code against it, and `test/e2e/account-codes.spec.js` the setup page. The desktop's in-memory server has codes too (`startAccountServer({ signups: 'verified', codes: true })`), as has Android's `FakeAccountServer`.
+
 ### The server for Android
 
 Android's live tests (`AccountLiveTest`, `WorkspaceLiveTest`) and an emulator reach the server through `test/fixtures/real-server-cli.js`, which needs only `server/node_modules`:
@@ -65,7 +67,7 @@ Android's live tests (`AccountLiveTest`, `WorkspaceLiveTest`) and an emulator re
 node test/fixtures/real-server-cli.js --port 38850 --ready-file tmp/rukoo-server.json
 ```
 
-Once the server answers, it writes `{"url":"http://127.0.0.1:38850","invite":"test-invite","pid":…}` to the ready file. It stops on Ctrl+C, SIGTERM or when the ready file is deleted, which also works for a process started without a console on Windows. Then, from `android/`:
+Once the server answers, it writes `{"url":"http://127.0.0.1:38850","invite":"test-invite","pid":…}` to the ready file. `--signups verified --mail` starts it with sign-ups that need an emailed code and the mail stand-in; the ready file's `mail` is then its address, and `GET <mail>/messages?to=<address>` answers the codes sent to an address. It stops on Ctrl+C, SIGTERM or when the ready file is deleted, which also works for a process started without a console on Windows. Then, from `android/`:
 
 ```bash
 RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:38850 RUKOO_ACCOUNT_TEST_INVITE=test-invite ./gradlew testDebugUnitTest --tests '*LiveTest'

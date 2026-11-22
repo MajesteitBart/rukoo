@@ -809,3 +809,134 @@ test('the real server: a workspace invitation signs up, joins, lists the workspa
   assert.equal((await other.accountDelete('a new password, long')).signedIn, false);
   await assert.rejects(browser(real.url).signIn({ email, password: 'a new password, long' }), { code: 'unauthorized' });
 });
+
+// ---- codes by email (src/web/account/service.js requestCode, as desktop's src/main/account/index.js) ----
+
+test('codes by email: a sign-up on a server that checks addresses asks for one; the long code works where six digits do not', async (t) => {
+  const srv = await fixture(t, { signups: 'verified', codes: true, invites: ['welcome'] });
+  const web = browser(srv.url, { language: () => 'nl' });
+  await assert.rejects(web.accountSignUp({ email: 'New@Example.com', password: PASSWORD }), { code: 'code_required' });
+  assert.equal(routes(srv).includes('POST /v1/signup'), false, 'stopped before the password keys');
+  assert.deepEqual(await web.accountEmailCode({ email: 'New@Example.com', purpose: 'signup' }), { email: 'new@example.com', expiresIn: 600 });
+  assert.equal(srv.calls.find((c) => c.route === 'POST /v1/email-code').body.lang, 'nl');
+  const code = srv.codeFor('new@example.com');
+  await assert.rejects(web.accountSignUp({ email: 'new@example.com', password: PASSWORD, emailCode: code === '000000' ? '111111' : '000000' }), (err) => {
+    assert.equal(err.code, 'code_wrong');
+    assert.equal(err.details.attemptsLeft, 4);
+    return true;
+  });
+  // Another browser has no challenge for the six digits, and can't read the code as anything else.
+  const other = browser(srv.url);
+  await assert.rejects(other.accountSignUp({ email: 'new@example.com', password: PASSWORD, emailCode: code }), { code: 'code_expired' });
+  await assert.rejects(other.accountSignUp({ email: 'new@example.com', password: PASSWORD, emailCode: 'abc' }), { code: 'code_format' });
+  await other.accountSignUp({ email: 'new@example.com', password: PASSWORD, emailCode: srv.tokenFor('new@example.com') });
+  assert.equal(other.status().signedIn, true);
+  // Both codes in an email are one: the six digits went with the long code.
+  await assert.rejects(web.accountSignUp({ email: 'new@example.com', password: PASSWORD, emailCode: code }), { code: 'code_expired' });
+  // The operator's invite code needs none.
+  const invited = browser(srv.url);
+  await invited.accountSignUp({ email: 'invited@example.com', password: PASSWORD, invite: 'welcome' });
+  assert.equal(invited.status().signedIn, true);
+});
+
+test('codes by email: a locked account signs in and recovers with an unlock code; a second code waits a minute', async (t) => {
+  const srv = await fixture(t, { signups: 'open', codes: true });
+  const first = browser(srv.url);
+  const { recoveryKey } = await first.accountSignUp({ email: 'locked@example.com', password: PASSWORD });
+  await first.signOut();
+  srv.lock('locked@example.com');
+  const web = browser(srv.url);
+  await assert.rejects(web.accountSignIn({ email: 'locked@example.com', password: PASSWORD }), { code: 'locked' });
+  await web.accountEmailCode({ email: 'locked@example.com', purpose: 'unlock' });
+  await assert.rejects(web.accountEmailCode({ email: 'locked@example.com', purpose: 'unlock' }), (err) => {
+    assert.equal(err.code, 'rate_limited');
+    assert.ok(err.details.retryAfter >= 1 && err.details.retryAfter <= 60);
+    return true;
+  });
+  const code = srv.codeFor('locked@example.com');
+  await assert.rejects(web.accountSignIn({ email: 'locked@example.com', password: 'not the password at all', emailCode: code }), { code: 'unauthorized' });
+  await web.accountSignIn({ email: 'locked@example.com', password: PASSWORD, emailCode: code });
+  assert.equal(web.status().signedIn, true);
+  await web.signOut();
+
+  srv.allowCode('locked@example.com', 'unlock');
+  await web.accountEmailCode({ email: 'locked@example.com', purpose: 'unlock' });
+  const token = srv.tokenFor('locked@example.com');
+  await web.accountRecover({ email: 'locked@example.com', recoveryKey, password: 'a brand new password', emailCode: token });
+  assert.equal(web.status().signedIn, true);
+  const finish = srv.calls.filter((c) => c.route === 'POST /v1/recover/finish').at(-1).body;
+  assert.deepEqual(finish.emailCode, { token });
+});
+
+test('codes by email on the real server: a sign-up with a workspace invitation needs the code, and an unlock code gets past the lock', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const verified = await startRealServer({ vars: { SIGNUPS: 'verified' }, mail: true });
+  t.after(() => verified.close());
+  const olga = await verified.seedAccount();
+  const ws = await verified.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga Owner' });
+  const invitation = await verified.createInvite(olga, ws.id);
+  const web = browser(verified.url);
+  await web.init();
+  await web.infoLoad;
+  const info = web.status().info;
+  assert.deepEqual(info.emailCodes.purposes, ['signup', 'unlock']);
+  assert.equal(info.workspace.inviteSignupsNeedCode, true);
+
+  const email = `web-code-${Date.now()}@example.com`;
+  const workspaceInvite = { workspace: ws.id, invite: invitation.secret };
+  await assert.rejects(web.accountSignUp({ email, password: PASSWORD, workspaceInvite }), { code: 'code_required' });
+  const asked = Date.now() - 1;
+  await web.accountEmailCode({ email, purpose: 'signup' });
+  const mail = await verified.mail.next(email, { after: asked });
+  await web.accountSignUp({ email, password: PASSWORD, workspaceInvite, emailCode: mail.code });
+  assert.equal(web.status().signedIn, true);
+  const joined = await web.workspaceCall('POST', `/v1/workspaces/${ws.id}/join`, { invite: invitation.secret, name: 'Web Person' });
+  assert.equal(joined.workspace.id, ws.id);
+  await web.signOut();
+
+  // Ten wrong passwords from a stranger lock the account; the owner's unlock code gets past it.
+  for (let i = 0; i < 10; i++) {
+    await verified.call('POST', '/v1/login', { body: { email, authKey: k.b64u(globalThis.crypto.getRandomValues(new Uint8Array(32))), device: { name: 'x', platform: 'web' } } });
+  }
+  await assert.rejects(web.accountSignIn({ email, password: PASSWORD }), { code: 'locked' });
+  const unlockAsked = Date.now() - 1;
+  await web.accountEmailCode({ email, purpose: 'unlock' });
+  const unlock = await verified.mail.next(email, { after: unlockAsked });
+  await web.accountSignIn({ email, password: PASSWORD, emailCode: unlock.code });
+  assert.equal(web.status().signedIn, true);
+});
+
+test('codes by email: a used-up invite code gets a code instead, and the emailed code goes without it', async (t) => {
+  const srv = await fixture(t, { signups: 'verified', codes: true, usedInvites: ['spent'] });
+  const web = browser(srv.url);
+  await assert.rejects(web.accountSignUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent' }), { code: 'code_required' });
+  await web.accountEmailCode({ email: 'spent@example.com', purpose: 'signup' });
+  const code = srv.codeFor('spent@example.com');
+  const before = srv.calls.filter((c) => c.route === 'POST /v1/signup').length;
+  await web.accountSignUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent', emailCode: code });
+  assert.equal(web.status().signedIn, true);
+  const [withInvite, without] = srv.calls.filter((c) => c.route === 'POST /v1/signup').slice(before);
+  assert.equal(withInvite.body.invite, 'spent');
+  assert.equal('invite' in without.body, false);
+  assert.equal(without.body.emailCode.code, code);
+  // On an invite-only server the same answer stays what it was.
+  const only = await fixture(t, { signups: 'invite', codes: true, usedInvites: ['spent'] });
+  await assert.rejects(browser(only.url).accountSignUp({ email: 'old@example.com', password: PASSWORD, invite: 'spent' }), { code: 'invite_required' });
+});
+
+test("codes by email: an older code request answered late doesn't replace the newer one's challenge", async (t) => {
+  const srv = await fixture(t, { signups: 'verified', codes: true });
+  const web = browser(srv.url);
+  let letGo = null;
+  const gate = new Promise((r) => (letGo = r));
+  srv.hold = ({ route }) => (route === 'POST /v1/email-code' ? ((srv.hold = null), gate) : null);
+  const older = web.accountEmailCode({ email: 'order@example.com', purpose: 'signup' });
+  for (let i = 0; i < 200 && !srv.calls.some((c) => c.route === 'POST /v1/email-code'); i++) await new Promise((r) => setTimeout(r, 10));
+  srv.allowCode('order@example.com', 'signup');
+  await web.accountEmailCode({ email: 'order@example.com', purpose: 'signup' });
+  const newest = srv.codeFor('order@example.com');
+  letGo();
+  await older;
+  await web.accountSignUp({ email: 'order@example.com', password: PASSWORD, emailCode: newest });
+  assert.equal(web.status().signedIn, true);
+});

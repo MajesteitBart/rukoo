@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -24,6 +25,7 @@ import nl.bvdm.rukoo.BuildConfig
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.account.AccountDetails
 import nl.bvdm.rukoo.account.AccountError
+import nl.bvdm.rukoo.account.AccountKeys
 import nl.bvdm.rukoo.account.AccountService
 import nl.bvdm.rukoo.account.ServerInfo
 import nl.bvdm.rukoo.core.AppLog
@@ -55,15 +57,41 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
          * closes back to Chat, which opens the Join sheet with the link. A sign-in with a carried link does the same.
          */
         val joinWithLink: Boolean = false,
+        /** The code step of a form (desktop's email-code.js): a code was emailed, and the form asks for it. */
+        val code: CodeStep? = null,
+        /** When Send a new code works again (System.currentTimeMillis), after the server's minute between two codes. */
+        val resendAt: Long = 0,
+    )
+
+    /**
+     * A code emailed for [form] to [email] by [server]: `signup` for a sign-up on a server that checks addresses,
+     * `unlock` for a sign-in or recovery of a locked account. [resent]: Send a new code went through. [inviteFailed]:
+     * the server turned down the typed invite code, so the code goes in its place. [notSent]: the server's limit held a
+     * new code back, and the step is there for the long code of an earlier email.
+     */
+    data class CodeStep(
+        val form: Form,
+        val email: String,
+        val server: String,
+        val resent: Boolean = false,
+        val inviteFailed: Boolean = false,
+        val notSent: Boolean = false,
     )
 
     sealed interface FormError {
-        data class Code(val code: String) : FormError
+        /** An [AccountError] code; [attemptsLeft] for six digits that didn't match (`code_wrong`). */
+        data class Code(val code: String, val attemptsLeft: Int? = null) : FormError
 
         data class Text(@StringRes val res: Int) : FormError
 
         /** An invitation link for a workspace on another server, named by [host]. */
         data class OtherServer(val host: String) : FormError
+
+        /** Too many wrong passwords locked the account; the server sends codes to get past the lock (Email me a code). */
+        data object Locked : FormError
+
+        /** The server sends a new code only after [seconds]. */
+        data class Wait(val seconds: Long) : FormError
     }
 
     /** What the sign-up form's invite field holds (contract §3.3). */
@@ -95,6 +123,11 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                     _ui.update { u -> u.copy(details = null, detailsFailed = false) }
                     filled = null
                 }
+            }
+            // Another server: a code step or a request on its way for the one before goes. Its code works only there,
+            // and a sign-up step left for later would stop the sign-up here.
+            viewModelScope.launch {
+                acc.status.map { it.server }.distinctUntilChanged().drop(1).collect { dropCode() }
             }
         }
     }
@@ -142,6 +175,114 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
 
     fun clearFormError() = _ui.update { it.copy(formError = null) }
 
+    // The form page on top of Settings, from its route coming on top (entered) to another taking its place (left).
+    private var visiting: Form? = null
+
+    // The form a code request on its way is for (sendCode), or null.
+    private var requesting: Form? = null
+
+    /**
+     * The page on top of Settings, by its [route], or null once Settings closed: SettingsScreen passes the top of its
+     * stack each time the stack changes. A form page's visit lasts from its route coming on top to another route taking
+     * its place. The stack says so rather than the page's composition: folding composes the page again in the other
+     * layout, and coming back to a form within the pages' cross-fade keeps its old composition, so the page can't tell
+     * a fold from a new visit. The same route again, as after a fold, changes nothing: the code step, the Locked offer
+     * and a code on its way stay.
+     */
+    fun pageShown(route: String?) {
+        val form = formOf(route)
+        val was = visiting
+        if (was == form) return
+        visiting = form
+        if (was != null) left(was)
+        if (form != null) entered(form)
+    }
+
+    // A new visit starts without an error, and a code step or request of another form goes, with what was typed in it,
+    // as does a step from a server this phone no longer uses.
+    private fun entered(form: Form) {
+        clearFormError()
+        val step = _ui.value.code
+        val stale = step != null && (step.form != form || step.server != account?.server)
+        if (stale || (requesting != null && requesting != form)) dropCode()
+    }
+
+    // The form was left, by going back, to another page or out of Settings. A sign-in's or recovery's code step goes
+    // with it: the lock it was for may be over at the next visit. A sign-up's stays for the address it went to.
+    private fun left(form: Form) {
+        if (form != Form.SIGN_UP && (_ui.value.code?.form == form || requesting == form)) dropCode()
+    }
+
+    /** The address field changed: a code sent to another address goes, so the next submit sends one to this one. */
+    fun emailChanged(value: String) {
+        val step = _ui.value.code ?: return
+        if (AccountKeys.normalizeEmail(value) != step.email) dropCode()
+    }
+
+    // The code step goes, and an answer still on its way changes nothing.
+    private fun dropCode() {
+        codeRequests += 1
+        requesting = null
+        fields.remove("emailCode")
+        _ui.update { it.copy(code = null) }
+    }
+
+    /**
+     * Asks the server to email a code for [form] to the address in the form, in [lang], and shows the code step. A
+     * refusal shows in the error line: the wait for a new code, or what went wrong. [inviteFailed]: sent because the
+     * server turned down the invite code.
+     */
+    fun sendCode(form: Form, lang: String, inviteFailed: Boolean = false) {
+        val acc = account ?: return
+        val email = fields["email"].orEmpty()
+        val address = AccountKeys.normalizeEmail(email)
+        val purpose = if (form == Form.SIGN_UP) "signup" else "unlock"
+        val at = acc.server
+        val asked = ++codeRequests
+        requesting = form
+        // An answer that comes after the address or the server changed, or after a newer request, changes nothing.
+        fun current() = asked == codeRequests && acc.server == at && AccountKeys.normalizeEmail(fields["email"].orEmpty()) == address
+        _ui.update { it.copy(working = true, formError = null) }
+        viewModelScope.launch {
+            try {
+                val sent = acc.requestCode(email, purpose, lang)
+                if (!current()) return@launch
+                val was = _ui.value.code
+                val again = was != null && was.form == form && was.email == sent.email && was.server == at
+                _ui.update {
+                    it.copy(
+                        code = CodeStep(form, sent.email, at, resent = again, inviteFailed = inviteFailed && !again),
+                        resendAt = System.currentTimeMillis() + CODE_GAP * 1000,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w(TAG, "a code by email was not sent", e)
+                if (!current()) return@launch
+                val err = e as? AccountError
+                if (err?.code == "rate_limited") {
+                    // The step shows anyway, or stays: the long code of an email sent before works on any device, also
+                    // of one a stranger asked for to use up the address's codes (server/PROTOCOL.md, POST /v1/email-code).
+                    val wait = err.retryAfter ?: CODE_GAP
+                    _ui.update {
+                        val step = it.code?.takeIf { s -> s.form == form && s.email == address && s.server == at }
+                            ?: CodeStep(form, address, at, notSent = true)
+                        it.copy(code = step, formError = FormError.Wait(wait), resendAt = System.currentTimeMillis() + wait * 1000)
+                    }
+                } else {
+                    _ui.update { it.copy(formError = FormError.Code(err?.code ?: "server")) }
+                }
+            } finally {
+                if (asked == codeRequests) requesting = null
+                _ui.update { it.copy(working = false) }
+            }
+        }
+    }
+
+    // Goes up with each request for a code, so only the answer to the newest counts (sendCode).
+    private var codeRequests = 0
+
     fun recoveryKeyShown() = _ui.update { it.copy(recoveryKey = null) }
 
     /** Chat took over after a sign-up with an invitation link. */
@@ -156,8 +297,14 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
      * A form's submit (desktop's submit): its own checks first, then the account; [done] gets the toast to show.
      * [carriedLink]: the invitation link onboarding's team chat step checked before this form (RUK-234). A sign-up uses
      * it as the invitation where the invite field is empty, and both sign-up and sign-in leave it as the pending join.
+     *
+     * The code step (desktop's email-code.js submit): a sign-up the server answers with `code_required` gets a code by
+     * email and waits for it; a sign-in or recovery of a locked account offers one ([FormError.Locked]) where the server
+     * sends codes. While the step shows, its field goes with the request. An unlock code is needed only while the lock
+     * lasts, so an empty field goes too: once the lock is over the sign-in works without one, and while it lasts the
+     * server says locked again and the form asks for the code. [lang]: the language a code's email is in.
      */
-    fun submit(form: Form, carriedLink: InviteLink? = null, done: (Int) -> Unit) {
+    fun submit(form: Form, carriedLink: InviteLink? = null, lang: String = "en", done: (Int) -> Unit) {
         val acc = account ?: return
         if (_ui.value.working) return
         val f = fields.toMap()
@@ -173,17 +320,25 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
         val invite = if (form == Form.SIGN_UP) inviteInput(f["invite"].orEmpty(), servers, devHosts) else null
         if (invite is InviteInput.OtherServer) return stop(FormError.OtherServer(invite.host))
         val carried = carriedLink?.takeIf { it.server in servers && form != Form.RECOVER }
+        val at = acc.server
+        val shown = _ui.value.code?.takeIf { it.form == form && it.server == at }
+        val emailCode = if (shown != null) f["emailCode"].orEmpty().trim() else ""
+        // The operator's invite code needs no emailed code, so an empty code field doesn't stop it.
+        val invited = invite is InviteInput.Code && invite.code.isNotBlank()
+        if (form == Form.SIGN_UP && shown != null && emailCode.isEmpty() && !invited) return stop(FormError.Text(R.string.settings_rukoo_code_missing))
         _ui.update { it.copy(working = true, formError = null) }
         viewModelScope.launch {
+            var codeNext: Boolean? = null
             try {
                 when (form) {
                     Form.SIGN_UP -> {
                         val res = when {
-                            invite is InviteInput.Link -> acc.signUp(email, password, workspaceInvite = invite.link)
+                            invite is InviteInput.Link -> acc.signUp(email, password, workspaceInvite = invite.link, emailCode = emailCode)
                             // The link onboarding carried stands in for an empty invite field.
-                            invite is InviteInput.Code && invite.code.isBlank() && carried != null -> acc.signUp(email, password, workspaceInvite = carried)
-                            invite is InviteInput.Code -> acc.signUp(email, password, invite.code)
-                            else -> acc.signUp(email, password, "")
+                            invite is InviteInput.Code && invite.code.isBlank() && carried != null ->
+                                acc.signUp(email, password, workspaceInvite = carried, emailCode = emailCode)
+                            invite is InviteInput.Code -> acc.signUp(email, password, invite.code, emailCode = emailCode)
+                            else -> acc.signUp(email, password, "", emailCode = emailCode)
                         }
                         // Chat opens the Join sheet with the link next time it shows, also after a restart (§3.3).
                         val link = (invite as? InviteInput.Link)?.link ?: carried
@@ -191,25 +346,45 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                         _ui.update { it.copy(recoveryKey = res.recoveryKey, joinWithLink = link != null) }
                     }
                     Form.SIGN_IN -> {
-                        acc.signIn(email, password)
+                        acc.signIn(email, password, emailCode)
                         if (carried != null) {
                             workspaces?.rememberJoin(carried)
                             _ui.update { it.copy(joinWithLink = true) }
                         }
                     }
-                    Form.RECOVER -> acc.recover(email, f["recoveryKey"].orEmpty(), password)
+                    Form.RECOVER -> acc.recover(email, f["recoveryKey"].orEmpty(), password, emailCode)
                 }
                 fields.clear()
+                _ui.update { it.copy(code = null) }
                 refill()
                 done(if (form == Form.SIGN_UP) R.string.settings_rukoo_welcome else R.string.settings_rukoo_signed_in)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 AppLog.w(TAG, "the account form failed", e)
-                stop(FormError.Code((e as? AccountError)?.code ?: "server"))
+                val err = e as? AccountError
+                val code = err?.code ?: "server"
+                // The step as it is now: leaving the form, changing the address or the server while the answer was on
+                // its way dropped the one shown at the submit, and the form then shows no code field.
+                val step = _ui.value.code?.takeIf { it.form == form && it.server == at }
+                when {
+                    // A code was sent already: the invite code typed since didn't work, and the emailed code still does.
+                    form == Form.SIGN_UP && code == "code_required" && step != null && step.email == AccountKeys.normalizeEmail(email) ->
+                        stop(FormError.Text(R.string.settings_rukoo_code_invite_wrong))
+                    // The server checks addresses: a code first, then the same submit again.
+                    form == Form.SIGN_UP && code == "code_required" -> codeNext = invited
+                    // Still locked, and the code went out already: the step asks for it.
+                    form != Form.SIGN_UP && code == "locked" && step != null -> stop(FormError.Text(R.string.settings_rukoo_code_missing))
+                    // A locked account, on a server that sends codes to get past the lock.
+                    form != Form.SIGN_UP && code == "locked" && step == null && acc.status.value.info?.codesFor("unlock") == true ->
+                        stop(FormError.Locked)
+                    else -> stop(FormError.Code(code, err?.attemptsLeft))
+                }
             } finally {
                 _ui.update { it.copy(working = false) }
             }
+            // A code from the server the sign-up went to, not from one chosen since.
+            if (acc.server == at) codeNext?.let { inviteFailed -> sendCode(form, lang, inviteFailed) }
         }
     }
 
@@ -261,6 +436,17 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     companion object {
         private const val FILL_AGAIN_AFTER = 15_000L
         private const val TAG = "RukooAccount"
+
+        /** The server sends an address at most one code of a purpose a minute, in seconds. */
+        const val CODE_GAP = 60L
+
+        /** The form a Settings route shows, or null for another page. */
+        fun formOf(route: String?): Form? = when (route) {
+            SettingsRoutes.RUKOO_SIGNUP -> Form.SIGN_UP
+            SettingsRoutes.RUKOO_SIGNIN -> Form.SIGN_IN
+            SettingsRoutes.RUKOO_RECOVER -> Form.RECOVER
+            else -> null
+        }
 
         /**
          * What [text] in the invite field is (contract §3.2, §3.3): a workspace invitation link for [server], the

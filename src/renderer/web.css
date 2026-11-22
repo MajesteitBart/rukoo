@@ -234,6 +234,11 @@ body.web-phone .ch-person,
 body.web-phone .ch-suggest [role='option'] {
   min-height: 44px;
 }
+/* The account forms' code step (email-code.js): Send a new code, and Email me a code under a locked account's error. */
+body.web-phone .code-step .code-actions .link-btn,
+body.web-phone .error .code-offer {
+  min-height: 44px;
+}
 body.web-phone .ch-send {
   width: 44px;
   height: 44px;

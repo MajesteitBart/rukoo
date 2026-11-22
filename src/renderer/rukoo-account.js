@@ -2,6 +2,7 @@
 // process does all key work (src/main/account/); passwords go there once and never come back.
 import { t } from './i18n.js';
 import { api, esc, toast, dialog, confirmDialog, numericDate, hhmm, fileSize, KEEP_OPEN } from './ui.js';
+import { codeStep, codesFor } from './email-code.js';
 
 const PROTOCOL_URL = 'https://github.com/MajesteitBart/rukoo/blob/main/server/PROTOCOL.md';
 const SELF_HOST_URL = 'https://github.com/MajesteitBart/rukoo/blob/main/server/README.md';
@@ -37,6 +38,18 @@ const chatIn = (info) => Boolean(info && Array.isArray(info.features) && info.fe
 const inviteSignups = (info) => chatIn(info) && Boolean(info.workspace.inviteSignups);
 // What team chat says now (contract 4.6), or null where main has none.
 const chatState = () => api('chatState').catch(() => null);
+// An invitation link in the invite field, as opposed to the operator's invite code: main splits it out (splitInvite).
+const looksLikeLink = (text) => /^https?:\/\//i.test(String(text || '').trim());
+
+// The invite code field of the sign-up form. On a server that checks addresses (emailed codes for signup) the code is
+// optional: without one, the form asks for a code sent to the address.
+function inviteField({ hidden, chatHelp, verified }) {
+  const helps = [verified ? ['rukoo-invite-code-help', t('settings.rukoo.inviteOptionalHelp')] : null, chatHelp ? ['rukoo-invite-help', t('settings.rukoo.inviteChatHelp')] : null].filter(Boolean);
+  const described = helps.length ? ` aria-describedby="${helps.map(([id]) => id).join(' ')}"` : '';
+  return `<label${hidden ? ' hidden data-invite-field' : ''}>${esc(t(verified ? 'settings.rukoo.inviteOptional' : 'settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"${described}/>${helps
+    .map(([id, text]) => `<span class="field-help" id="${id}">${esc(text)}</span>`)
+    .join('')}</label>`;
+}
 
 export function showRecoveryKey(key) {
   return dialog({
@@ -346,13 +359,7 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       ${emailField()}
       ${passwordFields(t('setup.fields.password'))}
       ${invitation ? `<div class="field-help" data-invitation>${esc(t('settings.rukoo.webInvitation'))}</div>` : ''}
-      ${
-        info && info.signups === 'invite'
-          ? `<label${invitation ? ' hidden data-invite-field' : ''}>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"${inviteSignups(info) ? ' aria-describedby="rukoo-invite-help"' : ''}/>${
-              inviteSignups(info) ? `<span class="field-help" id="rukoo-invite-help">${esc(t('settings.rukoo.inviteChatHelp'))}</span>` : ''
-            }</label>`
-          : ''
-      }
+      ${info && info.signups === 'invite' ? inviteField({ hidden: invitation, chatHelp: inviteSignups(info), verified: codesFor(info, 'signup') }) : ''}
       <label class="inline"><input type="checkbox" name="understand"/> ${esc(t('settings.rukoo.understand'))}</label>
       ${submitRow(t('settings.rukoo.create'))}
     </form></div>${webPolicyCard()}`;
@@ -434,6 +441,20 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
     return { title: t('settings.rukoo.privacy'), body: privacyPage() };
   }
 
+  // The code step of each form drawn (email-code.js), made at its first submit: a sign-up's for a server that checks
+  // addresses, a sign-in's and a recovery's for a locked account.
+  const steps = new WeakMap();
+  function stepOf(form) {
+    let step = steps.get(form);
+    if (!step) {
+      const errorEl = form.querySelector('[data-error]');
+      const purpose = form.dataset.form === 'rukoo-signup' ? 'signup' : 'unlock';
+      step = codeStep({ host: form, before: errorEl, purpose, emailField: form.querySelector('[name="email"]'), errorEl });
+      steps.set(form, step);
+    }
+    return step;
+  }
+
   async function submit(form) {
     const f = new FormData(form);
     const err = form.querySelector('[data-error]');
@@ -443,6 +464,10 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
     const stop = (message, name) => {
       err.textContent = message;
       if (name) field(name).focus();
+    };
+    const ready = () => {
+      btn.disabled = false;
+      btn.textContent = label;
     };
     err.textContent = '';
     const kind = form.dataset.form;
@@ -456,15 +481,23 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
     btn.innerHTML = `<span class="spinner"></span>${esc(t('settings.rukoo.working'))}`;
     try {
       const email = String(f.get('email') || '');
+      const step = stepOf(form);
       if (kind === 'rukoo-signup') {
-        const res = await api('accountSignUp', { email, password, invite: String(f.get('invite') || '') });
-        await showRecoveryKey(res.recoveryKey);
+        const invite = String(f.get('invite') || '');
+        const out = await step.submit(email, (emailCode) => api('accountSignUp', { email, password, invite, emailCode }), {
+          invited: Boolean(invite.trim()) && !looksLikeLink(invite)
+        });
+        if (!out.done) return ready();
+        await showRecoveryKey(out.result.recoveryKey);
         toast(WEB() ? t('settings.rukoo.webWelcome') : t('settings.rukoo.welcome'));
       } else if (kind === 'rukoo-signin') {
-        await api('accountSignIn', { email, password });
+        const out = await step.submit(email, (emailCode) => api('accountSignIn', { email, password, emailCode }));
+        if (!out.done) return ready();
         toast(WEB() ? t('settings.rukoo.webSignedIn') : t('settings.rukoo.signedIn'));
       } else {
-        await api('accountRecover', { email, recoveryKey: String(f.get('recoveryKey') || ''), password });
+        const recoveryKey = String(f.get('recoveryKey') || '');
+        const out = await step.submit(email, (emailCode) => api('accountRecover', { email, recoveryKey, password, emailCode }));
+        if (!out.done) return ready();
         toast(WEB() ? t('settings.rukoo.webSignedIn') : t('settings.rukoo.signedIn'));
       }
       take(await api('accountStatus').catch(() => status));
@@ -481,7 +514,7 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
     } catch (ex) {
       // The server refused the page's invitation (used, expired or withdrawn), which the bridge sends while the invite
       // code field it stands in for is empty: the field shows after all, and the error says the link stopped working
-      // instead of asking for a code the person most likely never had. Only the web's account errors carry a code.
+      // instead of asking for a code the person most likely never had. Only the web's form holds the page's invitation.
       const field = kind === 'rukoo-signup' && ex.code === 'invite_required' ? form.querySelector('[data-invite-field]') : null;
       const refused = Boolean(field) && !String(f.get('invite') || '').trim();
       if (field) {
@@ -489,8 +522,7 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
         form.querySelector('[data-invitation]')?.remove();
       }
       stop(refused ? t('settings.rukoo.webInvitationGone') : ex.message, field ? 'invite' : undefined);
-      btn.disabled = false;
-      btn.textContent = label;
+      ready();
     }
   }
 

@@ -11,8 +11,9 @@ const TIMEOUT = 20000;
 const MAX_BYTES = 32 * 1024 * 1024;
 
 // details: what an error answer says besides its code and message, as on desktop: the refused field, the booking as it
-// is now (stale_version), other times (slot_taken), and for the workspace routes (server/WORKSPACES.md, "Errors") the
-// scope, minVersion, channels, member, limit and retryAfter (from the Retry-After header).
+// is now (stale_version), other times (slot_taken), for the workspace routes (server/WORKSPACES.md, "Errors") the
+// scope, minVersion, channels, member, limit and retryAfter (from the Retry-After header, at most an hour), and for
+// emailed codes attemptsLeft and waitSeconds (a wait of more than an hour, up to a day).
 class AccountError extends Error {
   constructor(code, status = 0, message = '', details = null) {
     super(message || code);
@@ -26,8 +27,9 @@ const SCOPES = ['account', 'workspace', 'conversation'];
 const CONVERSATION_ID = /^c_[A-Za-z0-9_-]{22}$/;
 const MEMBER_ID = /^u_[A-Za-z0-9_-]{22}$/;
 
-// Retry-After in whole seconds, 1 to 3600: a number of seconds or an HTTP date. null when there is none to read.
-function retryAfter(raw, now = Date.now()) {
+// Retry-After in whole seconds, 1 to max (an hour unless said otherwise): a number of seconds or an HTTP date. null
+// when there is none to read.
+function retryAfter(raw, now = Date.now(), max = 3600) {
   const text = String(Array.isArray(raw) ? raw[0] : raw ?? '').trim();
   if (!text) return null;
   let seconds;
@@ -37,8 +39,11 @@ function retryAfter(raw, now = Date.now()) {
     if (!Number.isFinite(at)) return null;
     seconds = Math.ceil((at - now) / 1000);
   }
-  return Math.min(Math.max(seconds, 1), 3600);
+  return Math.min(Math.max(seconds, 1), max);
 }
+
+// The longest wait the code step says (waitSeconds), as on desktop: an address gets at most ten codes a day.
+const DAY_SECONDS = 86400;
 
 // headers: a fetch Headers, or a plain object of lowercase names.
 function headerOf(headers, name) {
@@ -61,9 +66,14 @@ function errorDetails(json, headers, now = Date.now()) {
     }
     if (typeof json.member === 'string' && MEMBER_ID.test(json.member)) out.member = json.member;
     if (typeof json.limit === 'string' && /^[A-Za-z]{1,40}$/.test(json.limit)) out.limit = json.limit;
+    // An emailed code that doesn't match: the tries its challenge has left (code_wrong).
+    if (Number.isSafeInteger(json.attemptsLeft) && json.attemptsLeft >= 0) out.attemptsLeft = Math.min(json.attemptsLeft, 100);
   }
   const wait = retryAfter(headerOf(headers, 'retry-after'), now);
   if (wait !== null) out.retryAfter = wait;
+  // A wait longer than an hour, up to a day, for the code step's "ask again in 5 hours".
+  const long = retryAfter(headerOf(headers, 'retry-after'), now, DAY_SECONDS);
+  if (long !== null && long !== wait) out.waitSeconds = long;
   return Object.keys(out).length ? out : null;
 }
 

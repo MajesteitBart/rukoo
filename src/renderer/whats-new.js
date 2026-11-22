@@ -5,6 +5,7 @@
 import { t } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast } from './ui.js';
+import { codeStep, codesFor } from './email-code.js';
 
 const STEPS = ['welcome', 'categories', 'account', 'jev', 'done'];
 const MIN_PASSWORD = 12;
@@ -42,7 +43,10 @@ async function run() {
     keySaved: false,
     jev: cats && cats.jev.on ? 'use' : 'rules',
     hasKey: Boolean(cats && cats.jev.hasKey),
-    jevKey: ''
+    jevKey: '',
+    // The code step of the account step (email-code.js): { purpose, email, sent, until }, so it shows again as it was
+    // when the page is drawn again, also when the server held a code back and how long it asked to wait.
+    code: null
   };
 
   return new Promise((resolve) => {
@@ -84,6 +88,13 @@ async function run() {
     const where = () => {
       const j = st.info && st.info.hosting && st.info.hosting.jurisdiction;
       return t(`settings.rukoo.where.${['eu', 'us', 'fedramp'].includes(j) ? j : 'any'}`);
+    };
+    // The invite field's placeholder: a code, or a code or a team chat invitation link, and optional where the server
+    // checks addresses with a code sent by email instead.
+    const invitePlaceholder = () => {
+      const link = Boolean(st.info && st.info.workspace && st.info.workspace.inviteSignups);
+      if (codesFor(st.info, 'signup')) return link ? 'whatsNew.account.inviteOrLinkOptional' : 'settings.rukoo.inviteOptional';
+      return link ? 'whatsNew.account.inviteOrLink' : 'settings.rukoo.invite';
     };
     const radio = (group, id, on, title, hint, extra = '') => `
       <div class="wn-choice ${on ? 'on' : ''}">
@@ -154,7 +165,7 @@ async function run() {
             ? `<div class="wn-fields">
                 <input class="wn-input wide" name="email" type="email" placeholder="${esc(t('whatsNew.account.email'))}" autocomplete="email" value="${esc(st.email)}">
                 <input class="wn-input" name="password" type="password" placeholder="${esc(t('whatsNew.account.password'))}" autocomplete="new-password">
-                <input class="wn-input" name="invite" type="text" placeholder="${esc(t(st.info && st.info.workspace && st.info.workspace.inviteSignups ? 'whatsNew.account.inviteOrLink' : 'settings.rukoo.invite'))}" autocomplete="off" spellcheck="false">
+                <input class="wn-input" name="invite" type="text" placeholder="${esc(t(invitePlaceholder()))}" autocomplete="off" spellcheck="false">
                 <label class="wn-tick wide"><input type="checkbox" name="understand"><span>${esc(t('settings.rukoo.understand'))}</span></label>
               </div>`
             : `<div class="wn-fields">
@@ -165,7 +176,7 @@ async function run() {
         const body = st.signedIn
           ? `<div class="card"><div class="row static"><span class="wn-ok">${icons.check}</span><span class="text"><span class="title">${esc(t('settings.rukoo.rowSignedIn', { email: st.email }))}</span><span class="desc">${esc(t('whatsNew.account.signedInHelp'))}</span></span></div></div>`
           : `<form class="choices stacked wn-choices" role="radiogroup" data-wn-form>
-              ${radio('choice', 'create', st.choice === 'create', t('whatsNew.account.create'), t('whatsNew.account.createHint'), fields)}
+              ${radio('choice', 'create', st.choice === 'create', t('whatsNew.account.create'), t(codesFor(st.info, 'signup') ? 'whatsNew.account.createHintCode' : 'whatsNew.account.createHint'), fields)}
               ${radio('choice', 'signin', st.choice === 'signin', t('whatsNew.account.signIn'), t('whatsNew.account.signInHint'), fields)}
               ${radio('choice', 'local', st.choice === 'local', t('whatsNew.account.local'), t('whatsNew.account.localHint'))}
             </form>
@@ -245,6 +256,28 @@ async function run() {
       if (!now.categories.some((c) => c.id === st.unsure)) st.unsure = now.unsure;
     }
 
+    // The code step of the account form on screen: a sign-up's on a server that checks addresses, a sign-in's for a
+    // locked account. Made when the form is drawn, and shown again for a code already sent (st.code). The step says
+    // each change, also from Email me a code and Send a new code, and also when its answer comes after the guide went
+    // to another page, so Back and Next bring it back as it was.
+    let code = null;
+    function attachCode() {
+      const form = $('[data-wn-form]');
+      const fields = form && form.querySelector('.wn-choice.on .wn-fields');
+      code = null;
+      if (!fields || st.signedIn || st.choice === 'local') return;
+      const purpose = st.choice === 'create' ? 'signup' : 'unlock';
+      const onChange = (snap) => {
+        st.code = snap ? { purpose, ...snap } : null;
+      };
+      code = {
+        purpose,
+        step: codeStep({ host: fields, purpose, emailField: fields.querySelector('[name="email"]'), errorEl: $('[data-wn-error]'), compact: true, onChange })
+      };
+      const saved = st.code && st.code.purpose === purpose && st.code.email.toLowerCase() === st.email.trim().toLowerCase() ? st.code : null;
+      if (saved) code.step.restore(saved);
+    }
+
     async function submitAccount() {
       if (st.signedIn || st.choice === 'local') return go(3);
       const err = $('[data-wn-error]');
@@ -260,12 +293,26 @@ async function run() {
       const btn = $('.wn-foot [data-wn="next"]');
       btn.disabled = true;
       btn.innerHTML = `<span class="spinner"></span>${esc(t('settings.rukoo.working'))}`;
+      if (!code) attachCode();
+      const { step } = code;
+      // The form stays: the step showed, or the error line says what to do. The step saved itself (attachCode).
+      const stay = () => {
+        btn.disabled = false;
+        btn.textContent = view.next.label;
+      };
       try {
         if (st.choice === 'create') {
-          const res = await api('accountSignUp', { email, password, invite: String(f.get('invite') || '') });
-          st.recoveryKey = res.recoveryKey;
+          const invite = String(f.get('invite') || '');
+          const out = await step.submit(email, (emailCode) => api('accountSignUp', { email, password, invite, emailCode }), {
+            invited: Boolean(invite.trim()) && !/^https?:\/\//i.test(invite.trim())
+          });
+          if (!out.done) return stay();
+          st.recoveryKey = out.result.recoveryKey;
+          st.code = null;
         } else {
-          await api('accountSignIn', { email, password });
+          const out = await step.submit(email, (emailCode) => api('accountSignIn', { email, password, emailCode }));
+          if (!out.done) return stay();
+          st.code = null;
           // The account's records first, so the steps that follow know its categories.
           await api('accountSync').catch(() => {});
           await reconcile();
@@ -318,6 +365,7 @@ async function run() {
         <span class="wn-dots" role="img" aria-label="${esc(t('whatsNew.step', { step: st.step + 1, count: STEPS.length }))}">${dots}</span>
         <button class="btn primary" data-wn="next">${esc(view.next.label)}</button>`;
       $('.wn-body').scrollTop = 0;
+      if (STEPS[st.step] === 'account') attachCode();
       const first = $('.wn-body .wn-choice.on input, .wn-body input[name="jevKey"]');
       (first || $('.wn-foot [data-wn="next"]')).focus();
     }
@@ -353,7 +401,11 @@ async function run() {
     });
     scrim.addEventListener('input', (e) => {
       if (e.target.name === 'jevKey') st.jevKey = e.target.value;
-      if (e.target.name === 'email') st.email = e.target.value;
+      if (e.target.name === 'email') {
+        st.email = e.target.value;
+        // A code went to another address; the step itself goes too (email-code.js).
+        if (st.code && st.code.email.toLowerCase() !== st.email.trim().toLowerCase()) st.code = null;
+      }
     });
     scrim.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && e.target.matches('input.wn-input')) {

@@ -25,6 +25,12 @@
     <string name="account_errors_protocol">This isn\'t a Rukoo account server, or it needs a newer version of Rukoo.</string>
     <string name="account_errors_signed_in">Sign out of your Rukoo account first.</string>
     <string name="account_errors_signed_out">You were signed out because your password changed or this device was removed. Sign in again.</string>
+    <string name="account_errors_code_required">This server checks your email address with a code first.</string>
+    <string name="account_errors_code_wrong">That code is wrong.</string>
+    <string name="account_errors_code_expired">This code no longer works. Send a new code, or paste the long code from the email.</string>
+    <string name="account_errors_code_in_use">This code is being checked right now. Try again in a moment.</string>
+    <string name="account_errors_mail_unavailable">This server can\'t send codes by email.</string>
+    <string name="account_errors_code_format">Enter the 6-digit code, or paste the long code from the email.</string>
 
     <!-- Settings overview -->
     <string name="settings_groups_sync">Sync</string>
@@ -170,4 +176,41 @@
     <!-- The phone's own: the file Export my data suggests, and a save that failed. -->
     <string name="settings_rukoo_export_file" translatable="false">rukoo-account.json</string>
     <string name="settings_rukoo_export_failed">Couldn\'t save the file.</string>
+
+    <!-- The code step (desktop src/renderer/email-code.js, settings.rukoo.code.*): codes by email for a sign-up on a
+         server that checks addresses and for a locked account. -->
+    <string name="settings_rukoo_code_label">Code from the email</string><!-- settings.rukoo.code.label -->
+    <string name="settings_rukoo_code_sent">We sent a code to %1$s.</string><!-- settings.rukoo.code.sent -->
+    <string name="settings_rukoo_code_resent">We sent a new code to %1$s. Use the one in the newest email.</string><!-- settings.rukoo.code.resent -->
+    <string name="settings_rukoo_code_help">Or paste the long code from the email. It works on any device for a day.</string><!-- settings.rukoo.code.help -->
+    <string name="settings_rukoo_code_not_sent">No new code went to %1$s yet. The long code from an earlier email works too.</string><!-- settings.rukoo.code.notSent -->
+    <string name="settings_rukoo_code_invite_wrong">That invite code didn\'t work. Enter the code from the email instead.</string><!-- settings.rukoo.code.inviteWrong -->
+    <string name="settings_rukoo_code_resend">Send a new code</string><!-- settings.rukoo.code.resend -->
+    <string name="settings_rukoo_code_wrong_last">Too many wrong codes. Send a new code, or paste the long code from the email.</string><!-- settings.rukoo.code.wrongLast -->
+    <string name="settings_rukoo_code_missing">Enter the code from the email.</string><!-- settings.rukoo.code.missing -->
+    <string name="settings_rukoo_code_invite_failed">That invite code didn\'t work, so we sent a code to %1$s instead.</string><!-- settings.rukoo.code.inviteFailed -->
+    <string name="settings_rukoo_code_locked">Too many attempts on this account. Wait 15 minutes, or get a code by email and go on now.</string><!-- settings.rukoo.code.locked -->
+    <string name="settings_rukoo_code_email_me">Email me a code</string><!-- settings.rukoo.code.emailMe -->
+    <string name="settings_rukoo_invite_optional">Invite code (optional)</string><!-- settings.rukoo.inviteOptional -->
+    <string name="settings_rukoo_invite_optional_help">Without one, Rukoo emails you a code to check your address.</string><!-- settings.rukoo.inviteOptionalHelp -->
+    <plurals name="settings_rukoo_code_resend_in"> <!-- settings.rukoo.code.resendIn -->
+        <item quantity="one">New code in %1$d second</item>
+        <item quantity="other">New code in %1$d seconds</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wrong"> <!-- settings.rukoo.code.wrong -->
+        <item quantity="one">That code is wrong. You can try %1$d more time.</item>
+        <item quantity="other">That code is wrong. You can try %1$d more times.</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wait_seconds"> <!-- settings.rukoo.code.waitSeconds -->
+        <item quantity="one">You can ask for a new code in %1$d second.</item>
+        <item quantity="other">You can ask for a new code in %1$d seconds.</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wait_minutes"> <!-- settings.rukoo.code.waitMinutes -->
+        <item quantity="one">You can ask for a new code in %1$d minute.</item>
+        <item quantity="other">You can ask for a new code in %1$d minutes.</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wait_hours"> <!-- settings.rukoo.code.waitHours -->
+        <item quantity="one">You can ask for a new code in %1$d hour.</item>
+        <item quantity="other">You can ask for a new code in %1$d hours.</item>
+    </plurals>
 </resources>

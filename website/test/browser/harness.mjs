@@ -26,7 +26,7 @@ const require = createRequire(import.meta.url);
 // From website/node_modules: the website's CI job installs no root packages.
 const { argon2id } = require('hash-wasm');
 const { createAccountService, SESSION_KEY } = require('../../../src/web/account/service.js');
-const { connectRealServer, INVITE } = require('../../../test/fixtures/real-server.js');
+const { connectRealServer, INVITE, startMailSink, writeMailEntry, MAIL_KEY, MAIL_FROM } = require('../../../test/fixtures/real-server.js');
 const i18n = require('../../../src/i18n/index.js');
 
 export const PASSWORD = 'a long enough password 1';
@@ -44,11 +44,13 @@ function buildOnce() {
   return built;
 }
 
-// The account server's settings for the tests: invite-only sign-ups with one code for any number of accounts, team
-// chat on or off, and a workspace invitation standing in for the code (WORKSPACE_SIGNUPS).
-const serverVars = (workspaceMode, previewHost = '') => ({
+// The account server's settings for the tests: invite-only sign-ups with one code for any number of accounts (or
+// signups, such as 'verified'), team chat on or off, a workspace invitation standing in for the code
+// (WORKSPACE_SIGNUPS), and with mail the sender that turns codes by email on.
+const serverVars = (workspaceMode, previewHost = '', signups = 'invite', mail = false) => ({
   JURISDICTION: '',
-  SIGNUPS: 'invite',
+  SIGNUPS: signups,
+  ...(mail ? { MAIL_FROM } : {}),
   INVITE_USES: 0,
   OPERATOR_NAME: 'Rukoo test server',
   OPERATOR_URL: '',
@@ -66,8 +68,9 @@ const serverVars = (workspaceMode, previewHost = '') => ({
 // Every request in these tests comes from 127.0.0.1, and the suite signs up, signs in and joins more than the 30 a
 // minute RATE_LIMITER allows; test/fixtures/real-server.js drops them for the same reason. limitRate() in
 // server/src/config.js skips without the binding. files: a local bucket as WORKSPACE_FILES, which wrangler.jsonc leaves
-// commented out. Returns the path relative to ROOT, as createTestHarness takes it.
-function serverConfig({ files = false } = {}) {
+// commented out. sink: the mail stand-in's origin (real-server.js startMailSink), which the Worker's mail goes to
+// through a wrapper entry. Returns the path relative to ROOT, as createTestHarness takes it.
+function serverConfig({ files = false, sink = null } = {}) {
   const { parseJsonc } = require(path.join(ROOT, 'test', 'fixtures', 'real-server.js'));
   const config = parseJsonc(readFileSync(path.join(ROOT, 'server', 'wrangler.jsonc'), 'utf8'));
   delete config.ratelimits;
@@ -80,28 +83,31 @@ function serverConfig({ files = false } = {}) {
   else delete config.r2_buckets;
   const dir = path.join(ROOT, 'server', '.wrangler', 'browser-tests');
   mkdirSync(dir, { recursive: true });
-  const name = files ? 'wrangler.files.json' : 'wrangler.json';
+  if (sink) config.main = writeMailEntry(dir, sink);
+  const name = `wrangler${files ? '.files' : ''}${sink ? '.mail' : ''}.json`;
   writeFileSync(path.join(dir, name), JSON.stringify(config));
   return path.relative(ROOT, path.join(dir, name)).split(path.sep).join('/');
 }
 
 // Both Workers and a headless Chromium. files: the account server has a files bucket and makes link cards of the
-// pages in pages (preview-pages.cjs: pages.page(spec) answers a page's address). Returns { origin, browser, seed,
-// pages, close }.
-export async function startWorkers({ workspaceMode = 'on', files = false } = {}) {
+// pages in pages (preview-pages.cjs: pages.page(spec) answers a page's address). signups: SIGNUPS, 'invite' unless
+// said. mail: codes by email go to the mail stand-in, which the result has as mail (mail.code(address) and the rest of
+// real-server.js startMailSink). Returns { origin, browser, seed, pages, mail, close }.
+export async function startWorkers({ workspaceMode = 'on', files = false, signups = 'invite', mail = false } = {}) {
   await buildOnce();
   process.env.CLOUDFLARE_CF_FETCH_ENABLED = 'false';
   process.env.WRANGLER_SEND_METRICS = 'false';
   const { createTestHarness } = createRequire(path.join(ROOT, 'server', 'package.json'))('wrangler');
   const pages = files ? await require(path.join(ROOT, 'server', 'test', 'fixtures', 'preview-pages.cjs')).startPreviewServer() : null;
+  const sink = mail ? await startMailSink() : null;
   const harness = createTestHarness({
     root: ROOT,
     workers: [
       { configPath: 'website/wrangler.jsonc' },
       {
-        configPath: serverConfig({ files }),
-        vars: serverVars(workspaceMode, pages ? pages.host : ''),
-        secrets: { PEPPER: randomBytes(32).toString('base64'), INVITE_CODES: INVITE }
+        configPath: serverConfig({ files, sink: sink && sink.origin }),
+        vars: serverVars(workspaceMode, pages ? pages.host : '', signups, Boolean(sink)),
+        secrets: { PEPPER: randomBytes(32).toString('base64'), INVITE_CODES: INVITE, ...(sink ? { RESEND_API_KEY: MAIL_KEY } : {}) }
       }
     ]
   });
@@ -115,16 +121,19 @@ export async function startWorkers({ workspaceMode = 'on', files = false } = {})
       browser,
       seed: connectRealServer(origin, { previews: pages ? pages.origin : null }),
       pages,
+      mail: sink,
       async close() {
         await browser.close().catch(() => {});
         await harness.close();
         await pages?.close();
+        await sink?.close();
       }
     };
   } catch (err) {
     await browser?.close().catch(() => {});
     await harness.close().catch(() => {});
     await pages?.close();
+    await sink?.close();
     throw err;
   }
 }
