@@ -357,16 +357,19 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                 AppLog.w(TAG, "the account form failed", e)
                 val err = e as? AccountError
                 val code = err?.code ?: "server"
+                // The step as it is now: leaving the form, changing the address or the server while the answer was on
+                // its way dropped the one shown at the submit, and the form then shows no code field.
+                val step = _ui.value.code?.takeIf { it.form == form && it.server == at }
                 when {
                     // A code was sent already: the invite code typed since didn't work, and the emailed code still does.
-                    form == Form.SIGN_UP && code == "code_required" && shown != null && shown.email == AccountKeys.normalizeEmail(email) ->
+                    form == Form.SIGN_UP && code == "code_required" && step != null && step.email == AccountKeys.normalizeEmail(email) ->
                         stop(FormError.Text(R.string.settings_rukoo_code_invite_wrong))
                     // The server checks addresses: a code first, then the same submit again.
                     form == Form.SIGN_UP && code == "code_required" -> codeNext = invited
                     // Still locked, and the code went out already: the step asks for it.
-                    form != Form.SIGN_UP && code == "locked" && shown != null -> stop(FormError.Text(R.string.settings_rukoo_code_missing))
+                    form != Form.SIGN_UP && code == "locked" && step != null -> stop(FormError.Text(R.string.settings_rukoo_code_missing))
                     // A locked account, on a server that sends codes to get past the lock.
-                    form != Form.SIGN_UP && code == "locked" && shown == null && acc.status.value.info?.codesFor("unlock") == true ->
+                    form != Form.SIGN_UP && code == "locked" && step == null && acc.status.value.info?.codesFor("unlock") == true ->
                         stop(FormError.Locked)
                     else -> stop(FormError.Code(code, err?.attemptsLeft))
                 }

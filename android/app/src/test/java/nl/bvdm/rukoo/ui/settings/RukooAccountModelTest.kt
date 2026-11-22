@@ -239,6 +239,26 @@ class RukooAccountModelTest {
         }
     }
 
+    @Test
+    fun `a locked answer after Sign in was left and opened again offers a code, as the new visit has no step`() = runBlocking<Unit> {
+        val (model, _) = lockedSignIn("again@example.com")
+        model.sendCode(Form.SIGN_IN, "en")
+        until { model.ui.value.code != null && !model.ui.value.working }
+        // A submit with the field empty, whose answer comes after the form was left and opened again.
+        val before = logins()
+        val gate = server.holdNext("POST /v1/login")
+        model.submit(Form.SIGN_IN) {}
+        withTimeout(10_000) { while (logins() <= before) delay(10) }
+        model.left(Form.SIGN_IN)
+        model.entered(Form.SIGN_IN)
+        assertNull(model.ui.value.code)
+        gate.countDown()
+        until { model.ui.value.formError != null && !model.ui.value.working }
+        // Still locked: Email me a code, not "Enter the code from the email." with no field to enter it in.
+        assertEquals(FormError.Locked, model.ui.value.formError)
+        assertNull(model.ui.value.code)
+    }
+
     private companion object {
         const val PASSWORD = "a long enough password"
     }
