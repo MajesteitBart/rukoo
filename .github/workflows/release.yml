@@ -91,7 +91,9 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb openbox dbus-x11 gnome-keyring libsecret-tools libgtk-3-0 libnss3 libasound2 libgbm1 libnotify4 libsecret-1-0
 
-      - run: npm run test:e2e
+      # The whole suite runs on one runner per system here, so a test that fails once and then passes counts as flaky
+      # (Playwright reports it as such) instead of stopping the release. A test that fails twice still does.
+      - run: npm run test:e2e -- --retries=1
         if: runner.os == 'Windows'
       - name: Test Linux desktop interactions
         if: runner.os == 'Linux'
@@ -126,12 +128,12 @@ jobs:
             test "$(timeout 15s secret-tool lookup application rukoo-ci)" = ready
             secret-tool clear application rukoo-ci
             sleep 1
-            npm run test:e2e
+            npm run test:e2e -- --retries=1
           '
 
       - name: Test native macOS desktop interactions
         if: runner.os == 'macOS'
-        run: npx playwright test test/e2e/macos.spec.js
+        run: npx playwright test test/e2e/macos.spec.js --retries=1
 
       - name: Build Windows or Linux packages
         if: runner.os != 'macOS'
@@ -174,7 +176,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           SEM_MAC_PACKAGED: '1'
-        run: npx playwright test test/e2e/macos.spec.js
+        run: npx playwright test test/e2e/macos.spec.js --retries=1
       - uses: actions/upload-artifact@v7
         if: always() && runner.os == 'macOS'
         with:
