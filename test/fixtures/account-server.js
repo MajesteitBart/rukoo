@@ -120,10 +120,36 @@ function badPublish(body, now) {
 }
 
 // passwordCheck: false plays a server from before POST /v1/password/check, which answers 404 there.
-function startAccountServer({ signups = 'open', invites = [], limit = 1000, jurisdiction = 'eu', kdf = DEFAULT_KDF, features = ['booking'], passwordCheck = true } = {}) {
+//
+// Codes by email (PROTOCOL.md, POST /v1/email-code): codes true mails codes for unlock, and for signup as well with
+// signups 'verified', which GET /v1/info reports as 'invite' as the real server does. Nothing is mailed: the server
+// keeps each message in mail, and codeFor(email) and tokenFor(email) read the six digits and the long code of the
+// newest one to an address. workspaceInvites: a workspace invitation { workspace, invite } that stands in for the
+// invite code at sign-up, with workspace.inviteSignups (and inviteSignupsNeedCode on a verified server) in the info.
+// lock(email) locks an account's sign-ins as ten wrong passwords would.
+function startAccountServer({
+  signups = 'open',
+  invites = [],
+  limit = 1000,
+  jurisdiction = 'eu',
+  kdf = DEFAULT_KDF,
+  features = ['booking'],
+  passwordCheck = true,
+  codes = false,
+  workspaceInvites = []
+} = {}) {
   const accounts = new Map();
   const sessions = new Map();
   const calls = [];
+  // Codes by email: challenge -> { email, purpose, challenge, code, token, codeUntil, until, misses, failures }, the
+  // messages that went out, and when each address and purpose last got one.
+  const codeRows = new Map();
+  const mail = [];
+  const lastSent = new Map();
+  // Failed sign-ins and recoveries per address: { count, first, lockedUntil }.
+  const failures = new Map();
+  const verified = signups === 'verified';
+  const purposes = codes ? (verified ? ['signup', 'unlock'] : ['unlock']) : [];
   // Booking pages by handle: { owner, handle, enabled, deviceId, profile, windows, busy, publishedAt, seq, retiredAt,
   // bookings: Map(id -> row), counts: { day, new, mail } }.
   const pages = new Map();
@@ -138,10 +164,79 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
     version: '1.0.0-test',
     operator: { name: 'Test operator', url: 'https://example.test', contact: 'ops@example.test', privacy: 'https://example.test/privacy' },
     hosting: { provider: 'Cloudflare', company: 'Cloudflare, Inc.', country: 'US', jurisdiction },
-    signups,
+    signups: verified ? 'invite' : signups,
     limits: { records: 250000, bytes: 104857600, recordBytes: 16384, batch: 500 },
-    features: [...features]
+    features: [...features, ...(purposes.length ? ['email-codes'] : [])],
+    ...(purposes.length ? { emailCodes: { purposes: [...purposes], digits: 6, expiresIn: 600, tokenExpiresIn: 86400 } } : {}),
+    ...(workspaceInvites.length
+      ? { workspace: { versions: [1, 2], inviteSignups: true, inviteSignupsNeedCode: verified && purposes.includes('signup') } }
+      : {})
   });
+
+  // Claims an emailed code for a request (codes.js claimCode): null when it may go on, else the answer to send.
+  // A wrong six digits costs only their own tries; five end them, and the long code still works then.
+  const claimCode = (email, purpose, emailCode) => {
+    const now = control.now();
+    const expired = [403, { error: 'code_expired', message: 'This code has expired or was used.' }];
+    const row = emailCode.token
+      ? [...codeRows.values()].find((r) => r.token === emailCode.token)
+      : codeRows.get(emailCode.challenge);
+    if (!row || row.until <= now || row.failures >= 5) return { answer: expired };
+    if (emailCode.token) {
+      if (row.email !== email || row.purpose !== purpose) return { answer: expired };
+    } else {
+      if (row.codeUntil <= now || row.misses >= 5) return { answer: expired };
+      const code = String(emailCode.code || '').replace(/[\s-]/g, '');
+      if (row.email !== email || row.purpose !== purpose || row.code !== code) {
+        row.misses += 1;
+        return { answer: [403, { error: 'code_wrong', message: 'The code is wrong.', attemptsLeft: Math.max(0, 5 - row.misses) }] };
+      }
+    }
+    return { row };
+  };
+  const useCode = (row) => codeRows.delete(row.challenge);
+  const failCode = (row) => {
+    row.failures += 1;
+    if (row.failures >= 5) codeRows.delete(row.challenge);
+  };
+  // The account lock of sign-ins and recoveries (PROTOCOL.md, POST /v1/login): the tenth failure within 15 minutes
+  // locks the address for 15 minutes, also for the right password. A right unlock code goes past it.
+  const lockedAnswer = (email) => {
+    const f = failures.get(email);
+    const now = control.now();
+    if (!f || !(f.lockedUntil > now)) return null;
+    return [429, { error: 'locked', message: 'Too many attempts.' }, { 'retry-after': String(Math.ceil((f.lockedUntil - now) / 1000)) }];
+  };
+  const failed = (email) => {
+    const now = control.now();
+    let f = failures.get(email);
+    if (!f || now - f.first > QUARTER) f = { count: 0, first: now, lockedUntil: 0 };
+    f.count += 1;
+    if (f.count >= 10) f.lockedUntil = now + QUARTER;
+    failures.set(email, f);
+    return f.count >= 10 ? lockedAnswer(email) : null;
+  };
+  // A sign-in or recovery step (run() → [status, json]) with the lock and an optional unlock code.
+  const guarded = (email, emailCode, run, keep = false) => {
+    let held = null;
+    if (emailCode) {
+      const claimed = claimCode(email, 'unlock', emailCode);
+      if (claimed.answer) return claimed.answer;
+      held = claimed.row;
+    } else {
+      const locked = lockedAnswer(email);
+      if (locked) return locked;
+    }
+    const out = run();
+    if (out[0] === 401) {
+      if (held) failCode(held);
+      else return failed(email) || out;
+    } else if (out[0] < 300) {
+      if (held && !keep) useCode(held);
+      if (!held) failures.delete(email);
+    }
+    return out;
+  };
   const accountView = (acc, current) => ({
     email: acc.email,
     createdAt: acc.createdAt,
@@ -481,10 +576,54 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       const fake = crypto.createHash('sha256').update(`salt\n${body.email}`).digest().subarray(0, 16).toString('base64url');
       return [200, acc ? { kdf: acc.kdf, salt: acc.salt } : { kdf, salt: fake }];
     },
+    'POST /v1/email-code': ({ body }) => {
+      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      if (!email.includes('@')) return [400, { error: 'invalid', field: 'email' }];
+      if (!['signup', 'unlock'].includes(body.purpose)) return [400, { error: 'invalid', field: 'purpose' }];
+      if (!purposes.length) return [503, { error: 'mail_unavailable', message: 'This server does not send codes by email.' }];
+      if (!purposes.includes(body.purpose)) return [400, { error: 'invalid', field: 'purpose' }];
+      const now = control.now();
+      const key = `${body.purpose}\n${email}`;
+      const last = lastSent.get(key);
+      if (last && now - last < MINUTE) {
+        return [429, { error: 'rate_limited', message: 'This address got too many codes.' }, { 'retry-after': String(Math.ceil((last + MINUTE - now) / 1000)) }];
+      }
+      lastSent.set(key, now);
+      const row = {
+        email,
+        purpose: body.purpose,
+        challenge: token(),
+        code: String(crypto.randomInt(1000000)).padStart(6, '0'),
+        token: token(),
+        codeUntil: now + 10 * MINUTE,
+        until: now + DAY,
+        misses: 0,
+        failures: 0
+      };
+      codeRows.set(row.challenge, row);
+      // Only what the real server mails: a sign-up code to an address without an account (one with an account gets a
+      // note instead), an unlock code to an account.
+      const exists = accounts.has(email);
+      if (body.purpose === 'signup' ? !exists : exists) mail.push({ to: email, purpose: body.purpose, code: row.code, token: row.token, lang: body.lang || null, at: now });
+      else if (body.purpose === 'signup') mail.push({ to: email, purpose: 'exists', code: null, token: null, lang: body.lang || null, at: now });
+      return [202, { challenge: row.challenge, expiresIn: 600 }];
+    },
     'POST /v1/signup': ({ body }) => {
       if (signups === 'closed') return [403, { error: 'signups_closed' }];
-      if (signups === 'invite' && !invites.includes(body.invite)) return [403, { error: 'invite_required' }];
+      const invited = invites.includes(body.invite);
+      const w = body.workspaceInvite;
+      const linked = !invited && w && workspaceInvites.some((x) => x.workspace === w.workspace && x.invite === w.invite);
+      if (signups === 'invite' && !invited && !linked) return [403, { error: 'invite_required' }];
+      // A verified server needs an emailed code without the operator's invite code, also with a workspace invitation.
+      let held = null;
+      if (verified && !invited) {
+        if (!body.emailCode) return [403, { error: 'code_required', message: 'This server checks the email address first.' }];
+        const claimed = claimCode(body.email, 'signup', body.emailCode);
+        if (claimed.answer) return claimed.answer;
+        held = claimed.row;
+      }
       if (accounts.has(body.email)) return [409, { error: 'exists' }];
+      if (held) useCode(held);
       const acc = {
         email: body.email,
         createdAt: Date.now(),
@@ -502,25 +641,34 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       const tok = newSession(acc, body.device);
       return [201, { token: tok, account: accountView(acc, tok) }];
     },
-    'POST /v1/login': ({ body }) => {
-      const acc = accounts.get(body.email);
-      if (!acc || acc.auth !== sha(body.authKey)) return [401, { error: 'unauthorized' }];
-      const tok = newSession(acc, body.device);
-      return [200, { token: tok, wrappedKey: acc.wrappedKey, account: accountView(acc, tok) }];
-    },
-    'POST /v1/recover/start': ({ body }) => {
-      const acc = accounts.get(body.email);
-      if (!acc || acc.recovery !== sha(body.recoveryAuth)) return [401, { error: 'unauthorized' }];
-      return [200, { recoveryWrappedKey: acc.recoveryWrappedKey, kdf: acc.kdf }];
-    },
-    'POST /v1/recover/finish': ({ body }) => {
-      const acc = accounts.get(body.email);
-      if (!acc || acc.recovery !== sha(body.recoveryAuth)) return [401, { error: 'unauthorized' }];
-      Object.assign(acc, { kdf: body.kdf, salt: body.salt, auth: sha(body.authKey), wrappedKey: body.wrappedKey });
-      endSessions(acc.email, null);
-      const tok = newSession(acc, body.device);
-      return [200, { token: tok, account: accountView(acc, tok) }];
-    },
+    'POST /v1/login': ({ body }) =>
+      guarded(body.email, body.emailCode, () => {
+        const acc = accounts.get(body.email);
+        if (!acc || acc.auth !== sha(body.authKey)) return [401, { error: 'unauthorized' }];
+        const tok = newSession(acc, body.device);
+        return [200, { token: tok, wrappedKey: acc.wrappedKey, account: accountView(acc, tok) }];
+      }),
+    // recover/start leaves an unlock code for recover/finish.
+    'POST /v1/recover/start': ({ body }) =>
+      guarded(
+        body.email,
+        body.emailCode,
+        () => {
+          const acc = accounts.get(body.email);
+          if (!acc || acc.recovery !== sha(body.recoveryAuth)) return [401, { error: 'unauthorized' }];
+          return [200, { recoveryWrappedKey: acc.recoveryWrappedKey, kdf: acc.kdf }];
+        },
+        true
+      ),
+    'POST /v1/recover/finish': ({ body }) =>
+      guarded(body.email, body.emailCode, () => {
+        const acc = accounts.get(body.email);
+        if (!acc || acc.recovery !== sha(body.recoveryAuth)) return [401, { error: 'unauthorized' }];
+        Object.assign(acc, { kdf: body.kdf, salt: body.salt, auth: sha(body.authKey), wrappedKey: body.wrappedKey });
+        endSessions(acc.email, null);
+        const tok = newSession(acc, body.device);
+        return [200, { token: tok, account: accountView(acc, tok) }];
+      }),
     'POST /v1/logout': ({ tok }) => {
       sessions.delete(tok);
       return [204];
@@ -604,8 +752,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       const session = sessions.get(tok);
       const acc = session && accounts.get(session.email);
       const forced = typeof control.fail === 'function' ? control.fail({ route, body, rest }) : null;
-      const send = (status, json) => {
-        const headers = json ? { 'content-type': 'application/json' } : {};
+      const send = (status, json, extra = {}) => {
+        const headers = { ...(json ? { 'content-type': 'application/json' } : {}), ...extra };
         let out = json ? JSON.stringify(json) : undefined;
         if (out && control.gzip && route === 'GET /v1/records') {
           out = zlib.gzipSync(out);
@@ -626,10 +774,10 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       // A server without booking pages doesn't have these routes (PROTOCOL.md, GET /v1/info).
       const handler = routes[route] || (features.includes('booking') ? booking[route] : null);
       if (!handler) return send(404, { error: 'not_found' });
-      const open = ['GET /v1/info', 'POST /v1/prelogin', 'POST /v1/signup', 'POST /v1/login', 'POST /v1/recover/start', 'POST /v1/recover/finish'];
+      const open = ['GET /v1/info', 'POST /v1/prelogin', 'POST /v1/email-code', 'POST /v1/signup', 'POST /v1/login', 'POST /v1/recover/start', 'POST /v1/recover/finish'];
       if (!open.includes(route) && !acc) return send(401, { error: 'unauthorized' });
-      const [status, json] = handler({ body, url, acc, tok, session, rest });
-      send(status, json);
+      const [status, json, headers] = handler({ body, url, acc, tok, session, rest });
+      send(status, json, headers);
     });
   });
 
@@ -651,6 +799,15 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
             const page = pages.get(handle);
             if (page) page.owner = owner;
           },
+          // Codes by email: every message the server would have mailed, and the codes of the newest one to an address.
+          mail,
+          codeFor: (email) => mail.filter((m) => m.to === email && m.code).at(-1)?.code ?? null,
+          tokenFor: (email) => mail.filter((m) => m.to === email && m.token).at(-1)?.token ?? null,
+          // Locks an address's sign-ins and recoveries, as ten wrong passwords in 15 minutes would.
+          lock: (email) => failures.set(email, { count: 10, first: control.now(), lockedUntil: control.now() + QUARTER }),
+          // Lets the next code request to an address through at once, as a minute passing would.
+          allowCode: (email, purpose) => lastSent.delete(`${purpose}
+${email}`),
           close: () => new Promise((r) => server.close(() => r()))
         })
       );

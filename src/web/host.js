@@ -211,7 +211,8 @@ function createHost(page) {
     storage: local,
     subtle: page.crypto && page.crypto.subtle,
     argon2: createArgon2({ Worker: page.Worker, url: script ? new URL('argon2-worker.js', script).href : 'web/argon2-worker.js' }),
-    t
+    t,
+    language: () => i18n.getLanguage()
   });
   const join = createJoin({ location, history: page.history, storage: storageOf(page, 'sessionStorage'), server: location && location.origin });
   const webFiles = createWebFiles(page, { log });
@@ -778,11 +779,14 @@ function createHost(page) {
       email: accountText(i.email, 320),
       password: accountText(i.password, 1000),
       invite: accountText(split.invite, 200),
-      workspaceInvite: workspaceInvite || undefined
+      workspaceInvite: workspaceInvite || undefined,
+      emailCode: accountText(i.emailCode, 200)
     });
     offerJoin(split.link);
     return res;
   };
+  // main.js accountEmailCode: a code by email for a sign-up or a locked account; the challenge stays in the service.
+  methods.accountEmailCode = (input) => account.accountEmailCode(input);
   methods.accountSignIn = async (input) => {
     const res = await account.accountSignIn(input);
     offerJoin();
@@ -918,11 +922,19 @@ function createHost(page) {
     }
   }
 
-  // main.js 1998-2010 (the mail:call handler): { ok: true, result } or { ok: false, error, ...windowError(err) }. An
-  // account error also carries its code here (desktop passes none), so the sign-up form can tell a refused invitation.
+  // main.js (the mail:call handler): { ok: true, result } or { ok: false, error, ...windowError(err) }. An account error
+  // carries its code, so the sign-up form can tell a refused invitation, and, as main.js windowError passes them, what
+  // the code step words its text with: the tries an emailed code has left and how long to wait for a new one.
   function answerError(err) {
     if (err && err.chat === true && typeof err.code === 'string') return { ok: false, error: (err && err.message) || String(err), ...chatDetails(err) };
-    if (err instanceof AccountError) return { ok: false, error: accountMessage(err), code: accountCode(err) };
+    if (err instanceof AccountError) {
+      const out = { ok: false, error: accountMessage(err), code: accountCode(err) };
+      const d = err.details || {};
+      if (Number.isSafeInteger(d.attemptsLeft)) out.attemptsLeft = Math.min(Math.max(d.attemptsLeft, 0), 100);
+      if (Number.isSafeInteger(d.retryAfter)) out.retryAfter = Math.min(Math.max(d.retryAfter, 0), 3600);
+      if (Number.isSafeInteger(d.waitSeconds)) out.waitSeconds = Math.min(Math.max(d.waitSeconds, 0), 86400);
+      return out;
+    }
     return { ok: false, error: (err && err.message) || String(err) };
   }
 

@@ -43,6 +43,7 @@ const invite = require('./calendar/invite');
 const { clipboard, ClipboardItem, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
+const { AccountError } = require('./account/client');
 const { Categories } = require('./categories');
 const { MailNotices } = require('./categories/notices');
 const { DiagLog } = require('./diaglog');
@@ -1592,23 +1593,35 @@ const api = {
       email: accountText(i.email, 320),
       password: accountText(i.password, 1000),
       invite: accountText(split.invite, 200),
-      workspaceInvite: workspaceInvite || undefined
+      workspaceInvite: workspaceInvite || undefined,
+      emailCode: accountText(i.emailCode, 200)
     });
     const link = split.link || carried.link;
     if (link && workspaces) workspaces.manage.rememberJoin(link);
     return res;
   },
+  // A code by email for a sign-up ('signup') or for a locked account ('unlock'); the challenge stays in main.
+  accountEmailCode: (input) => {
+    const i = plainObject(input);
+    return account.requestCode({ email: accountText(i.email, 320), purpose: accountText(i.purpose, 20) });
+  },
   // join: an invitation link the setup page's team chat step carried to the sign-in, which Chat then opens as a sign-up's.
+  // emailCode: an unlock code, for an account that too many wrong passwords locked.
   accountSignIn: async (input) => {
     const i = plainObject(input);
-    const res = await account.signIn({ email: accountText(i.email, 320), password: accountText(i.password, 1000) });
+    const res = await account.signIn({ email: accountText(i.email, 320), password: accountText(i.password, 1000), emailCode: accountText(i.emailCode, 200) });
     const join = accountText(i.join, 2000);
     if (join && workspaces) workspaces.manage.rememberJoin(join);
     return res;
   },
   accountRecover: (input) => {
     const i = plainObject(input);
-    return account.recover({ email: accountText(i.email, 320), recoveryKey: accountText(i.recoveryKey, 200), password: accountText(i.password, 1000) });
+    return account.recover({
+      email: accountText(i.email, 320),
+      recoveryKey: accountText(i.recoveryKey, 200),
+      password: accountText(i.password, 1000),
+      emailCode: accountText(i.emailCode, 200)
+    });
   },
   accountSignOut: () => account.signOut(),
   accountDetails: () => account.details(),
@@ -2083,6 +2096,16 @@ function windowError(err) {
     if (Array.isArray(err.channels)) out.channels = err.channels.filter((c) => typeof c === 'string').slice(0, 100).map((c) => c.slice(0, 40));
     if (typeof err.member === 'string') out.member = err.member.slice(0, 40);
     if (typeof err.limit === 'string') out.limit = err.limit.slice(0, 40);
+    return out;
+  }
+  // Rukoo account errors (account/index.js fail) pass their code, as in the browser (src/web/host.js answerError), and
+  // what the code step words its text with: the tries an emailed code has left and how long to wait for a new one.
+  if (err instanceof AccountError) {
+    const out = { code: String(err.code).slice(0, 40) };
+    const d = err.details || {};
+    if (Number.isSafeInteger(d.attemptsLeft)) out.attemptsLeft = Math.min(Math.max(d.attemptsLeft, 0), 100);
+    if (Number.isSafeInteger(d.retryAfter)) out.retryAfter = Math.min(Math.max(d.retryAfter, 0), 3600);
+    if (Number.isSafeInteger(d.waitSeconds)) out.waitSeconds = Math.min(Math.max(d.waitSeconds, 0), 86400);
     return out;
   }
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;

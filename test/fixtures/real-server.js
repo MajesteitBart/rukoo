@@ -244,34 +244,150 @@ process.on('exit', () => {
   for (const port of [...heldLocks]) releasePort(port);
 });
 
+// ---- codes by email ----
+//
+// The server mails codes through Resend (server/src/mail.js). With mail on, the Worker's entry is a wrapper that sends
+// its requests to https://api.resend.com to a mail stand-in on 127.0.0.1 instead, which keeps every message and never
+// mails anything. The server itself runs as it is. Its tests have the same stand-in in their own runtime
+// (server/test/fixtures/fake-resend.js); this one serves a Worker in another process, and the tests that read the codes.
+//
+//   const server = await startRealServer({ vars: { SIGNUPS: 'verified' }, mail: true });
+//   server.mail.code('bart@example.com')    // the six digits in the newest message to the address, or null
+//   server.mail.token('bart@example.com')   // the long code in it, or null
+//
+// GET <mail origin>/messages?to=<address> answers the messages to an address as JSON, for a test in another process,
+// such as Android's live tests (real-server-cli.js writes the origin to its ready file as mail).
+const RESEND_ORIGIN = 'https://api.resend.com';
+// What turns mail on in the Worker (server/README.md, Codes by email). Neither is a credential.
+const MAIL_KEY = 're_test_not_a_real_key';
+const MAIL_FROM = 'Rukoo test <codes@example.test>';
+
+function startMailSink() {
+  const sent = [];
+  const server = require('http').createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const url = new URL(req.url, 'http://127.0.0.1');
+      const answer = (status, json) => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(json));
+      };
+      if (req.method === 'POST' && url.pathname === '/emails') {
+        if (req.headers.authorization !== `Bearer ${MAIL_KEY}`) return answer(401, { name: 'missing_api_key' });
+        let body = null;
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch (_) {
+          body = null;
+        }
+        if (!body || !Array.isArray(body.to) || typeof body.text !== 'string') return answer(422, { name: 'validation_error' });
+        sent.push({ ...body, at: Date.now() });
+        return answer(200, { id: crypto.randomUUID() });
+      }
+      if (req.method === 'GET' && url.pathname === '/messages') {
+        const to = String(url.searchParams.get('to') || '').toLowerCase();
+        return answer(200, { messages: sent.filter((m) => !to || m.to.includes(to)).map(read) });
+      }
+      answer(404, { name: 'not_found' });
+    });
+  });
+  // A message as the tests read it: who it went to, its subject and text, and the codes in it.
+  const read = (m) => ({
+    to: m.to[0],
+    subject: m.subject,
+    text: m.text,
+    code: m.text.match(/^\d{6}$/m)?.[0] ?? null,
+    token: m.text.match(/^[A-Za-z0-9_-]{43}$/m)?.[0] ?? null,
+    at: m.at
+  });
+  const to = (address) => sent.filter((m) => m.to.includes(String(address).toLowerCase())).map(read);
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      resolve({
+        origin,
+        sent,
+        to,
+        code: (address) => to(address).at(-1)?.code ?? null,
+        token: (address) => to(address).at(-1)?.token ?? null,
+        // Waits for a message to an address that a code request sends after its answer (server/src/codes.js deliver).
+        async next(address, { after = 0, timeout = 10000 } = {}) {
+          const until = Date.now() + timeout;
+          for (;;) {
+            const m = to(address).filter((x) => x.at > after).at(-1);
+            if (m) return m;
+            if (Date.now() > until) throw new Error(`No mail to ${address} within ${timeout} ms`);
+            await new Promise((r) => setTimeout(r, 50));
+          }
+        },
+        close: () => new Promise((r) => server.close(() => r()))
+      });
+    });
+  });
+}
+
+// The Worker entry with mail: the server's own entry, its Durable Object classes and all, with requests to Resend sent
+// to the mail stand-in at sink. Written into dir; index is the server's src/index.js. Returns the entry's path.
+function writeMailEntry(dir, sink, index = path.join(SERVER_DIR, 'src', 'index.js')) {
+  const from = JSON.stringify(index.split(path.sep).join('/'));
+  const file = path.join(dir, 'mail-entry.mjs');
+  fs.writeFileSync(
+    file,
+    `// Written by test/fixtures/real-server.js: the account server with its mail going to ${sink}.
+import worker from ${from};
+export * from ${from};
+const SINK = ${JSON.stringify(sink)};
+const RESEND = ${JSON.stringify(RESEND_ORIGIN)};
+const real = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const address = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  const url = new URL(address);
+  if (url.origin === RESEND) return real(SINK + url.pathname, init);
+  return real(input, init);
+};
+export default worker;
+`
+  );
+  return file;
+}
+
 // The worker config, in the temporary folder: wrangler bundles into the config's folder, so server/.wrangler stays
 // untouched. env and $schema go; ratelimits go unless limiters, as one spec makes more than 30 sign-ups, logins and
 // joins a minute from 127.0.0.1 (limitRate() in server/src/config.js skips without its binding). files binds a local
 // bucket as WORKSPACE_FILES, which wrangler.jsonc leaves commented out; previewHost lets link cards reach the page
-// server.
-function writeConfig(dir, { vars, limiters, files, previewHost }) {
+// server. sink: the mail stand-in's origin, which turns codes by email on.
+function writeConfig(dir, { vars, limiters, files, previewHost, sink }) {
   const config = parseJsonc(fs.readFileSync(path.join(SERVER_DIR, 'wrangler.jsonc'), 'utf8'));
   delete config.env;
   delete config.$schema;
   if (!limiters) delete config.ratelimits;
   // fallthrough: false silences wrangler's warning about the shadowed default .bin rule; bundling is the same.
   config.rules = (config.rules || []).map((rule) => ({ ...rule, fallthrough: false }));
-  config.main = path.join(SERVER_DIR, 'src', 'index.js');
+  config.main = sink ? writeMailEntry(dir, sink) : path.join(SERVER_DIR, 'src', 'index.js');
   if (files) config.r2_buckets = [{ binding: 'WORKSPACE_FILES', bucket_name: 'rukoo-workspace-files-test' }];
   else delete config.r2_buckets;
-  config.vars = { ...config.vars, ...VARS, ...(previewHost ? { WORKSPACE_PREVIEW_HOSTS: previewHost } : {}), ...vars };
+  config.vars = {
+    ...config.vars,
+    ...VARS,
+    ...(previewHost ? { WORKSPACE_PREVIEW_HOSTS: previewHost } : {}),
+    ...(sink ? { MAIL_FROM } : {}),
+    ...vars
+  };
   const file = path.join(dir, 'wrangler.json');
   fs.writeFileSync(file, JSON.stringify(config));
   return file;
 }
 
 // The one place that maps the helper's options onto wrangler's, so a wrangler upgrade touches this function only.
-async function startWorker(unstable_startWorker, { configPath, port, persist, logLevel }) {
+async function startWorker(unstable_startWorker, { configPath, port, persist, logLevel, mail = false }) {
   const worker = await unstable_startWorker({
     config: configPath,
     bindings: {
       PEPPER: { type: 'secret_text', value: PEPPER },
-      INVITE_CODES: { type: 'secret_text', value: INVITE }
+      INVITE_CODES: { type: 'secret_text', value: INVITE },
+      ...(mail ? { RESEND_API_KEY: { type: 'secret_text', value: MAIL_KEY } } : {})
     },
     // A developer's server/.dev.vars never reaches the tests.
     envFiles: [],
@@ -302,22 +418,25 @@ async function startWorker(unstable_startWorker, { configPath, port, persist, lo
 }
 
 // options.port: a fixed port, tried once; null picks one from the range. limiters: keep the per-address rate limiters,
-// for a test of the app's 429 handling. vars: overrides such as { WORKSPACE_MODE: 'off' }. files: false starts the
-// Worker without its files bucket, as a server whose operator made none: no files capability, and 403 files_off.
-async function startRealServer({ vars = {}, port = null, limiters = false, logLevel = 'error', files = true } = {}) {
+// for a test of the app's 429 handling. vars: overrides such as { WORKSPACE_MODE: 'off' } or { SIGNUPS: 'verified' }.
+// files: false starts the Worker without its files bucket, as a server whose operator made none: no files capability,
+// and 403 files_off. mail: codes by email go to a mail stand-in (startMailSink), which the result has as mail.
+async function startRealServer({ vars = {}, port = null, limiters = false, logLevel = 'error', files = true, mail = false } = {}) {
   if (!realServerAvailable()) throw unavailableError();
   // Miniflare otherwise fetches https://workers.cloudflare.com/cf.json and caches it in .wrangler/cache (or
   // node_modules/.mf) under the current folder. Its built-in request.cf is enough here, and offline.
   process.env.CLOUDFLARE_CF_FETCH_ENABLED = 'false';
   const { unstable_startWorker } = createRequire(path.join(SERVER_DIR, 'package.json'))('wrangler');
   // The page server binds 127.0.0.1 on a port the system picks, outside the helper's range; it lives as long as the
-  // helper does, through stop() and start().
+  // helper does, through stop() and start(). So does the mail stand-in.
   const pages = await require(PREVIEW_PAGES).startPreviewServer();
+  const sink = mail ? await startMailSink() : null;
   const dir = tempDir('rukoo-real-server-');
   const settings = {
-    configPath: writeConfig(dir, { vars, limiters, files, previewHost: pages.host }),
+    configPath: writeConfig(dir, { vars, limiters, files, previewHost: pages.host, sink: sink && sink.origin }),
     persist: path.join(dir, 'state'),
-    logLevel
+    logLevel,
+    mail: Boolean(sink)
   };
 
   let worker = null;
@@ -368,6 +487,7 @@ async function startRealServer({ vars = {}, port = null, limiters = false, logLe
   } catch (err) {
     removeDir(dir);
     await pages.close();
+    await sink?.close();
     throw err;
   }
   const boundPort = Number(new URL(url).port);
@@ -401,10 +521,11 @@ async function startRealServer({ vars = {}, port = null, limiters = false, logLe
       releasePort(boundPort);
       removeDir(dir);
       await pages.close();
+      await sink?.close();
     }
   }
 
-  return { ...seeding(url, { pages }), dir, lockFile: lockFile(boundPort), previewOrigin: pages.origin, stop, start, close };
+  return { ...seeding(url, { pages }), dir, lockFile: lockFile(boundPort), previewOrigin: pages.origin, mail: sink, stop, start, close };
 }
 
 // The seeding API against a server that already runs, such as one real-server-cli.js started for an emulator check.
@@ -744,6 +865,11 @@ module.exports = {
   releasePort,
   INVITE,
   PEPPER,
-  // For website/test/browser/harness.mjs, which writes its own copy of the server config.
-  parseJsonc
+  // For website/test/browser/harness.mjs, which writes its own copy of the server config: with mail, the stand-in,
+  // the entry that sends the Worker's mail to it, and the settings that turn mail on.
+  parseJsonc,
+  startMailSink,
+  writeMailEntry,
+  MAIL_KEY,
+  MAIL_FROM
 };

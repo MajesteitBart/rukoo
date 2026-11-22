@@ -6,10 +6,12 @@
 // file is the stop signal that also works for a Windows process started without a console. Then it disposes of workerd
 // and removes its storage. previews is the origin of the page server link cards may fetch.
 //
-//   node test/fixtures/real-server-cli.js --port 38850 --ready-file tmp/rukoo-server.json [--no-files]
+//   node test/fixtures/real-server-cli.js --port 38850 --ready-file tmp/rukoo-server.json [--no-files] [--signups verified] [--mail]
 //
-// Without --port it picks a free port from 38800 to 38899. --no-files starts it without a files bucket. It needs only
-// server/node_modules: it never seeds, so it doesn't load the desktop's crypto code. Seed against it with
+// Without --port it picks a free port from 38800 to 38899. --no-files starts it without a files bucket. --signups sets
+// SIGNUPS (open, invite, verified or closed). --mail sends codes by email to the mail stand-in of real-server.js, whose
+// origin the ready file has as mail: GET <mail>/messages?to=<address> answers the codes sent to an address. It needs
+// only server/node_modules: it never seeds, so it doesn't load the desktop's crypto code. Seed against it with
 // connectRealServer(url, { previews }) from real-server.js.
 const fs = require('fs');
 const path = require('path');
@@ -31,8 +33,11 @@ async function main() {
   if (port !== null && !(Number.isInteger(port) && port > 0 && port < 65536)) throw new Error(`Not a port: ${portText}`);
   const readyFile = arg('--ready-file') && path.resolve(arg('--ready-file'));
   const files = !process.argv.includes('--no-files');
+  const mail = process.argv.includes('--mail');
+  const signups = arg('--signups');
+  if (signups !== null && !['open', 'invite', 'verified', 'closed'].includes(signups)) throw new Error(`Not a sign-up mode: ${signups}`);
 
-  const server = await startRealServer({ port, files });
+  const server = await startRealServer({ port, files, mail, vars: signups ? { SIGNUPS: signups } : {} });
   // The Worker reports ready before its first request is served; a waiter that reads the file may call at once.
   const info = await server.call('GET', '/v1/info').catch((err) => ({ status: err.message }));
   if (info.status !== 200) {
@@ -40,7 +45,7 @@ async function main() {
     throw new Error(`The server answered GET /v1/info with ${info.status}`);
   }
 
-  const ready = { url: server.url, invite: server.inviteCode, pid: process.pid, previews: server.previewOrigin };
+  const ready = { url: server.url, invite: server.inviteCode, pid: process.pid, previews: server.previewOrigin, mail: server.mail ? server.mail.origin : null };
   if (readyFile) {
     // Written whole and then renamed, so a waiter never reads half of it.
     fs.mkdirSync(path.dirname(readyFile), { recursive: true });

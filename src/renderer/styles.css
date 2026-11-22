@@ -3560,6 +3560,60 @@ body:has(.composer .composer-bar) .toast {
   font-size: 13px;
   line-height: 1.45;
 }
+/* "Email me a code", on the line under the error of a locked account (email-code.js). */
+.error .code-offer {
+  display: flex;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 0;
+  font-size: inherit;
+}
+/* The code step of the account forms (email-code.js): where the code went, the code field and Send a new code, under
+   a hairline that sets it apart from the fields above. In the What's new guide it spans the guide's two field
+   columns. */
+.code-step {
+  display: grid;
+  gap: 10px;
+}
+.form > .code-step {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.code-step.compact {
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+.code-step .code-sent {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.code-step input[name='emailCode'] {
+  font-variant-numeric: tabular-nums;
+}
+.code-step .code-help {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+.code-step .code-actions {
+  display: flex;
+  min-width: 0;
+}
+.code-step .code-actions .link-btn {
+  padding-left: 0;
+  white-space: normal;
+  text-align: left;
+}
+.code-step .link-btn:disabled {
+  color: var(--text-3);
+  cursor: default;
+  text-decoration: none;
+}
 .note {
   color: var(--text-2);
   font-size: 13px;

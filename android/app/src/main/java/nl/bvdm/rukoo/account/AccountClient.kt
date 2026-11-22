@@ -31,19 +31,45 @@ import okhttp3.Response
 /**
  * A failed account call. [code] is the server's `error` code (server/PROTOCOL.md, HTTP API) or one of the phone's
  * own ([AccountError.CODES]); the UI turns it into words. [status] is the HTTP status, 0 when there was none.
+ * [attemptsLeft]: the tries an emailed code has left (`code_wrong`). [retryAfter]: the answer's Retry-After in seconds,
+ * 1 to a day, as the code step says how long to wait for a new code.
  */
-class AccountError(val code: String, val status: Int = 0, message: String? = null) : Exception(message ?: code) {
+class AccountError(
+    val code: String,
+    val status: Int = 0,
+    message: String? = null,
+    val attemptsLeft: Int? = null,
+    val retryAfter: Long? = null,
+) : Exception(message ?: code) {
     companion object {
         /** The codes Rukoo has words for (account.errors.* on desktop); any other reads as `server`. */
         val CODES = setOf(
             "invalid", "unauthorized", "locked", "rate_limited", "exists", "signups_closed", "invite_required", "quota", "too_large",
             "not_configured", "network", "server", "invalid_email", "weak_password", "recovery_key", "weak_kdf", "no_server", "protocol",
             "signed_in", "signed_out", "wrong_password",
+            // Codes by email (server/PROTOCOL.md, POST /v1/email-code), and code_format, a typed code that is neither
+            // the six digits nor the long code.
+            "code_required", "code_wrong", "code_expired", "code_in_use", "mail_unavailable", "code_format",
             // Only the phone has a limit on how heavy a password hash may be.
             "heavy_kdf",
         )
 
         fun known(code: String?): String = if (code != null && code in CODES) code else "server"
+
+        /** The longest wait a Retry-After is read as: an address gets at most ten codes a day. */
+        const val DAY_SECONDS = 86_400L
+
+        /** Retry-After in whole seconds, 1 to a day: a number of seconds or an HTTP date. null without one to read. */
+        fun retryAfter(header: String?, now: Long = System.currentTimeMillis()): Long? {
+            val text = header?.trim().orEmpty()
+            if (text.isEmpty()) return null
+            val seconds = text.toLongOrNull()
+                ?: runCatching { java.time.ZonedDateTime.parse(text, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() }
+                    // Rounded up; Math.ceilDiv is newer than some phones' Java.
+                    .getOrNull()?.let { at -> if (at <= now) 0L else (at - now + 999) / 1000 }
+                ?: return null
+            return seconds.coerceIn(1L, DAY_SECONDS)
+        }
     }
 }
 
@@ -154,7 +180,8 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
                 val error = json as? JsonObject
                 val code = (error?.get("error") as? JsonPrimitive)?.takeIf { it.isString }?.content
                 val message = (error?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content
-                throw AccountError(code ?: "server", res.code, message)
+                val attemptsLeft = (error?.get("attemptsLeft") as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()?.takeIf { it >= 0 }?.coerceAtMost(100)
+                throw AccountError(code ?: "server", res.code, message, attemptsLeft, AccountError.retryAfter(res.header("Retry-After")))
             }
         } finally {
             meter?.addAndGet(counted(sockets.read.get(), body))

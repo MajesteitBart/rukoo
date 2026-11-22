@@ -14,7 +14,11 @@ You find it in Settings → Rukoo account.
 
 The computer then syncs. Data you already had on this computer goes into the account.
 
-Your email address is your sign-in name. The server doesn't send you mail, so it doesn't check the address.
+Your email address is your sign-in name. Some servers check it before they make the account: after **Create an account**, the server emails you a code and the form asks for it. Type the six digits, which work on this device for 10 minutes, or paste the long code from the same email, which works once on any device for a day. Five wrong tries end the six digits; **Send a new code** asks for another, at most one a minute. An invite code from the server's operator takes the place of the emailed code there, and an invitation link to a team chat workspace still needs it. A server that doesn't send mail never checks the address.
+
+## A locked account
+
+Ten wrong passwords in 15 minutes lock an account's sign-ins for 15 minutes, also on Forgot your password?, and anyone who knows your address can cause that. Where the server sends mail, the sign-in form then offers **Email me a code**: with the code from that email, your sign-in goes past the lock now. Devices that are already signed in aren't affected.
 
 ## Another device
 
@@ -60,7 +64,7 @@ Cloudflare is a company in the United States. The server in this repository keep
 
 ## The server Rukoo uses
 
-Rukoo uses `https://rukoo.io` unless you choose another server. Bart van der Meeren, Rukoo's maintainer, runs it on Cloudflare with the data kept in the EU. The same address serves Rukoo's website; booking pages are at `meet.rukoo.io`. For now, making an account there needs an invite code from the maintainer or an invitation link to one of its team chat workspaces: paste the link in the **Invite code** field. Each link makes one account ([Invitation links](chat.md#invitation-links)). The server holds up to 1,000 accounts of 32 MiB each. Its privacy statement is at [rukoo.io/privacy](https://rukoo.io/privacy).
+Rukoo uses `https://rukoo.io` unless you choose another server. Bart van der Meeren, Rukoo's maintainer, runs it on Cloudflare with the data kept in the EU. The same address serves Rukoo's website; booking pages are at `meet.rukoo.io`. For now, making an account there needs an invite code from the maintainer or an invitation link to one of its team chat workspaces: paste the link in the **Invite code** field. Each link makes one account ([Invitation links](chat.md#invitation-links)). It sends codes for [a locked account](#a-locked-account). The server holds up to 1,000 accounts of 32 MiB each. Its privacy statement is at [rukoo.io/privacy](https://rukoo.io/privacy).
 
 Earlier versions of Rukoo used `https://rukoo-account.bvdm.ai`, which reaches the same server. An account belongs to the address it was made at, because the proof of your password includes the server's address. So a device signed in at the old address keeps using it after an update, until you sign out or delete the account. Then it uses rukoo.io. The same happens when another device ends its session, for example by deleting the account or changing the password. When you sign in again on that device, Rukoo tries the old address too, and stays there when your account still is.
 

@@ -103,6 +103,13 @@ class AccountService(
     private var pushJob: Job? = null
     private var saveJob: Job? = null
 
+    /** A code asked for by email ([requestCode]): where and for whom, the challenge, and until when its six digits work. */
+    private class HeldCode(val server: String, val email: String, val challenge: String, val until: Long)
+
+    // The last code asked for, by purpose. Only in memory: the challenge is what the six digits count with, and only
+    // this phone got it.
+    private val codes = HashMap<String, HeldCode>()
+
     private val _status = MutableStateFlow(AccountStatus())
     val status: StateFlow<AccountStatus> = _status.asStateFlow()
 
@@ -202,9 +209,10 @@ class AccountService(
 
     // ---- talking to the server ----
 
-    private fun fail(code: String, status: Int = 0) = AccountError(AccountError.known(code), status)
+    private fun fail(code: String, status: Int = 0, attemptsLeft: Int? = null, retryAfter: Long? = null) =
+        AccountError(AccountError.known(code), status, null, attemptsLeft, retryAfter)
 
-    private fun translated(e: Throwable): Throwable = if (e is AccountError) fail(e.code, e.status) else e
+    private fun translated(e: Throwable): Throwable = if (e is AccountError) fail(e.code, e.status, e.attemptsLeft, e.retryAfter) else e
 
     /**
      * [session]: the one a signed-in call is made for. Its answer may come after this phone signed out or into
@@ -311,50 +319,141 @@ class AccountService(
 
     private fun recoveryKeys(key: ByteArray, at: String = server) = AccountKeys.recoveryKeys(key, at)
 
+    // ---- codes by email (desktop's requestCode, emailCodeFor and settleCode) ----
+
+    /** What [requestCode] says: the address as the server reads it, and how long the six digits work, in seconds. */
+    data class CodeSent(val email: String, val expiresIn: Long)
+
+    /**
+     * `POST /v1/email-code`: the server mails a code to [email] for [purpose], `signup` or `unlock`, in [lang] (`en` or
+     * `nl`). The challenge it answers, which the six digits count only with, stays here in memory for the sign-up,
+     * sign-in or recovery that follows; a new request replaces the one before.
+     */
+    suspend fun requestCode(email: String, purpose: String, lang: String = "en"): CodeSent {
+        val address = AccountKeys.normalizeEmail(email)
+        if (signedIn) throw fail("signed_in")
+        if (!validEmail(address)) throw fail("invalid_email")
+        if (purpose !in CODE_PURPOSES) throw fail("invalid")
+        val at = server
+        val res = call("POST", "/v1/email-code", buildJsonObject {
+            put("email", address)
+            put("purpose", purpose)
+            put("lang", if (lang == "nl") "nl" else "en")
+        }, server = at) as? JsonObject
+        val challenge = (res?.get("challenge") as? JsonPrimitive)?.takeIf { it.isString && CODE_TOKEN.matches(it.content) }?.content
+            ?: throw fail("server")
+        val expiresIn = (res["expiresIn"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()?.takeIf { it > 0 }?.coerceAtMost(3600) ?: 600
+        synchronized(lock) { codes[purpose] = HeldCode(at, address, challenge, clock.now() + expiresIn * 1000) }
+        return CodeSent(address, expiresIn)
+    }
+
+    /**
+     * `emailCode` for a request to [at] from what the person [typed]: null when nothing was, `{ token }` for the long
+     * code, `{ challenge, code }` for six digits with the challenge this phone got for the same address, purpose and
+     * server. Spaces, line breaks and dashes are left out. Six digits without such a challenge (asked for on another
+     * device, before the app restarted, or expired here) can't work: `code_expired`.
+     */
+    private fun emailCodeFor(purpose: String, address: String, at: String, typed: String): JsonObject? {
+        val text = typed.replace(Regex("\\s+"), "")
+        if (text.isEmpty()) return null
+        if (CODE_TOKEN.matches(text)) return buildJsonObject { put("token", text) }
+        val digits = text.replace("-", "")
+        if (!DIGITS.matches(digits)) throw fail("code_format")
+        val held = synchronized(lock) { codes[purpose] }
+        if (held == null || held.email != address || held.server != at || held.until <= clock.now()) throw fail("code_expired")
+        return buildJsonObject {
+            put("challenge", held.challenge)
+            put("code", digits)
+        }
+    }
+
+    /**
+     * After a request that carried [emailCode]: a code the server took is used up, and six digits that no longer work
+     * (`code_expired`, or wrong for the last time) leave nothing worth keeping.
+     */
+    private fun settleCode(purpose: String, emailCode: JsonObject?, error: Throwable? = null) {
+        if (emailCode == null) return
+        synchronized(lock) {
+            if (error == null) {
+                codes.remove(purpose)
+                return
+            }
+            val held = codes[purpose] ?: return
+            if ((emailCode["challenge"] as? JsonPrimitive)?.content != held.challenge) return
+            val e = error as? AccountError ?: return
+            if (e.code == "code_expired" || (e.code == "code_wrong" && e.attemptsLeft == 0)) codes.remove(purpose)
+        }
+    }
+
+    /** Runs [request] with [emailCode] and settles the code by how it went. */
+    private suspend fun <T> withCode(purpose: String, emailCode: JsonObject?, request: suspend () -> T): T {
+        val result = try {
+            request()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            settleCode(purpose, emailCode, e)
+            throw e
+        }
+        settleCode(purpose, emailCode)
+        return result
+    }
+
     /**
      * [invite] is the operator's invite code. [workspaceInvite] is a workspace invitation for this server, which an
      * invite-only server takes in its place (contract 2.12, 3.3): it goes as `workspaceInvite`, and [invite] doesn't
      * go at all. One for another server is refused here, so its secret never reaches this one.
      *
+     * [emailCode]: what the person typed of a `signup` code ([requestCode]). A server that checks addresses
+     * ([ServerInfo.codesFor]) needs one for every sign-up without the operator's invite code, also with a workspace
+     * invitation (`workspace.inviteSignupsNeedCode`); without it this stops with `code_required` before the password's
+     * keys are made, and the form asks for a code. A wrong invite code gets `code_required` from the server.
+     *
      * Sign-up, sign-in and recovery read the server once and use that address for every call and key, since the
      * server can still change while they wait (only a session stops it). [attach] refuses the session when it did.
      */
-    suspend fun signUp(email: String, password: String, invite: String = "", workspaceInvite: InviteLink? = null): SignUpResult {
+    suspend fun signUp(email: String, password: String, invite: String = "", workspaceInvite: InviteLink? = null, emailCode: String = ""): SignUpResult {
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
         val at = server
         // rukoo.io and its former address are one server (InviteLink.sameServers); the request still goes to at.
         if (workspaceInvite != null && workspaceInvite.server !in InviteLink.sameServers(at)) throw fail("invalid")
-        serverInfo(at)
+        val plain = if (workspaceInvite == null) invite.trim() else ""
+        val info = serverInfo(at)
+        val code = emailCodeFor("signup", address, at, emailCode)
+        if (code == null && plain.isEmpty() && info.codesFor("signup")) throw fail("code_required", 403)
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
         val keys = passwordKeys(password, salt, kdf, at)
         val dataKey = AccountKeys.randomBytes(32)
         val recoveryKey = AccountKeys.randomBytes(20)
         val recovery = recoveryKeys(recoveryKey, at)
-        val res = call(
-            "POST",
-            "/v1/signup",
-            buildJsonObject {
-                put("email", address)
-                if (workspaceInvite != null) {
-                    putJsonObject("workspaceInvite") {
-                        put("workspace", workspaceInvite.workspace)
-                        put("invite", workspaceInvite.secret)
+        val res = withCode("signup", code) {
+            call(
+                "POST",
+                "/v1/signup",
+                buildJsonObject {
+                    put("email", address)
+                    if (workspaceInvite != null) {
+                        putJsonObject("workspaceInvite") {
+                            put("workspace", workspaceInvite.workspace)
+                            put("invite", workspaceInvite.secret)
+                        }
+                    } else if (plain.isNotEmpty()) {
+                        put("invite", plain)
                     }
-                } else if (invite.isNotEmpty()) {
-                    put("invite", invite.trim())
-                }
-                put("kdf", kdf.toJson())
-                put("salt", AccountKeys.b64u(salt))
-                put("authKey", AccountKeys.b64u(keys.authKey))
-                put("wrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(keys.wrapKey, dataKey)))
-                put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
-                put("recoveryWrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(recovery.recoveryWrap, dataKey)))
-                put("device", device())
-            },
-            server = at,
-        ) as? JsonObject
+                    if (code != null) put("emailCode", code)
+                    put("kdf", kdf.toJson())
+                    put("salt", AccountKeys.b64u(salt))
+                    put("authKey", AccountKeys.b64u(keys.authKey))
+                    put("wrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(keys.wrapKey, dataKey)))
+                    put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
+                    put("recoveryWrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(recovery.recoveryWrap, dataKey)))
+                    put("device", device())
+                },
+                server = at,
+            ) as? JsonObject
+        }
         attach(address, tokenOf(res), dataKey, at)
         return SignUpResult(AccountKeys.formatRecoveryKey(recoveryKey), detailsOf(res?.get("account")))
     }
@@ -381,20 +480,25 @@ class AccountService(
         return passwordKeys(password, salt, kdf, at)
     }
 
-    suspend fun signIn(email: String, password: String): AccountDetails? {
+    /** [emailCode]: what the person typed of an `unlock` code, which lets the sign-in past the account's lock. */
+    suspend fun signIn(email: String, password: String, emailCode: String = ""): AccountDetails? {
         val address = AccountKeys.normalizeEmail(email)
         if (signedIn) throw fail("signed_in")
         if (!validEmail(address)) throw fail("invalid_email")
         if (password.isEmpty()) throw fail("unauthorized")
         checkStorage()
         val at = server
+        val code = emailCodeFor("unlock", address, at, emailCode)
         serverInfo(at)
         val keys = authFor(address, password, at)
-        val res = call("POST", "/v1/login", buildJsonObject {
-            put("email", address)
-            put("authKey", AccountKeys.b64u(keys.authKey))
-            put("device", device())
-        }, server = at) as? JsonObject
+        val res = withCode("unlock", code) {
+            call("POST", "/v1/login", buildJsonObject {
+                put("email", address)
+                put("authKey", AccountKeys.b64u(keys.authKey))
+                put("device", device())
+                if (code != null) put("emailCode", code)
+            }, server = at) as? JsonObject
+        }
         val dataKey = try {
             AccountKeys.unwrapDataKey(keys.wrapKey, AccountKeys.unb64u((res?.get("wrappedKey") as? JsonPrimitive)?.content))
         } catch (e: Exception) {
@@ -404,18 +508,28 @@ class AccountService(
         return detailsOf(res?.get("account"))
     }
 
-    /** A forgotten password: the recovery key opens the data key, and a new password takes over. */
-    suspend fun recover(email: String, recoveryKey: String, password: String): AccountDetails? {
+    /**
+     * A forgotten password: the recovery key opens the data key, and a new password takes over. [emailCode]: what the
+     * person typed of an `unlock` code; it goes with both steps, as `recover/start` leaves it for `recover/finish`.
+     */
+    suspend fun recover(email: String, recoveryKey: String, password: String, emailCode: String = ""): AccountDetails? {
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
         val key = AccountKeys.parseRecoveryKey(recoveryKey) ?: throw fail("recovery_key")
         val at = server
+        val code = emailCodeFor("unlock", address, at, emailCode)
         serverInfo(at)
         val recovery = recoveryKeys(key, at)
-        val start = call("POST", "/v1/recover/start", buildJsonObject {
-            put("email", address)
-            put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
-        }, server = at) as? JsonObject
+        val start = try {
+            call("POST", "/v1/recover/start", buildJsonObject {
+                put("email", address)
+                put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
+                if (code != null) put("emailCode", code)
+            }, server = at) as? JsonObject
+        } catch (e: AccountError) {
+            settleCode("unlock", code, e)
+            throw e
+        }
         val dataKey = try {
             AccountKeys.unwrapDataKey(recovery.recoveryWrap, AccountKeys.unb64u((start?.get("recoveryWrappedKey") as? JsonPrimitive)?.content))
         } catch (e: Exception) {
@@ -424,15 +538,18 @@ class AccountService(
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
         val keys = passwordKeys(password, salt, kdf, at)
-        val res = call("POST", "/v1/recover/finish", buildJsonObject {
-            put("email", address)
-            put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
-            put("kdf", kdf.toJson())
-            put("salt", AccountKeys.b64u(salt))
-            put("authKey", AccountKeys.b64u(keys.authKey))
-            put("wrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(keys.wrapKey, dataKey)))
-            put("device", device())
-        }, server = at) as? JsonObject
+        val res = withCode("unlock", code) {
+            call("POST", "/v1/recover/finish", buildJsonObject {
+                put("email", address)
+                put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
+                put("kdf", kdf.toJson())
+                put("salt", AccountKeys.b64u(salt))
+                put("authKey", AccountKeys.b64u(keys.authKey))
+                put("wrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(keys.wrapKey, dataKey)))
+                put("device", device())
+                if (code != null) put("emailCode", code)
+            }, server = at) as? JsonObject
+        }
         attach(address, tokenOf(res), dataKey, at)
         return detailsOf(res?.get("account"))
     }
@@ -1028,6 +1145,12 @@ class AccountService(
 
         // A record id is an HMAC-SHA256 in base64url (server/PROTOCOL.md, Records).
         private val RECORD_ID = Regex("[A-Za-z0-9_-]{43}")
+
+        // Codes by email: what one is for, the shape of a challenge and of the email's long code (32 random bytes in
+        // base64url), and the six digits.
+        val CODE_PURPOSES = setOf("signup", "unlock")
+        private val CODE_TOKEN = Regex("[A-Za-z0-9_-]{43}")
+        private val DIGITS = Regex("[0-9]{6}")
 
         // The most a record may take on the server, once sealed (server/PROTOCOL.md).
         private const val RECORD_BYTES = 16384

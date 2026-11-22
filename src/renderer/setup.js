@@ -2,12 +2,15 @@ import { t, languages, getLanguage, setLanguage, localize } from './i18n.js';
 import { icons, providerLogos } from './icons.js';
 import { api, brandLogo, esc, $, toast } from './ui.js';
 import { showRecoveryKey } from './rukoo-account.js';
+import { codeStep, codesFor } from './email-code.js';
 
 const ORDER = ['google', 'yahoo', 'outlook', 'exchange', 'office365', 'other'];
 const MIN_PASSWORD = 12;
 
 // The setup page on screen: { page, first, close, chatChanged }, or null.
 let current = null;
+// The code step of each team chat account form drawn, made at its first submit (submitChatAccount).
+const chatSteps = new WeakMap();
 
 // Closes the setup page; firstOnly: only the first-run one, which a Rukoo account alone makes way for (app.js).
 export function closeSetup({ firstOnly = false } = {}) {
@@ -147,6 +150,8 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
     // 2.12); without one, or where it doesn't, the form asks for the code.
     const linkIsCode = Boolean(chatLink && info && info.workspace && info.workspace.inviteSignups);
     const askCode = !signIn && signups === 'invite' && !linkIsCode;
+    // A server that checks addresses takes the invite code as an alternative to a code sent by email.
+    const verified = codesFor(info, 'signup');
     const host = ctx.chatHost() || hostOf(status && status.server);
     const lead = chatLink ? t('setup.chat.accountLeadLink', { host }) : t('setup.chat.accountLead', { host });
     page.innerHTML = `
@@ -160,7 +165,13 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
           <label>${esc(t('setup.fields.password'))}<input type="password" name="password" autocomplete="${signIn ? 'current-password' : 'new-password'}"/>
             ${signIn ? '' : `<span class="field-help">${esc(t('settings.rukoo.passwordHelp'))}</span>`}</label>
           ${signIn ? '' : `<label>${esc(t('settings.rukoo.repeat'))}<input type="password" name="repeat" autocomplete="new-password"/></label>`}
-          ${askCode ? `<label>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"/></label>` : ''}
+          ${
+            askCode
+              ? verified
+                ? `<label>${esc(t('settings.rukoo.inviteOptional'))}<input type="text" name="invite" spellcheck="false" autocomplete="off" aria-describedby="setup-invite-help"/><span class="field-help" id="setup-invite-help">${esc(t('settings.rukoo.inviteOptionalHelp'))}</span></label>`
+                : `<label>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"/></label>`
+              : ''
+          }
           ${signIn ? '' : `<label class="inline"><input type="checkbox" name="understand"/> ${esc(t('settings.rukoo.understand'))}</label>`}
           <div class="error" data-error></div>
           <div class="actions">
@@ -200,13 +211,30 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner"></span>${esc(t('settings.rukoo.working'))}`;
     const join = chatLink ? chatLink.link : '';
+    // The code step (email-code.js): a sign-up's on a server that checks addresses, a sign-in's for a locked account.
+    let step = chatSteps.get(form);
+    if (!step) {
+      step = codeStep({ host: form, before: err, purpose: signIn ? 'unlock' : 'signup', emailField: form.querySelector('[name="email"]'), errorEl: err });
+      chatSteps.set(form, step);
+    }
     try {
       if (signIn) {
-        await api('accountSignIn', { email, password, join });
+        const out = await step.submit(email, (emailCode) => api('accountSignIn', { email, password, join, emailCode }));
+        if (!out.done) {
+          btn.disabled = false;
+          btn.textContent = label;
+          return;
+        }
         toast(t('settings.rukoo.signedIn'));
       } else {
-        const res = await api('accountSignUp', { email, password, invite: String(f.get('invite') || '').trim(), join });
-        await showRecoveryKey(res.recoveryKey);
+        const invite = String(f.get('invite') || '').trim();
+        const out = await step.submit(email, (emailCode) => api('accountSignUp', { email, password, invite, join, emailCode }), { invited: Boolean(invite) });
+        if (!out.done) {
+          btn.disabled = false;
+          btn.textContent = label;
+          return;
+        }
+        await showRecoveryKey(out.result.recoveryKey);
         toast(t('settings.rukoo.welcome'));
       }
     } catch (ex) {

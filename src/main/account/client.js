@@ -12,7 +12,8 @@ const MAX_BYTES = 32 * 1024 * 1024;
 // booking as it is now (stale_version), other times (slot_taken). For the workspace routes (server/WORKSPACES.md,
 // "Errors"): what the refusal concerns (scope), the protocol version a 426 asks for (minVersion), the channels that
 // need another manager first (channels), the person a block is about (member), the limit that was reached (limit),
-// and how long to wait (retryAfter, from the Retry-After header).
+// and how long to wait (retryAfter, from the Retry-After header, at most an hour). For emailed codes: the tries left
+// (attemptsLeft), and a wait of more than an hour up to a day (waitSeconds).
 class AccountError extends Error {
   constructor(code, status = 0, message = '', details = null) {
     super(message || code);
@@ -26,8 +27,9 @@ const SCOPES = ['account', 'workspace', 'conversation'];
 const CONVERSATION_ID = /^c_[A-Za-z0-9_-]{22}$/;
 const MEMBER_ID = /^u_[A-Za-z0-9_-]{22}$/;
 
-// Retry-After in whole seconds, 1 to 3600: a number of seconds or an HTTP date. null when there is none to read.
-function retryAfter(res, now = Date.now()) {
+// Retry-After in whole seconds, 1 to max (an hour unless said otherwise): a number of seconds or an HTTP date. null
+// when there is none to read.
+function retryAfter(res, now = Date.now(), max = 3600) {
   const raw = res && res.headers ? res.headers['retry-after'] : undefined;
   const text = String(Array.isArray(raw) ? raw[0] : raw ?? '').trim();
   if (!text) return null;
@@ -38,8 +40,12 @@ function retryAfter(res, now = Date.now()) {
     if (!Number.isFinite(at)) return null;
     seconds = Math.ceil((at - now) / 1000);
   }
-  return Math.min(Math.max(seconds, 1), 3600);
+  return Math.min(Math.max(seconds, 1), max);
 }
+
+// The longest wait the code step says (waitSeconds): an address gets at most ten codes a day (server/PROTOCOL.md,
+// POST /v1/email-code), so its Retry-After can be most of a day.
+const DAY_SECONDS = 86400;
 
 function errorDetails(json, res) {
   const out = {};
@@ -55,9 +61,15 @@ function errorDetails(json, res) {
     }
     if (typeof json.member === 'string' && MEMBER_ID.test(json.member)) out.member = json.member;
     if (typeof json.limit === 'string' && /^[A-Za-z]{1,40}$/.test(json.limit)) out.limit = json.limit;
+    // An emailed code that doesn't match: the tries its challenge has left (code_wrong).
+    if (Number.isSafeInteger(json.attemptsLeft) && json.attemptsLeft >= 0) out.attemptsLeft = Math.min(json.attemptsLeft, 100);
   }
   const wait = retryAfter(res);
   if (wait !== null) out.retryAfter = wait;
+  // A wait longer than an hour, up to a day, for the code step's "ask again in 5 hours"; retryAfter stays at most an
+  // hour for the callers that time a retry with it.
+  const long = retryAfter(res, Date.now(), DAY_SECONDS);
+  if (long !== null && long !== wait) out.waitSeconds = long;
   return Object.keys(out).length ? out : null;
 }
 

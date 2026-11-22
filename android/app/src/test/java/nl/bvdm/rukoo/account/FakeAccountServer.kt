@@ -25,6 +25,11 @@ import okhttp3.mockwebserver.RecordedRequest
 /**
  * A Rukoo account server in memory, a port of desktop's test/fixtures/account-server.js. It follows
  * server/PROTOCOL.md closely enough for the phone's side; the real server in server/ has its own tests.
+ *
+ * Codes by email (desktop's codes option): [codes] mails codes for `unlock`, and for `signup` as well with [signups]
+ * `verified`, which `GET /v1/info` reports as `invite` as the real server does. Nothing is mailed: [mail] keeps each
+ * message, and [codeFor] and [tokenFor] read the newest one's six digits and long code. [lock] locks an address's
+ * sign-ins as ten wrong passwords would.
  */
 class FakeAccountServer(
     private val signups: String = "open",
@@ -34,7 +39,36 @@ class FakeAccountServer(
     private val kdf: JsonObject = AccountKeys.DEFAULT_KDF.toJson(),
     /** The workspace home `GET /v1/info` names, with team chat listed; none without. */
     private val home: String? = null,
+    private val codes: Boolean = false,
 ) : AutoCloseable {
+    class Mail(val to: String, val purpose: String, val code: String?, val token: String?, val lang: String?)
+
+    private class CodeRow(
+        val email: String,
+        val purpose: String,
+        val challenge: String,
+        val code: String,
+        val token: String,
+        var misses: Int = 0,
+        var failures: Int = 0,
+    )
+
+    private val verified = signups == "verified"
+    private val purposes = if (!codes) emptyList() else if (verified) listOf("signup", "unlock") else listOf("unlock")
+    private val codeRows = LinkedHashMap<String, CodeRow>()
+    private val lastSent = HashMap<String, Long>()
+    private val locked = HashSet<String>()
+    val mail = CopyOnWriteArrayList<Mail>()
+
+    fun codeFor(email: String): String? = mail.lastOrNull { it.to == email && it.code != null }?.code
+
+    fun tokenFor(email: String): String? = mail.lastOrNull { it.to == email && it.token != null }?.token
+
+    /** Locks an address's sign-ins and recoveries, as ten wrong passwords in 15 minutes would. */
+    fun lock(email: String) = synchronized(lock) { locked += email }
+
+    /** Lets the next code request to an address through at once, as a minute passing would. */
+    fun allowCode(email: String, purpose: String) = synchronized(lock) { lastSent.remove("$purpose\n$email") }
     class Stored(var seq: Long, var data: String?)
 
     class Acc(
@@ -94,20 +128,78 @@ class FakeAccountServer(
             put("country", "US")
             put("jurisdiction", jurisdiction)
         }
-        put("signups", signups)
+        put("signups", if (verified) "invite" else signups)
         putJsonObject("limits") {
             put("records", 250000)
             put("bytes", 104857600)
             put("recordBytes", 16384)
             put("batch", 500)
         }
+        putJsonArray("features") {
+            if (home != null) add(JsonPrimitive("workspaces-v1"))
+            if (purposes.isNotEmpty()) add(JsonPrimitive("email-codes"))
+        }
         if (home != null) {
-            putJsonArray("features") { add(JsonPrimitive("workspaces-v1")) }
             putJsonObject("workspace") {
                 putJsonArray("versions") { add(JsonPrimitive(1)) }
                 putJsonObject("home") { put("origin", home) }
+                put("inviteSignups", true)
+                put("inviteSignupsNeedCode", verified && purposes.isNotEmpty())
             }
         }
+        if (purposes.isNotEmpty()) {
+            putJsonObject("emailCodes") {
+                putJsonArray("purposes") { purposes.forEach { add(JsonPrimitive(it)) } }
+                put("digits", 6)
+                put("expiresIn", 600)
+                put("tokenExpiresIn", 86400)
+            }
+        }
+    }
+
+    /** Claims an emailed code (server/src/codes.js claimCode): the row, or the error answer to send instead. */
+    private fun claim(email: String, purpose: String, emailCode: JsonObject): Pair<CodeRow?, MockResponse?> {
+        val expired = error(403, "code_expired")
+        val token = emailCode.str("token")
+        val row = if (token.isNotEmpty()) codeRows.values.firstOrNull { it.token == token } else codeRows[emailCode.str("challenge")]
+        if (row == null || row.failures >= 5) return null to expired
+        if (token.isNotEmpty()) {
+            if (row.email != email || row.purpose != purpose) return null to expired
+        } else {
+            if (row.misses >= 5) return null to expired
+            val code = emailCode.str("code").replace(Regex("[\\s-]"), "")
+            if (row.email != email || row.purpose != purpose || row.code != code) {
+                row.misses += 1
+                return null to json(403, buildJsonObject {
+                    put("error", "code_wrong")
+                    put("attemptsLeft", maxOf(0, 5 - row.misses))
+                })
+            }
+        }
+        return row to null
+    }
+
+    /** A sign-in or recovery step with the lock and an optional unlock code; [keep] leaves the code for the next step. */
+    private fun guarded(body: JsonObject, keep: Boolean = false, run: () -> MockResponse): MockResponse {
+        val email = body.str("email")
+        val emailCode = body["emailCode"] as? JsonObject
+        var held: CodeRow? = null
+        if (emailCode != null) {
+            val (row, answer) = claim(email, "unlock", emailCode)
+            if (answer != null) return answer
+            held = row
+        } else if (email in locked) {
+            return error(429, "locked").setHeader("Retry-After", "900")
+        }
+        val out = run()
+        val status = out.status.split(' ').getOrNull(1)?.toIntOrNull() ?: 0
+        if (status == 401 && held != null) {
+            held.failures += 1
+            if (held.failures >= 5) codeRows.remove(held.challenge)
+        } else if (status in 200..299 && held != null && !keep) {
+            codeRows.remove(held.challenge)
+        }
+        return out
     }
 
     private fun accountView(acc: Acc, current: String?) = buildJsonObject {
@@ -171,7 +263,7 @@ class FakeAccountServer(
             sessions.remove(found.key)
             return json(204)
         }
-        val open = setOf("GET /v1/info", "POST /v1/prelogin", "POST /v1/signup", "POST /v1/login", "POST /v1/recover/start", "POST /v1/recover/finish")
+        val open = setOf("GET /v1/info", "POST /v1/prelogin", "POST /v1/email-code", "POST /v1/signup", "POST /v1/login", "POST /v1/recover/start", "POST /v1/recover/finish")
         if (route !in open && acc == null) return if (route in ROUTES) error(401, "unauthorized") else error(404, "not_found")
         return when (route) {
             "GET /v1/info" -> json(200, info())
@@ -184,32 +276,66 @@ class FakeAccountServer(
                     put("salt", a?.salt ?: fake)
                 })
             }
-            "POST /v1/signup" -> when {
-                signups == "closed" -> error(403, "signups_closed")
-                signups == "invite" && body.str("invite") !in invites -> error(403, "invite_required")
-                accounts.containsKey(body.str("email")) -> error(409, "exists")
-                else -> {
-                    val a = Acc(
-                        email = body.str("email"),
-                        createdAt = System.currentTimeMillis(),
-                        kdf = body["kdf"] ?: JsonNull,
-                        salt = body.str("salt"),
-                        auth = sha(body.str("authKey")),
-                        wrappedKey = body.str("wrappedKey"),
-                        recovery = sha(body.str("recoveryAuth")),
-                        recoveryWrappedKey = body.str("recoveryWrappedKey"),
-                    )
-                    accounts[a.email] = a
-                    val t = newSession(a, body["device"] as? JsonObject)
-                    json(201, buildJsonObject {
-                        put("token", t)
-                        put("account", accountView(a, t))
-                    })
+            "POST /v1/email-code" -> {
+                val email = body.str("email").trim().lowercase()
+                val purpose = body.str("purpose")
+                when {
+                    !email.contains('@') -> error(400, "invalid")
+                    purpose !in listOf("signup", "unlock") -> error(400, "invalid")
+                    purposes.isEmpty() -> error(503, "mail_unavailable")
+                    purpose !in purposes -> error(400, "invalid")
+                    else -> {
+                        val now = System.currentTimeMillis()
+                        val last = lastSent["$purpose\n$email"]
+                        if (last != null && now - last < 60_000) {
+                            return error(429, "rate_limited").setHeader("Retry-After", ((last + 60_000 - now + 999) / 1000).toString())
+                        }
+                        lastSent["$purpose\n$email"] = now
+                        val row = CodeRow(email, purpose, token(), "%06d".format(random.nextInt(1_000_000)), token())
+                        codeRows[row.challenge] = row
+                        val exists = accounts.containsKey(email)
+                        if (if (purpose == "signup") !exists else exists) mail += Mail(email, purpose, row.code, row.token, body.str("lang"))
+                        json(202, buildJsonObject {
+                            put("challenge", row.challenge)
+                            put("expiresIn", 600)
+                        })
+                    }
                 }
             }
-            "POST /v1/login" -> {
+            "POST /v1/signup" -> {
+                val invited = body.str("invite") in invites
+                if (signups == "closed") return error(403, "signups_closed")
+                if (signups == "invite" && !invited) return error(403, "invite_required")
+                // A server that checks addresses needs an emailed code without the operator's invite code.
+                var held: CodeRow? = null
+                if (verified && !invited) {
+                    val emailCode = body["emailCode"] as? JsonObject ?: return error(403, "code_required")
+                    val (row, answer) = claim(body.str("email"), "signup", emailCode)
+                    if (answer != null) return answer
+                    held = row
+                }
+                if (accounts.containsKey(body.str("email"))) return error(409, "exists")
+                held?.let { codeRows.remove(it.challenge) }
+                val a = Acc(
+                    email = body.str("email"),
+                    createdAt = System.currentTimeMillis(),
+                    kdf = body["kdf"] ?: JsonNull,
+                    salt = body.str("salt"),
+                    auth = sha(body.str("authKey")),
+                    wrappedKey = body.str("wrappedKey"),
+                    recovery = sha(body.str("recoveryAuth")),
+                    recoveryWrappedKey = body.str("recoveryWrappedKey"),
+                )
+                accounts[a.email] = a
+                val t = newSession(a, body["device"] as? JsonObject)
+                json(201, buildJsonObject {
+                    put("token", t)
+                    put("account", accountView(a, t))
+                })
+            }
+            "POST /v1/login" -> guarded(body) {
                 val a = accounts[body.str("email")]
-                if (a == null || a.auth != sha(body.str("authKey"))) return error(401, "unauthorized")
+                if (a == null || a.auth != sha(body.str("authKey"))) return@guarded error(401, "unauthorized")
                 val t = newSession(a, body["device"] as? JsonObject)
                 json(200, buildJsonObject {
                     put("token", t)
@@ -217,17 +343,17 @@ class FakeAccountServer(
                     put("account", accountView(a, t))
                 })
             }
-            "POST /v1/recover/start" -> {
+            "POST /v1/recover/start" -> guarded(body, keep = true) {
                 val a = accounts[body.str("email")]
-                if (a == null || a.recovery != sha(body.str("recoveryAuth"))) return error(401, "unauthorized")
+                if (a == null || a.recovery != sha(body.str("recoveryAuth"))) return@guarded error(401, "unauthorized")
                 json(200, buildJsonObject {
                     put("recoveryWrappedKey", a.recoveryWrappedKey)
                     put("kdf", a.kdf)
                 })
             }
-            "POST /v1/recover/finish" -> {
+            "POST /v1/recover/finish" -> guarded(body) {
                 val a = accounts[body.str("email")]
-                if (a == null || a.recovery != sha(body.str("recoveryAuth"))) return error(401, "unauthorized")
+                if (a == null || a.recovery != sha(body.str("recoveryAuth"))) return@guarded error(401, "unauthorized")
                 a.kdf = body["kdf"] ?: JsonNull
                 a.salt = body.str("salt")
                 a.auth = sha(body.str("authKey"))

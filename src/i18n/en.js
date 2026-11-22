@@ -7264,6 +7264,30 @@
     "message": "That password is wrong.",
     "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers wrong_password or the input is refused. src/main/account/index.js (fail)."
   },
+  "account.errors.code_required": {
+    "message": "This server checks your email address with a code first.",
+    "description": "Rukoo account error: a sign-up on a server that checks addresses came without a code sent by email (403 code_required). The forms usually send a code at once instead of showing this. src/main/account/index.js (fail, requestCode, emailCodeFor); worded in src/renderer/email-code.js (codeErrorText)."
+  },
+  "account.errors.code_wrong": {
+    "message": "That code is wrong.",
+    "description": "Rukoo account error: the six digits sent with a sign-up, sign-in or recovery don't match the emailed code (403 code_wrong). The code step says how many tries are left instead (settings.rukoo.code.wrong). src/main/account/index.js (fail, requestCode, emailCodeFor); worded in src/renderer/email-code.js (codeErrorText)."
+  },
+  "account.errors.code_expired": {
+    "message": "This code no longer works. Send a new code, or paste the long code from the email.",
+    "description": "Rukoo account error: the emailed code is unknown, expired, already used or out of tries (403 code_expired), or six digits were typed that Rukoo has no request for (asked on another device or before a restart). The long code in the same email works on any device for a day. src/main/account/index.js (fail, requestCode, emailCodeFor); worded in src/renderer/email-code.js (codeErrorText)."
+  },
+  "account.errors.code_in_use": {
+    "message": "This code is being checked right now. Try again in a moment.",
+    "description": "Rukoo account error: another request is using the same emailed code right now (409 code_in_use). src/main/account/index.js (fail, requestCode, emailCodeFor); worded in src/renderer/email-code.js (codeErrorText)."
+  },
+  "account.errors.mail_unavailable": {
+    "message": "This server can't send codes by email.",
+    "description": "Rukoo account error: Rukoo asked for a code by email, and the server has no mail set up (503 mail_unavailable). src/main/account/index.js (fail, requestCode, emailCodeFor); worded in src/renderer/email-code.js (codeErrorText)."
+  },
+  "account.errors.code_format": {
+    "message": "Enter the 6-digit code, or paste the long code from the email.",
+    "description": "Rukoo account error: what was typed in the code field is neither six digits nor the long code of 43 letters, digits, - and _ from the email. Checked before anything goes to the server. src/main/account/index.js (fail, requestCode, emailCodeFor); worded in src/renderer/email-code.js (codeErrorText)."
+  },
   "account.errors.locked": {
     "message": "Too many attempts. Try again in 15 minutes.",
     "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers locked or the input is refused. src/main/account/index.js (fail)."
@@ -7947,6 +7971,74 @@
   "settings.rukoo.inviteChatHelp": {
     "message": "An invitation link to a team chat workspace works as an invite code too.",
     "description": "Settings > Rukoo account: hint under the invite code field of the sign-up form, while team chat is available and the server accepts sign-ups with an invitation. src/renderer/rukoo-account.js"
+  },
+  "settings.rukoo.code.label": {
+    "message": "Code from the email",
+    "description": "Rukoo account forms: label (placeholder in the What's new guide) of the field for the code Rukoo had the server email, on the sign-up form of a server that checks addresses and on the sign-in and recovery forms of a locked account. Takes the six digits or the long code. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.sent": {
+    "message": "We sent a code to {email}.",
+    "description": "Rukoo account forms: line above the code field once the server took the request for a code. {email}: the address, as the server reads it (trimmed, lowercase). src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.resent": {
+    "message": "We sent a new code to {email}. Use the one in the newest email.",
+    "description": "Rukoo account forms: the line above the code field after Send a new code. Only the newest email's six digits work on this device; any email's long code works. {email}: the address. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.help": {
+    "message": "Or paste the long code from the email. It works on any device for a day.",
+    "description": "Rukoo account forms: hint under the code field. Each email has six digits for this device (for 10 minutes) and a long code of 43 characters that works once on any device for a day. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.resend": {
+    "message": "Send a new code",
+    "description": "Rukoo account forms: link button under the code field that asks the server for another code to the same address. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.resendIn": {
+    "message": { "one": "New code in {count} second", "other": "New code in {count} seconds" },
+    "description": "Rukoo account forms: the disabled Send a new code button while the server's minute between two codes runs; counts down each second. count: seconds left. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.wrong": {
+    "message": { "one": "That code is wrong. You can try {count} more time.", "other": "That code is wrong. You can try {count} more times." },
+    "description": "Rukoo account forms: error after six digits that don't match the emailed code (403 code_wrong). count: tries the code has left, 1 to 4. src/renderer/email-code.js (codeErrorText)"
+  },
+  "settings.rukoo.code.wrongLast": {
+    "message": "Too many wrong codes. Send a new code, or paste the long code from the email.",
+    "description": "Rukoo account forms: error after the fifth wrong six digits: they no longer work, but the long code in the same email still does. src/renderer/email-code.js (codeErrorText)"
+  },
+  "settings.rukoo.code.missing": {
+    "message": "Enter the code from the email.",
+    "description": "Rukoo account forms: error when the form is sent with the code field empty. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.waitSeconds": {
+    "message": { "one": "You can ask for a new code in {count} second.", "other": "You can ask for a new code in {count} seconds." },
+    "description": "Rukoo account forms: error when the server refused another code for now (429 rate_limited). count: seconds to wait, under a minute. src/renderer/email-code.js (waitText)"
+  },
+  "settings.rukoo.code.waitMinutes": {
+    "message": { "one": "You can ask for a new code in {count} minute.", "other": "You can ask for a new code in {count} minutes." },
+    "description": "Rukoo account forms: error when the server refused another code for now (429 rate_limited): an address gets at most five codes an hour. count: minutes to wait, rounded up. src/renderer/email-code.js (waitText)"
+  },
+  "settings.rukoo.code.waitHours": {
+    "message": { "one": "You can ask for a new code in {count} hour.", "other": "You can ask for a new code in {count} hours." },
+    "description": "Rukoo account forms: error when the server refused another code for now (429 rate_limited): an address gets at most ten codes a day. count: hours to wait, rounded up. src/renderer/email-code.js (waitText)"
+  },
+  "settings.rukoo.code.inviteFailed": {
+    "message": "That invite code didn't work, so we sent a code to {email} instead.",
+    "description": "Rukoo account forms: line on the sign-up form of a server that checks addresses, after the server turned down the invite code and Rukoo had it email a code instead. {email}: the address. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.locked": {
+    "message": "Too many attempts on this account. Wait 15 minutes, or get a code by email and go on now.",
+    "description": "Rukoo account forms: error on the sign-in and recovery forms when too many wrong passwords locked the account (429 locked) and the server sends codes to get past the lock. Followed by the Email me a code button (settings.rukoo.code.emailMe). src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.code.emailMe": {
+    "message": "Email me a code",
+    "description": "Rukoo account forms: link button after settings.rukoo.code.locked; asks the server to email a code that lets this sign-in or recovery past the lock. src/renderer/email-code.js (codeStep)"
+  },
+  "settings.rukoo.inviteOptional": {
+    "message": "Invite code (optional)",
+    "description": "Settings > Rukoo account and the setup page's team chat step: label of the invite code field on the sign-up form of a server that checks addresses with a code sent by email; without an invite code, the form asks for that code. Placeholder in the What's new guide. src/renderer/rukoo-account.js (inviteField), src/renderer/setup.js (showChatAccount), src/renderer/whats-new.js (invitePlaceholder)"
+  },
+  "settings.rukoo.inviteOptionalHelp": {
+    "message": "Without one, Rukoo emails you a code to check your address.",
+    "description": "Settings > Rukoo account and the setup page's team chat step: hint under the optional invite code field (settings.rukoo.inviteOptional). src/renderer/rukoo-account.js (inviteField), src/renderer/setup.js (showChatAccount)"
   },
   "settings.rukoo.webInvitation": {
     "message": "Your invitation link is used to create the account and then to join the workspace.",
@@ -8759,6 +8851,10 @@
   "whatsNew.account.inviteOrLink": {
     "message": "Invite code or invitation link",
     "description": "Placeholder of the invite field in the What's new account step, when the server takes a team chat invitation link as an invite code. src/renderer/whats-new.js"
+  },
+  "whatsNew.account.inviteOrLinkOptional": {
+    "message": "Invite code or invitation link (optional)",
+    "description": "Placeholder of the invite field in the What's new account step, when the server takes a team chat invitation link as an invite code and checks addresses with a code sent by email, so the field may stay empty. src/renderer/whats-new.js (invitePlaceholder)"
   },
   "whatsNew.account.localHint": {
     "message": "No account. You can make one later in Settings > Rukoo account.",

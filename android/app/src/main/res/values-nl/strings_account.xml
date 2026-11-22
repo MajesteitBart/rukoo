@@ -23,6 +23,12 @@
     <string name="account_errors_protocol">Dit is geen Rukoo-accountserver, of hij heeft een nieuwere versie van Rukoo nodig.</string>
     <string name="account_errors_signed_in">Log eerst uit bij je Rukoo-account.</string>
     <string name="account_errors_signed_out">Je bent uitgelogd omdat je wachtwoord is gewijzigd of dit apparaat is verwijderd. Log opnieuw in.</string>
+    <string name="account_errors_code_required">Deze server controleert je e-mailadres eerst met een code.</string>
+    <string name="account_errors_code_wrong">Die code klopt niet.</string>
+    <string name="account_errors_code_expired">Deze code werkt niet meer. Stuur een nieuwe code, of plak de lange code uit de e-mail.</string>
+    <string name="account_errors_code_in_use">Deze code wordt nu gecontroleerd. Probeer het zo opnieuw.</string>
+    <string name="account_errors_mail_unavailable">Deze server kan geen codes per e-mail sturen.</string>
+    <string name="account_errors_code_format">Vul de 6-cijferige code in, of plak de lange code uit de e-mail.</string>
 
     <string name="settings_groups_sync">Synchroniseren</string>
     <string name="settings_rukoo_title">Rukoo-account</string>
@@ -158,4 +164,38 @@
     <string name="settings_rukoo_self_host">Je eigen server draaien</string>
     <string name="settings_rukoo_self_host_help">Rukoo is open source. De handleiding laat zien hoe je je eigen accountserver host.</string>
     <string name="settings_rukoo_export_failed">Het bestand kon niet worden opgeslagen.</string>
+
+    <!-- De codestap: codes per e-mail -->
+    <string name="settings_rukoo_code_label">Code uit de e-mail</string>
+    <string name="settings_rukoo_code_sent">We hebben een code gestuurd naar %1$s.</string>
+    <string name="settings_rukoo_code_resent">We hebben een nieuwe code gestuurd naar %1$s. Gebruik die uit de nieuwste e-mail.</string>
+    <string name="settings_rukoo_code_help">Of plak de lange code uit de e-mail. Die werkt een dag lang op elk apparaat.</string>
+    <string name="settings_rukoo_code_resend">Stuur een nieuwe code</string>
+    <string name="settings_rukoo_code_wrong_last">Te vaak een foute code. Stuur een nieuwe code, of plak de lange code uit de e-mail.</string>
+    <string name="settings_rukoo_code_missing">Vul de code uit de e-mail in.</string>
+    <string name="settings_rukoo_code_invite_failed">Die uitnodigingscode werkte niet, dus we hebben in plaats daarvan een code naar %1$s gestuurd.</string>
+    <string name="settings_rukoo_code_locked">Te veel pogingen op dit account. Wacht 15 minuten, of vraag een code per e-mail en ga meteen verder.</string>
+    <string name="settings_rukoo_code_email_me">Mail me een code</string>
+    <string name="settings_rukoo_invite_optional">Uitnodigingscode (optioneel)</string>
+    <string name="settings_rukoo_invite_optional_help">Zonder uitnodigingscode mailt Rukoo je een code om je adres te controleren.</string>
+    <plurals name="settings_rukoo_code_resend_in">
+        <item quantity="one">Nieuwe code over %1$d seconde</item>
+        <item quantity="other">Nieuwe code over %1$d seconden</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wrong">
+        <item quantity="one">Die code klopt niet. Je kunt het nog %1$d keer proberen.</item>
+        <item quantity="other">Die code klopt niet. Je kunt het nog %1$d keer proberen.</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wait_seconds">
+        <item quantity="one">Je kunt over %1$d seconde een nieuwe code vragen.</item>
+        <item quantity="other">Je kunt over %1$d seconden een nieuwe code vragen.</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wait_minutes">
+        <item quantity="one">Je kunt over %1$d minuut een nieuwe code vragen.</item>
+        <item quantity="other">Je kunt over %1$d minuten een nieuwe code vragen.</item>
+    </plurals>
+    <plurals name="settings_rukoo_code_wait_hours">
+        <item quantity="one">Je kunt over %1$d uur een nieuwe code vragen.</item>
+        <item quantity="other">Je kunt over %1$d uur een nieuwe code vragen.</item>
+    </plurals>
 </resources>
