@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import nl.bvdm.rukoo.AppServices
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.account.AccountService
@@ -57,8 +58,8 @@ class RukooAccountModelTest {
     private val server = FakeAccountServer(codes = true)
     private val okhttp = OkHttpClient()
 
-    private fun device(name: String) =
-        AccountService(File(dir, name), PlainSecrets, server.url, name, OkHttpAccountHttp(okhttp), scope, devHosts = true, pushAfterMs = 60_000)
+    private fun device(name: String, at: String = server.url) =
+        AccountService(File(dir, name), PlainSecrets, at, name, OkHttpAccountHttp(okhttp), scope, devHosts = true, pushAfterMs = 60_000)
 
     private inner class Services(override val account: AccountService) : AppServices {
         override val mail: MailEngine = PreviewMailEngine()
@@ -175,6 +176,67 @@ class RukooAccountModelTest {
         gate.countDown()
         until { !model.ui.value.working }
         assertNull(model.ui.value.code)
+    }
+
+    // Waits for a code step to show, or for 2 seconds: an answer that should change nothing gets the time to arrive.
+    private suspend fun stepAfterAWhile(model: RukooAccountModel) =
+        withTimeoutOrNull(2_000) { while (model.ui.value.code == null) delay(20) }.let { model.ui.value.code }
+
+    @Test
+    fun `a sign-up code step goes when the server changes, also one still on its way`() = runBlocking<Unit> {
+        val a = FakeAccountServer(signups = "verified", codes = true)
+        val b = FakeAccountServer(signups = "verified", codes = true)
+        try {
+            val phone = device("servers", a.url)
+            phone.serverInfo()
+            val model = RukooAccountModel(Services(phone))
+            fun changeServer(url: String) {
+                var failure: String? = null
+                model.setServer(url, failed = { failure = it }) {}
+                assertNull(failure)
+            }
+            model.entered(Form.SIGN_UP)
+            model.fields["email"] = "alice@example.com"
+            model.sendCode(Form.SIGN_UP, "en")
+            until { model.ui.value.code != null && !model.ui.value.working }
+            assertEquals(1, a.calls.count { it.route == "POST /v1/email-code" })
+
+            // Back to Rukoo account, which keeps a sign-up's step, then another server and Create account again.
+            model.left(Form.SIGN_UP)
+            changeServer(b.url)
+            model.entered(Form.SIGN_UP)
+            assertNull(model.ui.value.code)
+
+            // The submit asks this server for a code, and its code signs up here.
+            model.fields["password"] = PASSWORD
+            model.fields["repeat"] = PASSWORD
+            model.fields["understand"] = "on"
+            model.submit(Form.SIGN_UP) {}
+            until { model.ui.value.code != null && !model.ui.value.working }
+            assertEquals(1, b.calls.count { it.route == "POST /v1/email-code" })
+
+            // A request on its way while the server changes: its answer doesn't show a step for the server before.
+            model.left(Form.SIGN_UP)
+            changeServer(a.url)
+            model.entered(Form.SIGN_UP)
+            assertNull(model.ui.value.code)
+            val gate = a.holdNext("POST /v1/email-code")
+            model.sendCode(Form.SIGN_UP, "en")
+            withTimeout(10_000) { while (a.calls.count { it.route == "POST /v1/email-code" } < 2) delay(10) }
+            changeServer(b.url)
+            gate.countDown()
+            assertNull(stepAfterAWhile(model))
+
+            model.sendCode(Form.SIGN_UP, "en")
+            until { model.ui.value.code != null && !model.ui.value.working }
+            model.fields["emailCode"] = b.codeFor("alice@example.com")!!
+            model.submit(Form.SIGN_UP) {}
+            until { phone.signedIn && !model.ui.value.working }
+            assertEquals(b.url, phone.server)
+        } finally {
+            a.close()
+            b.close()
+        }
     }
 
     private companion object {

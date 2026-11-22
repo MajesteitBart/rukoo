@@ -633,7 +633,7 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
     val carried by app.carriedJoin.collectAsStateWithLifecycle()
     // The language the app shows, which a code's email comes in.
     val lang = currentLocale().language
-    val code = ui.code?.takeIf { it.form == form }
+    val code = ui.code?.takeIf { it.form == form && it.server == status.server }
     fun submit() = model.submit(form, carried, lang) { text ->
         // A new account shows its recovery key first; the page goes back, and says so, once it is saved.
         if (form != RukooAccountModel.Form.SIGN_UP) {

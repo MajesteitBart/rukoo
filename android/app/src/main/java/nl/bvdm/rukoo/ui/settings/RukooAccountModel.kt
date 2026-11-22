@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -63,12 +64,19 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     )
 
     /**
-     * A code emailed for [form] to [email]: `signup` for a sign-up on a server that checks addresses, `unlock` for a
-     * sign-in or recovery of a locked account. [resent]: Send a new code went through. [inviteFailed]: the server
-     * turned down the typed invite code, so the code goes in its place. [notSent]: the server's limit held a new code
-     * back, and the step is there for the long code of an earlier email.
+     * A code emailed for [form] to [email] by [server]: `signup` for a sign-up on a server that checks addresses,
+     * `unlock` for a sign-in or recovery of a locked account. [resent]: Send a new code went through. [inviteFailed]:
+     * the server turned down the typed invite code, so the code goes in its place. [notSent]: the server's limit held a
+     * new code back, and the step is there for the long code of an earlier email.
      */
-    data class CodeStep(val form: Form, val email: String, val resent: Boolean = false, val inviteFailed: Boolean = false, val notSent: Boolean = false)
+    data class CodeStep(
+        val form: Form,
+        val email: String,
+        val server: String,
+        val resent: Boolean = false,
+        val inviteFailed: Boolean = false,
+        val notSent: Boolean = false,
+    )
 
     sealed interface FormError {
         /** An [AccountError] code; [attemptsLeft] for six digits that didn't match (`code_wrong`). */
@@ -115,6 +123,11 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                     _ui.update { u -> u.copy(details = null, detailsFailed = false) }
                     filled = null
                 }
+            }
+            // Another server: a code step or a request on its way for the one before goes. Its code works only there,
+            // and a sign-up step left for later would stop the sign-up here.
+            viewModelScope.launch {
+                acc.status.map { it.server }.distinctUntilChanged().drop(1).collect { dropCode() }
             }
         }
     }
@@ -171,14 +184,16 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     /**
      * A form page is on screen. Folding moves the page between the one- and two-pane layouts and composes it again,
      * which is the same visit: the code step, the Locked offer and a code on its way stay. A new visit starts without
-     * an error, and a code step or request of another form goes, with what was typed in it.
+     * an error, and a code step or request of another form goes, with what was typed in it, as does a step from a
+     * server this phone no longer uses.
      */
     fun entered(form: Form) {
         if (visiting == form) return
         visiting = form
         clearFormError()
         val step = _ui.value.code
-        if ((step != null && step.form != form) || (requesting != null && requesting != form)) dropCode()
+        val stale = step != null && (step.form != form || step.server != account?.server)
+        if (stale || (requesting != null && requesting != form)) dropCode()
     }
 
     /**
@@ -215,20 +230,21 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
         val email = fields["email"].orEmpty()
         val address = AccountKeys.normalizeEmail(email)
         val purpose = if (form == Form.SIGN_UP) "signup" else "unlock"
+        val at = acc.server
         val asked = ++codeRequests
         requesting = form
-        // An answer that comes after the address changed, or after a newer request, changes nothing.
-        fun current() = asked == codeRequests && AccountKeys.normalizeEmail(fields["email"].orEmpty()) == address
+        // An answer that comes after the address or the server changed, or after a newer request, changes nothing.
+        fun current() = asked == codeRequests && acc.server == at && AccountKeys.normalizeEmail(fields["email"].orEmpty()) == address
         _ui.update { it.copy(working = true, formError = null) }
         viewModelScope.launch {
             try {
                 val sent = acc.requestCode(email, purpose, lang)
                 if (!current()) return@launch
                 val was = _ui.value.code
-                val again = was != null && was.form == form && was.email == sent.email
+                val again = was != null && was.form == form && was.email == sent.email && was.server == at
                 _ui.update {
                     it.copy(
-                        code = CodeStep(form, sent.email, resent = again, inviteFailed = inviteFailed && !again),
+                        code = CodeStep(form, sent.email, at, resent = again, inviteFailed = inviteFailed && !again),
                         resendAt = System.currentTimeMillis() + CODE_GAP * 1000,
                     )
                 }
@@ -243,7 +259,8 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                     // of one a stranger asked for to use up the address's codes (server/PROTOCOL.md, POST /v1/email-code).
                     val wait = err.retryAfter ?: CODE_GAP
                     _ui.update {
-                        val step = it.code?.takeIf { s -> s.form == form && s.email == address } ?: CodeStep(form, address, notSent = true)
+                        val step = it.code?.takeIf { s -> s.form == form && s.email == address && s.server == at }
+                            ?: CodeStep(form, address, at, notSent = true)
                         it.copy(code = step, formError = FormError.Wait(wait), resendAt = System.currentTimeMillis() + wait * 1000)
                     }
                 } else {
@@ -296,7 +313,8 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
         val invite = if (form == Form.SIGN_UP) inviteInput(f["invite"].orEmpty(), servers, devHosts) else null
         if (invite is InviteInput.OtherServer) return stop(FormError.OtherServer(invite.host))
         val carried = carriedLink?.takeIf { it.server in servers && form != Form.RECOVER }
-        val shown = _ui.value.code?.takeIf { it.form == form }
+        val at = acc.server
+        val shown = _ui.value.code?.takeIf { it.form == form && it.server == at }
         val emailCode = if (shown != null) f["emailCode"].orEmpty().trim() else ""
         // The operator's invite code needs no emailed code, so an empty code field doesn't stop it.
         val invited = invite is InviteInput.Code && invite.code.isNotBlank()
@@ -355,7 +373,8 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
             } finally {
                 _ui.update { it.copy(working = false) }
             }
-            codeNext?.let { inviteFailed -> sendCode(form, lang, inviteFailed) }
+            // A code from the server the sign-up went to, not from one chosen since.
+            if (acc.server == at) codeNext?.let { inviteFailed -> sendCode(form, lang, inviteFailed) }
         }
     }
 
