@@ -249,8 +249,8 @@ test('a locked account recovers with an unlock code sent with both steps', async
 // Rukoo's former default address and today's, both reaching the test server, as account.test.js release() has them.
 const OLD_DEFAULT = 'https://rukoo-account.bvdm.ai';
 const NEW_DEFAULT = 'https://rukoo.io';
-// down: addresses that don't answer, as a retired domain wouldn't.
-function release(t, srv, defaultServer, dir, down = new Set()) {
+// down: addresses that don't answer, as a retired domain wouldn't. broken: addresses that answer 503.
+function release(t, srv, defaultServer, dir, down = new Set(), broken = new Set()) {
   const { request, AccountError } = require('../src/main/account/client');
   const acc = new AccountService({
     dataDir: dir,
@@ -259,7 +259,11 @@ function release(t, srv, defaultServer, dir, down = new Set()) {
     deviceName: 'desk',
     platform: 'linux',
     request: (server, ...rest) =>
-      down.has(server) ? Promise.reject(new AccountError('network', 0, 'unreachable')) : request([OLD_DEFAULT, NEW_DEFAULT].includes(server) ? srv.url : server, ...rest)
+      down.has(server)
+        ? Promise.reject(new AccountError('network', 0, 'unreachable'))
+        : broken.has(server)
+          ? Promise.reject(new AccountError('server', 503, 'unavailable'))
+          : request([OLD_DEFAULT, NEW_DEFAULT].includes(server) ? srv.url : server, ...rest)
   }).init();
   t.after(() => acc.close());
   return acc;
@@ -350,7 +354,7 @@ test('with an unlock code, the default is tried when the former address fails be
   assert.equal(after.status().server, NEW_DEFAULT);
 });
 
-test('with an unlock code, a former address that does not answer says so when the default refuses the password', async (t) => {
+test("with an unlock code, a former address that does not answer leaves the default's answer, a wrong password too", async (t) => {
   const srv = await server(t, { signups: 'open', codes: true });
   const dir = tmpDir(t);
   const before = release(t, srv, OLD_DEFAULT, dir);
@@ -361,9 +365,10 @@ test('with an unlock code, a former address that does not answer says so when th
   await after.signOut();
   srv.lock('gone@example.com');
   await after.requestCode({ email: 'gone@example.com', purpose: 'unlock' });
-  // The default is tried too, but the account lives at the former address, so its wrong password isn't the answer.
+  // The former address goes first for this account and doesn't answer, so it can't sign in there. The default
+  // refuses the password, and says so: a network error would have each retry spend a try at the default.
   const logins = routes(srv, 'POST /v1/login').length;
-  await assert.rejects(after.signIn({ email: 'gone@example.com', password: PASSWORD, emailCode: srv.codeFor('gone@example.com') }), fails('network'));
+  await assert.rejects(after.signIn({ email: 'gone@example.com', password: PASSWORD, emailCode: srv.codeFor('gone@example.com') }), fails('unauthorized'));
   assert.equal(routes(srv, 'POST /v1/login').length, logins + 1, 'the default was tried');
   // A wrong code stops at the first address, as the default would refuse it the same way.
   down.clear();
@@ -371,6 +376,44 @@ test('with an unlock code, a former address that does not answer says so when th
   const tried = routes(srv, 'POST /v1/login').length;
   await assert.rejects(after.signIn({ email: 'gone@example.com', password: PASSWORD, emailCode: wrong }), fails('code_wrong'));
   assert.equal(routes(srv, 'POST /v1/login').length, tried + 1);
+});
+
+test("with the default tried first, a former address that does not answer leaves the default's wrong password", async (t) => {
+  const srv = await server(t, { signups: 'open', codes: true });
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'first@example.com', password: PASSWORD });
+  before.close();
+  const down = new Set([OLD_DEFAULT]);
+  const after = release(t, srv, NEW_DEFAULT, dir, down);
+  await after.signOut();
+  // Another account, made at today's default: the default goes first for it, and the former address after.
+  const other = release(t, srv, NEW_DEFAULT, tmpDir(t));
+  await other.signUp({ email: 'elsewhere@example.com', password: PASSWORD });
+  await other.signOut();
+  srv.lock('elsewhere@example.com');
+  await after.requestCode({ email: 'elsewhere@example.com', purpose: 'unlock' });
+  const code = srv.codeFor('elsewhere@example.com');
+  await assert.rejects(after.signIn({ email: 'elsewhere@example.com', password: 'not the password at all', emailCode: code }), fails('unauthorized'));
+  await assert.rejects(after.signIn({ email: 'elsewhere@example.com', password: 'not the password at all' }), fails('locked'));
+  await after.signIn({ email: 'elsewhere@example.com', password: PASSWORD, emailCode: code });
+  assert.equal(after.status().server, NEW_DEFAULT);
+});
+
+test('with an unlock code, a former address that answers with an error says so over the default refusing the password', async (t) => {
+  const srv = await server(t, { signups: 'open', codes: true });
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'busy@example.com', password: PASSWORD });
+  before.close();
+  const broken = new Set();
+  const after = release(t, srv, NEW_DEFAULT, dir, new Set(), broken);
+  await after.signOut();
+  srv.lock('busy@example.com');
+  await after.requestCode({ email: 'busy@example.com', purpose: 'unlock' });
+  // The account lives at the former address, which answers: its error says more than the default's wrong password.
+  broken.add(OLD_DEFAULT);
+  await assert.rejects(after.signIn({ email: 'busy@example.com', password: PASSWORD, emailCode: srv.codeFor('busy@example.com') }), fails('server'));
 });
 
 test('an invite code that has been used up asks for an emailed code, and does not stop one', async (t) => {

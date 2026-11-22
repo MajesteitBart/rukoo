@@ -499,8 +499,8 @@ class AccountService extends EventEmitter {
     // on the address they were asked at. Each wrong proof costs the code a try, so for the account that was signed in
     // at the former address (formerEmail) that address goes first, and its right password doesn't spend the code's
     // tries at the default first. The default comes after it unless the code or another sign-in stopped the attempt
-    // there: the former address may not answer at all any more. Otherwise the second address is tried only after a
-    // wrong password at the first.
+    // there: the former address may not answer at all any more, and then the default's answer is the one shown, also
+    // a wrong password. Otherwise the second address is tried only after a wrong password at the first.
     const formerFirst = Boolean(former && emailCode && this.state.formerEmail === address);
     const hosts = !former ? [at] : formerFirst ? [former, at] : [at, former];
     let first = null;
@@ -521,9 +521,13 @@ class AccountService extends EventEmitter {
           continue;
         }
         // The second address took the password, but another sign-in got here first, or the code didn't do there:
-        // that one says why. Otherwise the first answer does: a former address that didn't answer, for an account
-        // that lives there, says more than the default's wrong password.
-        throw err && (err.code === 'signed_in' || (emailCode && /^code_|^locked$/.test(err.code))) ? err : first;
+        // that one says why. So does the default after a former address that didn't answer (network, also a
+        // timeout): that address can't sign anyone in, and its silence doesn't tell where the account lives, while a
+        // wrong password read as a network error would have each retry spend one of the code's tries at the default.
+        // Otherwise the first answer does: a former address that answered, for an account that lives there, says
+        // more than the default's wrong password.
+        const second = err && (err.code === 'signed_in' || (emailCode && /^code_|^locked$/.test(err.code)) || (formerFirst && first.code === 'network'));
+        throw second ? err : first;
       }
     }
     throw first;
