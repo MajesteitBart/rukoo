@@ -10,7 +10,7 @@ import { hmac, sha256, toBase64url, utf8 } from '../src/bytes.js';
 import { lockObject, registryObject } from '../src/config.js';
 import worker from '../src/index.js';
 import { lockHash as lockKey } from '../src/lock.js';
-import { registrableDomain } from '../src/signups.js';
+import { PUBLIC_PROVIDERS, exemptDomains, registrableDomain } from '../src/signups.js';
 import { FakeResend, MAIL_VARS, installFakeResend } from './fixtures/fake-resend.js';
 import { host } from './booking-helpers.js';
 import { KDF, accountStub, call, device, key, newEmail, push, random, randomIp, recordId, salt, sealed, signup, withVars } from './helpers.js';
@@ -128,47 +128,92 @@ describe('the limit on verified sign-ups per domain', () => {
     // A name that isn't a public suffix is a domain someone owns, so its subdomains count as that one domain.
     expect(registrableDomain('a@a.biz.nl')).toBe('biz.nl');
     expect(registrableDomain('b@b.biz.nl')).toBe('biz.nl');
-    // A suffix the list doesn't know pools its registrants in one count rather than splitting anyone's domain.
+    // A suffix the list doesn't know pools its registrants in one count.
     expect(registrableDomain('a@school.pvt.k12.ma.us')).toBe('ma.us');
+    // Under a country domain, the second labels registries keep for registrations count as public suffixes, so one
+    // registrant there can't use up the day for everyone under it.
+    expect(registrableDomain('a@shop.co.ae')).toBe('shop.co.ae');
+    expect(registrableDomain('b@mail.other.co.ae')).toBe('other.co.ae');
+    expect(registrableDomain('a@firm.com.cy')).toBe('firm.com.cy');
+    expect(registrableDomain('a@agency.gouv.fr')).toBe('agency.gouv.fr');
+    expect(registrableDomain('a@uni.edu.pl')).toBe('uni.edu.pl');
+    // One organization's own subdomains still count together.
+    expect(registrableDomain('a@tbs-sct.gc.ca')).toBe('gc.ca');
+    // A domain that isn't a host name has no registrable domain, so its spellings can't each count apart. A soft
+    // hyphen is no such case: host names leave it out, so the address counts as the domain without it.
+    expect(registrableDomain('a@exa‌mple.com')).toBeNull();
+    expect(registrableDomain('a@exa‍mple.com')).toBeNull();
+    expect(registrableDomain('a@[1.2.3.4]')).toBeNull();
+    expect(registrableDomain('a@exa­mple.com')).toBe('example.com');
+  });
+
+  it('lists every large provider as the registrable domain it counts under', () => {
+    for (const provider of PUBLIC_PROVIDERS) expect(registrableDomain(`x@${provider}`), provider).toBe(provider);
+    for (const provider of ['outlook.fr', 't-online.de', 'orange.fr', 'libero.it', 'yandex.ru', 'mail.ru', 'qq.com', 'gmx.at', 'laposte.net']) {
+      expect(PUBLIC_PROVIDERS.has(provider), provider).toBe(true);
+    }
+    for (const alias of ['duck.com', 'fastmail.com', 'passmail.net', 'mozmail.com', 'simplelogin.com']) expect(PUBLIC_PROVIDERS.has(alias), alias).toBe(false);
   });
 
   it('lets a domain make DOMAIN_SIGNUPS_PER_DAY accounts with emailed codes a day, its subdomains included', async () => {
     freshDay();
-    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '2' };
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5' };
     const domain = newDomain();
     // A code asked for before the domain made its accounts.
     const early = await codeFor(`c@${domain}`, 'signup', vars);
-    expect((await verifiedAccount(`a@${domain}`, vars)).status).toBe(201);
-    expect((await verifiedAccount(`b@mail.${domain}`, vars)).status).toBe(201);
-
-    // A third address gets no code, with the same answer whether or not it has an account.
-    const asked = await askCode(`d@other.${domain}`, 'signup', vars);
-    expect(asked.status).toBe(429);
-    expect(asked.body).toMatchObject({ error: 'rate_limited', limit: 'domain' });
-    expect(Number(asked.headers.get('retry-after'))).toBe(14 * 60 * 60);
-    expect(resend.to(`d@other.${domain}`)).toHaveLength(0);
-    expect((await askCode(`a@${domain}`, 'signup', vars)).body).toMatchObject({ error: 'rate_limited', limit: 'domain' });
+    for (let i = 0; i < 5; i++) expect((await verifiedAccount(`a${i}@${i % 2 ? 'mail.' : ''}${domain}`, vars)).status).toBe(201);
 
     // The code from before makes no account today, and stays for tomorrow.
     const refused = await post('/v1/signup', { ...person(`c@${domain}`), emailCode: { challenge: early.challenge, code: early.code } }, vars);
     expect(refused.status).toBe(429);
     expect(refused.body).toMatchObject({ error: 'rate_limited', limit: 'domain' });
+    expect(Number(refused.headers.get('retry-after'))).toBe(14 * 60 * 60);
 
     // Other domains, and the large providers, aren't held back.
     expect((await verifiedAccount(`a@${newDomain()}`, vars)).status).toBe(201);
-    for (let i = 0; i < 3; i++) {
-      const name = newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
-      expect((await verifiedAccount(`${name}@gmail.com`, vars)).status).toBe(201);
-    }
+    for (let i = 0; i < 3; i++) expect((await verifiedAccount(`${boxName()}@gmail.com`, vars)).status).toBe(201);
 
     // The next day the domain starts again, and the long code from yesterday's email still works.
     later(14 * HOUR + MINUTE);
     expect((await post('/v1/signup', { ...person(`c@${domain}`), emailCode: { token: early.token } }, vars)).status).toBe(201);
   });
 
+  it('answers a code request at a domain that made its accounts as any other request, and sends nothing', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5' };
+    const full = newDomain();
+    for (let i = 0; i < 5; i++) expect((await verifiedAccount(`a${i}@${full}`, vars)).status).toBe(201);
+    later(MINUTE + 1000);
+    const open = newDomain();
+    const answers = {};
+    for (const domain of [full, open]) {
+      const email = `d@${domain}`;
+      const first = await askCode(email, 'signup', vars);
+      // Asking again within the minute, and six wrong digits for the challenge, answer as anywhere.
+      const again = await askCode(email, 'signup', vars);
+      const wrong = await post('/v1/signup', { ...person(email), emailCode: { challenge: first.body.challenge, code: '000000' } }, vars);
+      answers[domain] = {
+        status: first.status,
+        keys: Object.keys(first.body).sort(),
+        expiresIn: first.body.expiresIn,
+        again: [again.status, again.body.error, again.body.limit],
+        wrong: [wrong.status, wrong.body.error, wrong.body.attemptsLeft]
+      };
+      expect(resend.to(email)).toHaveLength(domain === full ? 0 : 1);
+      // The code there is kept only for its 10 minutes, as one whose email didn't go.
+      expect(await keptPast(first.body.challenge)).toBe(domain === full ? 0 : DAY - 10 * MINUTE);
+    }
+    expect(answers[full]).toEqual(answers[open]);
+    expect(answers[full].status).toBe(202);
+    expect(answers[full].again[0]).toBe(429);
+    // An address with an account there gets no note either.
+    expect((await askCode(`a0@${full}`, 'signup', vars)).status).toBe(202);
+    expect(resend.to(`a0@${full}`)).toHaveLength(1);
+  });
+
   it('counts only accounts that were made, so asking for codes uses up no domain', async () => {
     freshDay();
-    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '2' };
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5' };
     const domain = newDomain();
     // A stranger asks for codes for many addresses at someone else's domain, and can't read them.
     for (let i = 0; i < 6; i++) expect((await askCode(`x${i}@${domain}`, 'signup', vars)).status).toBe(202);
@@ -178,22 +223,79 @@ describe('the limit on verified sign-ups per domain', () => {
     expect((await post('/v1/signup', { ...person(`taken@${domain}`), invite: 'first-code' }, vars)).status).toBe(201);
     const late = await post('/v1/signup', { ...person(`taken@${domain}`), emailCode: { token: codes.token } }, vars);
     expect(late.status).toBe(409);
-    expect((await verifiedAccount(`a@${domain}`, vars)).status).toBe(201);
-    expect((await verifiedAccount(`b@${domain}`, vars)).status).toBe(201);
-    expect((await askCode(`c@${domain}`, 'signup', vars)).status).toBe(429);
+    for (let i = 0; i < 5; i++) expect((await verifiedAccount(`a${i}@${domain}`, vars)).status).toBe(201);
+    expect((await askCode(`c@${domain}`, 'signup', vars)).status).toBe(202);
+    expect(resend.to(`c@${domain}`)).toHaveLength(0);
   });
 
-  it('leaves invite codes out of the count', async () => {
+  it('leaves invite codes out of the count, and counts a limit under 5 as 5', async () => {
     freshDay();
     const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '1' };
     const domain = newDomain();
     for (let i = 0; i < 3; i++) {
       expect((await post('/v1/signup', { ...person(`i${i}@${domain}`), invite: 'first-code' }, vars)).status).toBe(201);
     }
-    expect((await verifiedAccount(`a@${domain}`, vars)).status).toBe(201);
-    expect((await askCode(`b@${domain}`, 'signup', vars)).status).toBe(429);
+    for (let i = 0; i < 5; i++) expect((await verifiedAccount(`a${i}@${domain}`, vars)).status).toBe(201);
+    expect((await askCode(`b@${domain}`, 'signup', vars)).status).toBe(202);
+    expect(resend.to(`b@${domain}`)).toHaveLength(0);
     // 0 turns the limit off.
     expect((await verifiedAccount(`c@${domain}`, { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '0' })).status).toBe(201);
+  });
+
+  it('leaves the large free providers and the domains in SIGNUP_DOMAINS_EXEMPT out of the count', async () => {
+    freshDay();
+    const domain = newDomain();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5', SIGNUP_DOMAINS_EXEMPT: ` other.test , Mail.${domain.toUpperCase()}.` };
+    expect(exemptDomains(vars)).toEqual(new Set(['other.test', domain]));
+    // Two mailboxes at a free provider can't use up its day for everyone else there.
+    for (let i = 0; i < 6; i++) expect((await verifiedAccount(`${boxName()}@outlook.fr`, vars)).status).toBe(201);
+    for (let i = 0; i < 6; i++) expect((await verifiedAccount(`${boxName()}@t-online.de`, vars)).status).toBe(201);
+    // An exempt domain counts as its registrable domain, with every subdomain.
+    for (let i = 0; i < 6; i++) expect((await verifiedAccount(`a${i}@${i % 2 ? 'x.' : ''}${domain}`, vars)).status).toBe(201);
+  });
+
+  it('names a domain that made its accounts for the day in the log, and to the operator once a day', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5', OPERATOR_EMAIL: OPS, ALERT_SIGNUPS_PER_HOUR: '0', MAX_ACCOUNTS: '0' };
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const capped = [];
+      for (const day of [0, 0, 1]) {
+        if (day) later(DAY);
+        const domain = newDomain();
+        capped.push(domain);
+        for (let i = 0; i < 4; i++) expect((await verifiedAccount(`a${i}@${domain}`, vars)).status).toBe(201);
+        expect(JSON.stringify(errors.mock.calls)).not.toContain(domain);
+        expect((await verifiedAccount(`a4@sub.${domain}`, vars)).status).toBe(201);
+        expect(JSON.stringify(errors.mock.calls)).toContain(`at ${domain} reached DOMAIN_SIGNUPS_PER_DAY (5) today`);
+      }
+      const mails = resend.to(OPS);
+      // The first domain of each day goes to the operator; the second of the day is in the log only.
+      expect(mails).toHaveLength(2);
+      expect(mails[0].text).toContain(`The addresses at ${capped[0]} made 5 accounts`);
+      expect(mails[0].text).toContain('SIGNUP_DOMAINS_EXEMPT');
+      expect(mails[1].text).toContain(`The addresses at ${capped[2]} made 5 accounts`);
+      expect(JSON.stringify(mails)).not.toContain(capped[1]);
+      expect(JSON.stringify(mails)).not.toContain(`a4@sub.${capped[0]}`);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('turns away an address for a new account whose domain isn’t a host name, or that holds invisible characters', async () => {
+    const domain = newDomain();
+    const codes = await codeFor(`a@${domain}`);
+    // Invisible characters, which a host name drops or refuses, and a domain that is no host name at all: each would
+    // otherwise count apart from the domain it looks like.
+    for (const email of [`a@exa‌mple-${domain}`, `a­@${domain}`, `a@${domain.replace('.', '‍.')}`, `a@ex%zz-${domain}`]) {
+      const asked = await askCode(email);
+      expect(asked.status, email).toBe(400);
+      expect(asked.body.error).toBe('invalid');
+      expect((await post('/v1/signup', { ...person(email), emailCode: { token: codes.token } })).status, email).toBe(400);
+    }
+    // Invite codes don't count domains, but take no invisible characters either.
+    expect((await post('/v1/signup', { ...person(`b‌@${domain}`), invite: 'first-code' })).status).toBe(400);
+    expect(resend.sent).toHaveLength(1);
   });
 
   it('keeps only a hash of the domain, for the day', async () => {

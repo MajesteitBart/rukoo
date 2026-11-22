@@ -49,9 +49,11 @@
     "MAIL_FROM": "",
     "EMAIL_CODES_PER_HOUR": 100,
     // Limits on verified sign-ups and unlock emails (README.md, "Limits on verified sign-ups"): accounts one domain may
-    // make with an emailed code in a day, large mail providers not counted, and unlock emails a day to addresses that
-    // still have a long code to use. 0 for no limit.
+    // make with an emailed code in a day (5 at least), large mail providers not counted, and unlock emails a day to
+    // addresses that still have a long code to use. 0 for no limit. SIGNUP_DOMAINS_EXEMPT: more domains, comma-separated,
+    // whose sign-ups aren't counted, such as a mail provider the built-in list misses.
     "DOMAIN_SIGNUPS_PER_DAY": 20,
+    "SIGNUP_DOMAINS_EXEMPT": "",
     "UNLOCK_EMAILS_PER_DAY": 1000,
     // An address that hears, once a day at most, when sign-ups with an emailed code in an hour reach
     // ALERT_SIGNUPS_PER_HOUR or the accounts reach 80% of MAX_ACCOUNTS. It goes the way the codes go. "" sends nothing.
@@ -197,6 +199,7 @@
         "MAIL_FROM": "Rukoo <account@bvdm.ai>",
         "EMAIL_CODES_PER_HOUR": 100,
         "DOMAIN_SIGNUPS_PER_DAY": 20,
+        "SIGNUP_DOMAINS_EXEMPT": "",
         "UNLOCK_EMAILS_PER_DAY": 1000,
         // OPERATOR_EMAIL and EXPIRE_UNUSED_DAYS go in with the switch to "verified" (README.md, "The server Rukoo
         // uses"). Until then nobody is mailed, and no account is deleted on its own.

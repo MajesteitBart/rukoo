@@ -39,7 +39,7 @@ import { meet } from './meet.js';
 import * as owner from './owner.js';
 import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
-import { DOMAIN_LIMIT, checkAlert, untilTomorrow, verifiedSignup } from './signups.js';
+import { DOMAIN_LIMIT, checkAlert, registrableDomain, untilTomorrow, verifiedSignup } from './signups.js';
 import { inviteSignups, signupInvite, workspaceInfo, workspaces } from './workspaces.js';
 
 export { Account } from './account.js';
@@ -236,7 +236,7 @@ async function signup(request, env, ctx) {
     );
   }
   const fields = {
-    email: input.email(body.email),
+    email: input.newAddress(input.email(body.email)),
     kdf: input.kdf(body.kdf),
     salt: input.key(body.salt, 'salt', 16),
     authKey: input.key(body.authKey, 'authKey', 32),
@@ -248,17 +248,19 @@ async function signup(request, env, ctx) {
   // Without the operator's invite code, a verified server needs a code sent to the address (codes.js), also with a
   // workspace invitation: anyone with an account can make those, so one shows nothing about the address. The code is
   // held for this sign-up alone, used up once the account exists, and given back when the sign-up fails.
-  const code = mode === 'verified' && (!invite || workspaceInvite) ? await signupCode(env, fields.email, body.emailCode) : null;
+  const needsCode = mode === 'verified' && (!invite || workspaceInvite);
+  // A sign-up with an emailed code counts toward its domain's accounts of the day (signups.js).
+  const verified = needsCode ? await verifiedSignup(env, fields.email) : null;
+  const code = needsCode ? await signupCode(env, fields.email, body.emailCode) : null;
   let result;
   try {
-    // A sign-up with an emailed code counts toward its domain's accounts of the day (signups.js).
-    const verified = code ? await verifiedSignup(env, fields.email) : null;
     result = await makeAccount(env, fields, invite, uses, workspaceInvite, verified);
   } finally {
     if (code) await settleCode(env, code, result?.status === 201 ? 'used' : 'keep');
   }
-  // After the answer: the account is made, and nothing the alert does may stand between it and its device.
-  if (result.status === 201) checkAlert(env, ctx, new URL(request.url).host);
+  // After the answer: the account is made, and nothing the alert does may stand between it and its device. capped:
+  // this sign-up made its domain's last account of the day, which the operator hears of by name.
+  if (result.status === 201) checkAlert(env, ctx, new URL(request.url).host, result.capped ? registrableDomain(fields.email) : null);
   return send(result);
 }
 
@@ -268,6 +270,7 @@ async function makeAccount(env, fields, invite, uses, workspaceInvite, verified)
   // counted: the hour and day the place counted in, so giving it back takes it from the same ones.
   const registry = registryObject(env);
   let counted = null;
+  let capped = false;
   if (registry) {
     const place = await registry.reserve(maxAccounts(env), invite, uses, workspaceInvite, verified);
     if (place.result === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
@@ -276,6 +279,7 @@ async function makeAccount(env, fields, invite, uses, workspaceInvite, verified)
       throw new HttpError(429, 'rate_limited', DOMAIN_LIMIT, { 'retry-after': String(untilTomorrow()) }, { limit: 'domain' });
     }
     counted = place.counted;
+    capped = place.capped === true;
   }
   let result;
   try {
@@ -283,7 +287,8 @@ async function makeAccount(env, fields, invite, uses, workspaceInvite, verified)
   } finally {
     if (registry && (!result || result.status !== 201)) await registry.release(invite, verified, counted);
   }
-  return result;
+  // send() leaves capped out of the answer.
+  return { ...result, capped };
 }
 
 async function login(request, env) {

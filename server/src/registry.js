@@ -59,7 +59,8 @@ const CODE_TABLES = `
 // signup_domains: how many accounts were made today with an emailed code at a domain (signups.js), by the hash of the
 // domain, for the day that started at day * DAY. tallies: counts for the whole server in the period that started at
 // slot times the period: 'verified', sign-ups with an emailed code this hour; 'unlock', counted unlock emails today;
-// 'alert', 1 for the day the operator was last mailed (signups.js). unlock_mail: when counted unlock
+// 'signup mail', the emails sign-up code requests sent today (chargeMail); 'alert' and 'alert domain', 1 for the day
+// the operator was last mailed about the counts and about a domain (signups.js). unlock_mail: when counted unlock
 // emails went out to a mailbox in the last day, oldest first, by the hash of the mailbox (codes.js), and, under
 // "free\n" and the hash of an address, when the free ones went to that address (chargeUnlock). locks: the lock on
 // sign-ins and recovery for an address (lock.js), by the hash of the address: the wrong attempts since failedAt, the
@@ -128,16 +129,17 @@ export class Registry extends DurableObject {
     this.sql.exec('UPDATE codes SET sent = 1 WHERE challenge = ?', challenge);
   }
 
-  // Keeps a new code, unless the server is full (for a sign-up code, max > 0), the address's domain made its accounts
-  // for today (domain, for a sign-up code) or the address had too many of this purpose: { result } is 'ok', 'full',
-  // 'domain' or 'wait', with retryAfter in seconds for 'domain' and 'wait'. entry holds the hashes codes.js made; the
-  // limits count under entry.sends. rules: ttl, how long the six digits work; tokenTtl, how long the long code works;
-  // gap, hourly and daily, the limits per address and purpose; domain, { domain, cap } from signups.js or null.
+  // Keeps a new code, unless the server is full (for a sign-up code, max > 0) or the address had too many of this
+  // purpose: { result } is 'ok', 'full' or 'wait', with retryAfter in seconds for 'wait'. entry holds the hashes
+  // codes.js made; the limits count under entry.sends. rules: ttl, how long the six digits work; tokenTtl, how long the
+  // long code works; gap, hourly and daily, the limits per address and purpose; domain, { domain, cap } from
+  // signups.js or null. A sign-up code for an address whose domain made its accounts for today would make no account:
+  // it is kept and counted as any other, so its answers and the address's limits stay the same as anywhere, but only
+  // for its 10 minutes, and 'ok' comes with silent: true, so no email goes (codes.js, requestCode).
   async issueCode(entry, { ttl, tokenTtl, gap, hourly, daily, max = 0, domain = null }) {
     const now = Date.now();
     this.#purgeCodes(now);
     if (max > 0 && this.count() >= max) return { result: 'full' };
-    if (this.#domainFull(domain, now)) return { result: 'domain', retryAfter: untilTomorrow(now) };
     const row = this.sql
       .exec('SELECT times FROM code_sends WHERE address = ? AND purpose = ?', entry.sends, entry.purpose)
       .toArray()[0];
@@ -148,6 +150,8 @@ export class Registry extends DurableObject {
     if (hour.length >= hourly) wait = Math.max(wait, hour[hour.length - hourly] + HOUR - now);
     if (times.length >= daily) wait = Math.max(wait, times[times.length - daily] + DAY - now);
     if (wait > 0) return { result: 'wait', retryAfter: Math.ceil(wait / 1000) };
+    const silent = this.#domainFull(domain, now);
+    const until = silent ? now + ttl : now + tokenTtl;
     times.push(now);
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
@@ -158,7 +162,7 @@ export class Registry extends DurableObject {
         entry.purpose,
         entry.code,
         now + ttl,
-        now + tokenTtl
+        until
       );
       this.sql.exec(
         `INSERT INTO code_sends (address, purpose, times, until) VALUES (?, ?, ?, ?)
@@ -169,8 +173,8 @@ export class Registry extends DurableObject {
         now + DAY
       );
     });
-    await this.#armCodes(now + tokenTtl);
-    return { result: 'ok' };
+    await this.#armCodes(until);
+    return silent ? { result: 'ok', silent: true } : { result: 'ok' };
   }
 
   // Counts one email of a purpose against perHour emails an hour for the whole server: the hour it counts in, or null
@@ -295,40 +299,50 @@ export class Registry extends DurableObject {
     return row?.day === Math.floor(now / DAY) && row.count >= domain.cap;
   }
 
-  // Counts an account made at a domain on a day, or gives one back (step -1) to that day.
+  // Counts an account made at a domain on a day, or gives one back (step -1) to that day. Returns the day's count after
+  // a step up.
   #countDomain(domain, day, step) {
     if (step > 0) {
-      this.sql.exec(
-        `INSERT INTO signup_domains (domain, day, count) VALUES (?, ?, 1)
-         ON CONFLICT (domain) DO UPDATE SET
-           count = CASE WHEN signup_domains.day = excluded.day THEN signup_domains.count + 1 ELSE 1 END, day = excluded.day`,
-        domain,
-        day
-      );
-    } else {
-      this.sql.exec('UPDATE signup_domains SET count = MAX(0, count - 1) WHERE domain = ? AND day = ?', domain, day);
+      return this.sql
+        .exec(
+          `INSERT INTO signup_domains (domain, day, count) VALUES (?, ?, 1)
+           ON CONFLICT (domain) DO UPDATE SET
+             count = CASE WHEN signup_domains.day = excluded.day THEN signup_domains.count + 1 ELSE 1 END, day = excluded.day
+           RETURNING count`,
+          domain,
+          day
+        )
+        .one().count;
     }
+    this.sql.exec('UPDATE signup_domains SET count = MAX(0, count - 1) WHERE domain = ? AND day = ?', domain, day);
+    return null;
   }
 
-  // Whether to mail the operator now (signups.js), after a sign-up: 'signups' when this hour's sign-ups with an
-  // emailed code reached perHour, 'accounts' when the accounts reached 80% of max, else null. At most one a day:
-  // the reason it returns claims today's email, which alertFailed gives back when Resend refused it.
-  async alertDue({ perHour, max }) {
+  // Whether to mail the operator now (signups.js), after a sign-up: { reason, domain, signups, accounts, day } or null.
+  // reason is 'signups' when this hour's sign-ups with an emailed code reached perHour, 'accounts' when the accounts
+  // reached 80% of max, else null; domain is true when this sign-up completed its domain's accounts for the day
+  // (capped). At most one email a day about the counts and one about a domain: what this returns claims today's, and
+  // alertFailed gives it back when Resend refused the email.
+  async alertDue({ perHour, max, capped = false }) {
     const now = Date.now();
     const day = Math.floor(now / DAY);
-    if (this.#tally('alert', DAY, now) > 0) return null;
     const signups = this.#tally('verified', HOUR, now);
     const accounts = this.count();
     let reason = null;
-    if (perHour > 0 && signups >= perHour) reason = 'signups';
-    else if (max > 0 && accounts * 5 >= max * 4) reason = 'accounts';
-    if (!reason) return null;
-    this.#charge('alert', DAY, 0, now);
-    return { reason, signups, accounts, day };
+    if (this.#tally('alert', DAY, now) === 0) {
+      if (perHour > 0 && signups >= perHour) reason = 'signups';
+      else if (max > 0 && accounts * 5 >= max * 4) reason = 'accounts';
+    }
+    const domain = capped && this.#tally('alert domain', DAY, now) === 0;
+    if (!reason && !domain) return null;
+    if (reason) this.#charge('alert', DAY, 0, now);
+    if (domain) this.#charge('alert domain', DAY, 0, now);
+    return { reason, domain, signups, accounts, day };
   }
 
-  async alertFailed(day) {
-    this.#refund('alert', day);
+  async alertFailed({ reason, domain, day }) {
+    if (reason) this.#refund('alert', day);
+    if (domain) this.#refund('alert domain', day);
   }
 
   // One attempt to sign in or recover with an address (lock.js), let in before the password or recovery key is
@@ -624,7 +638,8 @@ export class Registry extends DurableObject {
   // 'domain'. max 0 means no cap; uses 0 means a code works any number of times. usedFirst: a used code says so even
   // when the server is full, as a workspace invitation that made its account must (WORKSPACES.md, Signing up with an
   // invitation). verified: { domain, cap } from signups.js for a sign-up with an emailed code, which counts toward
-  // this hour's sign-ups and, with a domain, toward its domain's accounts of the day ('domain' once cap is reached).
+  // this hour's sign-ups and, with a domain, toward its domain's accounts of the day ('domain' once cap is reached). An
+  // 'ok' says capped: true when this sign-up made the domain's count reach cap, which the operator hears of.
   async reserve(max, code = null, uses = 0, usedFirst = false, verified = null) {
     const used = () => code && uses > 0 && this.used(code) >= uses;
     if (usedFirst && used()) return { result: 'used' };
@@ -636,14 +651,15 @@ export class Registry extends DurableObject {
     if (code) this.sql.exec('INSERT INTO invites (code, used) VALUES (?, 1) ON CONFLICT (code) DO UPDATE SET used = used + 1', code);
     // The hour and day the sign-up counted in, which release takes it from again, also when the clock has moved on.
     const counted = verified ? { hour: Math.floor(now / HOUR), day: Math.floor(now / DAY) } : null;
+    let capped = false;
     if (verified) {
       this.#charge('verified', HOUR, 0, now);
       if (verified.domain && verified.cap > 0) {
-        this.#countDomain(verified.domain, counted.day, 1);
+        capped = this.#countDomain(verified.domain, counted.day, 1) >= verified.cap;
         await this.#armCodes((counted.day + 1) * DAY);
       }
     }
-    return { result: 'ok', counted };
+    return { result: 'ok', counted, capped };
   }
 
   // Gives a place back. With the code, the sign-up didn't happen after all, so its use comes back too, and so do the
@@ -675,11 +691,6 @@ export class Registry extends DurableObject {
   async accounts() {
     return this.count();
   }
-}
-
-// Seconds until the next day starts (UTC), when the counts per domain start again.
-function untilTomorrow(now) {
-  return seconds((Math.floor(now / DAY) + 1) * DAY - now);
 }
 
 function seconds(ms) {

@@ -25,7 +25,7 @@ import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
 import { sendMail } from './mail.js';
 import { language } from './privacy.js';
-import { DOMAIN_LIMIT, verifiedSignup } from './signups.js';
+import { verifiedSignup } from './signups.js';
 
 export const PURPOSES = ['signup', 'unlock'];
 export const DIGITS = 6;
@@ -69,6 +69,8 @@ export async function requestCode(request, env, ctx, max) {
   const purposes = codePurposes(env);
   if (purposes.length === 0) throw new HttpError(503, 'mail_unavailable', 'This server does not send codes by email.');
   if (!purposes.includes(purpose)) throw invalid('This server does not use codes to make accounts.', 'purpose');
+  const signup = purpose === 'signup';
+  if (signup) input.newAddress(email);
   const lang = language(body.lang, request.headers.get('accept-language'));
   const challenge = toBase64url(randomBytes(32));
   const token = toBase64url(randomBytes(32));
@@ -78,20 +80,19 @@ export async function requestCode(request, env, ctx, max) {
     token: await tokenHash(token),
     sends: await sendsHash(env, email, purpose)
   };
-  // A sign-up code for an address whose domain made its accounts for today would make no account, so none goes out.
-  // That says nothing about the address itself, so it is answered whether or not it has an account.
-  const signup = purpose === 'signup';
+  // A sign-up code for an address whose domain made its accounts for today would make no account, so none goes out
+  // (silent). The answer is the one any other request gets: a 429 here would tell anyone that someone at the domain
+  // made accounts today, which for a domain of one person tells who. The sign-up itself says so (index.js), and only
+  // with a code that works.
   const rules = { ...CODE_RULES, max: signup ? max : 0, domain: signup ? await verifiedSignup(env, email) : null };
   const issued = await registryObject(env).issueCode(entry, rules);
   if (issued.result === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
-  if (issued.result === 'domain') {
-    throw new HttpError(429, 'rate_limited', DOMAIN_LIMIT, { 'retry-after': String(issued.retryAfter) }, { limit: 'domain' });
-  }
   if (issued.result !== 'ok') {
     throw new HttpError(429, 'rate_limited', 'This address got too many codes. Try again later.', {
       'retry-after': String(issued.retryAfter)
     });
   }
+  if (issued.silent) return json(202, { challenge, expiresIn: CODE_TTL / 1000 });
   const host = new URL(request.url).host;
   ctx.waitUntil(
     deliver(env, { email, purpose, code, token, lang, host, id: entry.challenge }).catch((err) =>

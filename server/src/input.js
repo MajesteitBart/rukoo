@@ -99,6 +99,15 @@ export function email(value) {
   return normalized;
 }
 
+// An address for a new account, and for the sign-up code that makes it: email() without invisible format characters
+// such as a zero-width joiner or a soft hyphen (\p{Cf}). Each would make the address look like another one while the
+// limits per mailbox and per domain counted it apart. Sign-ins take any address email() takes, so an account made
+// with one before still gets in.
+export function newAddress(value) {
+  if (/\p{Cf}/u.test(value)) throw invalid('email must be an email address.');
+  return value;
+}
+
 export function key(value, name, length) {
   const bytes = fromBase64url(value);
   if (!bytes || bytes.length !== length) throw invalid(`${name} must be ${length} bytes in base64url.`);
