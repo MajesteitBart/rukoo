@@ -44,10 +44,12 @@
     "INVITE_USES": 1,
     // Codes by email (README.md, "Codes by email"), for "verified" sign-ups and for signing in while an account is
     // locked: the sender, such as "Rukoo <account@example.com>", on a domain verified in Resend. The Resend API key is
-    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR: the most sign-up
-    // emails the whole server sends in an hour.
+    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR and
+    // SIGNUP_EMAILS_PER_DAY: the most sign-up emails the whole server sends in an hour and in a day (UTC; 0 for no
+    // limit). Size them, and UNLOCK_EMAILS_PER_DAY, to your Resend plan (README.md, "Sizing the mail limits").
     "MAIL_FROM": "",
     "EMAIL_CODES_PER_HOUR": 100,
+    "SIGNUP_EMAILS_PER_DAY": 300,
     // Limits on verified sign-ups and unlock emails (README.md, "Limits on verified sign-ups"): accounts one domain may
     // make with an emailed code in a day (5 at least), large mail providers not counted, and unlock emails a day to
     // addresses that still have a long code to use. 0 for no limit. SIGNUP_DOMAINS_EXEMPT: more domains, comma-separated,
@@ -198,6 +200,7 @@
         // a secret: npx wrangler secret put RESEND_API_KEY --env bvdm. Until it is set, no codes are sent.
         "MAIL_FROM": "Rukoo <account@bvdm.ai>",
         "EMAIL_CODES_PER_HOUR": 100,
+        "SIGNUP_EMAILS_PER_DAY": 300,
         "DOMAIN_SIGNUPS_PER_DAY": 20,
         "SIGNUP_DOMAINS_EXEMPT": "",
         "UNLOCK_EMAILS_PER_DAY": 1000,

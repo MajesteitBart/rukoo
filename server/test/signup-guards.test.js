@@ -546,6 +546,44 @@ describe('giving back a failed sign-up', () => {
   });
 });
 
+describe('sign-up emails a day', () => {
+  it('sends at most SIGNUP_EMAILS_PER_DAY sign-up emails a day, notes included, and leaves the unlock emails their quota', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, SIGNUP_EMAILS_PER_DAY: '3', DOMAIN_SIGNUPS_PER_DAY: '0' };
+    const holder = await signup();
+    const first = newEmail();
+    expect((await askCode(first, 'signup', vars)).status).toBe(202);
+    expect(resend.to(first)).toHaveLength(1);
+    // The note to an address with an account is a sign-up email too.
+    expect((await askCode(holder.email, 'signup', vars)).status).toBe(202);
+    expect(resend.to(holder.email)).toHaveLength(1);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // One Resend refuses doesn't count.
+      resend.failNext({ status: 422, name: 'validation_error' });
+      expect((await askCode(newEmail(), 'signup', vars)).status).toBe(202);
+      const third = newEmail();
+      expect((await askCode(third, 'signup', vars)).status).toBe(202);
+      expect(resend.to(third)).toHaveLength(1);
+      // The day's are used up: the answer stays the same, and no email goes.
+      const fourth = newEmail();
+      expect((await askCode(fourth, 'signup', vars)).status).toBe(202);
+      expect(resend.to(fourth)).toHaveLength(0);
+      expect(JSON.stringify(errors.mock.calls)).toContain('SIGNUP_EMAILS_PER_DAY');
+    } finally {
+      errors.mockRestore();
+    }
+    // Unlock emails count apart.
+    expect((await askCode(holder.email, 'unlock', vars)).status).toBe(202);
+    expect(resend.to(holder.email)).toHaveLength(2);
+    // The next day they go again.
+    later(DAY);
+    const next = newEmail();
+    expect((await askCode(next, 'signup', vars)).status).toBe(202);
+    expect(resend.to(next)).toHaveLength(1);
+  });
+});
+
 describe('the operator alert', () => {
   const VARS = { ...VERIFIED, OPERATOR_EMAIL: OPS, ALERT_SIGNUPS_PER_HOUR: '2', DOMAIN_SIGNUPS_PER_DAY: '0' };
 

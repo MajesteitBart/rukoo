@@ -36,9 +36,12 @@ export const TOKEN_TTL = 24 * 60 * 60 * 1000;
 export const ATTEMPTS = 5;
 // To one address, for each purpose: at least a minute apart, at most five in an hour and ten in a day.
 export const CODE_RULES = { ttl: CODE_TTL, tokenTtl: TOKEN_TTL, gap: 60 * 1000, hourly: 5, daily: 10 };
-// The most sign-up emails the whole server sends in an hour, unless EMAIL_CODES_PER_HOUR says otherwise. They are the
-// ones that reach addresses without an account.
+// The most emails sign-up code requests make the whole server send in an hour, unless EMAIL_CODES_PER_HOUR says
+// otherwise, and in a day (UTC), unless SIGNUP_EMAILS_PER_DAY says otherwise (0 for none). They are the ones anyone can
+// make the server send to addresses without an account, so the day's cap keeps them from using up the mail service's
+// quota, which the unlock emails need too (README.md, "Sizing the mail limits").
 const PER_HOUR = 100;
+const SIGNUP_PER_DAY = 300;
 // Unlock emails go only to accounts on this server. One always goes to an address that has no long code left to use;
 // the others count toward ten a day to one mailbox, counted when they go out, so deleting an account and making one
 // again, or making accounts at tags of one mailbox, doesn't give it ten more, and toward a budget for the whole server,
@@ -102,9 +105,9 @@ export async function requestCode(request, env, ctx, max) {
   return json(202, { challenge, expiresIn: CODE_TTL / 1000 });
 }
 
-// Whether the address has an account decides what goes out, so this runs after the answer. Sign-up emails count
-// toward the hourly limit, and unlock emails toward their mailbox's ten a day and the daily budget; one Resend refused
-// is given back. A code whose long code didn't go out, because no email or only the note went, a limit held it back
+// Whether the address has an account decides what goes out, so this runs after the answer. Sign-up emails, notes
+// included, count toward the limits per hour and per day, and unlock emails toward their mailbox's ten a day and the
+// daily budget; one Resend refused is given back. A code whose long code didn't go out, because no email or only the note went, a limit held it back
 // or Resend refused the email, is kept for its 10 minutes and not a day.
 async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   const registry = registryObject(env);
@@ -114,12 +117,17 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   if (!kind) return;
   let slot = null;
   if (purpose === 'signup') {
-    slot = await registry.chargeMail('signup', positive(env.EMAIL_CODES_PER_HOUR, PER_HOUR));
-    if (slot === null) {
+    const charged = await registry.chargeMail('signup', positive(env.EMAIL_CODES_PER_HOUR, PER_HOUR), signupEmailsPerDay(env));
+    if (!charged.ok) {
       await registry.shortenCode(id);
-      console.error("A sign-up email was not sent: this hour's are used up (EMAIL_CODES_PER_HOUR).");
+      console.error(
+        charged.limit === 'day'
+          ? "A sign-up email was not sent: today's are used up (SIGNUP_EMAILS_PER_DAY)."
+          : "A sign-up email was not sent: this hour's are used up (EMAIL_CODES_PER_HOUR)."
+      );
       return;
     }
+    slot = charged.slot;
   }
   let unlock = null;
   if (kind === 'unlock') {
@@ -159,6 +167,11 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
 // UNLOCK_EMAILS_PER_DAY: the budget for unlock emails past each mailbox's first in a day, 0 for none.
 export function unlockBudget(env) {
   return limit(env.UNLOCK_EMAILS_PER_DAY, UNLOCK_PER_DAY);
+}
+
+// SIGNUP_EMAILS_PER_DAY: the most emails sign-up code requests send in a day, codes and notes together, 0 for none.
+export function signupEmailsPerDay(env) {
+  return limit(env.SIGNUP_EMAILS_PER_DAY, SIGNUP_PER_DAY);
 }
 
 // emailCode in a sign-up, sign-in or recovery: null when it is absent, else { challenge, code } for the six digits or

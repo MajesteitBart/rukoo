@@ -177,26 +177,31 @@ export class Registry extends DurableObject {
     return silent ? { result: 'ok', silent: true } : { result: 'ok' };
   }
 
-  // Counts one email of a purpose against perHour emails an hour for the whole server: the hour it counts in, or null
-  // when this hour's are used up. Only emails about to go out count, so asking for codes that send nothing uses none
-  // of them up.
-  async chargeMail(purpose, perHour) {
-    const slot = Math.floor(Date.now() / HOUR);
+  // Counts one email of a purpose against perHour emails an hour and perDay emails a day (UTC) for the whole server, 0
+  // for no limit: { ok: true, slot } with the hour and day it counts in, or { ok: false, limit } with 'hour' or 'day'
+  // when those are used up. Only emails about to go out count, so asking for codes that send nothing uses none of them
+  // up.
+  async chargeMail(purpose, perHour, perDay = 0) {
+    const now = Date.now();
+    const hour = Math.floor(now / HOUR);
     const row = this.sql.exec('SELECT hour, count FROM code_mail WHERE purpose = ?', purpose).toArray()[0];
-    if (perHour > 0 && row?.hour === slot && row.count >= perHour) return null;
+    if (perHour > 0 && row?.hour === hour && row.count >= perHour) return { ok: false, limit: 'hour' };
+    const day = this.#charge(`${purpose} mail`, DAY, perDay, now);
+    if (day === null) return { ok: false, limit: 'day' };
     this.sql.exec(
       `INSERT INTO code_mail (purpose, hour, count) VALUES (?, ?, 1)
        ON CONFLICT (purpose) DO UPDATE SET
          count = CASE WHEN code_mail.hour = excluded.hour THEN code_mail.count + 1 ELSE 1 END, hour = excluded.hour`,
       purpose,
-      slot
+      hour
     );
-    return slot;
+    return { ok: true, slot: { hour, day } };
   }
 
-  // Gives back an email chargeMail counted, when Resend refused it, so a refusal doesn't use up the hour.
-  async refundMail(purpose, slot) {
-    this.sql.exec('UPDATE code_mail SET count = MAX(0, count - 1) WHERE purpose = ? AND hour = ?', purpose, slot);
+  // Gives back an email chargeMail counted, when Resend refused it, so a refusal uses up neither the hour nor the day.
+  async refundMail(purpose, { hour, day }) {
+    this.sql.exec('UPDATE code_mail SET count = MAX(0, count - 1) WHERE purpose = ? AND hour = ?', purpose, hour);
+    this.#refund(`${purpose} mail`, day);
   }
 
   // Counts an unlock email about to go out to a mailbox (codes.js). { ok: true, at, slot, free } lets it go: at is when
