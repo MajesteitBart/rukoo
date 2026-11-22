@@ -83,11 +83,8 @@ object SettingsRoutes {
     val sections = listOf(ACCOUNTS, RUKOO, AGENTS, PHONE, NOTIFICATIONS, APPEARANCE, LANGUAGE, CATEGORIES, ABOUT)
 }
 
-/**
- * Moves between Settings pages; [reset] makes a section the only page (a tap in the two-pane list). [shows]: whether
- * Settings is open on that page, which a page leaving the composition asks to tell a fold from leaving it.
- */
-class SettingsNav(val push: (String) -> Unit, val pop: () -> Unit, val reset: (String) -> Unit, val shows: (String) -> Boolean = { false })
+/** Moves between Settings pages; [reset] makes a section the only page (a tap in the two-pane list). */
+class SettingsNav(val push: (String) -> Unit, val pop: () -> Unit, val reset: (String) -> Unit)
 
 /**
  * Settings, a full-screen route on both widths (spec 6 §4.8): the list of sections, then a section's page.
@@ -99,10 +96,13 @@ fun SettingsScreen(app: AppViewModel, modifier: Modifier = Modifier) {
     // Opened on a page (the chat's Edit shortcuts): that page, with the way back to its section.
     remember { app.takeSettingsStart()?.let(model::setSettingsStack) }
     val stack by model.settingsStack.collectAsStateWithLifecycle()
+    val account = rukooAccountModel(app)
     // A link onboarding carried belongs to the account form it was carried to: leaving that form lets it go (RUK-234).
-    // The stack survives folding, so a fold keeps it.
+    // A Rukoo account form's visit, with its code step and Locked offer, ends the same way. The stack survives folding,
+    // so a fold keeps both; a page's composition can't tell, as coming back within the cross-fade reuses the old one.
     LaunchedEffect(stack) {
         if (stack.lastOrNull() != SettingsRoutes.RUKOO_SIGNUP && stack.lastOrNull() != SettingsRoutes.RUKOO_SIGNIN) app.dropCarriedJoin()
+        account.pageShown(stack.lastOrNull())
     }
     // Each page keeps its fields when the layout moves it between the one- and two-pane branches.
     val pages = rememberSaveableStateHolder()
@@ -111,10 +111,17 @@ fun SettingsScreen(app: AppViewModel, modifier: Modifier = Modifier) {
         push = { route -> model.setSettingsStack(model.settingsStack.value + route) },
         pop = { model.setSettingsStack(model.settingsStack.value.dropLast(1)) },
         reset = { route -> model.setSettingsStack(listOf(route)) },
-        shows = { route -> app.state.value.overlay == Overlay.SETTINGS && model.settingsStack.value.lastOrNull() == route },
     )
-    // Folding recreates this screen with Settings still open; closing Settings starts it at the top next time.
-    DisposableEffect(Unit) { onDispose { if (app.state.value.overlay != Overlay.SETTINGS) model.settingsClosed() } }
+    // Folding recreates this screen with Settings still open; closing Settings starts it at the top next time, and ends
+    // a form's visit.
+    DisposableEffect(Unit) {
+        onDispose {
+            if (app.state.value.overlay != Overlay.SETTINGS) {
+                model.settingsClosed()
+                account.pageShown(null)
+            }
+        }
+    }
     val add by model.add.collectAsStateWithLifecycle()
     val addedText = add.added?.let { stringResource(R.string.settings_setup_account_added, it.email) }
     val clientText = stringResource(R.string.settings_setup_google_ready)

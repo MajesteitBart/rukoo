@@ -24,7 +24,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -615,15 +614,9 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
         RukooAccountModel.Form.SIGN_IN -> SettingsRoutes.RUKOO_SIGNIN
         RukooAccountModel.Form.RECOVER -> SettingsRoutes.RUKOO_RECOVER
     }
-    // A visit lasts from opening the form to leaving it. Folding composes the page again in the other layout, which is
-    // still the same visit, so the code step, the Locked offer and a code on its way stay (RukooAccountModel.entered).
-    LaunchedEffect(Unit) {
-        model.entered(form)
-        model.fill(route)
-    }
-    DisposableEffect(Unit) {
-        onDispose { if (!nav.shows(route)) model.left(form) }
-    }
+    // When a visit to the form starts and ends comes from the settings stack (SettingsScreen, RukooAccountModel.pageShown),
+    // as folding composes this page again in the other layout within the same visit.
+    LaunchedEffect(Unit) { model.fill(route) }
     val info = ui.info ?: status.info
     val working = ui.working
     fun field(name: String) = model.fields[name].orEmpty()

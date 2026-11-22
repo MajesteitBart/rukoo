@@ -175,34 +175,41 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
 
     fun clearFormError() = _ui.update { it.copy(formError = null) }
 
-    // The form page on screen, from opening it ([entered]) to leaving it ([left]).
+    // The form page on top of Settings, from its route coming on top (entered) to another taking its place (left).
     private var visiting: Form? = null
 
     // The form a code request on its way is for (sendCode), or null.
     private var requesting: Form? = null
 
     /**
-     * A form page is on screen. Folding moves the page between the one- and two-pane layouts and composes it again,
-     * which is the same visit: the code step, the Locked offer and a code on its way stay. A new visit starts without
-     * an error, and a code step or request of another form goes, with what was typed in it, as does a step from a
-     * server this phone no longer uses.
+     * The page on top of Settings, by its [route], or null once Settings closed: SettingsScreen passes the top of its
+     * stack each time the stack changes. A form page's visit lasts from its route coming on top to another route taking
+     * its place. The stack says so rather than the page's composition: folding composes the page again in the other
+     * layout, and coming back to a form within the pages' cross-fade keeps its old composition, so the page can't tell
+     * a fold from a new visit. The same route again, as after a fold, changes nothing: the code step, the Locked offer
+     * and a code on its way stay.
      */
-    fun entered(form: Form) {
-        if (visiting == form) return
+    fun pageShown(route: String?) {
+        val form = formOf(route)
+        val was = visiting
+        if (was == form) return
         visiting = form
+        if (was != null) left(was)
+        if (form != null) entered(form)
+    }
+
+    // A new visit starts without an error, and a code step or request of another form goes, with what was typed in it,
+    // as does a step from a server this phone no longer uses.
+    private fun entered(form: Form) {
         clearFormError()
         val step = _ui.value.code
         val stale = step != null && (step.form != form || step.server != account?.server)
         if (stale || (requesting != null && requesting != form)) dropCode()
     }
 
-    /**
-     * The form page was left, by going back, to another page or out of Settings. A sign-in's or recovery's code step
-     * goes with it: the lock it was for may be over at the next visit. A sign-up's stays for the address it went to.
-     */
-    fun left(form: Form) {
-        if (visiting != form) return
-        visiting = null
+    // The form was left, by going back, to another page or out of Settings. A sign-in's or recovery's code step goes
+    // with it: the lock it was for may be over at the next visit. A sign-up's stays for the address it went to.
+    private fun left(form: Form) {
         if (form != Form.SIGN_UP && (_ui.value.code?.form == form || requesting == form)) dropCode()
     }
 
@@ -432,6 +439,14 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
 
         /** The server sends an address at most one code of a purpose a minute, in seconds. */
         const val CODE_GAP = 60L
+
+        /** The form a Settings route shows, or null for another page. */
+        fun formOf(route: String?): Form? = when (route) {
+            SettingsRoutes.RUKOO_SIGNUP -> Form.SIGN_UP
+            SettingsRoutes.RUKOO_SIGNIN -> Form.SIGN_IN
+            SettingsRoutes.RUKOO_RECOVER -> Form.RECOVER
+            else -> null
+        }
 
         /**
          * What [text] in the invite field is (contract §3.2, §3.3): a workspace invitation link for [server], the

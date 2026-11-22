@@ -48,8 +48,8 @@ import org.junit.Test
 
 /**
  * Settings > Rukoo account's model: after an action, the page shows what the server has now; an unlock code step
- * doesn't stop a sign-in once the lock is over; and folding keeps a form's code step, its Locked offer and a code on
- * its way, which leaving the form drops.
+ * doesn't stop a sign-in once the lock is over; folding keeps a form's code step, its Locked offer and a code on its
+ * way, which leaving the form drops, as the settings stack tells (pageShown); and a code step belongs to its server.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RukooAccountModelTest {
@@ -112,7 +112,7 @@ class RukooAccountModelTest {
         val phone = device("phone-$email")
         phone.serverInfo()
         val model = RukooAccountModel(Services(phone))
-        model.entered(Form.SIGN_IN)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
         model.fields["email"] = email
         model.fields["password"] = PASSWORD
         model.submit(Form.SIGN_IN) {}
@@ -143,26 +143,26 @@ class RukooAccountModelTest {
     @Test
     fun `folding keeps the Locked offer, a code on its way and the code step, and leaving drops the unlock step`() = runBlocking<Unit> {
         val (model, _) = lockedSignIn("fold@example.com")
-        // A fold composes the page again in the other layout: the same visit.
-        model.entered(Form.SIGN_IN)
+        // A fold composes Settings again with the same stack: the same visit.
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
         assertEquals(FormError.Locked, model.ui.value.formError)
 
         val gate = server.holdNext("POST /v1/email-code")
         model.sendCode(Form.SIGN_IN, "en")
         withTimeout(10_000) { while (server.calls.none { it.route == "POST /v1/email-code" }) delay(10) }
-        model.entered(Form.SIGN_IN)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
         gate.countDown()
         until { model.ui.value.code?.form == Form.SIGN_IN && !model.ui.value.working }
         model.fields["emailCode"] = "12"
-        model.entered(Form.SIGN_IN)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
         assertEquals("fold@example.com", model.ui.value.code?.email)
         assertEquals("12", model.fields["emailCode"])
 
         // Going back ends the visit: the unlock step goes, and the next visit starts without an error.
-        model.left(Form.SIGN_IN)
+        model.pageShown(SettingsRoutes.RUKOO)
         assertNull(model.ui.value.code)
         assertNull(model.fields["emailCode"])
-        model.entered(Form.SIGN_IN)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
         assertNull(model.ui.value.formError)
     }
 
@@ -172,10 +172,38 @@ class RukooAccountModelTest {
         val gate = server.holdNext("POST /v1/email-code")
         model.sendCode(Form.SIGN_IN, "en")
         withTimeout(10_000) { while (server.calls.none { it.route == "POST /v1/email-code" }) delay(10) }
-        model.entered(Form.RECOVER)
+        model.pageShown(SettingsRoutes.RUKOO_RECOVER)
         gate.countDown()
         until { !model.ui.value.working }
         assertNull(model.ui.value.code)
+    }
+
+    @Test
+    fun `each change of the settings stack's top is a new visit, also a quick one, and closing Settings ends it`() = runBlocking<Unit> {
+        val (model, _) = lockedSignIn("stack@example.com")
+        model.sendCode(Form.SIGN_IN, "en")
+        until { model.ui.value.code != null && !model.ui.value.working }
+        // Back to Rukoo account and into Sign in again within the pages' cross-fade, which keeps the old page composed:
+        // the stack went from Sign in to Rukoo account and back, so the visit is new and the unlock step went.
+        model.pageShown(SettingsRoutes.RUKOO)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
+        assertNull(model.ui.value.code)
+
+        // Forgot your password? opened and closed at once: Sign in is a new visit, whose Locked offer a fold keeps.
+        model.pageShown(SettingsRoutes.RUKOO_RECOVER)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
+        model.submit(Form.SIGN_IN) {}
+        until { model.ui.value.formError == FormError.Locked && !model.ui.value.working }
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
+        assertEquals(FormError.Locked, model.ui.value.formError)
+
+        // Closing Settings ends the visit, and the unlock step with it.
+        model.sendCode(Form.SIGN_IN, "en")
+        until { model.ui.value.code != null && !model.ui.value.working }
+        model.pageShown(null)
+        assertNull(model.ui.value.code)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
+        assertNull(model.ui.value.formError)
     }
 
     // Waits for a code step to show, or for 2 seconds: an answer that should change nothing gets the time to arrive.
@@ -195,16 +223,16 @@ class RukooAccountModelTest {
                 model.setServer(url, failed = { failure = it }) {}
                 assertNull(failure)
             }
-            model.entered(Form.SIGN_UP)
+            model.pageShown(SettingsRoutes.RUKOO_SIGNUP)
             model.fields["email"] = "alice@example.com"
             model.sendCode(Form.SIGN_UP, "en")
             until { model.ui.value.code != null && !model.ui.value.working }
             assertEquals(1, a.calls.count { it.route == "POST /v1/email-code" })
 
             // Back to Rukoo account, which keeps a sign-up's step, then another server and Create account again.
-            model.left(Form.SIGN_UP)
+            model.pageShown(SettingsRoutes.RUKOO)
             changeServer(b.url)
-            model.entered(Form.SIGN_UP)
+            model.pageShown(SettingsRoutes.RUKOO_SIGNUP)
             assertNull(model.ui.value.code)
 
             // The submit asks this server for a code, and its code signs up here.
@@ -216,9 +244,9 @@ class RukooAccountModelTest {
             assertEquals(1, b.calls.count { it.route == "POST /v1/email-code" })
 
             // A request on its way while the server changes: its answer doesn't show a step for the server before.
-            model.left(Form.SIGN_UP)
+            model.pageShown(SettingsRoutes.RUKOO)
             changeServer(a.url)
-            model.entered(Form.SIGN_UP)
+            model.pageShown(SettingsRoutes.RUKOO_SIGNUP)
             assertNull(model.ui.value.code)
             val gate = a.holdNext("POST /v1/email-code")
             model.sendCode(Form.SIGN_UP, "en")
@@ -249,8 +277,8 @@ class RukooAccountModelTest {
         val gate = server.holdNext("POST /v1/login")
         model.submit(Form.SIGN_IN) {}
         withTimeout(10_000) { while (logins() <= before) delay(10) }
-        model.left(Form.SIGN_IN)
-        model.entered(Form.SIGN_IN)
+        model.pageShown(SettingsRoutes.RUKOO)
+        model.pageShown(SettingsRoutes.RUKOO_SIGNIN)
         assertNull(model.ui.value.code)
         gate.countDown()
         until { model.ui.value.formError != null && !model.ui.value.working }
