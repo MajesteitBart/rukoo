@@ -60,6 +60,7 @@
       </div>
       <nav class="log-jump" aria-label="Versions on this page">
         <ul class="chips">
+          <li><a class="chip" href="#v2-4-0">2.4.0</a></li>
           <li><a class="chip" href="#v2-3-0">2.3.0</a></li>
           <li><a class="chip" href="#voice-0-1-0">Voice 0.1.0</a></li>
           <li><a class="chip" href="#v2-2-0">2.2.0</a></li>
@@ -76,6 +77,24 @@
           <li><a class="chip" href="#v1-0-0">1.0.0</a></li>
         </ul>
       </nav>
+
+    <article class="log-entry" id="v2-4-0">
+      <header class="log-head">
+        <p class="log-meta"><time datetime="2026-11-22T13:10:11.000Z">22 November 2026</time><span class="chip log-version">2.4.0</span></p>
+        <h2><a href="#v2-4-0">Team chat</a></h2>
+        <p class="log-summary">Workspaces with channels, direct messages and threads, in the desktop app, on the phone and in the browser.</p>
+      </header>
+      <div class="prose">
+<p>Version 2.4.0 adds team chat. You make a workspace, invite your colleagues and talk with them in Rukoo. Chat has its own tab at the top of the window, next to Mail, Calendar and Meet, so your team is one click away from your inbox.</p>
+<p>A workspace has channels for topics and projects, and direct messages for one person or a small group. You can answer a message in a thread, so a side conversation doesn&#39;t bury the rest of the channel. You can react with an emoji, mention someone with @, make text bold or add a list, and send files. A web address in a message gets a small preview card.</p>
+<figure class="log-shot"><a class="log-zoom" href="/img/changelog/v2.4.0-1-a-channel-with-a-thread-open-2480.webp"><span class="log-frame"><picture><source type="image/avif" srcset="/img/changelog/v2.4.0-1-a-channel-with-a-thread-open-2480.avif 2480w, /img/changelog/v2.4.0-1-a-channel-with-a-thread-open-1440.avif 1440w, /img/changelog/v2.4.0-1-a-channel-with-a-thread-open-720.avif 720w" sizes="(min-width: 760px) 720px, 92vw"><source type="image/webp" srcset="/img/changelog/v2.4.0-1-a-channel-with-a-thread-open-2480.webp 2480w, /img/changelog/v2.4.0-1-a-channel-with-a-thread-open-1440.webp 1440w, /img/changelog/v2.4.0-1-a-channel-with-a-thread-open-720.webp 720w" sizes="(min-width: 760px) 720px, 92vw"><img src="/img/changelog/v2.4.0-1-a-channel-with-a-thread-open-720.webp" width="2480" height="1560" alt="A channel with a thread open" loading="lazy" decoding="async"></picture></span></a><figcaption>A channel with a thread open, with sample people and messages. Source: <a href="https://github.com/MajesteitBart/rukoo/pull/338">pull request #338</a>.</figcaption></figure>
+<p>You join a workspace with an invitation link from its owner or an admin. The link works once. It expires after a day, unless the person who made it chose a longer time, up to a week. On rukoo.io, an invitation also lets someone without a Rukoo account make one. Team chat doesn&#39;t need a mail account: on a fresh install, choose Join with an invitation link on the first screen, and Rukoo opens the workspace once you&#39;re signed in.</p>
+<p>Team chat works in three places. The desktop app has it next to your mail. Rukoo for Android has workspaces, channels, direct messages and threads. And at rukoo.io/app you can use it in a browser without installing anything.</p>
+<p>One thing works differently from the rest of your Rukoo account. What your account syncs between your devices, such as your categories, is locked with a key that only your devices have. Team chat isn&#39;t: messages and files are stored on the server that runs the workspace in a form that server can read, so whoever runs it can read them. On rukoo.io that is Bart. The <a href="https://rukoo.io/privacy">privacy statement</a> lists what the server keeps and for how long. On rukoo.io, messages are deleted after 90 days. You can also run the server yourself, on your own Cloudflare account.</p>
+<p>Workspaces on rukoo.io are part of Rukoo Cloud, which is in early access. The <a href="https://rukoo.io/pricing">pricing page</a> shows what it will cost once billing opens.</p>
+      </div>
+      <p class="log-release"><a href="https://github.com/MajesteitBart/rukoo/releases/tag/v2.4.0">Release notes for 2.4.0 on GitHub</a></p>
+    </article>
 
     <article class="log-entry" id="v2-3-0">
       <header class="log-head">
