@@ -66,6 +66,17 @@ export function registryObject(env) {
   return ns.get(ns.idFromName('registry'));
 }
 
+// The registry object that keeps the sign-in lock of an address (lock.js), by the lock's hash of the address: one of
+// 64, named by the hash's first character. Every attempt with every address goes through the lock, so a flood of them
+// from many networks, at addresses with an account or without, spreads over these and leaves the server's own
+// registry, which keeps the counts and the emailed codes, to everyone else. They are the same class, so they need no
+// migration of their own.
+export function lockObject(env, address) {
+  if (!env.REGISTRY) return null;
+  const ns = namespace(env, env.REGISTRY);
+  return ns.get(ns.idFromName(`lock\n${address.slice(0, 1)}`));
+}
+
 // The object of one workspace (workspace.js). An id nobody made leaves its object empty.
 export function workspaceObject(env, id) {
   const ns = namespace(env, env.WORKSPACES);
@@ -205,6 +216,24 @@ export function config(env, url) {
 export function positive(value, fallback) {
   const n = Number(value);
   return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+}
+
+// A count setting that takes 0 too, for none or off: a whole number, or the fallback when it is unset or isn't one.
+export function limit(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
+}
+
+// The fewest days EXPIRE_UNUSED_DAYS counts as. An account is checked no sooner than a day after its sign-up day, so a
+// request that came in on that day, such as a booking page being published, is long finished by then.
+export const EXPIRE_MIN_DAYS = 2;
+
+// EXPIRE_UNUSED_DAYS: days after which an account that was never used is deleted (account.js, expireUnused), at
+// least EXPIRE_MIN_DAYS. 0, also when unset, keeps every account.
+export function expiryDays(env) {
+  const days = limit(env.EXPIRE_UNUSED_DAYS, 0);
+  return days > 0 ? Math.max(days, EXPIRE_MIN_DAYS) : 0;
 }
 
 // An http(s) address as an origin, or null when it is empty or isn't one.

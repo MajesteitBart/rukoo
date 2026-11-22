@@ -44,10 +44,25 @@
     "INVITE_USES": 1,
     // Codes by email (README.md, "Codes by email"), for "verified" sign-ups and for signing in while an account is
     // locked: the sender, such as "Rukoo <account@example.com>", on a domain verified in Resend. The Resend API key is
-    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR: the most sign-up
-    // emails the whole server sends in an hour.
+    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR and
+    // SIGNUP_EMAILS_PER_DAY: the most sign-up emails the whole server sends in an hour and in a day (UTC; 0 for no
+    // limit). Size them, and UNLOCK_EMAILS_PER_DAY, to your Resend plan (README.md, "Sizing the mail limits").
     "MAIL_FROM": "",
     "EMAIL_CODES_PER_HOUR": 100,
+    "SIGNUP_EMAILS_PER_DAY": 300,
+    // Limits on verified sign-ups and unlock emails (README.md, "Limits on verified sign-ups"): accounts one domain may
+    // make with an emailed code in a day (5 at least), large mail providers not counted, and unlock emails a day to
+    // addresses that still have a long code to use. 0 for no limit. SIGNUP_DOMAINS_EXEMPT: more domains, comma-separated,
+    // whose sign-ups aren't counted, such as a mail provider the built-in list misses.
+    "DOMAIN_SIGNUPS_PER_DAY": 20,
+    "SIGNUP_DOMAINS_EXEMPT": "",
+    "UNLOCK_EMAILS_PER_DAY": 1000,
+    // An address that hears, once a day at most, when sign-ups with an emailed code in an hour reach
+    // ALERT_SIGNUPS_PER_HOUR or the accounts reach 80% of MAX_ACCOUNTS. It goes the way the codes go. "" sends nothing.
+    "OPERATOR_EMAIL": "",
+    "ALERT_SIGNUPS_PER_HOUR": 20,
+    // Unset here, so no account is ever deleted on its own: EXPIRE_UNUSED_DAYS, such as 30 (2 at least), deletes an
+    // account that many days after it was made when nothing ever used it (README.md, "Accounts that are never used").
     // Per account: live records, and their total size in bytes.
     "MAX_RECORDS": 250000,
     "MAX_BYTES": 104857600,
@@ -185,6 +200,14 @@
         // a secret: npx wrangler secret put RESEND_API_KEY --env bvdm. Until it is set, no codes are sent.
         "MAIL_FROM": "Rukoo <account@bvdm.ai>",
         "EMAIL_CODES_PER_HOUR": 100,
+        "SIGNUP_EMAILS_PER_DAY": 300,
+        "DOMAIN_SIGNUPS_PER_DAY": 20,
+        "SIGNUP_DOMAINS_EXEMPT": "",
+        "UNLOCK_EMAILS_PER_DAY": 1000,
+        // OPERATOR_EMAIL and EXPIRE_UNUSED_DAYS go in with the switch to "verified" (README.md, "The server Rukoo
+        // uses"). Until then nobody is mailed, and no account is deleted on its own.
+        "OPERATOR_EMAIL": "",
+        "ALERT_SIGNUPS_PER_HOUR": 20,
         "MAX_RECORDS": 250000,
         // 1,000 accounts of at most 32 MiB keep the worst case at 32 GB.
         "MAX_BYTES": 33554432,

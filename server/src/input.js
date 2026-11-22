@@ -99,6 +99,16 @@ export function email(value) {
   return normalized;
 }
 
+// An address for a new account, and for the sign-up code that makes it: email() without invisible characters, the
+// format characters such as a zero-width joiner or a soft hyphen (\p{Cf}) and the other code points Unicode marks as
+// ignorable, such as variation selectors, which a host name drops (\p{Default_Ignorable_Code_Point}). Each would make
+// the address look like another one, or reach the same inbox, while the limits per mailbox and per domain counted it
+// apart. Sign-ins take any address email() takes, so an account made with one before still gets in.
+export function newAddress(value) {
+  if (/[\p{Cf}\p{Default_Ignorable_Code_Point}]/u.test(value)) throw invalid('email must be an email address.');
+  return value;
+}
+
 export function key(value, name, length) {
   const bytes = fromBase64url(value);
   if (!bytes || bytes.length !== length) throw invalid(`${name} must be ${length} bytes in base64url.`);
