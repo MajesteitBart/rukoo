@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Rukoo Mail | Email worth opening</title>
-  <meta name="description" content="A free email app for Windows, macOS, Linux and Android. Your accounts in one inbox, your calendars beside it, and your own agents next to the inbox.">
+  <meta name="description" content="A free email app for Windows, macOS, Linux and Android. Your accounts in one inbox, your calendars beside it, team chat one tab away, and your own agents next to the inbox.">
   <link rel="canonical" href="https://rukoo.io/">
   <meta name="theme-color" content="#08090a">
   <meta name="color-scheme" content="dark">
@@ -34,16 +34,16 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Rukoo Mail",
-    "description": "An email client for Windows, macOS, Linux and Android, with calendars and a panel for your own AI agents.",
+    "description": "An email client for Windows, macOS, Linux and Android, with calendars and a panel for your own AI agents. The apps are free and MIT licensed. Hosted team workspaces on Rukoo Cloud are in early access.",
     "applicationCategory": "CommunicationApplication",
     "operatingSystem": "Windows, macOS, Linux, Android",
-    "softwareVersion": "2.1.0",
+    "softwareVersion": "2.4.0",
     "license": "https://opensource.org/license/mit",
     "url": "https://rukoo.io/",
     "downloadUrl": "https://rukoo.io/download/installer",
     "codeRepository": "https://github.com/MajesteitBart/rukoo",
     "image": "https://rukoo.io/img/og.png",
-    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+    "offers": { "@type": "Offer", "name": "The Rukoo apps", "price": "0", "priceCurrency": "EUR" },
     "author": { "@type": "Person", "name": "Bart van der Meeren", "url": "https://bvdm.ai" }
   }
   </script>
@@ -74,16 +74,18 @@
         </svg>
       </a>
       <ul class="nav-links">
+        <li><a href="#chat">Team chat</a></li>
         <li><a href="#agents">Agents</a></li>
-        <li><a href="#categories">Categories</a></li>
-        <li><a href="#booking">Booking</a></li>
-        <li><a href="#why">Why I built this</a></li>
+        <li class="nav-wide"><a href="#categories">Categories</a></li>
+        <li class="nav-wide"><a href="#booking">Booking</a></li>
+        <li><a href="/pricing">Pricing</a></li>
         <li><a href="#faq">FAQ</a></li>
         <li><a href="/changelog/">Changelog</a></li>
       </ul>
       <div class="nav-end">
-        <a class="btn btn-ghost btn-sm" href="https://github.com/MajesteitBart/rukoo" aria-label="GitHub"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg><span class="label">GitHub</span></a>
-        <a class="btn btn-primary btn-sm" href="#download">Download</a>
+        <a class="btn btn-ghost btn-sm nav-gh" href="https://github.com/MajesteitBart/rukoo" aria-label="GitHub"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg><span class="label">GitHub</span></a>
+        <a class="btn btn-ghost btn-sm" href="/app">Sign in</a>
+        <a class="btn btn-primary btn-sm" href="#start">Get started</a>
       </div>
     </div>
   </header>
@@ -192,6 +194,45 @@
             <source type="image/webp" srcset="/img/calendar-1200.webp 1200w, /img/calendar-2400.webp 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
             <img src="/img/calendar-1200.webp" width="2423" height="1512" alt="The calendar's week view with an invitation to Quarterly planning open: three guests, a video call link and Yes, Maybe and No." loading="lazy">
           </picture>
+        </div>
+      </div>
+    </section>
+
+    <!-- Team chat -->
+    <section class="section" id="chat">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow reveal"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#chat-circle-dots"/></svg>New: team chat</p>
+          <h2 class="reveal" style="--i:1">Your team, one tab away.</h2>
+          <p class="body reveal" style="--i:2">Make a workspace and invite your colleagues. Talk in channels and direct messages, reply in threads, react, mention people and share files. Team chat is in Rukoo 2.4 on your desktop and phone, and works in the browser at rukoo.io/app.</p>
+          <div class="cta-row reveal" style="--i:3">
+            <a class="btn btn-primary" href="/app">Open Rukoo in the browser</a>
+            <a class="btn btn-ghost" href="/pricing">See pricing</a>
+          </div>
+        </div>
+        <div class="shot chat-shot reveal">
+          <picture>
+            <source type="image/avif" srcset="/img/chat-1200.avif 1200w, /img/chat-2400.avif 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+            <source type="image/webp" srcset="/img/chat-1200.webp 1200w, /img/chat-2400.webp 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+            <img src="/img/chat-1200.webp" width="2480" height="1560" alt="Team chat in Rukoo: the Northwind workspace with its channels and direct messages, the launch channel with reactions, a shared PDF and a mention, and a thread with three replies open beside it." loading="lazy">
+          </picture>
+        </div>
+        <div class="chat-facts">
+          <div class="fact reveal">
+            <span class="badge"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#shield-check"/></svg></span>
+            <strong>Your account stays encrypted.</strong>
+            <p>What your Rukoo account syncs is end-to-end encrypted, and you keep the recovery key. Chat messages are different: the server that runs the workspace can read them.</p>
+          </div>
+          <div class="fact reveal" style="--i:1">
+            <span class="badge"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#hard-drives"/></svg></span>
+            <strong>On rukoo.io or your own server.</strong>
+            <p>Use a workspace on rukoo.io, or run the open-source server on your own Cloudflare account.</p>
+          </div>
+          <div class="fact reveal" style="--i:2">
+            <span class="badge"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#device-mobile"/></svg></span>
+            <strong>Desktop, phone and browser.</strong>
+            <p>The same workspaces in the desktop app, in Rukoo for Android and at rukoo.io/app.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -460,7 +501,7 @@ Sanne</p>
         <div class="early reveal" id="early-access">
           <div>
             <h3>Get early access.</h3>
-            <p class="body">Booking pages and the Rukoo account are invite-only for now. Leave your email and I'll send you an invite.</p>
+            <p class="body">Booking pages, the Rukoo account and team workspaces on Rukoo Cloud are invite-only for now. Leave your email and I'll send you an invite.</p>
           </div>
           <form class="early-form" action="/api/early-access" method="post" data-early>
             <label class="field"><span>Name</span><input name="name" type="text" autocomplete="name" maxlength="100" placeholder="Optional"></label>
@@ -546,6 +587,48 @@ Sanne</p>
       </div>
     </section>
 
+    <!-- Get started: the order to install in -->
+    <section class="section" id="start">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="reveal">Get started.</h2>
+          <p class="body reveal" style="--i:1">Start in the browser, then add the apps you need, in this order.</p>
+        </div>
+        <ol class="steps">
+          <li class="step reveal">
+            <span class="step-n" aria-hidden="true">1</span>
+            <h3>Start in the browser</h3>
+            <p>Sign in at rukoo.io/app and chat with your team. Nothing to install.</p>
+            <a class="btn btn-primary" href="/app">Open Rukoo in the browser</a>
+          </li>
+          <li class="step reveal" style="--i:1">
+            <span class="step-n" aria-hidden="true">2</span>
+            <h3>Install the desktop app</h3>
+            <p>Mail, calendar, meetings and team chat. For Windows, macOS and Linux.</p>
+            <a class="btn btn-ghost" href="#download"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#download-simple"/></svg>Choose your download</a>
+          </li>
+          <li class="step reveal" style="--i:2">
+            <span class="step-n" aria-hidden="true">3</span>
+            <h3>Add your phone</h3>
+            <p>Rukoo for Android: mail, your agent and team chat. Android 12 or newer, experimental.</p>
+            <a class="dl-link" href="/download/android" aria-label="Download Rukoo for Android"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#android-logo"/></svg><b>Phone app</b><span>.apk</span></a>
+          </li>
+          <li class="step reveal" style="--i:3">
+            <span class="step-n" aria-hidden="true">4</span>
+            <h3>Add Rukoo Voice</h3>
+            <p>Hold a key and talk to type in any app. Voice also records your meetings for Rukoo.</p>
+            <div class="step-links">
+              <a class="dl-link" href="/download/voice-installer" aria-label="Download the Rukoo Voice installer for Windows"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#windows-logo"/></svg><b>Windows installer</b><span>.exe</span></a>
+              <a class="dl-link" href="/download/voice-portable" aria-label="Download portable Rukoo Voice for Windows"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#package"/></svg><b>Windows portable</b><span>.zip</span></a>
+              <a class="dl-link" href="/download/voice-mac-dmg" aria-label="Download Rukoo Voice for Macs with Apple Silicon, as a disk image"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#apple-logo"/></svg><b>Mac, Apple Silicon</b><span>.dmg</span></a>
+              <a class="dl-link" href="/download/voice-mac-zip" aria-label="Download Rukoo Voice for Macs with Apple Silicon, as a ZIP file"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#package"/></svg><b>Mac, Apple Silicon</b><span>.zip</span></a>
+            </div>
+            <p class="caption">The Mac version needs macOS 15 or newer. <a href="/download/voice">Release notes</a></p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
     <!-- Download -->
     <section class="section" id="download">
       <div class="wrap">
@@ -574,7 +657,7 @@ Sanne</p>
               <a class="dl-link" href="/download/android" aria-label="Download Rukoo for Android"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#device-mobile"/></svg><b>Phone app</b><span>.apk</span></a>
             </div>
           </div>
-          <div class="dl-meta"><span>Version 2.1.0</span><span>MIT license</span><a href="/releases">All downloads and release notes</a></div>
+          <div class="dl-meta"><span>Version 2.4.0</span><span>MIT license</span><a href="/releases">All downloads and release notes</a></div>
           <a class="dl-gh" href="https://github.com/MajesteitBart/rukoo"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg>View the source on GitHub</a>
           <p class="smartscreen"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#warning-circle"/></svg><span>The builds aren't signed yet. Windows may show a SmartScreen prompt: choose "More info", then "Run anyway". The Mac builds aren't notarized, so macOS may block the first start.</span></p>
         </div>
@@ -598,7 +681,11 @@ Sanne</p>
           </details>
           <details>
             <summary>Is it free?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
-            <p class="a">Yes, and MIT licensed. Any agent you connect runs on your own account.</p>
+            <p class="a">The apps are: desktop, phone, browser and Rukoo Voice, all MIT licensed. Any agent you connect runs on your own account. Team workspaces on Rukoo Cloud will cost €19.50 per member per month, including Dutch VAT. Rukoo Cloud is in early access and billing isn't open yet. <a href="/pricing">See pricing</a>.</p>
+          </details>
+          <details>
+            <summary>Can the server read team chat?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">Yes. Unlike what your Rukoo account syncs, chat messages and files aren't end-to-end encrypted: the server that runs the workspace stores them readable, so whoever runs it can read them. You can run the server on your own Cloudflare account instead. The <a href="/privacy">privacy statement</a> says what rukoo.io keeps and for how long.</p>
           </details>
           <details>
             <summary>Do I need an agent?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
@@ -610,11 +697,11 @@ Sanne</p>
           </details>
           <details>
             <summary>Where is my data?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
-            <p class="a">Accounts, cached mail and agent chats stay on your computer, in <code>%APPDATA%\Rukoo Mail</code> on Windows, <code>~/Library/Application Support/Rukoo Mail</code> on macOS and <code>~/.config/Rukoo Mail</code> on Linux. Your system encrypts passwords and tokens. Older mail stays on your mail server, and your agent processes the mail it reads. Sender logos load from company websites, and you can turn them off in Settings.</p>
+            <p class="a">Accounts, cached mail and agent chats stay on your computer, in <code>%APPDATA%\Rukoo Mail</code> on Windows, <code>~/Library/Application Support/Rukoo Mail</code> on macOS and <code>~/.config/Rukoo Mail</code> on Linux. Your system encrypts passwords and tokens. Older mail stays on your mail server, and your agent processes the mail it reads. Sender logos load from company websites, and you can turn them off in Settings. Team chat lives on the server that runs the workspace.</p>
           </details>
           <details>
             <summary>Is there a phone app?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
-            <p class="a">Yes, for Android 12 or newer. It's experimental and built for the Galaxy Z Fold7: mail, categories and the agent chat, but no calendar yet. There's no iPhone app.</p>
+            <p class="a">Yes, for Android 12 or newer. It's experimental and built for the Galaxy Z Fold7: mail, categories, the agent chat and team chat. It has no calendar yet. There's no iPhone app.</p>
           </details>
           <details>
             <summary>What is Jev?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
@@ -626,7 +713,7 @@ Sanne</p>
           </details>
           <details>
             <summary>What is a Rukoo account?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
-            <p class="a">An optional account that syncs your categories, corrections and booking settings between your devices, end-to-end encrypted. The key comes from your password and never reaches the server.</p>
+            <p class="a">An optional account that syncs your categories, corrections and booking settings between your devices, end-to-end encrypted. The key comes from your password and never reaches the server. Save the recovery key you get when you make the account: without it and your password, nobody can open that data again. The same account signs you in to team chat.</p>
           </details>
         </div>
       </div>
@@ -642,6 +729,8 @@ Sanne</p>
         <a href="https://github.com/MajesteitBart/rukoo/issues">Issues</a>
         <a href="#contribute">Contribute</a>
         <a href="/changelog/">Changelog</a>
+        <a href="/pricing">Pricing</a>
+        <a href="/privacy">Privacy statement</a>
         <a href="https://bvdm.ai">bvdm.ai</a>
       </nav>
     </div>

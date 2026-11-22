@@ -1,6 +1,6 @@
 # Rukoo website
 
-The website at [rukoo.io](https://rukoo.io): the landing page, the changelog, the early access form and Rukoo in the browser at `/app`. It runs on Cloudflare as the `rukoo-site` Worker. The Worker serves the files in `site/` and passes every other request on to the account server in [`server/`](../server/README.md#how-rukooio-is-set-up).
+The website at [rukoo.io](https://rukoo.io): the landing page, the pricing page, the changelog, the early access form and Rukoo in the browser at `/app`. It runs on Cloudflare as the `rukoo-site` Worker. The Worker serves the files in `site/` and passes every other request on to the account server in [`server/`](../server/README.md#how-rukooio-is-set-up).
 
 ## What's where
 

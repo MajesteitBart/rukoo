@@ -184,16 +184,18 @@ const pageHtml = (entries, bodies) => `<!doctype html>
     <div class="wrap">
       <a class="brand" href="/" aria-label="Rukoo Mail, home"><img src="/assets/rukoo-logo-dark.svg" width="828" height="268" alt="" style="height:26px;width:auto"></a>
       <ul class="nav-links">
+        <li><a href="/#chat">Team chat</a></li>
         <li><a href="/#agents">Agents</a></li>
-        <li><a href="/#categories">Categories</a></li>
-        <li><a href="/#booking">Booking</a></li>
-        <li><a href="/#why">Why I built this</a></li>
+        <li class="nav-wide"><a href="/#categories">Categories</a></li>
+        <li class="nav-wide"><a href="/#booking">Booking</a></li>
+        <li><a href="/pricing">Pricing</a></li>
         <li><a href="/#faq">FAQ</a></li>
         <li><a href="/changelog/" aria-current="page">Changelog</a></li>
       </ul>
       <div class="nav-end">
-        <a class="btn btn-ghost btn-sm" href="https://github.com/MajesteitBart/rukoo" aria-label="GitHub"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg><span class="label">GitHub</span></a>
-        <a class="btn btn-primary btn-sm" href="/#download">Download</a>
+        <a class="btn btn-ghost btn-sm nav-gh" href="https://github.com/MajesteitBart/rukoo" aria-label="GitHub"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg><span class="label">GitHub</span></a>
+        <a class="btn btn-ghost btn-sm" href="/app">Sign in</a>
+        <a class="btn btn-primary btn-sm" href="/#start">Get started</a>
       </div>
     </div>
   </header>
@@ -203,7 +205,7 @@ const pageHtml = (entries, bodies) => `<!doctype html>
       <h1>Changelog</h1>
       <p class="lede log-lede">What changed in Rukoo Mail, in plain English.</p>
       <div class="prose log-intro">
-        <p>Rukoo Mail is an email app for your computer and phone. You read and write mail in it, see your calendar next to your mail, and can chat with an AI assistant that you connect yourself. This page tells the story version by version, newest first, and shows what each change looks like.</p>
+        <p>Rukoo Mail is an email app for your computer and phone. You read and write mail in it, see your calendar next to your mail, talk with your team, and can chat with an AI assistant that you connect yourself. This page tells the story version by version, newest first, and shows what each change looks like.</p>
       </div>
       <nav class="log-jump" aria-label="Versions on this page">
         <ul class="chips">
@@ -238,6 +240,8 @@ ${entries.map((e, i) => entryHtml(e, bodies[i])).join('\n\n')}
         <a href="https://github.com/MajesteitBart/rukoo">GitHub</a>
         <a href="https://github.com/MajesteitBart/rukoo/issues">Issues</a>
         <a href="/changelog/">Changelog</a>
+        <a href="/pricing">Pricing</a>
+        <a href="/privacy">Privacy statement</a>
         <a href="https://bvdm.ai">bvdm.ai</a>
       </nav>
     </div>

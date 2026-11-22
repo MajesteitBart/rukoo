@@ -353,14 +353,43 @@ kbd,
   .nav-links {
     display: none;
   }
+  /* 44px targets on a phone or a narrow tablet; .nav wins over the icon-only rules further down */
+  .nav .nav-end .btn-sm {
+    height: 44px;
+  }
+  .nav .nav-end .nav-gh {
+    width: 44px;
+  }
 }
 @media (max-width: 480px) {
-  .nav-end .btn-ghost .label {
+  .nav-end .nav-gh .label {
     display: none;
   }
-  .nav-end .btn-ghost {
+  .nav-end .nav-gh {
     width: 36px;
     padding: 0;
+  }
+}
+/* Between the phone and a wide window the nav keeps its main links, and GitHub becomes an icon. */
+@media (max-width: 1100px) {
+  .nav-links .nav-wide {
+    display: none;
+  }
+  .nav-end .nav-gh .label {
+    display: none;
+  }
+  .nav-end .nav-gh {
+    width: 36px;
+    padding: 0;
+  }
+}
+/* Sign in and Get started need the room on a phone; GitHub is in the footer and under Contribute. */
+@media (max-width: 400px) {
+  .nav .wrap {
+    gap: 16px;
+  }
+  .nav-end .nav-gh {
+    display: none;
   }
 }
 
@@ -2369,7 +2398,8 @@ kbd,
 .foot nav {
   margin-left: auto;
   display: flex;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 10px 20px;
   font-size: 14.5px;
 }
 .foot nav a {
@@ -2585,4 +2615,292 @@ kbd,
   margin: 18vh auto;
   padding: 0 var(--gutter);
   font-size: 20px;
+}
+
+/* ---------- team chat, get started and the pricing page ---------- */
+
+/* team chat: the desktop app's chat, then three facts in a row */
+.chat-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 28px clamp(24px, 4vw, 48px);
+  margin-top: clamp(40px, 5vw, 56px);
+}
+.chat-facts .fact {
+  align-content: start;
+}
+@media (max-width: 860px) {
+  .chat-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* get started: four numbered cards, in the order to install */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.step {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 12px;
+  padding: 22px 20px;
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.025);
+}
+.step-n {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-3);
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.step:first-child .step-n {
+  border-color: transparent;
+  background: var(--text);
+  color: #0a0b0d;
+}
+.step h3 {
+  font-size: 19px;
+}
+.step > p:not(.caption) {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.step .dl-link,
+.step-links {
+  justify-self: stretch;
+}
+.step-links {
+  display: grid;
+  gap: 8px;
+}
+.step .caption a {
+  color: var(--text-2);
+  text-underline-offset: 3px;
+}
+@media (max-width: 1100px) {
+  .steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .steps {
+    grid-template-columns: 1fr;
+  }
+  /* body text at 16px on a phone */
+  .step > p:not(.caption),
+  .chat-facts .fact p,
+  .tier .notes {
+    font-size: 16px;
+  }
+}
+
+/* pricing: the free apps beside Rukoo Cloud, then what a team pays */
+.price-main {
+  padding-top: clamp(120px, 14vw, 168px);
+}
+.price-head {
+  display: grid;
+  gap: 20px;
+  max-width: 760px;
+}
+.price-head h1 {
+  font-size: clamp(40px, 6vw, 68px);
+  line-height: 1.02;
+}
+.notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  max-width: 720px;
+  padding: 14px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 15.5px;
+  color: var(--text-2);
+}
+.notice strong {
+  color: var(--text);
+  font-weight: 580;
+}
+.notice .icon {
+  margin-top: 2px;
+  color: var(--eye);
+}
+.notice a {
+  color: var(--text);
+  text-underline-offset: 3px;
+}
+.tiers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: clamp(48px, 6vw, 72px);
+  align-items: stretch;
+}
+.tier {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  gap: 18px;
+  padding: clamp(24px, 3vw, 36px);
+  border-radius: 20px;
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+}
+/* Rukoo Cloud gets the pigeon's neck as its border, like the download card */
+.tier.cloud {
+  border-color: transparent;
+  background:
+    radial-gradient(80% 60% at 15% 0%, rgba(22, 240, 163, 0.08), transparent 60%),
+    radial-gradient(80% 60% at 90% 10%, rgba(189, 45, 196, 0.1), transparent 60%),
+    linear-gradient(180deg, #121317, #0b0c0e);
+}
+.tier.cloud::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--neck);
+  opacity: 0.45;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+.tier-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 560;
+  color: var(--text-2);
+}
+.tier-name .chip {
+  height: 26px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.tier-price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.tier-price b {
+  font-size: clamp(44px, 5vw, 56px);
+  font-weight: 640;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.tier-price span {
+  font-size: 15px;
+  color: var(--text-2);
+}
+.tier > .body {
+  font-size: 16.5px;
+}
+.tier .notes {
+  align-content: start;
+  gap: 12px;
+  font-size: 15.5px;
+}
+.tier .notes strong {
+  color: var(--text);
+  font-weight: 560;
+}
+.tier .notes .icon {
+  color: var(--green);
+}
+.tier .btn {
+  justify-self: start;
+}
+@media (max-width: 860px) {
+  .tiers {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* what a team pays: one row per team size */
+.team-cost {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(32px, 6vw, 96px);
+  align-items: start;
+  margin-top: clamp(72px, 9vw, 120px);
+}
+.team-cost h2 {
+  font-size: clamp(30px, 3.6vw, 42px);
+}
+.team-cost .body {
+  margin-top: 16px;
+}
+.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.cost-table caption {
+  text-align: left;
+  padding-bottom: 12px;
+  font-size: 14px;
+  color: var(--text-3);
+}
+.cost-table th,
+.cost-table td {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  font-size: 17px;
+  font-weight: 500;
+}
+.cost-table thead th {
+  padding-top: 0;
+  border-top: 0;
+  font-size: 13.5px;
+  font-weight: 520;
+  color: var(--text-3);
+}
+.cost-table tbody tr:last-child > * {
+  border-bottom: 1px solid var(--line);
+}
+.cost-table td:last-child,
+.cost-table th:last-child {
+  text-align: right;
+}
+.cost-table td:nth-child(2) {
+  color: var(--text-2);
+}
+@media (max-width: 860px) {
+  .team-cost {
+    grid-template-columns: 1fr;
+  }
+}
+.price-main .early {
+  margin-top: clamp(72px, 9vw, 120px);
+}
+.price-main .faq {
+  margin-top: clamp(72px, 9vw, 120px);
+}
+.price-main .faq h2 {
+  font-size: clamp(30px, 3.6vw, 42px);
+}
+.nav-links a[aria-current='page'] {
+  color: var(--text);
 }

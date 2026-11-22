@@ -7,7 +7,7 @@ const icons = {
     'paper-plane-tilt', 'arrow-bend-up-left', 'arrow-bend-double-up-left', 'archive', 'folder-simple-plus', 'envelope-simple', 'arrows-out-simple',
     'star', 'lock-simple', 'hard-drives', 'eye-slash', 'shield-check', 'keyboard', 'sun', 'moon', 'pencil-simple', 'arrow-counter-clockwise',
     'download', 'list-checks', 'chat-circle-dots', 'arrow-square-out', 'warning-circle', 'package',
-    'apple-logo', 'linux-logo', 'android-logo', 'calendar-dots', 'device-mobile', 'bell', 'signature', 'copy'],
+    'apple-logo', 'linux-logo', 'android-logo', 'calendar-dots', 'device-mobile', 'bell', 'signature', 'copy', 'microphone'],
   fill: ['play', 'check-circle', 'sparkle', 'pause', 'speaker-high', 'speaker-slash'],
 };
 // Phosphor's MIT license asks for its notice in every copy, so the sprite carries it.
