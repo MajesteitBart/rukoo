@@ -93,7 +93,7 @@ The server speaks JSON over HTTPS. Requests that need a session send `Authorizat
 | 404 | `not_found` |
 | 409 | `exists` (sign-up for an address that has an account), `code_in_use` (an emailed code another request is using right now) |
 | 413 | `too_large`, `quota` |
-| 429 | `locked` (too many failed sign-ins, or too many wrong passwords from one session), `rate_limited` (with `limit: "domain"` when the addresses at a domain made their accounts for today: [`POST /v1/email-code`](#post-v1email-code)) |
+| 429 | `locked` (too many failed sign-ins, or too many wrong passwords from one session), `rate_limited` (with `limit: "domain"` for a sign-up with a code when the addresses at its domain made their accounts for today: [`POST /v1/signup`](#post-v1signup)) |
 | 500 | `not_configured` (the server has no `PEPPER` secret), `server` |
 | 503 | `mail_unavailable` (the server sends no codes by email) |
 
