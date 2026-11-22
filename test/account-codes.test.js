@@ -249,15 +249,17 @@ test('a locked account recovers with an unlock code sent with both steps', async
 // Rukoo's former default address and today's, both reaching the test server, as account.test.js release() has them.
 const OLD_DEFAULT = 'https://rukoo-account.bvdm.ai';
 const NEW_DEFAULT = 'https://rukoo.io';
-function release(t, srv, defaultServer, dir) {
-  const { request } = require('../src/main/account/client');
+// down: addresses that don't answer, as a retired domain wouldn't.
+function release(t, srv, defaultServer, dir, down = new Set()) {
+  const { request, AccountError } = require('../src/main/account/client');
   const acc = new AccountService({
     dataDir: dir,
     secrets,
     defaultServer,
     deviceName: 'desk',
     platform: 'linux',
-    request: (server, ...rest) => request([OLD_DEFAULT, NEW_DEFAULT].includes(server) ? srv.url : server, ...rest)
+    request: (server, ...rest) =>
+      down.has(server) ? Promise.reject(new AccountError('network', 0, 'unreachable')) : request([OLD_DEFAULT, NEW_DEFAULT].includes(server) ? srv.url : server, ...rest)
   }).init();
   t.after(() => acc.close());
   return acc;
@@ -322,5 +324,128 @@ test('a late answer for another address leaves the code of this one alone', asyn
   // The answer for an address typed before comes after it.
   await desk.requestCode({ email: 'a@example.com', purpose: 'signup' });
   await desk.signUp({ email: 'b@example.com', password: PASSWORD, emailCode: srv.codeFor('b@example.com') });
+  assert.equal(desk.status().signedIn, true);
+});
+
+test('with an unlock code, the default is tried when the former address fails before the password', async (t) => {
+  const srv = await server(t, { signups: 'open', codes: true });
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'moved@example.com', password: PASSWORD });
+  before.close();
+  const down = new Set();
+  const after = release(t, srv, NEW_DEFAULT, dir, down);
+  await after.signOut();
+  // The account was deleted, and made again at today's default from another device: it signs in there now.
+  srv.accounts.delete('moved@example.com');
+  const other = release(t, srv, NEW_DEFAULT, tmpDir(t));
+  await other.signUp({ email: 'moved@example.com', password: 'a brand new password' });
+  await other.signOut();
+  srv.lock('moved@example.com');
+  await after.requestCode({ email: 'moved@example.com', purpose: 'unlock' });
+  // The former address goes first for this account, and doesn't answer.
+  down.add(OLD_DEFAULT);
+  await after.signIn({ email: 'moved@example.com', password: 'a brand new password', emailCode: srv.codeFor('moved@example.com') });
+  assert.equal(after.status().signedIn, true);
+  assert.equal(after.status().server, NEW_DEFAULT);
+});
+
+test('with an unlock code, a former address that does not answer says so when the default refuses the password', async (t) => {
+  const srv = await server(t, { signups: 'open', codes: true });
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'gone@example.com', password: PASSWORD });
+  before.close();
+  const down = new Set([OLD_DEFAULT]);
+  const after = release(t, srv, NEW_DEFAULT, dir, down);
+  await after.signOut();
+  srv.lock('gone@example.com');
+  await after.requestCode({ email: 'gone@example.com', purpose: 'unlock' });
+  // The default is tried too, but the account lives at the former address, so its wrong password isn't the answer.
+  const logins = routes(srv, 'POST /v1/login').length;
+  await assert.rejects(after.signIn({ email: 'gone@example.com', password: PASSWORD, emailCode: srv.codeFor('gone@example.com') }), fails('network'));
+  assert.equal(routes(srv, 'POST /v1/login').length, logins + 1, 'the default was tried');
+  // A wrong code stops at the first address, as the default would refuse it the same way.
+  down.clear();
+  const wrong = srv.codeFor('gone@example.com') === '000000' ? '111111' : '000000';
+  const tried = routes(srv, 'POST /v1/login').length;
+  await assert.rejects(after.signIn({ email: 'gone@example.com', password: PASSWORD, emailCode: wrong }), fails('code_wrong'));
+  assert.equal(routes(srv, 'POST /v1/login').length, tried + 1);
+});
+
+test('an invite code that has been used up asks for an emailed code, and does not stop one', async (t) => {
+  const srv = await server(t, { signups: 'verified', codes: true, usedInvites: ['spent'] });
+  const desk = device(t, srv);
+  // Without an emailed code, the server's invite_required reads as a request for one, which the window sends.
+  await assert.rejects(desk.signUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent' }), fails('code_required'));
+  assert.equal(routes(srv, 'POST /v1/signup').at(-1).body.invite, 'spent');
+  // A typed code that can't go says what is wrong with it.
+  await assert.rejects(desk.signUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent', emailCode: '12345' }), fails('code_format'));
+
+  await desk.requestCode({ email: 'spent@example.com', purpose: 'signup' });
+  const code = srv.codeFor('spent@example.com');
+  const wrong = code === '000000' ? '111111' : '000000';
+  await assert.rejects(desk.signUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent', emailCode: wrong }), fails('code_wrong', { attemptsLeft: 4 }));
+  // With the emailed code, the sign-up goes once more without the invite code, and works.
+  const before = routes(srv, 'POST /v1/signup').length;
+  await desk.signUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent', emailCode: code });
+  assert.equal(desk.status().signedIn, true);
+  const [withInvite, without] = routes(srv, 'POST /v1/signup').slice(before);
+  assert.equal(withInvite.body.invite, 'spent');
+  assert.equal(without.body.invite, undefined);
+  assert.equal(without.body.emailCode.code, code);
+});
+
+test('a used-up invite code on a server without sign-up codes is refused as before', async (t) => {
+  const srv = await server(t, { signups: 'invite', codes: true, invites: ['welcome'], usedInvites: ['spent'] });
+  const desk = device(t, srv);
+  await assert.rejects(desk.signUp({ email: 'old@example.com', password: PASSWORD, invite: 'spent' }), fails('invite_required'));
+  assert.equal(routes(srv, 'POST /v1/signup').length, 1);
+});
+
+// Holds the next answer of route back until the returned function lets it go.
+function holdNext(srv, route) {
+  let release = null;
+  const gate = new Promise((r) => (release = r));
+  srv.hold = (req) => {
+    if (req.route !== route) return null;
+    srv.hold = null;
+    return gate;
+  };
+  return () => release();
+}
+async function until(check) {
+  for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(check(), 'waited too long');
+}
+
+test("a late code answer from the server used before doesn't replace the current server's", async (t) => {
+  const a = await server(t, { signups: 'verified', codes: true });
+  const b = await server(t, { signups: 'verified', codes: true });
+  const desk = device(t, a);
+  const letGo = holdNext(a, 'POST /v1/email-code');
+  const late = desk.requestCode({ email: 'late@example.com', purpose: 'signup' });
+  await until(() => routes(a, 'POST /v1/email-code').length === 1);
+  desk.setServer(b.url);
+  await desk.requestCode({ email: 'late@example.com', purpose: 'signup' });
+  letGo();
+  await late;
+  await desk.signUp({ email: 'late@example.com', password: PASSWORD, emailCode: b.codeFor('late@example.com') });
+  assert.equal(desk.status().signedIn, true);
+  assert.equal(routes(b, 'POST /v1/signup').length, 1);
+});
+
+test("an older code request answered late doesn't replace the newer one's challenge", async (t) => {
+  const srv = await server(t, { signups: 'verified', codes: true });
+  const desk = device(t, srv);
+  const letGo = holdNext(srv, 'POST /v1/email-code');
+  const older = desk.requestCode({ email: 'order@example.com', purpose: 'signup' });
+  await until(() => routes(srv, 'POST /v1/email-code').length === 1);
+  srv.allowCode('order@example.com', 'signup');
+  await desk.requestCode({ email: 'order@example.com', purpose: 'signup' });
+  const newest = srv.codeFor('order@example.com');
+  letGo();
+  await older;
+  await desk.signUp({ email: 'order@example.com', password: PASSWORD, emailCode: newest });
   assert.equal(desk.status().signedIn, true);
 });

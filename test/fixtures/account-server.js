@@ -126,10 +126,13 @@ function badPublish(body, now) {
 // keeps each message in mail, and codeFor(email) and tokenFor(email) read the six digits and the long code of the
 // newest one to an address. workspaceInvites: a workspace invitation { workspace, invite } that stands in for the
 // invite code at sign-up, with workspace.inviteSignups (and inviteSignupsNeedCode on a verified server) in the info.
-// lock(email) locks an account's sign-ins as ten wrong passwords would.
+// lock(email) locks an account's sign-ins as ten wrong passwords would. usedInvites: invite codes the operator handed
+// out that are used up, which get 403 invite_required; on a verified server the emailed code beside one isn't looked
+// at, as server/src/index.js signup and makeAccount have it.
 function startAccountServer({
   signups = 'open',
   invites = [],
+  usedInvites = [],
   limit = 1000,
   jurisdiction = 'eu',
   kdf = DEFAULT_KDF,
@@ -156,8 +159,9 @@ function startAccountServer({
   // Set gzip on the started server to answer pulls compressed whatever the device asked for, as a proxy that
   // compresses everything would. mailMax is the booking pages' daily mail budget, now the server's clock and
   // bookingOrigin the server's BOOKING_ORIGIN: pages live at its root, and without it under /meet on the server's own
-  // address. fail({ route, body }) may answer a request instead of the server: [status, json] or null.
-  const control = { gzip: false, mailMax: 10, now: () => Date.now(), bookingOrigin: null, fail: null };
+  // address. fail({ route, body }) may answer a request instead of the server: [status, json] or null. hold({ route,
+  // body }) may hold an answer back: a promise the answer waits for, or null. The request itself is handled at once.
+  const control = { gzip: false, mailMax: 10, now: () => Date.now(), bookingOrigin: null, fail: null, hold: null };
 
   const info = () => ({
     protocol: 1,
@@ -610,6 +614,7 @@ function startAccountServer({
     },
     'POST /v1/signup': ({ body }) => {
       if (signups === 'closed') return [403, { error: 'signups_closed' }];
+      if (usedInvites.includes(body.invite)) return [403, { error: 'invite_required', message: 'This invite code has been used.' }];
       const invited = invites.includes(body.invite);
       const w = body.workspaceInvite;
       const linked = !invited && w && workspaceInvites.some((x) => x.workspace === w.workspace && x.invite === w.invite);
@@ -777,7 +782,9 @@ function startAccountServer({
       const open = ['GET /v1/info', 'POST /v1/prelogin', 'POST /v1/email-code', 'POST /v1/signup', 'POST /v1/login', 'POST /v1/recover/start', 'POST /v1/recover/finish'];
       if (!open.includes(route) && !acc) return send(401, { error: 'unauthorized' });
       const [status, json, headers] = handler({ body, url, acc, tok, session, rest });
-      send(status, json, headers);
+      const held = typeof control.hold === 'function' ? control.hold({ route, body }) : null;
+      if (held) held.then(() => send(status, json, headers));
+      else send(status, json, headers);
     });
   });
 

@@ -143,3 +143,27 @@ test('a locked account recovers with the long code of an unlock email', async (t
   await desk.recover({ email: person.email, recoveryKey: person.recoveryKey, password: 'a brand new password', emailCode: mail.token });
   assert.equal(desk.status().signedIn, true);
 });
+
+test('an invite code that has been used up gets a code instead, and the emailed code goes without it', async (t) => {
+  if (skipWithoutServer(t)) return;
+  // One account per invite code, so the second sign-up with it finds it used up.
+  const once = await startRealServer({ vars: { SIGNUPS: 'verified', INVITE_USES: '1' }, mail: true });
+  t.after(() => once.close());
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-codes-live-'));
+  const at = (name) => {
+    const acc = new AccountService({ dataDir: path.join(dir, name), secrets, defaultServer: once.url, deviceName: name, platform: 'linux' }).init();
+    t.after(() => acc.close());
+    return acc;
+  };
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  await at('first').signUp({ email: address('first'), password: PASSWORD, invite: once.inviteCode });
+  const desk = at('desk');
+  const email = address('second');
+  // The server answers invite_required for the used-up code and doesn't look for an emailed one.
+  await assert.rejects(desk.signUp({ email, password: PASSWORD, invite: once.inviteCode }), fails('code_required'));
+  const after = Date.now() - 1;
+  await desk.requestCode({ email, purpose: 'signup' });
+  const mail = await once.mail.next(email, { after });
+  await desk.signUp({ email, password: PASSWORD, invite: once.inviteCode, emailCode: mail.code });
+  assert.equal(desk.status().signedIn, true);
+});
