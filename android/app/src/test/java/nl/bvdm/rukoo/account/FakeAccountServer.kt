@@ -4,6 +4,8 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -29,7 +31,9 @@ import okhttp3.mockwebserver.RecordedRequest
  * Codes by email (desktop's codes option): [codes] mails codes for `unlock`, and for `signup` as well with [signups]
  * `verified`, which `GET /v1/info` reports as `invite` as the real server does. Nothing is mailed: [mail] keeps each
  * message, and [codeFor] and [tokenFor] read the newest one's six digits and long code. [lock] locks an address's
- * sign-ins as ten wrong passwords would.
+ * sign-ins as ten wrong passwords would. [usedInvites]: invite codes the operator handed out that are used up, which
+ * get `403 invite_required`; on a verified server the emailed code beside one isn't looked at, as server/src/index.js
+ * signup has it. [holdNext] holds an answer back.
  */
 class FakeAccountServer(
     private val signups: String = "open",
@@ -40,6 +44,7 @@ class FakeAccountServer(
     /** The workspace home `GET /v1/info` names, with team chat listed; none without. */
     private val home: String? = null,
     private val codes: Boolean = false,
+    private val usedInvites: List<String> = emptyList(),
 ) : AutoCloseable {
     class Mail(val to: String, val purpose: String, val code: String?, val token: String?, val lang: String?)
 
@@ -66,6 +71,15 @@ class FakeAccountServer(
 
     /** Locks an address's sign-ins and recoveries, as ten wrong passwords in 15 minutes would. */
     fun lock(email: String) = synchronized(lock) { locked += email }
+
+    /** Ends that lock, as the 15 minutes passing would. */
+    fun unlock(email: String) = synchronized(lock) { locked -= email }
+
+    // Answers held back by route (holdNext).
+    private val held = HashMap<String, CountDownLatch>()
+
+    /** Holds the next answer of [route] back until the latch counts down. The request itself is handled at once. */
+    fun holdNext(route: String): CountDownLatch = CountDownLatch(1).also { synchronized(lock) { held[route] = it } }
 
     /** Lets the next code request to an address through at once, as a minute passing would. */
     fun allowCode(email: String, purpose: String) = synchronized(lock) { lastSent.remove("$purpose\n$email") }
@@ -99,7 +113,12 @@ class FakeAccountServer(
 
     init {
         server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse = synchronized(lock) { handle(request) }
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val route = "${request.method} ${request.requestUrl?.encodedPath}"
+                val res = synchronized(lock) { handle(request) }
+                synchronized(lock) { held.remove(route) }?.await(10, TimeUnit.SECONDS)
+                return res
+            }
         }
         server.start()
         url = "http://127.0.0.1:${server.port}"
@@ -305,6 +324,7 @@ class FakeAccountServer(
             "POST /v1/signup" -> {
                 val invited = body.str("invite") in invites
                 if (signups == "closed") return error(403, "signups_closed")
+                if (body.str("invite") in usedInvites) return error(403, "invite_required")
                 if (signups == "invite" && !invited) return error(403, "invite_required")
                 // A server that checks addresses needs an emailed code without the operator's invite code.
                 var held: CodeRow? = null

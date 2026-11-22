@@ -14,11 +14,11 @@ You find it in Settings → Rukoo account.
 
 The computer then syncs. Data you already had on this computer goes into the account.
 
-Your email address is your sign-in name. Some servers check it before they make the account: after **Create an account**, the server emails you a code and the form asks for it. Type the six digits, which work on this device for 10 minutes, or paste the long code from the same email, which works once on any device for a day. Five wrong tries end the six digits; **Send a new code** asks for another, at most one a minute. An invite code from the server's operator takes the place of the emailed code there, and an invitation link to a team chat workspace still needs it. A server that doesn't send mail never checks the address.
+Your email address is your sign-in name. Some servers check it before they make the account: after **Create an account**, the server emails you a code and the form asks for it. Type the six digits, which work on this device for 10 minutes, or paste the long code from the same email, which works once on any device for a day. Five wrong tries end the six digits; **Send a new code** asks for another, at most one a minute. An invite code from the server's operator takes the place of the emailed code there, and an invitation link to a team chat workspace still needs it. When the invite code is wrong or used up, the form emails a code instead, and that code works with the invite code still in its field. A server that doesn't send mail never checks the address.
 
 ## A locked account
 
-Ten wrong passwords in 15 minutes lock an account's sign-ins for 15 minutes, also on Forgot your password?, and anyone who knows your address can cause that. Where the server sends mail, the sign-in form then offers **Email me a code**: with the code from that email, your sign-in goes past the lock now. Devices that are already signed in aren't affected.
+Ten wrong passwords in 15 minutes lock an account's sign-ins for 15 minutes, also on Forgot your password?, and anyone who knows your address can cause that. Where the server sends mail, the sign-in form then offers **Email me a code**: with the code from that email, your sign-in goes past the lock now. Once the 15 minutes are over, the form signs in without the code. Devices that are already signed in aren't affected.
 
 ## Another device
 

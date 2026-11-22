@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
 import nl.bvdm.rukoo.AppServices
+import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.account.AccountService
 import nl.bvdm.rukoo.account.FakeAccountServer
 import nl.bvdm.rukoo.account.OkHttpAccountHttp
@@ -34,18 +35,26 @@ import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.SettingsStore
 import nl.bvdm.rukoo.ui.ComposerController
 import nl.bvdm.rukoo.ui.ScreenState
+import nl.bvdm.rukoo.ui.settings.RukooAccountModel.Form
+import nl.bvdm.rukoo.ui.settings.RukooAccountModel.FormError
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 
-/** Settings > Rukoo account's model: after an action, the page shows what the server has now. */
+/**
+ * Settings > Rukoo account's model: after an action, the page shows what the server has now; an unlock code step
+ * doesn't stop a sign-in once the lock is over; and folding keeps a form's code step, its Locked offer and a code on
+ * its way, which leaving the form drops.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RukooAccountModelTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val dir: File = Files.createTempDirectory("rukoo-account-model").toFile().apply { deleteOnExit() }
-    private val server = FakeAccountServer()
+    private val server = FakeAccountServer(codes = true)
     private val okhttp = OkHttpClient()
 
     private fun device(name: String) =
@@ -89,5 +98,86 @@ class RukooAccountModelTest {
         withTimeout(10_000) { while (model.ui.value.details?.devices?.size != 1) delay(20) }
         assertEquals(null, failure)
         assertEquals(listOf("phone"), model.ui.value.details!!.devices.map { it.name })
+    }
+
+    private suspend fun until(check: () -> Boolean) = withTimeout(10_000) { while (!check()) delay(20) }
+
+    // A model on the Sign in form of an account that ten wrong passwords locked, showing the Locked offer.
+    private suspend fun lockedSignIn(email: String): Pair<RukooAccountModel, AccountService> {
+        val first = device("first-$email")
+        first.signUp(email, PASSWORD)
+        first.signOut()
+        server.lock(email)
+        val phone = device("phone-$email")
+        phone.serverInfo()
+        val model = RukooAccountModel(Services(phone))
+        model.entered(Form.SIGN_IN)
+        model.fields["email"] = email
+        model.fields["password"] = PASSWORD
+        model.submit(Form.SIGN_IN) {}
+        until { model.ui.value.formError == FormError.Locked && !model.ui.value.working }
+        return model to phone
+    }
+
+    private fun logins() = server.calls.count { it.route == "POST /v1/login" }
+
+    @Test
+    fun `an unlock code step lets an empty code go, so the sign-in works once the lock is over`() = runBlocking<Unit> {
+        val (model, phone) = lockedSignIn("later@example.com")
+        model.sendCode(Form.SIGN_IN, "en")
+        until { model.ui.value.code != null && !model.ui.value.working }
+        // Still locked: the empty field goes to the server, which says so, and the form asks for the code.
+        val before = logins()
+        model.submit(Form.SIGN_IN) {}
+        until { model.ui.value.formError == FormError.Text(R.string.settings_rukoo_code_missing) && !model.ui.value.working }
+        assertEquals(before + 1, logins())
+        assertNotNull(model.ui.value.code)
+        // The 15 minutes are over: the same empty field signs in.
+        server.unlock("later@example.com")
+        model.submit(Form.SIGN_IN) {}
+        until { phone.signedIn && !model.ui.value.working }
+        assertNull(model.ui.value.code)
+    }
+
+    @Test
+    fun `folding keeps the Locked offer, a code on its way and the code step, and leaving drops the unlock step`() = runBlocking<Unit> {
+        val (model, _) = lockedSignIn("fold@example.com")
+        // A fold composes the page again in the other layout: the same visit.
+        model.entered(Form.SIGN_IN)
+        assertEquals(FormError.Locked, model.ui.value.formError)
+
+        val gate = server.holdNext("POST /v1/email-code")
+        model.sendCode(Form.SIGN_IN, "en")
+        withTimeout(10_000) { while (server.calls.none { it.route == "POST /v1/email-code" }) delay(10) }
+        model.entered(Form.SIGN_IN)
+        gate.countDown()
+        until { model.ui.value.code?.form == Form.SIGN_IN && !model.ui.value.working }
+        model.fields["emailCode"] = "12"
+        model.entered(Form.SIGN_IN)
+        assertEquals("fold@example.com", model.ui.value.code?.email)
+        assertEquals("12", model.fields["emailCode"])
+
+        // Going back ends the visit: the unlock step goes, and the next visit starts without an error.
+        model.left(Form.SIGN_IN)
+        assertNull(model.ui.value.code)
+        assertNull(model.fields["emailCode"])
+        model.entered(Form.SIGN_IN)
+        assertNull(model.ui.value.formError)
+    }
+
+    @Test
+    fun `a code on its way for one form changes nothing once another form opens`() = runBlocking<Unit> {
+        val (model, _) = lockedSignIn("switch@example.com")
+        val gate = server.holdNext("POST /v1/email-code")
+        model.sendCode(Form.SIGN_IN, "en")
+        withTimeout(10_000) { while (server.calls.none { it.route == "POST /v1/email-code" }) delay(10) }
+        model.entered(Form.RECOVER)
+        gate.countDown()
+        until { !model.ui.value.working }
+        assertNull(model.ui.value.code)
+    }
+
+    private companion object {
+        const val PASSWORD = "a long enough password"
     }
 }

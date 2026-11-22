@@ -3,8 +3,11 @@ package nl.bvdm.rukoo.account
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -41,8 +44,8 @@ class AccountCodesTest {
         servers.forEach { it.close() }
     }
 
-    private fun server(signups: String = "open", invites: List<String> = emptyList(), codes: Boolean = true) =
-        FakeAccountServer(signups, invites, codes = codes).also { servers += it }
+    private fun server(signups: String = "open", invites: List<String> = emptyList(), codes: Boolean = true, usedInvites: List<String> = emptyList()) =
+        FakeAccountServer(signups, invites, codes = codes, usedInvites = usedInvites).also { servers += it }
 
     private fun device(srv: FakeAccountServer, name: String = "phone"): AccountService {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
@@ -248,6 +251,73 @@ class AccountCodesTest {
         phone.requestCode("b@example.com", "signup")
         phone.requestCode("a@example.com", "signup")
         phone.signUp("b@example.com", PASSWORD, emailCode = srv.codeFor("b@example.com")!!)
+        assertTrue(phone.signedIn)
+    }
+
+    @Test
+    fun `an invite code that has been used up asks for an emailed code, and does not stop one`() = runBlocking<Unit> {
+        val srv = server(signups = "verified", usedInvites = listOf("spent"))
+        val phone = device(srv)
+        // Without an emailed code, the server's invite_required reads as a request for one, which the form sends.
+        rejects("code_required") { phone.signUp("spent@example.com", PASSWORD, "spent") }
+        assertEquals("spent", bodies(srv, "POST /v1/signup").last().str("invite"))
+        rejects("code_format") { phone.signUp("spent@example.com", PASSWORD, "spent", emailCode = "12345") }
+        phone.requestCode("spent@example.com", "signup")
+        val code = srv.codeFor("spent@example.com")!!
+        val wrong = if (code == "000000") "111111" else "000000"
+        assertEquals(4, rejects("code_wrong") { phone.signUp("spent@example.com", PASSWORD, "spent", emailCode = wrong) }.attemptsLeft)
+        // With the emailed code, the sign-up goes once more without the invite code, and works.
+        val before = bodies(srv, "POST /v1/signup").size
+        phone.signUp("spent@example.com", PASSWORD, "spent", emailCode = code)
+        assertTrue(phone.signedIn)
+        val (withInvite, without) = bodies(srv, "POST /v1/signup").drop(before)
+        assertEquals("spent", withInvite.str("invite"))
+        assertNull(without["invite"])
+        assertEquals(code, without["emailCode"]!!.jsonObject.str("code"))
+    }
+
+    @Test
+    fun `a used-up invite code on a server without sign-up codes is refused as before`() = runBlocking<Unit> {
+        val srv = server(signups = "invite", invites = listOf("welcome"), usedInvites = listOf("spent"))
+        rejects("invite_required") { device(srv).signUp("old@example.com", PASSWORD, "spent") }
+        assertEquals(1, bodies(srv, "POST /v1/signup").size)
+    }
+
+    // Waits for a request to have reached srv.
+    private suspend fun reached(srv: FakeAccountServer, route: String, count: Int = 1) {
+        withTimeout(10_000) { while (srv.calls.count { it.route == route } < count) delay(10) }
+    }
+
+    @Test
+    fun `a late code answer from the server used before does not replace the current server's`() = runBlocking<Unit> {
+        val a = server(signups = "verified")
+        val b = server(signups = "verified")
+        val phone = device(a)
+        val gate = a.holdNext("POST /v1/email-code")
+        val late = async(Dispatchers.IO) { phone.requestCode("late@example.com", "signup") }
+        reached(a, "POST /v1/email-code")
+        phone.setServer(b.url)
+        phone.requestCode("late@example.com", "signup")
+        gate.countDown()
+        late.await()
+        phone.signUp("late@example.com", PASSWORD, emailCode = b.codeFor("late@example.com")!!)
+        assertTrue(phone.signedIn)
+        assertEquals(1, bodies(b, "POST /v1/signup").size)
+    }
+
+    @Test
+    fun `an older code request answered late does not replace the newer one's challenge`() = runBlocking<Unit> {
+        val srv = server(signups = "verified")
+        val phone = device(srv)
+        val gate = srv.holdNext("POST /v1/email-code")
+        val older = async(Dispatchers.IO) { phone.requestCode("order@example.com", "signup") }
+        reached(srv, "POST /v1/email-code")
+        srv.allowCode("order@example.com", "signup")
+        phone.requestCode("order@example.com", "signup")
+        val newest = srv.codeFor("order@example.com")!!
+        gate.countDown()
+        older.await()
+        phone.signUp("order@example.com", PASSWORD, emailCode = newest)
         assertTrue(phone.signedIn)
     }
 

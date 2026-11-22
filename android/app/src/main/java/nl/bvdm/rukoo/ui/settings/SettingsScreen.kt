@@ -83,8 +83,11 @@ object SettingsRoutes {
     val sections = listOf(ACCOUNTS, RUKOO, AGENTS, PHONE, NOTIFICATIONS, APPEARANCE, LANGUAGE, CATEGORIES, ABOUT)
 }
 
-/** Moves between Settings pages; [reset] makes a section the only page (a tap in the two-pane list). */
-class SettingsNav(val push: (String) -> Unit, val pop: () -> Unit, val reset: (String) -> Unit)
+/**
+ * Moves between Settings pages; [reset] makes a section the only page (a tap in the two-pane list). [shows]: whether
+ * Settings is open on that page, which a page leaving the composition asks to tell a fold from leaving it.
+ */
+class SettingsNav(val push: (String) -> Unit, val pop: () -> Unit, val reset: (String) -> Unit, val shows: (String) -> Boolean = { false })
 
 /**
  * Settings, a full-screen route on both widths (spec 6 §4.8): the list of sections, then a section's page.
@@ -108,6 +111,7 @@ fun SettingsScreen(app: AppViewModel, modifier: Modifier = Modifier) {
         push = { route -> model.setSettingsStack(model.settingsStack.value + route) },
         pop = { model.setSettingsStack(model.settingsStack.value.dropLast(1)) },
         reset = { route -> model.setSettingsStack(listOf(route)) },
+        shows = { route -> app.state.value.overlay == Overlay.SETTINGS && model.settingsStack.value.lastOrNull() == route },
     )
     // Folding recreates this screen with Settings still open; closing Settings starts it at the top next time.
     DisposableEffect(Unit) { onDispose { if (app.state.value.overlay != Overlay.SETTINGS) model.settingsClosed() } }

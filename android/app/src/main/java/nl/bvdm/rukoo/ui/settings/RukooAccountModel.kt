@@ -162,23 +162,47 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
 
     fun clearFormError() = _ui.update { it.copy(formError = null) }
 
-    /** A form page opened: a code step of another form goes, with what was typed in it. */
-    fun opened(form: Form) {
-        if (_ui.value.code?.form != form) {
-            codeRequests += 1
-            fields.remove("emailCode")
-            _ui.update { it.copy(code = null) }
-        }
+    // The form page on screen, from opening it ([entered]) to leaving it ([left]).
+    private var visiting: Form? = null
+
+    // The form a code request on its way is for (sendCode), or null.
+    private var requesting: Form? = null
+
+    /**
+     * A form page is on screen. Folding moves the page between the one- and two-pane layouts and composes it again,
+     * which is the same visit: the code step, the Locked offer and a code on its way stay. A new visit starts without
+     * an error, and a code step or request of another form goes, with what was typed in it.
+     */
+    fun entered(form: Form) {
+        if (visiting == form) return
+        visiting = form
+        clearFormError()
+        val step = _ui.value.code
+        if ((step != null && step.form != form) || (requesting != null && requesting != form)) dropCode()
+    }
+
+    /**
+     * The form page was left, by going back, to another page or out of Settings. A sign-in's or recovery's code step
+     * goes with it: the lock it was for may be over at the next visit. A sign-up's stays for the address it went to.
+     */
+    fun left(form: Form) {
+        if (visiting != form) return
+        visiting = null
+        if (form != Form.SIGN_UP && (_ui.value.code?.form == form || requesting == form)) dropCode()
     }
 
     /** The address field changed: a code sent to another address goes, so the next submit sends one to this one. */
     fun emailChanged(value: String) {
         val step = _ui.value.code ?: return
-        if (AccountKeys.normalizeEmail(value) != step.email) {
-            codeRequests += 1
-            fields.remove("emailCode")
-            _ui.update { it.copy(code = null) }
-        }
+        if (AccountKeys.normalizeEmail(value) != step.email) dropCode()
+    }
+
+    // The code step goes, and an answer still on its way changes nothing.
+    private fun dropCode() {
+        codeRequests += 1
+        requesting = null
+        fields.remove("emailCode")
+        _ui.update { it.copy(code = null) }
     }
 
     /**
@@ -192,6 +216,7 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
         val address = AccountKeys.normalizeEmail(email)
         val purpose = if (form == Form.SIGN_UP) "signup" else "unlock"
         val asked = ++codeRequests
+        requesting = form
         // An answer that comes after the address changed, or after a newer request, changes nothing.
         fun current() = asked == codeRequests && AccountKeys.normalizeEmail(fields["email"].orEmpty()) == address
         _ui.update { it.copy(working = true, formError = null) }
@@ -225,6 +250,7 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                     _ui.update { it.copy(formError = FormError.Code(err?.code ?: "server")) }
                 }
             } finally {
+                if (asked == codeRequests) requesting = null
                 _ui.update { it.copy(working = false) }
             }
         }
@@ -250,7 +276,9 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
      *
      * The code step (desktop's email-code.js submit): a sign-up the server answers with `code_required` gets a code by
      * email and waits for it; a sign-in or recovery of a locked account offers one ([FormError.Locked]) where the server
-     * sends codes. While the step shows, its field goes with the request. [lang]: the language a code's email is in.
+     * sends codes. While the step shows, its field goes with the request. An unlock code is needed only while the lock
+     * lasts, so an empty field goes too: once the lock is over the sign-in works without one, and while it lasts the
+     * server says locked again and the form asks for the code. [lang]: the language a code's email is in.
      */
     fun submit(form: Form, carriedLink: InviteLink? = null, lang: String = "en", done: (Int) -> Unit) {
         val acc = account ?: return
@@ -272,7 +300,7 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
         val emailCode = if (shown != null) f["emailCode"].orEmpty().trim() else ""
         // The operator's invite code needs no emailed code, so an empty code field doesn't stop it.
         val invited = invite is InviteInput.Code && invite.code.isNotBlank()
-        if (shown != null && emailCode.isEmpty() && !invited) return stop(FormError.Text(R.string.settings_rukoo_code_missing))
+        if (form == Form.SIGN_UP && shown != null && emailCode.isEmpty() && !invited) return stop(FormError.Text(R.string.settings_rukoo_code_missing))
         _ui.update { it.copy(working = true, formError = null) }
         viewModelScope.launch {
             var codeNext: Boolean? = null
@@ -317,6 +345,8 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                         stop(FormError.Text(R.string.settings_rukoo_code_invite_wrong))
                     // The server checks addresses: a code first, then the same submit again.
                     form == Form.SIGN_UP && code == "code_required" -> codeNext = invited
+                    // Still locked, and the code went out already: the step asks for it.
+                    form != Form.SIGN_UP && code == "locked" && shown != null -> stop(FormError.Text(R.string.settings_rukoo_code_missing))
                     // A locked account, on a server that sends codes to get past the lock.
                     form != Form.SIGN_UP && code == "locked" && shown == null && acc.status.value.info?.codesFor("unlock") == true ->
                         stop(FormError.Locked)
