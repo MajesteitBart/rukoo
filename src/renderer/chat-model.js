@@ -56,8 +56,8 @@ function sysKind(e) {
   }
 }
 
-// The part of a member a row's look depends on, for its sig.
-const memberSig = (m) => (m ? `${m.name ?? ''}\u0001${m.state ?? ''}\u0001${m.role ?? ''}` : '');
+// The part of a member a row's look depends on, for its sig: an agent's row has the Agent tag.
+const memberSig = (m) => (m ? `${m.name ?? ''}\u0001${m.state ?? ''}\u0001${m.role ?? ''}\u0001${m.kind === 'agent' ? 'agent' : ''}` : '');
 
 const listOf = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object') : []);
 
@@ -321,14 +321,130 @@ export function displayName(member, t) {
   return String(member.name || '').trim() || t('chat.log.formerMember');
 }
 
-// The tag after a member's name, or null: Former member for someone who left or was removed, Guest for a guest. A
-// deleted member has none, because their name is the tag already.
+// The tag after a member's name, or null: Former member for someone who left or was removed, Agent for an agent, Guest
+// for a guest. A deleted member has none, because their name is the tag already.
 export function memberTag(member, t) {
   if (!member || member.state === 'deleted') return null;
   if (member.state === 'left' || member.state === 'removed') return t('chat.log.formerMember');
+  if (isAgent(member)) return t('chat.roles.agent');
   if (member.role === 'guest') return t('chat.roles.guest');
   return null;
 }
+
+// ---------- agents in channels (server/WORKSPACES.md "Agents") ----------
+
+// Whether a member is an agent: a bot account a full member made, run by its own runtime. On the wire its role is
+// member and its kind agent.
+export const isAgent = (member) => Boolean(member) && member.kind === 'agent';
+// A person: someone who isn't an agent. A kind this version doesn't know counts as a person.
+export const isPerson = (member) => Boolean(member) && member.kind !== 'agent';
+
+// The choices of whom an agent answers, in the order the form shows them.
+export const AGENT_ANSWERS = ['everyone', 'sponsor', 'members'];
+// The most people an agent answers besides its sponsor (the server's limit).
+export const AGENT_CHOSEN_MAX = 50;
+
+// Whether an agent answers a mention by viewer, by its settings (member.agent: { sponsor, answers, members, agents }):
+// its sponsor always; everyone with 'everyone'; with 'members' the people it lists. An answers word this version
+// doesn't know counts as not answering, as Android's AgentRules.answers takes it. An agent without settings (an older
+// cache, until its directory loads again) counts as answering, since nothing says otherwise yet.
+export function agentAnswers(agent, viewer) {
+  const s = agent && agent.agent;
+  if (!s) return true;
+  if (viewer && s.sponsor === viewer) return true;
+  if (s.answers === 'everyone') return true;
+  if (s.answers === 'members') return Array.isArray(s.members) && s.members.includes(viewer);
+  return false;
+}
+
+// Who an agent answers, as one line: "Answers everyone", "Answers only Olga", "Answers only Olga, Bart and Sanne",
+// "Answers only Olga, Bart and 3 others". The sponsor comes first. Names come from members (Map or list). An answers
+// word this version doesn't know reads as its sponsor only. Someone the directory doesn't hold isn't named: a guest's
+// directory holds only the people in their channels, which can leave out the sponsor. With nobody left to name the
+// line reads "Answers only the person who made it", never "Former member".
+export function agentAnswersText(agent, { members, t, listFormat = new Intl.ListFormat(undefined, { type: 'conjunction' }) } = {}) {
+  const s = agent && (agent.agent || agent);
+  if (!s || !s.answers) return null;
+  if (s.answers === 'everyone') return t('chat.agents.answersEveryone');
+  const map = asMap(members);
+  const chosen = s.answers === 'members' && Array.isArray(s.members) ? s.members : [];
+  const ids = [s.sponsor, ...chosen].filter((id, i, all) => id && all.indexOf(id) === i && map.has(id));
+  const names = ids.map((id) => displayName(map.get(id), t));
+  if (!names.length) return t('chat.agents.answersSponsorGone');
+  if (names.length <= 3) return t('chat.agents.answersOnly', { names: listFormat.format(names) });
+  return t('chat.agents.answersMore', { names: names.slice(0, 2).join(', '), count: names.length - 2 });
+}
+
+// The line under an agent in Workspace members, a channel's members and the Agents dialog: "Made by Olga · Answers
+// only Olga · Answers other agents", as Android's agentNote. Made by is left out when the directory doesn't hold the
+// sponsor; whom it answers then says "the person who made it". agent: a directory member or an AgentOut.
+export function agentNote(agent, opts = {}) {
+  const s = agent && (agent.agent || (agent.answers ? agent : null));
+  if (!s) return null;
+  const { t } = opts;
+  const sponsor = s.sponsor ? asMap(opts.members).get(s.sponsor) : null;
+  const parts = [sponsor ? t('chat.agents.madeBy', { name: displayName(sponsor, t) }) : '', agentAnswersText(s, opts) || '', s.agents ? t('chat.agents.answersAgents') : ''];
+  return parts.filter(Boolean).join(' · ') || null;
+}
+
+// Whom the form for a new or changed agent starts on: the agent's own choice when this version knows it, else Only
+// me ('sponsor'), so nobody else's mention reaches a new agent until its sponsor says so. Android's AgentFormState
+// starts the same way.
+export function agentFormAnswers(agent = null) {
+  return agent && AGENT_ANSWERS.includes(agent.answers) ? agent.answers : 'sponsor';
+}
+
+// Whether the form for an agent can be saved, as far as whom it answers goes: a known choice, and for Chosen people
+// at least one person and at most the server's limit. Android's AgentRules.formReady holds the same rule.
+export function agentFormReady({ answers, chosen = 0 } = {}) {
+  if (!AGENT_ANSWERS.includes(answers)) return false;
+  if (answers !== 'members') return true;
+  return chosen > 0 && chosen <= AGENT_CHOSEN_MAX;
+}
+
+// The note a mention list shows beside an agent that won't answer viewer ("Answers only Olga"), or null when it will.
+export function agentMentionNote(agent, viewer, opts = {}) {
+  if (!isAgent(agent) || agentAnswers(agent, viewer)) return null;
+  return agentAnswersText(agent, opts);
+}
+
+// Whether viewer may add an agent to a channel (room: the Room, as the feed gives it): the channel's managers may add
+// any active agent; its sponsor may add it to a channel the workspace can see and the sponsor is in. Into a private
+// channel an agent comes only while its sponsor is in it (the server's 409 sponsor_not_in_channel): inside holds the
+// channel's member IDs (a Set or a list), and without it no agent is offered for a private channel. Never to an
+// archived channel or a DM.
+export function canAddAgent(agent, room, viewer, inside = null) {
+  if (!isAgent(agent) || agent.state !== 'active' || !room || room.kind !== 'channel' || room.archived) return false;
+  const sponsor = agent.agent?.sponsor ?? null;
+  if (room.visibility !== 'workspace') {
+    const ids = inside instanceof Set ? inside : new Set(inside || []);
+    if (!sponsor || !ids.has(sponsor)) return false;
+  }
+  if (room.role === 'manager') return true;
+  return Boolean(viewer) && sponsor === viewer && room.visibility === 'workspace';
+}
+
+// Whether viewer may take an agent out of a channel: the channel's managers, and its sponsor. Also out of an archived
+// channel, whose history its key reads on until it leaves; the server allows it there (server/WORKSPACES.md "Channels").
+export function canRemoveAgent(agent, room, viewer) {
+  if (!isAgent(agent) || !room || room.kind !== 'channel') return false;
+  return room.role === 'manager' || (Boolean(viewer) && agent.agent?.sponsor === viewer);
+}
+
+// Whether viewer may change an agent (rename it, change whom it answers, remove it): its sponsor, an owner or an admin.
+export function canManageAgent(agent, viewer, myRole) {
+  if (!agent) return false;
+  return ['owner', 'admin'].includes(myRole) || (Boolean(viewer) && sponsorOf(agent) === viewer);
+}
+
+// Whether viewer may give an agent a new key: its sponsor alone. The key reads every channel the agent is in, private
+// ones too, so an owner or admin outside such a channel gets 403 forbidden from the server.
+export function canRenewAgentKey(agent, viewer) {
+  return Boolean(agent) && Boolean(viewer) && sponsorOf(agent) === viewer;
+}
+
+// The sponsor of an agent, a directory member (member.agent) or an AgentOut.
+const sponsorOf = (agent) => (agent.agent ? agent.agent.sponsor : agent.sponsor) ?? null;
 
 // A direct message's title: the other participant's name; two or three names joined by listFormat ("Sanne, Mila and
 // Olga"); four or more as "Sanne, Mila and 3 others". members: Map or list of Member.
@@ -385,14 +501,23 @@ export function modeBadge({ attention: n = 0, unread = false } = {}) {
   return unread ? { dot: true } : null;
 }
 
-// Whether you may remove a message (an event or a timeline row): your own, anywhere, or any in a channel you
-// manage. Never a pending send or one already removed.
-export function canRemove(event, me, room) {
+// Whether you may remove a message (an event or a timeline row): your own, anywhere, any in a channel you manage, or
+// one an agent you made wrote, also once the agent itself was removed (server/WORKSPACES.md "Agents"; members, a Map
+// or list, is the directory that says so). Never a pending send or one already removed.
+export function canRemove(event, me, room, members = null) {
   if (!event) return false;
   const message = event.kind ? event.kind === 'message.posted' : event.type === 'msg' || event.type === 'reply';
   if (!message || event.redacted || event.removed || event.pending || event.seq == null) return false;
   if (me && event.actor === me) return true;
-  return Boolean(room && room.kind === 'channel' && room.role === 'manager');
+  if (room && room.kind === 'channel' && room.role === 'manager') return true;
+  return sponsorsAuthor(event, me, members);
+}
+
+// Whether the author of a message is an agent that me made: its sponsor may remove the message and its link cards.
+export function sponsorsAuthor(event, me, members) {
+  if (!event || !me || !members) return false;
+  const author = asMap(members).get(event.actor);
+  return isAgent(author) && author.agent?.sponsor === me;
 }
 
 // ---------- leaving as the last owner or the only manager (desktop-ui 6.9, 6.10) ----------
@@ -420,11 +545,12 @@ export function soleManager(roomMembers, me) {
   return list.some((m) => m.member !== me) && !list.some((m) => m.member !== me && m.role === 'manager');
 }
 
-// Who can take a channel over: its active full members other than you, by name. ids: the channel's member IDs.
+// Who can take a channel over: its active full members other than you, by name. Never an agent. ids: the channel's
+// member IDs.
 export function successors(ids, members, me, collator, t) {
   const map = asMap(members);
   return [...new Set(ids || [])]
-    .filter((id) => id !== me && map.get(id)?.state === 'active' && map.get(id)?.role !== 'guest')
+    .filter((id) => id !== me && map.get(id)?.state === 'active' && map.get(id)?.role !== 'guest' && !isAgent(map.get(id)))
     .sort((a, b) => collator.compare(displayName(map.get(a), t), displayName(map.get(b), t)));
 }
 
@@ -463,10 +589,11 @@ export function closedBar(room, { me = null, members, blocks, full = true, colla
 // pick: active full members you can message that fit the search and aren't picked yet. blocked: people you blocked,
 // shown switched off with Unblock. guests: shown switched off with the reason, while searching or when nobody else
 // would show. empty: 'none' for a search that finds nobody, 'nobody' when nobody else is in the workspace (as far as
-// a complete directory says), else null. matches(member) says whether a member fits the query.
+// a complete directory says), else null. matches(member) says whether a member fits the query. Agents are never in a
+// DM, so they don't show at all.
 export function dmPicker(people, { me = null, blocks, picked = [], query = '', matches = () => true, membersMore = false } = {}) {
   const mine = blocks instanceof Set ? blocks : new Set(blocks || []);
-  const others = (people || []).filter((m) => m && m.id !== me && m.state === 'active');
+  const others = (people || []).filter((m) => m && m.id !== me && m.state === 'active' && !isAgent(m));
   const searching = Boolean(String(query || '').trim());
   const fits = (m) => !searching || matches(m);
   const full = others.filter((m) => m.role !== 'guest');
@@ -483,10 +610,13 @@ export function dmPicker(people, { me = null, blocks, picked = [], query = '', m
 }
 
 // What Add people says when its list is empty, or null while it has rows: 'none' after a search, 'nobody' when the
-// workspace has nobody else, 'everyone' when everyone else is in the channel already.
-export function addPeopleEmpty({ rows = 0, candidates = 0, others = 0, query = '' } = {}) {
+// workspace has nobody else, 'everyone' when everyone else is in the channel already. agentsOnly: the person doesn't
+// manage the channel and may add only their own agents (Add agents), so the list says 'agents', all of them are in
+// already, and never speaks for the people.
+export function addPeopleEmpty({ rows = 0, candidates = 0, others = 0, query = '', agentsOnly = false } = {}) {
   if (rows > 0) return null;
   if (String(query || '').trim() && candidates > 0) return 'none';
+  if (agentsOnly) return 'agents';
   return others > 0 ? 'everyone' : 'nobody';
 }
 
@@ -611,10 +741,19 @@ export function draftFiles(files, now = Date.now()) {
 }
 
 // Whether a message's More menu offers Message {author} (contract 5.2): someone else's message, by an active full
-// member you haven't blocked, and you a full member yourself.
+// member you haven't blocked, and you a full member yourself. Never an agent's: agents aren't in DMs.
 export function canMessageAuthor(row, { me = null, myRole = 'member', members, blocks } = {}) {
   if (!row || !row.actor || row.actor === me || row.pending || myRole === 'guest') return false;
   const m = asMap(members).get(row.actor);
   const mine = blocks instanceof Set ? blocks : new Set(blocks || []);
-  return Boolean(m) && m.state === 'active' && m.role !== 'guest' && !mine.has(row.actor);
+  return Boolean(m) && m.state === 'active' && m.role !== 'guest' && !isAgent(m) && !mine.has(row.actor);
+}
+
+// Whether a message's More menu offers Block {author}: someone else's, by an active full member you haven't blocked
+// yet. Never an agent: its sponsor or an admin removes it instead.
+export function canBlockAuthor(row, { me = null, members, blocks } = {}) {
+  if (!row || !row.actor || row.actor === me) return false;
+  const m = asMap(members).get(row.actor);
+  const mine = blocks instanceof Set ? blocks : new Set(blocks || []);
+  return Boolean(m) && m.state === 'active' && m.role !== 'guest' && !isAgent(m) && !mine.has(row.actor);
 }

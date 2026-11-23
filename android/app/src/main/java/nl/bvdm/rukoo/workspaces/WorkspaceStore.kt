@@ -55,6 +55,8 @@ data class RoomRow(
     val hi: Long?,
     val notified: Long,
     val muted: Boolean,
+    /** How many agents are in the room, from the feed; [members] counts only people. */
+    val agents: Int = 0,
 ) {
     val hasCache: Boolean get() = lo != null && hi != null
 }
@@ -271,18 +273,19 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
             val readSent = if (local) "MAX(room.readSent, excluded.read)" else "excluded.read"
             sql.exec(
                 """INSERT INTO room (ws, id, kind, name, visibility, archived, closedReason, participants, startedBy, grantId, role,
-                     members, head, floor, lastAt, read, readLocal, readSent, unread, mentions)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     members, head, floor, lastAt, read, readLocal, readSent, unread, mentions, agents)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (ws, id) DO UPDATE SET
                      kind = excluded.kind, name = excluded.name, visibility = excluded.visibility, archived = excluded.archived,
                      closedReason = excluded.closedReason, participants = excluded.participants, startedBy = excluded.startedBy,
                      grantId = excluded.grantId, role = excluded.role, members = excluded.members, head = excluded.head,
                      floor = excluded.floor, lastAt = excluded.lastAt, read = excluded.read,
                      readLocal = $readLocal, readSent = $readSent,
-                     unread = excluded.unread, mentions = excluded.mentions""",
+                     unread = excluded.unread, mentions = excluded.mentions, agents = excluded.agents""",
                 ws, feed.conversation, feed.kind, feed.name, feed.visibility, feed.archived, feed.closedReason,
                 feed.participants?.let { RukooJson.encodeToString(STRINGS, it) }, feed.startedBy, feed.grant, feed.role,
                 feed.members, feed.head, feed.floor, feed.lastAt, feed.read, feed.read, feed.read, feed.unread, feed.mentions,
+                feed.agents,
             )
             val dropped = applyFloor(ws, feed.conversation, feed.floor)
             // The workspace's view hears every change in it; the room's own timeline hears this one.
@@ -340,12 +343,14 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
 
         /**
          * Writes events as the server sent them and returns them as stored. A tombstoned message is stored removed, a
-         * removed one never gets its text back, and a `message.redacted` removes its target and tombstones it.
+         * removed one never gets its text back, and a `message.redacted` removes its target and tombstones it. An
+         * agent's reply keeps its trigger and depth in `data` until it is removed, as the server drops them then.
          */
         fun writeEvents(ws: String, room: String, events: List<WireEvent>): List<Event> {
             for (e in events) {
                 val removed = e.isMessage && (e.redacted || hasTombstone(ws, e.id))
                 val keepText = e.isMessage && !removed
+                val data = if (e.isMessage && removed) null else e.data()
                 sql.exec(
                     """INSERT INTO event (ws, room, seq, id, kind, actor, at, root, text, mentions, data, redacted)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -353,11 +358,12 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
                          id = excluded.id, kind = excluded.kind, actor = excluded.actor, at = excluded.at, root = excluded.root,
                          text = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.text END,
                          mentions = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.mentions END,
-                         data = excluded.data, redacted = MAX(event.redacted, excluded.redacted)""",
+                         data = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.data END,
+                         redacted = MAX(event.redacted, excluded.redacted)""",
                     ws, room, e.seq, e.id, e.kind, e.actor, e.at, e.root,
                     if (keepText) e.text else null,
                     if (keepText) RukooJson.encodeToString(MENTIONS, e.mentions) else null,
-                    e.data()?.let { RukooJson.encodeToString(EventData.serializer(), it) },
+                    data?.let { RukooJson.encodeToString(EventData.serializer(), it) },
                     removed,
                 )
                 if (e.kind == WireEvent.MESSAGE_REDACTED && e.target != null) {
@@ -422,6 +428,21 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
             ws, room, row = ::event,
         )
 
+        /**
+         * Each room's roster revision (`Room.roster`): the seq of the newest join or leave cached for it, a
+         * `member.joined` or `member.left`. Rooms without one are left out. Read from the index `event_roster`.
+         */
+        fun rosters(ws: String): Map<String, Long> = sql.query(
+            "SELECT room, MAX(seq) FROM event INDEXED BY event_roster WHERE ws = ? AND ${ChatDb.ROSTER_EVENTS} GROUP BY room",
+            ws,
+        ) { it.text(0) to it.long(1) }.toMap()
+
+        /** [room]'s roster revision, as in [rosters]; 0 when no join or leave of it is cached. */
+        fun roster(ws: String, room: String): Long = sql.one(
+            "SELECT MAX(seq) FROM event INDEXED BY event_roster WHERE ws = ? AND room = ? AND ${ChatDb.ROSTER_EVENTS}",
+            ws, room,
+        ) { it.longOrNull(0) } ?: 0L
+
         /** The cached replies to a thread root, in order. */
         fun replies(ws: String, room: String, root: String): List<Event> =
             sql.query("SELECT $EVENT_COLUMNS FROM event WHERE ws = ? AND room = ? AND root = ? ORDER BY seq", ws, room, root, row = ::event)
@@ -466,14 +487,17 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
         }
 
         /**
-         * Removed messages lose their text and mentions, in any room of the workspace. Returns room to IDs for the ones
-         * that were cached with text, for the `redacted` report.
+         * Removed messages lose their text and mentions (and an agent reply its trigger and depth), in any room of the
+         * workspace. Returns room to IDs for the ones that were cached with text, for the `redacted` report.
          */
         fun redact(ws: String, ids: Collection<String>): Map<String, List<String>> {
             val out = LinkedHashMap<String, MutableList<String>>()
             for (id in ids) {
                 val row = sql.one("SELECT room, redacted FROM event WHERE ws = ? AND id = ?", ws, id) { it.text(0) to it.bool(1) } ?: continue
-                sql.exec("UPDATE event SET text = NULL, mentions = NULL, redacted = 1 WHERE ws = ? AND id = ?", ws, id)
+                sql.exec(
+                    "UPDATE event SET text = NULL, mentions = NULL, data = CASE WHEN kind = 'message.posted' THEN NULL ELSE data END, redacted = 1 WHERE ws = ? AND id = ?",
+                    ws, id,
+                )
                 sql.touch(ws, row.first)
                 if (!row.second) out.getOrPut(row.first) { ArrayList() } += id
             }
@@ -551,8 +575,9 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
             sql.exec("DELETE FROM member WHERE ws = ?", ws)
             for (m in rows) {
                 sql.exec(
-                    "INSERT INTO member (ws, id, kind, name, role, state, joinedAt) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (ws, id) DO NOTHING",
+                    "INSERT INTO member (ws, id, kind, name, role, state, joinedAt, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (ws, id) DO NOTHING",
                     ws, m.id, m.kind, m.name, m.role, m.state, m.joinedAt,
+                    m.agent?.let { RukooJson.encodeToString(AgentSettings.serializer(), it) },
                 )
             }
             sql.exec("UPDATE ws SET membersStale = 0, membersMore = ? WHERE id = ?", more, ws)
@@ -568,8 +593,10 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
         }
 
         fun listMembers(ws: String): List<Member> =
-            sql.query("SELECT id, kind, name, role, state, joinedAt FROM member WHERE ws = ? ORDER BY id", ws) { r ->
-                Member(r.text(0), r.text(1), r.text(2), r.text(3), r.text(4), r.long(5))
+            sql.query("SELECT id, kind, name, role, state, joinedAt, agent FROM member WHERE ws = ? ORDER BY id", ws) { r ->
+                // Settings this version can't read are left out; the member still shows, as an agent.
+                val agent = r.textOrNull(6)?.let { runCatching { RukooJson.decodeFromString(AgentSettings.serializer(), it) }.getOrNull() }
+                Member(r.text(0), r.text(1), r.text(2), r.text(3), r.text(4), r.long(5), agent)
             }
 
         fun replaceChannels(ws: String, rows: List<Channel>) {
@@ -740,6 +767,7 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
             grantId = r.text(9), role = r.textOrNull(10), members = r.int(11), head = r.long(12), floor = r.long(13),
             lastAt = r.longOrNull(14), read = r.long(15), readLocal = r.long(16), readSent = r.long(17), unread = r.int(18),
             mentions = r.int(19), lo = r.longOrNull(20), hi = r.longOrNull(21), notified = r.long(22), muted = r.bool(23),
+            agents = r.int(24),
         )
 
         private fun event(r: Row) = Event(
@@ -774,7 +802,7 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
         private const val WS_COLUMNS =
             "id, name, role, me, myName, generation, keyId, limits, retention, cursor, passing, fresh, state, membersStale, channelsStale, blocksStale, membersMore, syncedAt, activeAt"
         private const val ROOM_COLUMNS =
-            "ws, id, kind, name, visibility, archived, closedReason, participants, startedBy, grantId, role, members, head, floor, lastAt, read, readLocal, readSent, unread, mentions, lo, hi, notified, muted"
+            "ws, id, kind, name, visibility, archived, closedReason, participants, startedBy, grantId, role, members, head, floor, lastAt, read, readLocal, readSent, unread, mentions, lo, hi, notified, muted, agents"
         private const val EVENT_COLUMNS = "seq, id, kind, actor, at, root, text, mentions, data, redacted"
         private const val OUTBOX_COLUMNS =
             "local, ws, room, actor, grantId, generation, text, mentions, root, operationId, state, reason, attempts, nextAt, createdAt"

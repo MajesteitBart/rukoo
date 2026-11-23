@@ -10531,6 +10531,10 @@
     "message": "Members",
     "description": "Workspace menu item that opens the list of the workspace's members. src/renderer/chat.js"
   },
+  "chat.workspace.agents": {
+    "message": "Agents",
+    "description": "Workspace menu: item that opens the Agents dialog, for full members of a workspace whose server has agents in channels. src/renderer/chat-dialogs.js (workspaceItems)"
+  },
   "chat.workspace.yourName": {
     "message": "Change your name",
     "description": "Workspace menu item that opens the dialog for the user's name in this workspace. src/renderer/chat.js"
@@ -10563,6 +10567,10 @@
     "message": "Guest",
     "description": "Workspace role in the switcher's second line, member lists and Invite people; also the tag beside a guest's name in the message list. src/renderer/chat.js, src/renderer/chat-view.js, src/renderer/chat-dialogs.js"
   },
+  "chat.roles.agent": {
+    "message": "Agent",
+    "description": "Tag beside an agent's name: a message author, the mention list and channel members. Workspace members and Add people show agents under the Agents heading instead. An agent is a bot account a member made, which answers mentions in channels. src/renderer/chat-model.js (memberTag), src/renderer/chat-input.js, src/renderer/chat-dialogs.js"
+  },
   "chat.roles.manager": {
     "message": "Manager",
     "description": "Channel role: pill beside a channel manager in the channel's member list. src/renderer/chat-dialogs.js"
@@ -10582,6 +10590,10 @@
   "chat.roles.guests": {
     "message": "Guests",
     "description": "Workspace members dialog: group heading over the guests. src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.agents": {
+    "message": "Agents",
+    "description": "Workspace members dialog and Add people: group heading over the agents. src/renderer/chat-dialogs.js"
   },
   "chat.status.connected": {
     "message": "Connected",
@@ -10758,6 +10770,10 @@
   "chat.head.members": {
     "message": { "one": "{count} member", "other": "{count} members" },
     "description": "Conversation header: member count; also in the channel rows of Browse channels. {count}: members. src/renderer/chat-view.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.head.agents": {
+    "message": { "one": "{count} agent", "other": "{count} agents" },
+    "description": "Conversation header of a channel: how many agents are in it, after the member count (\"3 members · 1 agent\"). Shown only when there is one. {count}: agents. src/renderer/chat-view.js"
   },
   "chat.head.private": {
     "message": "Private",
@@ -11531,6 +11547,10 @@
     "message": "The host can read messages in this workspace.",
     "description": "Make a workspace, Join and Workspace settings: line saying the host can read the messages. src/renderer/chat-dialogs.js"
   },
+  "chat.host.agents": {
+    "message": "Agents in a channel pass what they read there on to the system that runs them.",
+    "description": "Make a workspace, Join and Workspace settings: line after \"The host can read messages\", shown when the server has agents in channels; also under the Agents heading of Add people. An agent is run by software its maker chose, outside the host's control. src/renderer/chat.js (hostNote)"
+  },
   "chat.make.title": {
     "message": "Make a workspace",
     "description": "Make a workspace dialog: title. src/renderer/chat-dialogs.js"
@@ -11883,9 +11903,21 @@
     "message": "Only an owner or admin can add a guest.",
     "description": "Channel members dialog: note on a guest the user can't add, and the error when the server asks for an owner or admin. src/renderer/chat-dialogs.js, src/renderer/chat.js (chatErrorText)"
   },
+  "chat.channel.addAgents": {
+    "message": "Add agents",
+    "description": "Room menu and channel members dialog: item and button that open the picker for someone who doesn't manage the channel but made agents they may add to it. They can't add people, so the label says agents. Android chat_channel_add_agents. src/renderer/chat.js (roomItems), src/renderer/chat-dialogs.js (channelMembers)"
+  },
+  "chat.channel.addAgentsTitle": {
+    "message": "Add agents to #{name}",
+    "description": "Channel members dialog: title of the picker for someone who may add only their own agents to the channel. {name}: the channel name, after #. Android chat_channel_add_agents_title. src/renderer/chat-dialogs.js (channelMembers)"
+  },
   "chat.channel.addEveryone": {
     "message": "Everyone in {workspace} is already in #{name}",
     "description": "Add people picker of a channel: line when every other workspace member is in the channel already; owners and admins get an Invite people button beside it. {workspace}: the workspace name. {name}: the channel name, after #. Android chat_channel_add_everyone. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.peopleGroup": {
+    "message": "People",
+    "description": "Add people picker of a channel: group heading over the people, shown when agents can be added too (their group is headed Agents). src/renderer/chat-dialogs.js"
   },
   "chat.channel.addFailed": {
     "message": "Couldn't add {names}.",
@@ -11974,6 +12006,258 @@
   "chat.members.blocked": {
     "message": "Blocked",
     "description": "Workspace members dialog: tag after the name of someone the user blocked. src/renderer/chat-dialogs.js"
+  },
+  "chat.agents.title": {
+    "message": "Agents in {workspace}",
+    "description": "Agents dialog: title. {workspace}: the workspace name. src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.intro": {
+    "message": "An agent answers when someone mentions it in a channel it was added to. It runs outside Rukoo, on a computer or server you choose, and connects with a key.",
+    "description": "Agents dialog: line above the list that explains what an agent is. src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.add": {
+    "message": "Add an agent",
+    "description": "Agents dialog: button above the list that opens the Add an agent form. src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.none": {
+    "message": "No agents yet.",
+    "description": "Agents dialog: line in place of the list when the workspace has no agents. src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.madeBy": {
+    "message": "Made by {name}",
+    "description": "Part of the line under an agent in the Agents dialog, Workspace members and a channel's members: who made it (its sponsor). Left out when the app doesn't know that member. {name}: that member. Android chat_agents_made_by. src/renderer/chat-model.js (agentNote)"
+  },
+  "chat.agents.answersEveryone": {
+    "message": "Answers everyone",
+    "description": "Who an agent answers, in the Agents dialog, Add people and the mention list: everyone who can post in its channels. src/renderer/chat-model.js (agentAnswersText)"
+  },
+  "chat.agents.answersOnly": {
+    "message": "Answers only {names}",
+    "description": "Who an agent answers, in the Agents dialog, Add people and the mention list (where it shows only to someone it won't answer). {names}: one to three names joined by the list format, the person who made it first (\"Olga\", \"Olga, Bart and Sanne\"). src/renderer/chat-model.js (agentAnswersText)"
+  },
+  "chat.agents.answersMore": {
+    "message": { "one": "Answers only {names} and {count} other", "other": "Answers only {names} and {count} others" },
+    "description": "Who an agent answers, when it answers more than three people. {names}: the first two names with a comma between (\"Olga, Bart\"); {count}: how many more. src/renderer/chat-model.js (agentAnswersText)"
+  },
+  "chat.agents.answersSponsorGone": {
+    "message": "Answers only the person who made it",
+    "description": "Who an agent answers, when the app doesn't know who made it, such as for a guest whose channels don't include that person. Android chat_agents_answers_sponsor_gone. src/renderer/chat-model.js (agentAnswersText)"
+  },
+  "chat.agents.answersAgents": {
+    "message": "Answers other agents",
+    "description": "Part of the line under an agent in the Agents dialog, Workspace members and a channel's members, when it answers mentions by other agents. src/renderer/chat-model.js (agentNote)"
+  },
+  "chat.agents.lastActive": {
+    "message": "Last active {date}",
+    "description": "Agents dialog: part of an agent's second line, when its runner last reached the server. {date}: day, month and time. src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.neverActive": {
+    "message": "Not connected yet",
+    "description": "Agents dialog: part of an agent's second line when its runner never reached the server. src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.edit": {
+    "message": "Edit agent",
+    "description": "Agents dialog and Workspace members: menu item that opens the agent's form. src/renderer/chat-dialogs.js"
+  },
+  "chat.agents.newKey": {
+    "message": "New key",
+    "description": "Agents dialog and Workspace members: menu item that replaces the agent's key. Only the person who made the agent sees it. src/renderer/chat-dialogs.js (agentMenu)"
+  },
+  "chat.agents.remove": {
+    "message": "Remove agent",
+    "description": "Agents dialog and Workspace members: menu item that removes the agent from the workspace. src/renderer/chat-dialogs.js"
+  },
+  "chat.agents.newKeyTitle": {
+    "message": "Make a new key for {name}?",
+    "description": "Confirmation before New key: title. {name}: the agent. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.newKeyBody": {
+    "message": "The current key stops working at once, and a runner that uses it disconnects. You'll see the new key only once.",
+    "description": "Confirmation before New key: body. {name}: the agent (not used in English). A runner is the program that connects an agent to the workspace. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.newKeyConfirm": {
+    "message": "Make new key",
+    "description": "Confirmation before New key: the button. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.removeTitle": {
+    "message": "Remove {name}?",
+    "description": "Confirmation before removing an agent: title. {name}: the agent. src/renderer/chat-dialogs.js (removeAgent)"
+  },
+  "chat.agents.removeBody": {
+    "message": "{name} leaves every channel and its key stops working. Its messages stay.",
+    "description": "Confirmation before removing an agent: body. {name}: the agent. src/renderer/chat-dialogs.js (removeAgent)"
+  },
+  "chat.agents.removeConfirm": {
+    "message": "Remove",
+    "description": "Confirmation before removing an agent: the button. src/renderer/chat-dialogs.js (removeAgent)"
+  },
+  "chat.agents.removed": {
+    "message": "{name} was removed.",
+    "description": "Toast after an agent was removed. {name}: the agent. src/renderer/chat-dialogs.js (removeAgent)"
+  },
+  "chat.agents.addTitle": {
+    "message": "Add an agent",
+    "description": "Add an agent form: title. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.editTitle": {
+    "message": "Edit {name}",
+    "description": "Edit agent form: title. {name}: the agent. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.make": {
+    "message": "Add agent",
+    "description": "Add an agent form: the button that makes the agent and shows its key. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.name": {
+    "message": "Name",
+    "description": "Add an agent and Edit agent: label of the name field; people mention the agent by this name. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.namePlaceholder": {
+    "message": "Assistant",
+    "description": "Add an agent: placeholder of the name field, an example name for an agent. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answers": {
+    "message": "Who it answers",
+    "description": "Add an agent and Edit agent: heading over the three choices of whose mentions the agent answers. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersEveryoneOption": {
+    "message": "Everyone",
+    "description": "Add an agent and Edit agent: the choice that the agent answers everyone. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersEveryoneHelp": {
+    "message": "Anyone who can post in a channel it's in.",
+    "description": "Add an agent and Edit agent: help under Everyone. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersMeOption": {
+    "message": "Only me",
+    "description": "Add an agent and Edit agent: the choice that the agent answers only the person who made it, when that is the user. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersSponsorOption": {
+    "message": "Only {name}",
+    "description": "Edit agent, for an owner or admin editing someone else's agent: the choice that it answers only the person who made it. {name}: that person. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersOnlyHelp": {
+    "message": "It doesn't answer anyone else, but it still reads every message in its channels.",
+    "description": "Add an agent and Edit agent: help under Only me and Only {name}. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersChosenOption": {
+    "message": "Chosen people",
+    "description": "Add an agent and Edit agent: the choice that the agent answers its maker and the people picked below it; also the accessible name of that list. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersChosenHelp": {
+    "message": "You and the people you pick.",
+    "description": "Add an agent and Edit agent: help under Chosen people, when the user made the agent. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersChosenSponsorHelp": {
+    "message": "{name} and the people you pick.",
+    "description": "Edit agent, for someone else's agent: help under Chosen people. {name}: who made the agent. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.chosenCount": {
+    "message": { "one": "{count} person picked", "other": "{count} people picked" },
+    "description": "Add an agent and Edit agent: line under the people list of Chosen people. {count}: how many are picked (at most 50). src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.chosenNone": {
+    "message": "Pick at least one person.",
+    "description": "Add an agent and Edit agent: line under the people list of Chosen people while nobody is picked, shown as a warning; the Make agent or Save button stays off until someone is picked. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.allIn": {
+    "message": "All your agents are in #{name} already",
+    "description": "Add agents picker: line when every agent the user made is in the channel already. {name}: the channel name, after #. Android chat_agents_all_in. src/renderer/chat-dialogs.js (channelMembers)"
+  },
+  "chat.agents.nobodyToPick": {
+    "message": "Nobody else is in this workspace yet.",
+    "description": "Add an agent and Edit agent: line in place of the people list of Chosen people when there is nobody to pick. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersAgentsOption": {
+    "message": "Answers other agents",
+    "description": "Add an agent and Edit agent: checkbox that lets the agent answer mentions by other agents. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersAgentsHelp": {
+    "message": { "one": "When another agent mentions it. A chain of agents answering each other stops after {count} reply.", "other": "When another agent mentions it. A chain of agents answering each other stops after {count} replies." },
+    "description": "Add an agent and Edit agent: help under Answers other agents. {count}: the server's depth limit, 3 by default. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.answersAgentsHelpPlain": {
+    "message": "When another agent mentions it. A chain of agents answering each other stops after a few replies.",
+    "description": "Add an agent and Edit agent: help under Answers other agents, when the server doesn't say its depth limit. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.runsNote": {
+    "message": "Next you get its key and a config for the runner, the program that connects it to your own agent.",
+    "description": "Add an agent: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.keyTitle": {
+    "message": "Key for {name}",
+    "description": "Key step after Add an agent and New key: title. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyOnce": {
+    "message": "Copy the key now. You'll see it only once.",
+    "description": "Key step: first line. {name}: the agent (not used in English). src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.key": {
+    "message": "Key",
+    "description": "Key step: label of the field with the agent's key. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.copyKey": {
+    "message": "Copy key",
+    "description": "Key step: button that copies the key. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyCopied": {
+    "message": "Key copied",
+    "description": "Toast after Copy key. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.server": {
+    "message": "Server",
+    "description": "Key step: label of the field with the server's address, which the runner connects to. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.workspaceId": {
+    "message": "Workspace ID",
+    "description": "Key step: label of the field with the workspace's ID (w_…). src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.useMine": {
+    "message": "Use one of my agents",
+    "description": "Key step, desktop only: label of the list of the user's agents from Settings → Agents (Hermes, OpenClaw, Claude Code, Codex, a custom agent); the one picked goes into the runner config. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.useNone": {
+    "message": "None: a command of my own",
+    "description": "Key step, desktop only: first choice of Use one of my agents, which leaves a placeholder command in the config. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.useMineHelp": {
+    "message": "Its settings from Settings → Agents go into the config. Its key or token doesn't.",
+    "description": "Key step, desktop only: help under Use one of my agents. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.config": {
+    "message": "Runner config",
+    "description": "Key step: label of the read-only JSON config for the reference runner (integrations/agent-runner). src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.configBackend": {
+    "message": "Change backend to how your agent runs: runs, openai, claude, codex or command. The runner's README describes each.",
+    "description": "Key step: line under the config while its backend is the placeholder command. Keep runs, openai, claude, codex and command as they are: they are values in the file. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyEnv": {
+    "message": "Set {name} to that agent's key or token before you start the runner.",
+    "description": "Key step: line under the config when its backend needs a secret, which the config names as an environment variable. {name}: the variable, such as HERMES_API_KEY. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.copyConfig": {
+    "message": "Copy config",
+    "description": "Key step: button that copies the runner config. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.configCopied": {
+    "message": "Config copied",
+    "description": "Toast after Copy config. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.configRun": {
+    "message": "Save it as agent.json and start the runner from the Rukoo repository:",
+    "description": "Key step: line before the command that starts the runner. Keep agent.json. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.configPrivate": {
+    "message": "The config holds the agent's key. Keep it private, as you would a password.",
+    "description": "Key step: note at the end. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeTitle": {
+    "message": "Close without copying the key?",
+    "description": "Question when the key step closes before the key or the config was copied: title. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeBody": {
+    "message": "You won't see this key again. Without it the agent can't connect, and you'd need a new key.",
+    "description": "Question when the key step closes before anything was copied: body. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.new.title": {
     "message": "New message",
@@ -12254,6 +12538,30 @@
   "chat.errors.dmUnavailable": {
     "message": "You can't start a conversation with these people.",
     "description": "Team chat error, shown in the New message dialog: the server refused a direct message with these people (403 dm_unavailable). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.agentLimit": {
+    "message": "{workspace} has as many agents as it can have. Remove one first.",
+    "description": "Team chat error in the Add an agent dialog: the workspace reached its limit of agents (409 agent_limit). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.agentInDm": {
+    "message": "Agents can't be in direct messages.",
+    "description": "Team chat error: the server refused a direct message with an agent in it (400 agent_in_dm). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.agentNotManager": {
+    "message": "An agent can't manage a channel.",
+    "description": "Team chat error: the server refused to make an agent a channel manager or successor (400 agent_not_manager). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.agentBlock": {
+    "message": "You can't block an agent. The person who made it, or an admin, can remove it.",
+    "description": "Team chat error: the server refused to block an agent (400 agent_block). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.agentRole": {
+    "message": "An agent's role can't change.",
+    "description": "Team chat error: the server refused a workspace role change for an agent (400 agent_role). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.agentSponsorNotInChannel": {
+    "message": "An agent can be in a private channel only while the person who made it is in it.",
+    "description": "Team chat error: the server refused to add an agent to a private channel its sponsor isn't in (409 sponsor_not_in_channel). Shown after Couldn't add {names}. in Add people. src/renderer/chat.js (chatErrorText)"
   },
   "chat.errors.dailyDms": {
     "message": "You started 20 conversations today. Try again later.",

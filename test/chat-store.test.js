@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 const { tempDir } = require('./tmp');
-const { openStore, ROOM_CACHE_MAX, SCHEMA_VERSION } = require('../src/main/workspaces/store');
+const { openStore, ROOM_CACHE_MAX, SCHEMA_VERSION, SCHEMA_V1, MIGRATIONS, PRAGMAS } = require('../src/main/workspaces/store');
 const { ChatError, toRenderer } = require('../src/main/workspaces/wire');
 
 const id = (prefix, label) => `${prefix}_${crypto.createHash('sha256').update(label).digest('base64url').slice(0, 22)}`;
@@ -55,11 +55,11 @@ const outboxRow = (label, over = {}) => ({
 const COLUMNS = {
   meta: ['key', 'value'],
   ws: ['id', 'name', 'role', 'me', 'myName', 'generation', 'keyId', 'limits', 'retention', 'cursor', 'passing', 'fresh', 'state', 'membersStale', 'channelsStale', 'blocksStale', 'membersMore', 'syncedAt', 'activeAt'],
-  room: ['ws', 'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'grantId', 'role', 'members', 'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted', 'readMark', 'readPaused'],
+  room: ['ws', 'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'grantId', 'role', 'members', 'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted', 'readMark', 'readPaused', 'agents'],
   pass_room: ['ws', 'id', 'row'],
   event: ['ws', 'room', 'seq', 'id', 'kind', 'actor', 'at', 'root', 'text', 'mentions', 'data', 'redacted', 'attachments', 'previews', 'reactions', 'asOf'],
   tombstone: ['ws', 'message', 'at'],
-  member: ['ws', 'id', 'kind', 'name', 'role', 'state', 'joinedAt'],
+  member: ['ws', 'id', 'kind', 'name', 'role', 'state', 'joinedAt', 'agent'],
   channel: ['ws', 'id', 'name', 'visibility', 'archived', 'joined', 'role', 'members'],
   block: ['ws', 'member', 'at'],
   outbox: ['local', 'ws', 'room', 'actor', 'grantId', 'generation', 'text', 'mentions', 'root', 'operationId', 'state', 'reason', 'attempts', 'nextAt', 'createdAt', 'attachments'],
@@ -68,10 +68,10 @@ const COLUMNS = {
   file_cache: ['ws', 'room', 'file', 'message', 'sha256', 'size', 'name', 'type', 'usedAt']
 };
 
-test('a new cache has the schema of contract 3.5 with rich chat 4.2, its pragmas and schema version 3', (t) => {
+test('a new cache has the schema of contract 3.5 with rich chat 4.2 and agents, its pragmas and schema version 4', (t) => {
   const store = fresh(t);
   const db = store.db;
-  assert.equal(store.getMeta('schema'), '3');
+  assert.equal(store.getMeta('schema'), '4');
   assert.equal(store.lostUnsent, 0);
   assert.ok(store.quickCheck());
   const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all().map((r) => r.name);
@@ -818,4 +818,95 @@ test('a database without the chat schema is replaced too', (t) => {
   t.after(() => store.close());
   assert.equal(store.getMeta('schema'), String(SCHEMA_VERSION));
   assert.equal(store.db.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'something'`).get().n, 0);
+});
+
+// ---- agents in channels (server/WORKSPACES.md "Agents"): schema version 4 ----
+
+test("an agent's reply settings stay with its member row, a person's row has none, and a room keeps its agents", (t) => {
+  const store = fresh(t);
+  store.insertWs({ id: W, name: 'Rukoo team', role: 'owner' });
+  const zoe = { id: ME, kind: 'human', name: 'Zoë', role: 'owner', state: 'active', joinedAt: 1 };
+  const clark = { id: MILA, kind: 'agent', name: 'Clark', role: 'member', state: 'active', joinedAt: 2, agent: { sponsor: ME, answers: 'members', members: [JOEL], agents: true } };
+  // An agent row a server sent without settings keeps none.
+  const bare = { id: JOEL, kind: 'agent', name: 'Bare', role: 'member', state: 'removed', joinedAt: 3 };
+  store.replaceMembers(W, [zoe, clark, bare]);
+  const byId = new Map(store.listMembers(W).map((m) => [m.id, m]));
+  assert.deepEqual(byId.get(ME), zoe);
+  assert.deepEqual(byId.get(MILA), clark);
+  assert.deepEqual(byId.get(JOEL), bare);
+  // A person never carries agent settings, whatever came with the row.
+  store.replaceMembers(W, [{ ...zoe, agent: clark.agent }]);
+  assert.deepEqual(store.listMembers(W), [zoe]);
+
+  withRoom(store, W, feedRoom({ agents: 2 }));
+  assert.equal(store.getRoom(W, C).agents, 2);
+  assert.equal(toRoomAgents(store), 2);
+  store.upsertRoom(W, feedRoom({ agents: 0 }));
+  assert.equal(store.getRoom(W, C).agents, 0);
+  // A row from a server from before agents says nothing about them: 0.
+  const { agents, ...older } = feedRoom({ agents: 1 });
+  store.upsertRoom(W, older);
+  assert.equal(store.getRoom(W, C).agents, 0);
+});
+
+const toRoomAgents = (store) => require('../src/main/workspaces/wire').toRoom(store.getRoom(W, C)).agents;
+
+test("an agent's reply keeps its trigger, depth and origin until it is removed, as the server drops them", (t) => {
+  const store = fresh(t);
+  withRoom(store);
+  const asked = posted(1);
+  const reply = posted(2, { actor: MILA, root: asked.id, trigger: asked.id, depth: 1, origin: JOEL });
+  const another = posted(3, { actor: MILA, root: asked.id, trigger: asked.id, depth: 2, origin: JOEL });
+  store.writeEvents(W, C, [asked, reply, another]);
+  const data = (e) => toRenderer(store.eventById(W, e.id)).data;
+  assert.deepEqual(data(reply), { trigger: asked.id, depth: 1, origin: JOEL });
+  assert.deepEqual(data(asked), {});
+  // Removed through a message.redacted in the feed, or by the person's own Remove message.
+  store.writeEvents(W, C, [{ seq: 4, id: id('e', 'redacted 4'), kind: 'message.redacted', actor: ME, at: 1004, target: reply.id, targetSeq: 2 }]);
+  assert.deepEqual(data(reply), {});
+  store.redact(W, [another.id]);
+  assert.deepEqual(data(another), {});
+  // A page that brings it back from before its removal keeps it removed, without them.
+  store.writeEvents(W, C, [reply]);
+  assert.deepEqual([toRenderer(store.eventById(W, reply.id)).redacted, data(reply)], [true, {}]);
+  // A message.redacted keeps its own data.
+  assert.deepEqual(toRenderer(store.eventById(W, id('e', 'redacted 4'))).data, { target: reply.id, targetSeq: 2 });
+});
+
+test('a version 3 cache migrates to version 4: its members get no agent settings, its rooms no agents, and its directory loads again', (t) => {
+  const file = path.join(tempDir('rukoo-chat-migrate-4-'), 'data', 'chat.db');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec(PRAGMAS);
+  db.exec(SCHEMA_V1);
+  db.exec(MIGRATIONS[2]);
+  db.exec(MIGRATIONS[3]);
+  db.exec(`INSERT INTO meta (key, value) VALUES ('schema', '3'), ('session', 'tag')`);
+  // A directory the older app had loaded, with an agent it kept without its settings.
+  db.prepare(`INSERT INTO ws (id, name, role, me, membersStale) VALUES (?, 'Old', 'member', ?, 0)`).run(W, ME);
+  db.prepare(`INSERT INTO member (ws, id, kind, name, role, state, joinedAt) VALUES (?, ?, 'human', 'Zoë', 'member', 'active', 1)`).run(W, ME);
+  db.prepare(`INSERT INTO member (ws, id, kind, name, role, state, joinedAt) VALUES (?, ?, 'agent', 'Clark', 'member', 'active', 2)`).run(W, MILA);
+  db.prepare(
+    `INSERT INTO room (ws, id, kind, name, visibility, archived, grantId, members, head, floor, read, readLocal, readSent, unread, mentions)
+     VALUES (?, ?, 'channel', 'general', 'workspace', 0, ?, 2, 3, 1, 2, 3, 2, 1, 0)`
+  ).run(W, C, G);
+  db.close();
+  const store = openStore(file);
+  t.after(() => store.close());
+  assert.equal(SCHEMA_VERSION, 4);
+  assert.equal(store.getMeta('schema'), '4');
+  assert.equal(store.getMeta('session'), 'tag');
+  const members = new Map(store.listMembers(W).map((m) => [m.id, m]));
+  assert.deepEqual(members.get(ME), { id: ME, kind: 'human', name: 'Zoë', role: 'member', state: 'active', joinedAt: 1 });
+  assert.deepEqual(members.get(MILA), { id: MILA, kind: 'agent', name: 'Clark', role: 'member', state: 'active', joinedAt: 2 });
+  // The agent's settings come with the next directory: the migration marks it stale, so the next run loads it.
+  assert.equal(store.getWs(W).membersStale, 1);
+  assert.equal(store.getRoom(W, C).agents, 0);
+  assert.equal(store.getRoom(W, C).readLocal, 3);
+  // The columns are those of a new file.
+  const other = fresh(t);
+  for (const table of ['member', 'room']) {
+    const columns = (d) => d.prepare(`PRAGMA table_info(${table})`).all().map((c) => `${c.name} ${c.type} ${c.notnull} ${c.dflt_value}`);
+    assert.deepEqual(columns(store.db), columns(other.db), table);
+  }
 });

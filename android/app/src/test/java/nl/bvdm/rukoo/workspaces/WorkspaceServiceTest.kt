@@ -19,6 +19,9 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import nl.bvdm.rukoo.account.AccountStatus
 import nl.bvdm.rukoo.account.BorrowedSession
 import nl.bvdm.rukoo.account.ServerInfo
@@ -409,7 +412,7 @@ class WorkspaceServiceTest {
                 insertOutbox(OutboxRow(local, ws, Ids.GENERAL, Ids.ME, Ids.grant(1), Ids.GEN, "hi", emptyList(), null, createdAt = 1))
             }
             // A newer Rukoo's file: replaced, its outbox counted first.
-            sql.exec("UPDATE meta SET value = '2' WHERE key = 'schema'")
+            sql.exec("UPDATE meta SET value = ? WHERE key = 'schema'", (ChatDb.SCHEMA_VERSION + 1).toString())
         }
         h.list()
         h.account.signIn("mine")
@@ -612,6 +615,63 @@ class WorkspaceServiceTest {
         assertEquals("admin", view.ws.role)
         assertEquals("admin", view.me.role)
         assertEquals("no GET / brought it", gets, h.http.calls("GET", h.route(ws)).size)
+        h.http.verify()
+    }
+
+    // ---- agents in channels ----
+
+    @Test
+    fun `an agent made, changed and removed reaches the directory at once, and one gone already counts as removed`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws, room())
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until("the workspace synced") { st -> st.connection == Connection.ONLINE && st.workspaces.singleOrNull()?.status == WorkspaceStatus.OK }
+
+        val clark = Ids.id("u", 9, 'C')
+        val made = Agent(clark, "Clark", Ids.ME, "sponsor")
+        val key = "rka_" + clark.removePrefix("u_") + "." + "k".repeat(43)
+        val me = Member(Ids.ME, name = "Me", role = "member", state = "active")
+        h.http.once("POST", h.route(ws, "/agents")) { ok(MadeAgent.serializer(), MadeAgent(made, key), status = 201) }
+        h.http.once("GET", h.route(ws, "/members")) {
+            ok(MembersPage.serializer(), MembersPage(listOf(me, Member(clark, Member.KIND_AGENT, "Clark", "member", "active", agent = made.settings))))
+        }
+        // Only the chosen people go, and only for "members": the service drops a list a choice doesn't use.
+        val got = s.createAgent(ws, "  Clark ", "sponsor", listOf(Ids.OLGA), agents = false)
+        assertEquals(key, got.key)
+        val sent = h.http.calls("POST", h.route(ws, "/agents")).single().body!!.jsonObject
+        assertEquals("Clark", (sent.getValue("name") as JsonPrimitive).content)
+        assertEquals(0, sent.getValue("members").jsonArray.size)
+        val view = s.view(ws).until("the agent in the directory") { v -> v.members.any { it.isAgent } }
+        assertEquals(made.settings, view.members.single { it.isAgent }.agent)
+
+        // A change names the chosen people once each.
+        val changed = made.copy(answers = "members", members = listOf(Ids.OLGA), agents = true)
+        h.http.once("PATCH", h.route(ws, "/agents/$clark")) { ok(AgentAnswer.serializer(), AgentAnswer(changed)) }
+        h.http.once("GET", h.route(ws, "/members")) {
+            ok(MembersPage.serializer(), MembersPage(listOf(me, Member(clark, Member.KIND_AGENT, "Clark", "member", "active", agent = changed.settings))))
+        }
+        s.updateAgent(ws, clark, "Clark", "members", listOf(Ids.OLGA, Ids.OLGA), agents = true)
+        val patched = h.http.calls("PATCH", h.route(ws, "/agents/$clark")).single().body!!.jsonObject
+        assertEquals(listOf(Ids.OLGA), patched.getValue("members").jsonArray.map { (it as JsonPrimitive).content })
+        s.view(ws).until("the changed settings") { v -> v.members.any { it.agent?.agents == true } }
+
+        // A key that isn't this agent's is no answer the config can use.
+        h.http.once("POST", h.route(ws, "/agents/$clark/key")) { ok(MadeAgent.serializer(), MadeAgent(made, "rka_short.key")) }
+        try {
+            s.newAgentKey(ws, clark)
+            fail("a key of the wrong shape is refused")
+        } catch (e: WorkspaceError) {
+            assertEquals("server", e.code)
+        }
+
+        // Removed meanwhile by its sponsor on another device: the 404 counts as done, and the directory loads again.
+        h.http.once("DELETE", h.route(ws, "/agents/$clark")) { throw refusal(404, "not_found") }
+        h.http.once("GET", h.route(ws, "/members")) { ok(MembersPage.serializer(), MembersPage(listOf(me))) }
+        s.removeAgent(ws, clark)
+        s.view(ws).until("the agent gone from the directory") { v -> v.members.none { it.isAgent } }
         h.http.verify()
     }
 
@@ -949,6 +1009,41 @@ class WorkspaceServiceTest {
         assertTrue(ChatAlertRules.onScreen(h.screen.current, ws, Ids.GENERAL))
         s.onScreen(ws, null, null)
         assertNull(h.screen.current.chatRoom)
+        h.http.verify()
+    }
+
+    @Test
+    fun `the room on screen and the room list carry the roster revision, which one agent replaced by another moves`() = runTest {
+        val clark = Ids.id("u", 4, 'C')
+        val dot = Ids.id("u", 5, 'D')
+        val withClark = listOf(msg(1), msg(2), joined(3, clark))
+        val h = Harness(this, db)
+        h.seed { syncedWs(); upsertRoom(ws, room(head = 3).copy(agents = 1)); appendEvents(ws, Ids.GENERAL, withClark) }
+        h.list(ws)
+        // Before h.workspace's feed, so this one answers: the first route that matches does.
+        val row = java.util.concurrent.atomic.AtomicReference(room(head = 3).copy(agents = 1))
+        h.http.on("GET", h.route(ws, "/changes")) { ok(FeedPage.serializer(), feed(row.get(), next = "c1")) }
+        h.workspace(ws)
+        val events = EventsRoute(withClark)
+        h.http.on("GET", h.route(ws, "/conversations/${Ids.GENERAL}/events")) { events.answer(it) }
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
+        h.screen.setForeground(true)
+        s.onScreen(ws, Ids.GENERAL, null)
+        val before = s.timeline(ws, Ids.GENERAL).until("the room with Clark") { it.room.roster == 3L }.room
+        assertEquals(3L, s.view(ws).first().rooms.single().roster)
+
+        // Clark is taken out and Dot added before the next run: the feed's row keeps two people and one agent, and
+        // only its head moves on. The run ends by catching the open room up, which brings the two events.
+        events.events = withClark + listOf(left(4, clark), joined(5, dot))
+        events.head = 5
+        row.set(room(head = 5).copy(agents = 1))
+        withTimeout(10_000) { while (h.sockets.opened.isEmpty()) delay(100) }
+        h.sockets.opened.last().listener.wake()
+        val after = s.timeline(ws, Ids.GENERAL).until("the room with Dot") { it.room.roster == 5L }.room
+        assertEquals(before.members to before.agents, after.members to after.agents)
+        s.view(ws).until("the room list with Dot") { v -> v.rooms.single().roster == 5L }
         h.http.verify()
     }
 

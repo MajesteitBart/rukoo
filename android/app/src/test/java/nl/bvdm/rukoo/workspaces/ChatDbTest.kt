@@ -57,9 +57,9 @@ class ChatDbTest {
             tables,
         )
         val indexes = db.read { query("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name") { it.text(0) } }
-        assertEquals(listOf("event_id", "event_root", "outbox_room"), indexes)
+        assertEquals(listOf("event_id", "event_root", "event_roster", "outbox_room"), indexes)
         db.read {
-            assertEquals("1", one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) })
+            assertEquals(ChatDb.SCHEMA_VERSION.toString(), one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) })
             assertEquals("wal", one("PRAGMA journal_mode") { it.text(0) })
             assertEquals(1L, long("PRAGMA foreign_keys"))
             assertEquals(1L, long("PRAGMA secure_delete"))
@@ -154,7 +154,7 @@ class ChatDbTest {
     fun `a file of a newer schema is replaced and its unsent messages counted`() = runTest {
         val db = t.open()
         db.transaction {
-            exec("UPDATE meta SET value = '2' WHERE key = 'schema'")
+            exec("UPDATE meta SET value = ? WHERE key = 'schema'", (ChatDb.SCHEMA_VERSION + 1).toString())
             exec("INSERT INTO ws (id, name, role) VALUES ('w_1', 'Team', 'owner')")
             exec(
                 "INSERT INTO room (ws, id, kind, visibility, archived, grantId, members, head, floor, read, readLocal, readSent, unread, mentions) " +
@@ -172,8 +172,114 @@ class ChatDbTest {
         val again = t.open()
         assertEquals(3, again.lostUnsent)
         again.read {
-            assertEquals("1", one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) })
+            assertEquals(ChatDb.SCHEMA_VERSION.toString(), one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) })
             assertEquals(0L, long("SELECT COUNT(*) FROM ws"))
+        }
+    }
+
+    // Version 1 as an earlier Rukoo made it: the schema without the columns version 2 added and the index of version 3.
+    private fun schemaV1(): List<String> = ChatDb.SCHEMA.filter { it != ChatDb.ROSTER_INDEX }.map {
+        it.replace(Regex("\\r?\\n\\s*agent TEXT,"), "").replace(Regex("\\r?\\n\\s*agents INTEGER NOT NULL DEFAULT 0,"), "")
+    }
+
+    // Each index with the statement that made it.
+    private suspend fun indexes(db: ChatDb): Map<String, String> = db.read {
+        query("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name") { it.text(0) to it.text(1) }.toMap()
+    }
+
+    // A version 1 file with a workspace, a person, a room, an unsent message and a draft, written straight through
+    // the driver as that Rukoo did.
+    private fun writeV1File(file: File, driver: SQLiteDriver, extra: List<String> = emptyList()) {
+        file.parentFile!!.mkdirs()
+        val c = driver.open(file.path)
+        try {
+            fun exec(sql: String) = c.prepare(sql).use { st -> st.step() }
+            for (pragma in ChatDb.PRAGMAS) exec(pragma)
+            for (statement in schemaV1()) exec(statement)
+            exec("INSERT INTO meta (key, value) VALUES ('schema', '1')")
+            exec("INSERT INTO ws (id, name, role, me, membersStale) VALUES ('w_1', 'Team', 'owner', 'u_1', 0)")
+            exec("INSERT INTO member (ws, id, kind, name, role, state, joinedAt) VALUES ('w_1', 'u_1', 'human', 'Sam', 'owner', 'active', 1)")
+            exec(
+                "INSERT INTO room (ws, id, kind, visibility, archived, grantId, members, head, floor, read, readLocal, readSent, unread, mentions, muted) " +
+                    "VALUES ('w_1', 'c_1', 'channel', 'workspace', 0, 'g_1', 2, 7, 1, 5, 5, 5, 2, 1, 1)",
+            )
+            exec(
+                "INSERT INTO outbox (local, ws, room, actor, grantId, generation, text, mentions, state, createdAt) " +
+                    "VALUES ('l1', 'w_1', 'c_1', 'u_1', 'g_1', 'gen', 'hi', '[]', 'queued', 1)",
+            )
+            exec("INSERT INTO draft (ws, room, root, text, mentions, at) VALUES ('w_1', 'c_1', '', 'half a thought', '[]', 1)")
+            for (statement in extra) exec(statement)
+        } finally {
+            c.close()
+        }
+    }
+
+    // Each table's columns as SQLite reports them: name, type, not null, default, key.
+    private suspend fun columns(db: ChatDb): Map<String, List<String>> = db.read {
+        val tables = query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name") { it.text(0) }
+        tables.associateWith { table ->
+            query("PRAGMA table_info($table)") { r -> "${r.text(1)} ${r.text(2)} ${r.long(3)} ${r.textOrNull(4)} ${r.long(5)}" }
+        }
+    }
+
+    @Test
+    fun `a file of version 1 migrates in place, keeps its rows and loads the directory again`() = runTest {
+        val v1 = schemaV1().joinToString("\n")
+        assertFalse("the version 1 schema lacks what version 2 adds", v1.contains("agent TEXT") || v1.contains("agents INTEGER"))
+        assertFalse("the version 1 schema lacks what version 3 adds", v1.contains("event_roster"))
+        writeV1File(t.file, t.driver)
+        val db = t.open()
+        assertEquals("nothing was lost", 0, db.lostUnsent)
+        db.read {
+            assertEquals(ChatDb.SCHEMA_VERSION.toString(), one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) })
+            assertEquals("the directory loads again, for the agents' settings", 1L, long("SELECT membersStale FROM ws WHERE id = 'w_1'"))
+            assertEquals(1L, long("SELECT COUNT(*) FROM outbox"))
+            assertEquals("half a thought", one("SELECT text FROM draft") { it.text(0) })
+            assertTrue(one("SELECT agent FROM member WHERE id = 'u_1'") { it.isNull(0) }!!)
+        }
+        val store = WorkspaceStore(db)
+        store.read {
+            val room = getRoom("w_1", "c_1")!!
+            assertEquals(0, room.agents)
+            assertEquals(7L, room.head)
+            assertEquals(5L, room.readLocal)
+            assertTrue(room.muted)
+            assertEquals(listOf(Member("u_1", "human", "Sam", "owner", "active", 1)), listMembers("w_1"))
+            // The roster queries name the index version 3 makes, so they would fail without it.
+            assertEquals(emptyMap<String, Long>(), rosters("w_1"))
+            assertEquals(0L, roster("w_1", "c_1"))
+        }
+        // A migrated file and a new one have the same tables with the same columns in the same order, and the same
+        // indexes.
+        val fresh = TestDb()
+        try {
+            val made = fresh.open()
+            assertEquals(columns(made), columns(db))
+            assertEquals(indexes(made), indexes(db))
+        } finally {
+            fresh.close()
+        }
+    }
+
+    @Test
+    fun `a migration SQLite refuses rolls back and keeps the file with its unsent messages`() = runTest {
+        // A version 1 file that already has the column the migration adds: its ALTER fails half way.
+        writeV1File(t.file, t.driver, extra = listOf("ALTER TABLE room ADD COLUMN agents INTEGER NOT NULL DEFAULT 0"))
+        try {
+            t.open()
+            fail("the migration should fail")
+        } catch (e: WorkspaceError) {
+            assertEquals("not_saved", e.code)
+        }
+        assertTrue(t.file.exists())
+        val c = t.driver.open(t.file.path)
+        try {
+            assertEquals("1", c.prepare("SELECT value FROM meta WHERE key = 'schema'").use { st -> st.step(); st.getText(0) })
+            assertEquals(1L, c.prepare("SELECT COUNT(*) FROM outbox").use { st -> st.step(); st.getLong(0) })
+            // The member column of the first statement went with the rollback.
+            assertFalse(c.prepare("PRAGMA table_info(member)").use { st -> buildList { while (st.step()) add(st.getText(1)) } }.contains("agent"))
+        } finally {
+            c.close()
         }
     }
 
@@ -184,7 +290,7 @@ class ChatDbTest {
         val db = t.open()
         assertEquals(0, db.lostUnsent)
         assertTrue(db.quickCheck())
-        assertEquals("1", db.read { one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) } })
+        assertEquals(ChatDb.SCHEMA_VERSION.toString(), db.read { one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) } })
     }
 
     @Test
@@ -193,7 +299,7 @@ class ChatDbTest {
         t.file.createNewFile()
         val db = t.open()
         assertEquals(0, db.lostUnsent)
-        assertEquals("1", db.read { one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) } })
+        assertEquals(ChatDb.SCHEMA_VERSION.toString(), db.read { one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) } })
     }
 
     @Test

@@ -1,7 +1,31 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast, showMenu, closeMenu, menuOpen, dialog, confirmDialog, KEEP_OPEN, segmented, setSegmented } from './ui.js';
-import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM, dmPicker, addPeopleEmpty, inviteGrant, inviteRowChannels } from './chat-model.js';
+import {
+  displayName,
+  onlyOwner,
+  sharedManaged,
+  soleManager,
+  successors,
+  handOverReady,
+  SUCCESSOR_SEARCH_FROM,
+  dmPicker,
+  addPeopleEmpty,
+  inviteGrant,
+  inviteRowChannels,
+  isAgent,
+  isPerson,
+  agentAnswersText,
+  agentNote,
+  agentFormAnswers,
+  agentFormReady,
+  AGENT_CHOSEN_MAX,
+  canAddAgent,
+  canRemoveAgent,
+  canManageAgent,
+  canRenewAgentKey
+} from './chat-model.js';
+import { runnerAgents, runnerConfig, runnerText, runnerEnv, PLACEHOLDER_BACKEND, RUNNER_COMMAND } from './chat-agents.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -11,7 +35,7 @@ import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOve
 // chat.js gives them what they need through bindDialogs(kit) once, so this module never imports chat.js:
 //   CH, ctx, errorText(err, context), hostNote(), summary(id?), me(), myRole(), isGuest(), roomName(room),
 //   memberAvatar(id, cls), tileHtml(w), selectWorkspace(ws, opts), openRoom(id, opts), openDefault(),
-//   previewChannel(channel), expectLeave(roomId), expectGone(ws), reload(), refreshState()
+//   previewChannel(channel), expectLeave(roomId), expectGone(ws), reload(), refreshState(), caps()
 //
 // Rules every dialog keeps (desktop-ui 6): a server call disables the buttons and marks the primary one aria-busy;
 // its error shows under the field err.field names, or above the buttons; an error never closes the dialog. Names
@@ -46,6 +70,26 @@ const roleText = (role) => t(`chat.roles.${['owner', 'admin', 'member', 'guest',
 const activeMembers = () => [...K.CH.members.values()].filter((m) => m.state === 'active');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const channelIcon = (c) => (c.archived ? icons.archive : c.visibility === 'private' ? icons.lock : icons.hash);
+// Agents in channels (server/WORKSPACES.md "Agents"), when the server lists them in its capabilities.
+const agentsOn = () => Boolean(K.caps && K.caps().has('agents'));
+// Whether the person sponsors an active agent they could add to room without managing it: a channel the workspace
+// can see. Whether it is in the channel already shows once the channel's members load.
+export const sponsorsHere = (room) =>
+  agentsOn() && Boolean(room) && room.kind === 'channel' && !room.archived && room.visibility === 'workspace' && activeMembers().some((m) => isAgent(m) && m.agent?.sponsor === K.me());
+// Rukoo in a browser (src/web) has no Settings, Agents to take a runner's backend from.
+const WEB = window.mail?.platform === 'web';
+const listFormat = () => new Intl.ListFormat(getLocale(), { type: 'conjunction' });
+const agentTag = () => `<span class="ch-tag ch-agent-tag">${esc(t('chat.roles.agent'))}</span>`;
+const byName = (a, b) => collator().compare(displayName(a, t), displayName(b, t));
+// "Made by Olga · Answers only Olga" under an agent's name, as a channel's members and Workspace members show it.
+const agentLine = (m) => agentNote(m, { members: K.CH.members, t, listFormat: listFormat() });
+// A member's name in a list row; an agent's with its line under it.
+const personName = (m, label) => {
+  const note = isAgent(m) ? agentLine(m) : null;
+  return note
+    ? `<span class="ch-agent-text"><span class="ch-person-name">${esc(label)}</span><span class="ch-agent-meta">${esc(note)}</span></span>`
+    : `<span class="ch-person-name">${esc(label)}</span>`;
+};
 
 const cancelButton = () => ({ get label() { return t('common.actions.cancel'); }, value: null });
 const closeButton = () => ({ get label() { return t('common.actions.close'); }, value: null });
@@ -844,11 +888,27 @@ export async function browseChannels() {
 }
 
 // A channel's members and roles (desktop-ui 6.6), or a group DM's people. add: open on the Add people picker.
+// Agents (server/WORKSPACES.md "Agents") show with the Agent tag. A manager adds people and agents; an agent's sponsor
+// adds it to a channel the workspace can see, and takes it out again, also without managing the channel.
 export async function channelMembers(room, { add = false } = {}) {
   const ws = K.CH.ws;
   if (!ws || !room) return null;
   const channel = room.kind === 'channel';
   const manager = channel && room.role === 'manager' && !room.archived;
+  // Someone who doesn't manage the channel adds only their own agents: the picker is Add agents, and its texts never
+  // speak for the people (Android's chat_channel_add_agents).
+  const agentsOnly = channel && !manager;
+  const addLabel = () => t(agentsOnly ? 'chat.channel.addAgents' : 'chat.head.addPeople');
+  // The agents the person may add here that aren't in the channel yet, by name; none before its members load. Into a
+  // private channel only those whose sponsor is in it.
+  const addableAgents = () => {
+    if (!channel || !list || !agentsOn()) return [];
+    const inside = new Set(list.map((m) => m.member));
+    return activeMembers()
+      .filter((m) => !inside.has(m.id) && canAddAgent(m, room, K.me(), inside))
+      .sort(byName);
+  };
+  const canAdd = () => manager || addableAgents().length > 0;
   let list = null;
   let query = '';
   let picking = false;
@@ -883,6 +943,8 @@ export async function channelMembers(room, { add = false } = {}) {
     const ul = body.querySelector('[data-people]');
     ul.removeAttribute('aria-busy');
     if (!list) return;
+    const addButton = body.querySelector('[data-add]');
+    if (addButton) addButton.hidden = !canAdd();
     const q = fold(query.trim());
     const byId = new Map(list.map((m) => [m.member, m]));
     const ids = sortByName(list.map((m) => m.member)).filter((id) => !q || fold(nameOf(id)).includes(q));
@@ -891,22 +953,30 @@ export async function channelMembers(room, { add = false } = {}) {
         const m = byId.get(id);
         const member = K.CH.members.get(id);
         const mine = id === K.me();
+        const agent = isAgent(member);
         const label = mine ? t('chat.members.you', { name: nameOf(id) }) : nameOf(id);
-        const tags = [member && member.role === 'guest' ? `<span class="ch-tag">${esc(t('chat.roles.guest'))}</span>` : '', m.role === 'manager' && channel ? `<span class="ch-pill">${esc(t('chat.roles.manager'))}</span>` : ''].join('');
-        const more =
-          manager && !mine
-            ? `<button type="button" class="icon-btn xs" data-person="${esc(id)}" aria-haspopup="menu" aria-label="${esc(t('chat.members.more', { name: nameOf(id) }))}" title="${esc(t('chat.members.more', { name: nameOf(id) }))}">${icons.more}</button>`
-            : '';
-        return `<li class="ch-person">${K.memberAvatar(id, 'ch-av-24')}<span class="ch-person-name">${esc(label)}</span>${tags}${more}</li>`;
+        const tags = [
+          agent ? agentTag() : member && member.role === 'guest' ? `<span class="ch-tag">${esc(t('chat.roles.guest'))}</span>` : '',
+          m.role === 'manager' && channel ? `<span class="ch-pill">${esc(t('chat.roles.manager'))}</span>` : ''
+        ].join('');
+        // A manager has a menu for everyone else; an agent's sponsor one for their agent, with Remove only. An archived
+        // channel keeps only an agent's Remove, for its managers and its sponsor: the agent's key reads the history the
+        // channel keeps until it leaves (server/WORKSPACES.md "Channels").
+        const menu = !mine && (manager || (agent && canRemoveAgent(member, room, K.me())));
+        const more = menu
+          ? `<button type="button" class="icon-btn xs" data-person="${esc(id)}" aria-haspopup="menu" aria-label="${esc(t('chat.members.more', { name: nameOf(id) }))}" title="${esc(t('chat.members.more', { name: nameOf(id) }))}">${icons.more}</button>`
+          : '';
+        // An agent says under its name who made it and whom it answers.
+        return `<li class="ch-person${agent ? ' ch-agent-row' : ''}">${K.memberAvatar(id, 'ch-av-24')}${personName(member, label)}${tags}${more}</li>`;
       })
       .join('');
     if (!ids.length) ul.innerHTML = `<li class="ch-browse-none">${esc(t('chat.new.none'))}</li>`;
   };
+  // Who Add people offers: the people who aren't in the channel, for a manager, then the agents the person may add.
   const candidates = () => {
     const inside = new Set((list || []).map((m) => m.member));
-    return activeMembers()
-      .filter((m) => !inside.has(m.id))
-      .sort((a, b) => collator().compare(displayName(a, t), displayName(b, t)));
+    const people = manager ? activeMembers().filter((m) => !inside.has(m.id) && isPerson(m)).sort(byName) : [];
+    return { people, agents: addableAgents() };
   };
   const chosen = new Set();
   const drawPicker = () => {
@@ -914,28 +984,61 @@ export async function channelMembers(room, { add = false } = {}) {
     const query = body.querySelector('[name="pick-search"]').value.trim();
     const q = fold(query);
     const all = candidates();
-    const rows = all.filter((m) => !q || fold(displayName(m, t)).includes(q));
-    // Nobody to add: say whether the workspace has nobody else or everyone is in already, with Invite people.
-    const empty = addPeopleEmpty({ rows: rows.length, candidates: all.length, others: activeMembers().filter((m) => m.id !== K.me()).length, query });
-    const invite = isAdmin() ? `<button type="button" class="btn secondary sm" data-invite>${icons.userPlus}<span>${esc(t('chat.workspace.invite'))}</span></button>` : '';
-    ul.innerHTML = rows.length
-      ? rows
-          .map((m) => {
-            const guest = m.role === 'guest';
-            const locked = guest && !isAdmin();
-            return `<li><label class="ch-check-row${locked ? ' is-disabled' : ''}"><input type="checkbox" name="pick" value="${esc(m.id)}"${chosen.has(m.id) ? ' checked' : ''}${locked ? ' disabled' : ''}/>${K.memberAvatar(
-              m.id,
-              'ch-av-24'
-            )}<span class="ch-check-label">${esc(displayName(m, t))}</span>${guest ? `<span class="ch-tag">${esc(t('chat.roles.guest'))}</span>` : ''}${
-              locked ? `<span class="field-help ch-check-note">${esc(t('chat.channel.addGuestNeedsAdmin'))}</span>` : ''
-            }</label></li>`;
-          })
-          .join('')
+    // Someone picked who can't be added any more (an agent whose sponsor left a private channel) is no longer picked.
+    const offered = new Set([...all.people, ...all.agents].map((m) => m.id));
+    for (const id of [...chosen]) if (!offered.has(id)) chosen.delete(id);
+    const fits = (m) => !q || fold(displayName(m, t)).includes(q);
+    const people = all.people.filter(fits);
+    const agents = all.agents.filter(fits);
+    const count = people.length + agents.length;
+    // Nobody to add: say whether the workspace has nobody else or everyone is in already, with Invite people. Add agents
+    // says only that the person's agents are in already.
+    const empty = addPeopleEmpty({
+      rows: count,
+      candidates: all.people.length + all.agents.length,
+      others: activeMembers().filter((m) => m.id !== K.me() && isPerson(m)).length,
+      query,
+      agentsOnly
+    });
+    const invite = isAdmin() && !agentsOnly ? `<button type="button" class="btn secondary sm" data-invite>${icons.userPlus}<span>${esc(t('chat.workspace.invite'))}</span></button>` : '';
+    const emptyText = () =>
+      empty === 'agents'
+        ? t('chat.agents.allIn', { name: room.name || '' })
+        : empty === 'everyone'
+          ? t('chat.channel.addEveryone', { workspace: wsName(), name: room.name || '' })
+          : t('chat.new.nobody', { workspace: wsName() });
+    const personRow = (m) => {
+      const guest = m.role === 'guest';
+      const locked = guest && !isAdmin();
+      return `<li><label class="ch-check-row${locked ? ' is-disabled' : ''}"><input type="checkbox" name="pick" value="${esc(m.id)}"${chosen.has(m.id) ? ' checked' : ''}${locked ? ' disabled' : ''}/>${K.memberAvatar(
+        m.id,
+        'ch-av-24'
+      )}<span class="ch-check-label">${esc(displayName(m, t))}</span>${guest ? `<span class="ch-tag">${esc(t('chat.roles.guest'))}</span>` : ''}${
+        locked ? `<span class="field-help ch-check-note">${esc(t('chat.channel.addGuestNeedsAdmin'))}</span>` : ''
+      }</label></li>`;
+    };
+    // An agent with who it answers under its name ("Answers only Olga"). The Agents heading above says what it is.
+    const agentRow = (m) => {
+      const note = agentAnswersText(m, { members: K.CH.members, t, listFormat: listFormat() });
+      return `<li data-kind="agent"><label class="ch-check-row ch-agent-pick"><input type="checkbox" name="pick" value="${esc(m.id)}"${chosen.has(m.id) ? ' checked' : ''}/>${K.memberAvatar(
+        m.id,
+        'ch-av-24'
+      )}<span class="ch-agent-text"><span class="ch-check-label">${esc(displayName(m, t))}</span>${note ? `<span class="field-help ch-agent-note">${esc(note)}</span>` : ''}</span></label></li>`;
+    };
+    const group = (title) => `<li class="ch-group" role="presentation"><span>${esc(title)}</span></li>`;
+    // A heading over each group only when both show. Under Agents, what adding one means for the channel's messages.
+    const both = people.length > 0 && agents.length > 0;
+    const html = [
+      both ? group(t('chat.channel.peopleGroup')) : '',
+      people.map(personRow).join(''),
+      agents.length ? `${group(t('chat.roles.agents'))}<li class="field-help ch-agents-read" role="presentation">${esc(t('chat.host.agents'))}</li>` : '',
+      agents.map(agentRow).join('')
+    ].join('');
+    ul.innerHTML = count
+      ? html
       : empty === 'none'
         ? `<li class="ch-browse-none">${esc(t('chat.new.none'))}</li>`
-        : `<li class="ch-browse-none ch-new-none" data-empty="${empty}"><span>${esc(
-            empty === 'everyone' ? t('chat.channel.addEveryone', { workspace: wsName(), name: room.name || '' }) : t('chat.new.nobody', { workspace: wsName() })
-          )}</span>${invite}</li>`;
+        : `<li class="ch-browse-none ch-new-none" data-empty="${empty}"><span>${esc(emptyText())}</span>${invite}</li>`;
     body.querySelector('[data-add-go]').disabled = !chosen.size || adding;
   };
   const addChosen = async () => {
@@ -975,12 +1078,15 @@ export async function channelMembers(room, { add = false } = {}) {
     const id = btn.dataset.person;
     const m = (list || []).find((x) => x.member === id);
     if (!m) return;
+    const remove = { icon: 'leave', label: t('chat.channel.removeMember', { name: room.name || '' }), danger: true, action: () => removeOne(id) };
+    // An agent is never a manager: only Remove.
+    if (isAgent(K.CH.members.get(id))) return menuInDialog(btn, [remove]);
     const items = [
       m.role === 'manager'
         ? { icon: 'person', label: t('chat.channel.makeMember'), action: () => setRole(id, 'member') }
         : { icon: 'people', label: t('chat.channel.makeManager'), action: () => setRole(id, 'manager') },
       { separator: true },
-      { icon: 'leave', label: t('chat.channel.removeMember', { name: room.name || '' }), danger: true, action: () => removeOne(id) }
+      remove
     ];
     menuInDialog(btn, items);
   };
@@ -1036,12 +1142,16 @@ export async function channelMembers(room, { add = false } = {}) {
       body.innerHTML = `<div data-view="list">
           <div class="ch-dlg-tools">
             <input type="search" class="ch-search" name="search" placeholder="${esc(t('chat.members.search'))}" aria-label="${esc(t('chat.members.search'))}" autocomplete="off" spellcheck="false"/>
-            ${manager ? `<button type="button" class="btn secondary sm" data-add>${icons.userPlus}<span>${esc(t('chat.head.addPeople'))}</span></button>` : ''}
+            ${
+              channel && !room.archived
+                ? `<button type="button" class="btn secondary sm" data-add${manager ? '' : ' hidden'}>${icons.userPlus}<span>${esc(addLabel())}</span></button>`
+                : ''
+            }
           </div>
           <ul class="ch-people" data-people></ul>
         </div>
         <div data-view="pick" hidden>
-          <p class="ch-sub">${esc(t('chat.channel.addTitle', { name: room.name || '' }))}</p>
+          <p class="ch-sub">${esc(t(agentsOnly ? 'chat.channel.addAgentsTitle' : 'chat.channel.addTitle', { name: room.name || '' }))}</p>
           <div class="ch-dlg-tools"><input type="search" class="ch-search" name="pick-search" placeholder="${esc(t('chat.members.search'))}" aria-label="${esc(t('chat.members.search'))}" autocomplete="off" spellcheck="false"/></div>
           <ul class="ch-people ch-pick" data-pick></ul>
           <p class="error" data-error="pick" hidden></p>
@@ -1081,7 +1191,8 @@ export async function channelMembers(room, { add = false } = {}) {
           invitePeople();
         }
       });
-      picking = Boolean(add && manager);
+      // A sponsor who doesn't manage the channel opens on Add people for their own agents.
+      picking = Boolean(add && (manager || sponsorsHere(room)));
       load().then(() => {
         if (picking) body.querySelector('[name="pick-search"]')?.focus();
       });
@@ -1323,7 +1434,8 @@ const directoryKnown = () => K.CH.members.size > 0;
 
 // Whether nobody else is in the workspace, as far as the directory knows. An empty one says nothing, so Delete isn't
 // offered and the server's answer to leaving decides.
-const nobodyElse = () => directoryKnown() && activeMembers().length <= 1;
+// Agents don't count: deleting a workspace removes them too (server/WORKSPACES.md "Agents").
+const nobodyElse = () => directoryKnown() && activeMembers().filter(isPerson).length <= 1;
 
 // The channels you are the only manager of while others are in them, each with its members and who of them can take
 // it over ({ id, name, room, inside, people }), by name; null when a channel's members don't load.
@@ -1630,13 +1742,19 @@ export async function workspaceMembers() {
     const list = activeMembers()
       .filter((m) => !q || fold(displayName(m, t)).includes(q))
       .sort((a, b) => collator().compare(displayName(a, t), displayName(b, t)));
-    const groups = ROLES.map((role) => ({ role, people: list.filter((m) => m.role === role) })).filter((g) => g.people.length);
+    // People by role, then the agents in a group of their own (server/WORKSPACES.md "Agents").
+    const groups = [
+      ...ROLES.map((role) => ({ role, people: list.filter((m) => m.role === role && !isAgent(m)) })),
+      { role: 'agent', people: list.filter(isAgent) }
+    ].filter((g) => g.people.length);
     const row = (m) => {
       const mine = m.id === K.me();
       const label = mine ? t('chat.members.you', { name: displayName(m, t) }) : displayName(m, t);
       const blocked = K.CH.blocks.has(m.id);
       const hasMenu = !mine && menuFor(m).length;
-      return `<li class="ch-person">${K.memberAvatar(m.id, 'ch-av-24')}<span class="ch-person-name">${esc(label)}</span>${
+      // An agent says under its name who made it and whom it answers.
+      const agent = isAgent(m);
+      return `<li class="ch-person${agent ? ' ch-agent-row' : ''}"${agent ? ' data-kind="agent"' : ''}>${K.memberAvatar(m.id, 'ch-av-24')}${personName(m, label)}${
         blocked ? `<span class="ch-tag">${esc(t('chat.members.blocked'))}</span>` : ''
       }${
         hasMenu
@@ -1646,13 +1764,15 @@ export async function workspaceMembers() {
           : ''
       }</li>`;
     };
-    const titles = { owner: 'chat.roles.owners', admin: 'chat.roles.admins', member: 'chat.roles.members', guest: 'chat.roles.guests' };
+    const titles = { owner: 'chat.roles.owners', admin: 'chat.roles.admins', member: 'chat.roles.members', guest: 'chat.roles.guests', agent: 'chat.roles.agents' };
     body.querySelector('[data-people]').innerHTML = groups.length
       ? groups.map((g) => `<li class="ch-group" role="presentation"><span>${esc(t(titles[g.role]))}</span></li>${g.people.map(row).join('')}`).join('')
       : `<li class="ch-browse-none">${esc(t('chat.new.none'))}</li>`;
   };
-  // What may be done to m (desktop-ui 6.15).
+  // What may be done to m (desktop-ui 6.15). An agent gets no Message, no Block and no role: its sponsor, an owner or
+  // an admin changes or removes it, and its sponsor alone gives it a new key.
   const menuFor = (m) => {
+    if (isAgent(m)) return full && agentsOn() ? agentMenu(agentFromDirectory(m), later) : [];
     const items = [];
     const targetFull = m.role !== 'guest';
     if (full && targetFull && !K.CH.blocks.has(m.id)) items.push({ icon: 'chat', label: t('chat.members.message'), action: () => close(() => messageMember(m.id)) });
@@ -1901,6 +2021,8 @@ export function workspaceItems() {
   const top = [];
   if (isAdmin()) top.push({ icon: 'userPlus', label: t('chat.workspace.invite'), action: () => invitePeople() });
   top.push({ icon: 'people', label: t('chat.workspace.members'), action: () => workspaceMembers() });
+  // Agents in channels, for full members (server/WORKSPACES.md "Agents").
+  if (agentsOn() && !K.isGuest()) top.push({ icon: 'sparkle', label: t('chat.workspace.agents'), action: () => agentsDialog() });
   top.push({ icon: 'edit', label: t('chat.workspace.yourName'), action: () => changeName() });
   top.push({ icon: 'settings', label: t('chat.workspace.settings'), action: () => workspaceSettings() });
   // The only owner can't leave yet: the item says how, and opens the dialog that offers Members.
@@ -1909,6 +2031,434 @@ export function workspaceItems() {
   // Delete only works for an owner who is the only member; while others are in it, Workspace settings says why it's off.
   if (K.myRole() === 'owner' && nobodyElse()) bottom.push({ icon: 'trash', label: t('chat.workspace.delete'), danger: true, action: () => deleteWorkspace() });
   return { top, bottom };
+}
+
+// ---------- agents in channels (server/WORKSPACES.md "Agents") ----------
+//
+// An agent is a bot account in the workspace: a full member makes it (its sponsor) and gets a key, and the agent's own
+// runtime, such as the reference runner in integrations/agent-runner, connects with that key. It answers a mention
+// in a channel it was added to, as far as its settings let it. Its sponsor, an owner or an admin changes it.
+
+// An agent as the Agents dialog and the form take it (AgentOut), from its directory row, for Workspace members. A row
+// without settings (an older cache, until its directory loads again) has no answers: the form starts on Only me.
+const agentFromDirectory = (m) => ({
+  id: m.id,
+  name: m.name,
+  sponsor: m.agent?.sponsor ?? null,
+  answers: m.agent?.answers ?? null,
+  members: m.agent?.members ?? [],
+  agents: Boolean(m.agent?.agents),
+  lastSeen: null,
+  createdAt: m.joinedAt
+});
+
+// The menu of an agent in the Agents dialog and Workspace members, the same on Android: Edit agent and Remove agent
+// for its sponsor, an owner or an admin, and New key for its sponsor alone (the server refuses anyone else with 403,
+// since the key reads every channel the agent is in). then runs after each, to draw the list again.
+function agentMenu(agent, then) {
+  if (!canManageAgent(agent, K.me(), K.myRole())) return [];
+  const items = [{ icon: 'edit', label: t('chat.agents.edit'), action: () => editAgent(agent).then(then) }];
+  if (canRenewAgentKey(agent, K.me())) items.push({ icon: 'sync', label: t('chat.agents.newKey'), action: () => newAgentKey(agent).then(then) });
+  items.push({ separator: true }, { icon: 'leave', label: t('chat.agents.remove'), danger: true, action: () => removeAgent(agent).then(then) });
+  return items;
+}
+
+// The Agents dialog (workspace menu): the workspace's agents with who made them, whom they answer, whether they answer
+// other agents and when they were last active; Add an agent, and Edit, New key and Remove for those the person may
+// change.
+export async function agentsDialog() {
+  const ws = K.CH.ws;
+  if (!ws || K.isGuest() || !agentsOn()) return null;
+  let list = null;
+  let failed = null;
+  let body = null;
+  // The agents of the directory when the list loaded: one made, changed or removed elsewhere loads the list again.
+  let loadedFor = '';
+  const directoryIds = () =>
+    JSON.stringify(
+      activeMembers()
+        .filter(isAgent)
+        .map((m) => [m.id, m.name, m.agent || null])
+        .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    );
+  const load = async () => {
+    loadedFor = directoryIds();
+    try {
+      const res = await api('chatAgents', ws);
+      list = (res && res.agents) || [];
+      failed = null;
+    } catch (err) {
+      failed = err;
+    }
+    draw();
+  };
+  // Who made it, whom it answers and whether it answers agents, as in Workspace members, and when it was last active.
+  const meta = (a) => [agentLine(a), a.lastSeen ? t('chat.agents.lastActive', { date: dateTime(a.lastSeen) }) : t('chat.agents.neverActive')].filter(Boolean).join(' · ');
+  const draw = () => {
+    if (!body || !body.isConnected) return;
+    const ul = body.querySelector('[data-agents]');
+    if (!list) {
+      ul.setAttribute('aria-busy', String(!failed));
+      ul.innerHTML = failed ? `<li class="error">${esc(K.errorText(failed))}</li>` : '<li class="ch-invites-wait"><span class="spinner"></span></li>';
+      return;
+    }
+    ul.removeAttribute('aria-busy');
+    const rows = list.slice().sort((a, b) => collator().compare(a.name, b.name));
+    ul.innerHTML = rows.length
+      ? rows
+          .map((a) => {
+            const menu = canManageAgent(a, K.me(), K.myRole())
+              ? `<button type="button" class="icon-btn xs" data-agent="${esc(a.id)}" aria-haspopup="menu" aria-label="${esc(t('chat.members.more', { name: a.name }))}" title="${esc(t('chat.members.more', { name: a.name }))}">${icons.more}</button>`
+              : '';
+            return `<li class="ch-person ch-agent-row" data-agent-row="${esc(a.id)}">${K.memberAvatar(a.id, 'ch-av-24')}<span class="ch-agent-text"><span class="ch-person-name">${esc(
+              a.name
+            )}</span><span class="ch-agent-meta">${esc(meta(a))}</span></span>${menu}</li>`;
+          })
+          .join('')
+      : `<li class="ch-browse-none ch-agents-none">${esc(t('chat.agents.none'))}</li>`;
+    if (failed) toast(K.errorText(failed), 5000);
+    failed = null;
+  };
+  const menu = (btn) => {
+    const a = (list || []).find((x) => x.id === btn.dataset.agent);
+    if (!a) return;
+    menuInDialog(btn, agentMenu(a, load));
+  };
+  return wsDialog({
+    title: t('chat.agents.title', { workspace: wsName() }),
+    wide: true,
+    quietClose: true,
+    buttons: [closeButton()],
+    // Names come from the directory; an agent made or removed elsewhere comes with it.
+    redraw: () => {
+      if (directoryIds() !== loadedFor) load();
+      else draw();
+    },
+    render(b) {
+      body = b;
+      body.innerHTML = `<p class="ch-agents-intro">${esc(t('chat.agents.intro'))}</p>
+        <div class="ch-dlg-tools ch-dlg-tools-end"><button type="button" class="btn primary sm" data-add-agent>${icons.plus}<span>${esc(t('chat.agents.add'))}</span></button></div>
+        <ul class="ch-people ch-agents" data-agents aria-busy="true"><li class="ch-invites-wait"><span class="spinner"></span></li></ul>
+        <p class="error" data-error="" hidden></p>`;
+      body.addEventListener('click', async (e) => {
+        const more = e.target.closest('[data-agent]');
+        if (more) return menu(more);
+        if (e.target.closest('[data-add-agent]')) {
+          await addAgent();
+          return load();
+        }
+      });
+      load();
+    }
+  });
+}
+
+// Add an agent: the form, then its key once.
+export async function addAgent() {
+  const made = await agentForm(null);
+  if (made && made.key) await showAgentKey(made);
+  return made ? made.agent : null;
+}
+
+// Edit an agent: its name, whom it answers and whether it answers other agents.
+export async function editAgent(agent) {
+  const changed = await agentForm(agent);
+  return changed ? changed.agent : null;
+}
+
+// A new key: the old one stops at once, so the person confirms first; then the new key shows once.
+export async function newAgentKey(agent) {
+  const ws = K.CH.ws;
+  if (!ws || !agent) return null;
+  const ok = await confirmDialog(t('chat.agents.newKeyTitle', { name: agent.name }), t('chat.agents.newKeyBody', { name: agent.name }), t('chat.agents.newKeyConfirm'));
+  if (!ok || ws !== K.CH.ws) return null;
+  try {
+    const made = await api('chatNewAgentKey', ws, agent.id);
+    if (made && made.key && ws === K.CH.ws) await showAgentKey(made);
+    return made ? made.agent : null;
+  } catch (err) {
+    toast(K.errorText(err), 5000);
+    return null;
+  }
+}
+
+// Remove an agent: it leaves every channel and its key stops; its messages stay, under a former member.
+export async function removeAgent(agent) {
+  const ws = K.CH.ws;
+  if (!ws || !agent) return false;
+  const ok = await confirmDialog(t('chat.agents.removeTitle', { name: agent.name }), t('chat.agents.removeBody', { name: agent.name }), t('chat.agents.removeConfirm'), true);
+  if (!ok || ws !== K.CH.ws) return false;
+  try {
+    await api('chatRemoveAgent', ws, agent.id);
+    toast(t('chat.agents.removed', { name: agent.name }));
+    return true;
+  } catch (err) {
+    toast(K.errorText(err), 5000);
+    return false;
+  }
+}
+
+// The form of Add an agent and Edit: the name, whom it answers (everyone, only its sponsor, or its sponsor and people
+// picked here) and whether it answers other agents. agent: the AgentOut to edit, or null for a new one. Answers what
+// the server answered ({ agent, key } for a new one, { agent } for a change), or null.
+async function agentForm(agent = null) {
+  const ws = K.CH.ws;
+  if (!ws || K.isGuest()) return null;
+  const editing = Boolean(agent);
+  const sponsor = editing ? agent.sponsor : K.me();
+  const yours = sponsor === K.me();
+  // A new agent starts on Only me, as on Android; one whose choice this version doesn't know too.
+  let answers = agentFormAnswers(agent);
+  const chosen = new Set(editing && agent.answers === 'members' ? agent.members || [] : []);
+  let finish = null;
+  let busy = false;
+  // The people it may answer besides its sponsor: active people, never an agent.
+  const people = () => activeMembers().filter((m) => isPerson(m) && m.id !== sponsor).sort(byName);
+  const sponsorName = () => nameOf(sponsor);
+  // How many replies a chain of agents answering each other may hold, as the server says (/v1/info).
+  const depth = Number.isSafeInteger(K.CH.state?.agents?.depth) && K.CH.state.agents.depth > 0 ? K.CH.state.agents.depth : null;
+  // Only people still in the workspace count: someone picked who left meanwhile would be refused.
+  const picked = () => {
+    const live = new Set(people().map((m) => m.id));
+    return [...chosen].filter((id) => live.has(id));
+  };
+  // Chosen people with nobody picked can't be saved: the button stays off, and the line under the list says why.
+  const ready = () => agentFormReady({ answers, chosen: picked().length });
+  const showReady = (body) => {
+    const primary = body.closest('.dialog')?.querySelector('.buttons button:last-child');
+    if (primary && !busy) primary.disabled = !ready();
+  };
+
+  const drawPeople = (body) => {
+    const box = body.querySelector('[data-people-box]');
+    box.hidden = answers !== 'members';
+    if (box.hidden) return showReady(body);
+    const q = fold(body.querySelector('[name="people-search"]').value.trim());
+    const all = people();
+    const rows = all.filter((m) => !q || fold(displayName(m, t)).includes(q));
+    const full = chosen.size >= AGENT_CHOSEN_MAX;
+    body.querySelector('[data-people]').innerHTML = rows.length
+      ? rows
+          .map((m) => {
+            const on = chosen.has(m.id);
+            return `<label class="ch-check-row"><input type="checkbox" name="person" value="${esc(m.id)}"${on ? ' checked' : ''}${!on && full ? ' disabled' : ''}/>${K.memberAvatar(
+              m.id,
+              'ch-av-18'
+            )}<span class="ch-check-label">${esc(displayName(m, t))}</span>${m.role === 'guest' ? `<span class="ch-tag">${esc(t('chat.roles.guest'))}</span>` : ''}</label>`;
+          })
+          .join('')
+      : `<p class="field-help">${esc(all.length ? t('chat.new.none') : t('chat.agents.nobodyToPick'))}</p>`;
+    countPeople(body);
+  };
+  // The count under the list, or with nobody picked what Save needs, and the boxes that can't be checked any more at
+  // the limit. A checkbox changes only this, so it keeps the focus.
+  const countPeople = (body) => {
+    const full = chosen.size >= AGENT_CHOSEN_MAX;
+    for (const box of body.querySelectorAll('[name="person"]')) box.disabled = !box.checked && full;
+    const count = picked().length;
+    const line = body.querySelector('[data-people-count]');
+    line.textContent = count ? t('chat.agents.chosenCount', { count }) : t('chat.agents.chosenNone');
+    line.classList.toggle('ch-warn', !count);
+    showReady(body);
+  };
+
+  const submit = async (scrim) => {
+    if (busy || !ready()) return;
+    const body = scrim.querySelector('.dialog-body');
+    const name = body.querySelector('[name="name"]').value.trim();
+    if (!nameOk(name)) return showError(body, 'name', t('chat.errors.invalidName'));
+    const agents = body.querySelector('[name="agents"]').checked;
+    const members = answers === 'members' ? picked() : [];
+    clearErrors(body);
+    busy = true;
+    setBusy(scrim, true);
+    try {
+      const res = editing
+        ? await api('chatUpdateAgent', ws, agent.id, { name, answers, agents, ...(answers === 'members' ? { members } : {}) })
+        : await api('chatCreateAgent', ws, { name, answers, agents, ...(answers === 'members' ? { members } : {}) });
+      finish(res || null);
+    } catch (err) {
+      busy = false;
+      setBusy(scrim, false);
+      showReady(body);
+      showError(body, fieldOf(err, ['name']), K.errorText(err));
+    }
+  };
+
+  const option = (value, label, help) =>
+    `<label class="ch-radio-row"><input type="radio" name="answers" value="${value}"${answers === value ? ' checked' : ''}/><span class="ch-radio-text"><span class="ch-radio-label">${esc(label)}</span><span class="field-help">${esc(
+      help
+    )}</span></span></label>`;
+  return wsDialog({
+    title: editing ? t('chat.agents.editTitle', { name: agent.name }) : t('chat.agents.addTitle'),
+    buttons: [cancelButton(), { label: editing ? t('common.actions.save') : t('chat.agents.make'), value: (scrim) => (submit(scrim), KEEP_OPEN) }],
+    // Who can be picked comes from the directory: what was typed, picked and checked stays.
+    redraw: (body) => drawPeople(body),
+    render(body, done) {
+      finish = done;
+      body.innerHTML = `<div class="form ch-form">
+        <label>${esc(t('chat.agents.name'))}<input type="text" name="name" autocomplete="off" spellcheck="false" maxlength="200" placeholder="${esc(t('chat.agents.namePlaceholder'))}" value="${esc(
+          editing ? agent.name : ''
+        )}"/></label>
+        <p class="error" data-error="name" hidden></p>
+        <fieldset class="ch-field"><legend class="ch-label">${esc(t('chat.agents.answers'))}</legend>
+          ${option('everyone', t('chat.agents.answersEveryoneOption'), t('chat.agents.answersEveryoneHelp'))}
+          ${option(
+            'sponsor',
+            yours ? t('chat.agents.answersMeOption') : t('chat.agents.answersSponsorOption', { name: sponsorName() }),
+            t('chat.agents.answersOnlyHelp')
+          )}
+          ${option('members', t('chat.agents.answersChosenOption'), yours ? t('chat.agents.answersChosenHelp') : t('chat.agents.answersChosenSponsorHelp', { name: sponsorName() }))}
+          <div class="ch-agent-people" data-people-box hidden>
+            <input type="search" class="ch-search" name="people-search" placeholder="${esc(t('chat.members.search'))}" aria-label="${esc(t('chat.members.search'))}" autocomplete="off" spellcheck="false"/>
+            <div class="ch-checks" data-people role="group" aria-label="${esc(t('chat.agents.answersChosenOption'))}"></div>
+            <p class="field-help" data-people-count></p>
+          </div>
+        </fieldset>
+        <label class="ch-check-row ch-agent-toggle"><input type="checkbox" name="agents"${editing && agent.agents ? ' checked' : ''}/><span class="ch-radio-text"><span class="ch-radio-label">${esc(
+          t('chat.agents.answersAgentsOption')
+        )}</span><span class="field-help">${esc(depth ? t('chat.agents.answersAgentsHelp', { count: depth }) : t('chat.agents.answersAgentsHelpPlain'))}</span></span></label>
+        ${editing ? '' : `<p class="field-help ch-agent-runs">${esc(t('chat.agents.runsNote'))}</p>`}
+        <p class="error" data-error="" hidden></p>
+      </div>`;
+      body.addEventListener('change', (e) => {
+        if (e.target.name === 'answers') {
+          answers = e.target.value;
+          drawPeople(body);
+        } else if (e.target.name === 'person') {
+          if (e.target.checked) chosen.add(e.target.value);
+          else chosen.delete(e.target.value);
+          countPeople(body);
+        }
+      });
+      body.querySelector('[name="people-search"]').addEventListener('input', () => drawPeople(body));
+      // Enter in the name field presses the button; in the people search it only filters.
+      body.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing && e.target.matches('[name="name"]')) {
+          e.preventDefault();
+          submit(body.closest('.scrim'));
+        }
+      });
+      drawPeople(body);
+      setTimeout(() => body.querySelector('[name="name"]')?.[editing ? 'select' : 'focus'](), 0);
+    }
+  });
+}
+
+// The key of an agent, shown once after Add an agent and New key: the key with Copy, the server's address and the
+// workspace ID, and a ready config for the reference runner with Copy. On desktop the config can take its backend
+// from one of the person's agents in Settings, Agents, with an environment variable in place of that agent's own key.
+// Closing before anything was copied asks first, as the invitation link does.
+async function showAgentKey({ agent, key }) {
+  const ws = K.CH.ws;
+  if (!ws || !agent || !key) return null;
+  const server = K.CH.state?.server || '';
+  let backend = PLACEHOLDER_BACKEND;
+  let choices = [];
+  let kept = false;
+  const config = () => runnerConfig({ server, workspace: ws, key, backend });
+
+  const drawConfig = (body) => {
+    const cfg = config();
+    body.querySelector('[name="config"]').value = runnerText(cfg);
+    const env = runnerEnv(cfg);
+    const envLine = body.querySelector('[data-env]');
+    envLine.hidden = !env.length;
+    envLine.textContent = env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
+    body.querySelector('[data-placeholder]').hidden = cfg.backend.type !== PLACEHOLDER_BACKEND.type || cfg.backend.command !== PLACEHOLDER_BACKEND.command;
+  };
+  // Copy key is the filled button until something was copied; Done is filled after.
+  const showKept = (scrim) => {
+    const copyKey = scrim.querySelector('[data-copy-key]');
+    copyKey.classList.toggle('primary', !kept);
+    copyKey.classList.toggle('secondary', kept);
+    scrim.querySelector('.dialog').classList.toggle('ch-quiet-close', !kept);
+  };
+  const keep = (scrim) => {
+    if (kept) return;
+    kept = true;
+    showKept(scrim);
+  };
+  const copy = (scrim, value, done) =>
+    navigator.clipboard.writeText(value).then(
+      () => {
+        toast(done);
+        keep(scrim);
+      },
+      () => {}
+    );
+  const leaveOk = () => {
+    if (kept) return true;
+    return dialog({
+      title: t('chat.agents.closeTitle'),
+      body: `<p>${esc(t('chat.agents.closeBody'))}</p>`,
+      buttons: [
+        { label: t('chat.invite.goBack'), value: false },
+        { label: t('common.actions.close'), value: true }
+      ]
+    });
+  };
+
+  return wsDialog({
+    title: t('chat.agents.keyTitle', { name: agent.name }),
+    wide: true,
+    buttons: [{ get label() { return t('chat.invite.done'); }, value: true }],
+    beforeClose: () => leaveOk(),
+    render(body) {
+      const scrim = body.closest('.scrim');
+      const fact = (label, value, name) =>
+        `<label>${esc(label)}<input type="text" name="${name}" class="sel ch-link-field" readonly spellcheck="false" value="${esc(value)}"/></label>`;
+      body.innerHTML = `<div class="form ch-form ch-agent-key">
+        <p class="ch-agent-once">${esc(t('chat.agents.keyOnce', { name: agent.name }))}</p>
+        <div class="ch-agent-copy-row">${fact(t('chat.agents.key'), key, 'key')}<button type="button" class="btn primary sm" data-copy-key>${icons.copy}<span>${esc(t('chat.agents.copyKey'))}</span></button></div>
+        <div class="ch-agent-facts">${fact(t('chat.agents.server'), server, 'server')}${fact(t('chat.agents.workspaceId'), ws, 'workspace')}</div>
+        ${
+          WEB
+            ? ''
+            : `<label data-use hidden>${esc(t('chat.agents.useMine'))}<select name="use"><option value="">${esc(t('chat.agents.useNone'))}</option></select>
+                 <span class="field-help">${esc(t('chat.agents.useMineHelp'))}</span></label>`
+        }
+        <label>${esc(t('chat.agents.config'))}<textarea name="config" class="sel ch-agent-config" readonly spellcheck="false" rows="12"></textarea></label>
+        <p class="field-help" data-placeholder>${esc(t('chat.agents.configBackend'))}</p>
+        <p class="field-help ch-warn" data-env hidden></p>
+        <div class="ch-agent-copy-end"><button type="button" class="btn secondary sm" data-copy-config>${icons.copy}<span>${esc(t('chat.agents.copyConfig'))}</span></button></div>
+        <p class="field-help">${esc(t('chat.agents.configRun'))} <code class="ch-agent-cmd sel">${esc(RUNNER_COMMAND)}</code></p>
+        <p class="note">${esc(t('chat.agents.configPrivate'))}</p>
+      </div>`;
+      drawConfig(body);
+      showKept(scrim);
+      body.querySelector('[data-copy-key]').addEventListener('click', () => copy(scrim, key, t('chat.agents.keyCopied')));
+      body.querySelector('[data-copy-config]').addEventListener('click', () => copy(scrim, body.querySelector('[name="config"]').value, t('chat.agents.configCopied')));
+      // Ctrl+C in the key or the config copies too.
+      for (const field of body.querySelectorAll('[name="key"], [name="config"]')) field.addEventListener('copy', () => keep(scrim));
+      const use = body.querySelector('[name="use"]');
+      if (use) {
+        use.addEventListener('change', () => {
+          const pick = choices.find((c) => c.id === use.value);
+          backend = pick ? pick.backend : PLACEHOLDER_BACKEND;
+          drawConfig(body);
+        });
+        // The agents of Settings, Agents, without their keys (agentConfig never gives one).
+        api('agentConfig')
+          .then((cfg) => {
+            if (!body.isConnected) return;
+            choices = runnerAgents(cfg);
+            if (!choices.length) return;
+            for (const c of choices) {
+              const o = document.createElement('option');
+              o.value = c.id;
+              o.textContent = c.name;
+              use.append(o);
+            }
+            body.querySelector('[data-use]').hidden = false;
+          })
+          .catch(() => {});
+      }
+      const field = body.querySelector('[name="key"]');
+      field.focus();
+      field.select();
+    }
+  });
 }
 
 // ---------- direct messages (desktop-ui 6.11, contract 3.12) ----------
@@ -1922,7 +2472,7 @@ export async function newMessage(prefill = []) {
   // draw: a view from before the run's first step doesn't know it yet, and the list draws again when it comes.
   const people = () =>
     activeMembers()
-      .filter((m) => m.id !== K.me() && m.role !== 'guest' && !K.CH.blocks.has(m.id))
+      .filter((m) => m.id !== K.me() && m.role !== 'guest' && !isAgent(m) && !K.CH.blocks.has(m.id))
       .sort((a, b) => collator().compare(displayName(a, t), displayName(b, t)));
   const picked = prefill.filter((id) => people().some((m) => m.id === id)).slice(0, PICK_MAX);
   let active = 0;

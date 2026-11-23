@@ -2,7 +2,7 @@ import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog, dialog, esc } from './ui.js';
 import { h } from './agent/bui.js';
-import { timeline, displayName, memberTag, canRemove, closedBar, applyReaction, reacted, canMessageAuthor } from './chat-model.js';
+import { timeline, displayName, memberTag, canRemove, closedBar, applyReaction, reacted, canMessageAuthor, canBlockAuthor, isAgent, agentMentionNote, sponsorsAuthor } from './chat-model.js';
 import { toParts, appendToDraft } from './chat-text.js';
 import { plainText } from './chat-markdown.js';
 import { mountChatInput } from './chat-input.js';
@@ -48,8 +48,9 @@ function svg(name) {
   return tpl.content.firstElementChild;
 }
 
-function avatarEl(id, name, { cls = 'ch-av', deleted = false } = {}) {
-  const el = h('span', { class: `avatar ${cls}`, 'aria-hidden': 'true', text: deleted ? '?' : initials({ name }) });
+// agent: a rounded square, as an agent's avatar is everywhere in Chat.
+function avatarEl(id, name, { cls = 'ch-av', deleted = false, agent = false } = {}) {
+  const el = h('span', { class: `avatar ${cls}${agent ? ' is-agent' : ''}`, 'aria-hidden': 'true', text: deleted ? '?' : initials({ name }) });
   el.style.setProperty('--h', String(hue(id || '')));
   return el;
 }
@@ -511,7 +512,14 @@ export function mountView(section, H) {
     if (room.muted) titleRow.append(h('span', { class: 'ch-head-muted', role: 'img', 'aria-label': t('chat.sidebar.rowMuted', { name }), title: t('chat.sidebar.rowMuted', { name }) }, svg('mute')));
     const meta = dm
       ? t('chat.head.direct', { host: H.state()?.host || '' })
-      : [t('chat.head.members', { count: room.members || 0 }), room.visibility === 'private' ? t('chat.head.private') : ''].filter(Boolean).join(' · ');
+      : [
+          t('chat.head.members', { count: room.members || 0 }),
+          // The agents in it, which members leaves out (server/WORKSPACES.md "Agents").
+          room.agents > 0 ? t('chat.head.agents', { count: room.agents }) : '',
+          room.visibility === 'private' ? t('chat.head.private') : ''
+        ]
+          .filter(Boolean)
+          .join(' · ');
     const titles = h('div', { class: 'ch-titles' }, titleRow, h('div', { class: 'ch-meta', text: meta }));
     const actions = h('div', { class: 'ch-actions' });
     const group = dm && (room.participants || []).length > 2;
@@ -590,7 +598,12 @@ export function mountView(section, H) {
       const dir = members();
       const me = H.me();
       const list = ids ? ids.map((id) => dir.get(id)).filter(Boolean) : [...dir.values()];
-      return list.filter((m) => m.id !== me && (!m.state || m.state === 'active'));
+      // An agent that won't answer you says so ("Answers only Olga"); the mention still goes in (server/WORKSPACES.md
+      // "Agents").
+      const listFormat = new Intl.ListFormat(getLocale(), { type: 'conjunction' });
+      return list
+        .filter((m) => m.id !== me && (!m.state || m.state === 'active'))
+        .map((m) => (isAgent(m) ? { ...m, note: agentMentionNote(m, me, { members: dir, t, listFormat }) } : m));
     });
   }
 
@@ -1151,7 +1164,7 @@ export function mountView(section, H) {
     const ic = h('span', { class: 'ch-intro-ic', 'aria-hidden': 'true' });
     if (room.kind === 'dm') {
       const others = (room.participants || []).filter((id) => id !== H.me()).slice(0, 3);
-      for (const id of others.length ? others : [H.me()]) ic.append(avatarEl(id, nameOf(id), { cls: 'ch-av-40', deleted: members().get(id)?.state === 'deleted' }));
+      for (const id of others.length ? others : [H.me()]) ic.append(avatarEl(id, nameOf(id), { cls: 'ch-av-40', deleted: members().get(id)?.state === 'deleted', agent: isAgent(members().get(id)) }));
       li.append(ic, h('h2', { class: 'ch-intro-title', text: t('chat.log.startDirect', { names: name }) }));
       li.append(h('p', { class: 'ch-intro-line', text: t('chat.log.hostNote', { host: H.state()?.host || '' }) }));
       return li;
@@ -1249,11 +1262,12 @@ export function mountView(section, H) {
     });
   }
 
-  // A link card's remove button (contract 2.7): the card goes at once, and comes back when the server refuses.
+  // A link card's remove button (contract 2.7): the card goes at once, and comes back when the server refuses. The
+  // author's, and the sponsor's of an agent that wrote the message (server/WORKSPACES.md "Agents").
   function cardsOf(row) {
     const ws = V.ws;
     const c = V.c;
-    const own = row.actor === H.me() && !row.pending && Boolean(row.id);
+    const own = (row.actor === H.me() || sponsorsAuthor(row, H.me(), members())) && !row.pending && Boolean(row.id);
     return cardsEl(row.previews, {
       canRemove: own,
       url: viewUrl(ws, c),
@@ -1362,7 +1376,7 @@ export function mountView(section, H) {
     const last = Number.isFinite(r.lastAt) ? t('chat.log.lastReply', { time: listTime(r.lastAt) }) : '';
     const btn = h('button', { type: 'button', class: `ch-replies${r.hasNew ? ' has-new' : ''}`, 'data-ch': 'thread', 'data-root': row.id, 'data-roving': '', tabindex: '-1', 'aria-label': [count, last].filter(Boolean).join(', ') });
     const avs = h('span', { class: 'ch-replies-av', 'aria-hidden': 'true' });
-    for (const id of r.actors) avs.append(avatarEl(id, nameOf(id), { cls: 'ch-av-16', deleted: members().get(id)?.state === 'deleted' }));
+    for (const id of r.actors) avs.append(avatarEl(id, nameOf(id), { cls: 'ch-av-16', deleted: members().get(id)?.state === 'deleted', agent: isAgent(members().get(id)) }));
     btn.append(avs);
     if (r.hasNew) btn.append(h('i', { class: 'ch-replies-dot', 'aria-hidden': 'true' }));
     btn.append(h('span', { class: 'ch-replies-n', text: t('chat.log.replies', { count: r.count }) }));
@@ -1439,11 +1453,12 @@ export function mountView(section, H) {
     if (!row.removed && H.startDm && canMessageAuthor(row, { me: H.me(), myRole: H.myRole(), members: members(), blocks: H.blocks() })) {
       items.push({ icon: 'chat', label: t('chat.msg.messageAuthor', { name: nameOf(row.actor) }), action: () => H.startDm([row.actor]) });
     }
-    const author = members().get(row.actor);
-    if (H.canBlock && H.canBlock() && row.actor !== H.me() && author && author.state === 'active' && author.role !== 'guest' && !H.blocks().has(row.actor)) {
+    // Never an agent's: its sponsor or an admin removes it instead (server/WORKSPACES.md "Agents").
+    if (H.canBlock && H.canBlock() && canBlockAuthor(row, { me: H.me(), members: members(), blocks: H.blocks() })) {
       items.push({ separator: true }, { icon: 'ban', label: t('chat.head.block', { name: nameOf(row.actor) }), action: () => H.block(row.actor) });
     }
-    if (canRemove(row, H.me(), V.room)) items.push({ separator: true }, { icon: 'trash', label: t('chat.msg.remove'), danger: true, action: () => removeMessage(row) });
+    // Also an agent's message for the person who made the agent (server/WORKSPACES.md "Agents").
+    if (canRemove(row, H.me(), V.room, members())) items.push({ separator: true }, { icon: 'trash', label: t('chat.msg.remove'), danger: true, action: () => removeMessage(row) });
     return items;
   }
 
@@ -1490,7 +1505,7 @@ export function mountView(section, H) {
     if (row.root) li.dataset.root = row.root;
     if (row.pending) li.dataset.state = row.pending;
     if (row.type === 'reply' && row.head && row.context) li.append(contextLine(row.context));
-    if (row.head) li.append(avatarEl(row.actor, name, { deleted }));
+    if (row.head) li.append(avatarEl(row.actor, name, { deleted, agent: isAgent(author) }));
     else li.append(timeEl(row.at, 'ch-time is-gutter'));
     const body = h('div', { class: 'ch-body' });
     if (row.head) {

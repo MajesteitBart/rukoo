@@ -502,6 +502,92 @@
     <string name="agent_empty_title_chat">%1$s ziet de teamchat niet</string>
     <string name="agent_empty_body_chat">Rukoo houdt werkruimteberichten weg bij je persoonlijke agents. Plak waarmee je hulp wilt, of vraag iets anders.</string>
 
+    <!-- chat.workspace.agents, chat.roles.agent(s), chat.head.agents, chat.host.agents, chat.agents.*, chat.errors.agent* -->
+    <string name="chat_workspace_agents">Agents</string>
+    <string name="chat_roles_agent">Agent</string>
+    <string name="chat_roles_agents">Agents</string>
+    <plurals name="chat_head_agents">
+        <item quantity="one">%d agent</item>
+        <item quantity="other">%d agents</item>
+    </plurals>
+    <string name="chat_host_agents">Agents in een kanaal geven wat ze daar lezen door aan het systeem dat ze draait.</string>
+    <string name="chat_agents_title">Agents in %1$s</string>
+    <string name="chat_agents_intro">Een agent antwoordt als iemand hem noemt in een kanaal waaraan hij is toegevoegd. Hij draait buiten Rukoo, op een computer of server die jij kiest, en maakt verbinding met een sleutel.</string>
+    <string name="chat_agents_add">Agent toevoegen</string>
+    <string name="chat_agents_none">Nog geen agents.</string>
+    <string name="chat_agents_made_by">Gemaakt door %1$s</string>
+    <string name="chat_agents_answers_everyone">Antwoordt iedereen</string>
+    <string name="chat_agents_answers_only">Antwoordt alleen %1$s</string>
+    <plurals name="chat_agents_answers_more">
+        <item quantity="one">Antwoordt alleen %1$s en %2$d ander</item>
+        <item quantity="other">Antwoordt alleen %1$s en %2$d anderen</item>
+    </plurals>
+    <string name="chat_agents_answers_sponsor_gone">Antwoordt alleen wie hem maakte</string>
+    <string name="chat_agents_answers_agents">Antwoordt andere agents</string>
+    <string name="chat_agents_last_active">Laatst actief %1$s</string>
+    <string name="chat_agents_never_active">Nog niet verbonden</string>
+    <string name="chat_agents_edit">Agent bewerken</string>
+    <string name="chat_agents_new_key">Nieuwe sleutel</string>
+    <string name="chat_agents_remove">Agent verwijderen</string>
+    <string name="chat_agents_new_key_title">Nieuwe sleutel maken voor %1$s?</string>
+    <string name="chat_agents_new_key_body">De huidige sleutel werkt meteen niet meer, en een runner die hem gebruikt verliest de verbinding. Je ziet de nieuwe sleutel maar één keer.</string>
+    <string name="chat_agents_new_key_confirm">Nieuwe sleutel maken</string>
+    <string name="chat_agents_remove_title">%1$s verwijderen?</string>
+    <string name="chat_agents_remove_body">%1$s verlaat alle kanalen en de sleutel werkt niet meer. De berichten blijven staan.</string>
+    <string name="chat_agents_remove_confirm">Verwijderen</string>
+    <string name="chat_agents_removed">%1$s is verwijderd.</string>
+    <string name="chat_agents_add_title">Agent toevoegen</string>
+    <string name="chat_agents_edit_title">%1$s bewerken</string>
+    <string name="chat_agents_make">Agent toevoegen</string>
+    <string name="chat_agents_name">Naam</string>
+    <string name="chat_agents_name_placeholder">Assistent</string>
+    <string name="chat_agents_answers">Wie hij antwoordt</string>
+    <string name="chat_agents_answers_everyone_option">Iedereen</string>
+    <string name="chat_agents_answers_everyone_help">Iedereen die kan posten in een kanaal waar hij in zit.</string>
+    <string name="chat_agents_answers_me_option">Alleen mij</string>
+    <string name="chat_agents_answers_sponsor_option">Alleen %1$s</string>
+    <string name="chat_agents_answers_only_help">Anderen antwoordt hij niet, maar hij leest wel alle berichten in zijn kanalen.</string>
+    <string name="chat_agents_answers_chosen_option">Gekozen mensen</string>
+    <string name="chat_agents_answers_chosen_help">Jij en de mensen die je kiest.</string>
+    <string name="chat_agents_answers_chosen_sponsor_help">%1$s en de mensen die je kiest.</string>
+    <plurals name="chat_agents_chosen_count">
+        <item quantity="one">%d persoon gekozen</item>
+        <item quantity="other">%d mensen gekozen</item>
+    </plurals>
+    <string name="chat_agents_nobody_to_pick">Er zit nog niemand anders in deze werkruimte.</string>
+    <string name="chat_agents_answers_agents_option">Antwoordt andere agents</string>
+    <plurals name="chat_agents_answers_agents_help">
+        <item quantity="one">Als een andere agent hem noemt. Een reeks agents die elkaar antwoorden, stopt na %d antwoord.</item>
+        <item quantity="other">Als een andere agent hem noemt. Een reeks agents die elkaar antwoorden, stopt na %d antwoorden.</item>
+    </plurals>
+    <string name="chat_agents_runs_note">Daarna krijg je de sleutel en een config voor de runner, het programma dat hem met je eigen agent verbindt.</string>
+    <string name="chat_agents_key_title">Sleutel voor %1$s</string>
+    <string name="chat_agents_key_once">Kopieer de sleutel nu. Je ziet hem maar één keer.</string>
+    <string name="chat_agents_key">Sleutel</string>
+    <string name="chat_agents_copy_key">Sleutel kopiëren</string>
+    <string name="chat_agents_key_copied">Sleutel gekopieerd</string>
+    <string name="chat_agents_server">Server</string>
+    <string name="chat_agents_workspace_id">Werkruimte-ID</string>
+    <string name="chat_agents_config">Config voor de runner</string>
+    <string name="chat_agents_config_backend">Pas backend aan aan hoe je agent draait: runs, openai, claude, codex of command. De README van de runner beschrijft ze.</string>
+    <string name="chat_agents_copy_config">Config kopiëren</string>
+    <string name="chat_agents_config_copied">Config gekopieerd</string>
+    <string name="chat_agents_config_run">Sla hem op als agent.json en start de runner vanuit de Rukoo-repository:</string>
+    <string name="chat_agents_config_private">De config bevat de sleutel van de agent. Houd hem geheim, net als een wachtwoord.</string>
+    <string name="chat_agents_close_title">Sluiten zonder de sleutel te kopiëren?</string>
+    <string name="chat_agents_close_body">Je ziet deze sleutel niet meer terug. Zonder sleutel kan de agent geen verbinding maken en heb je een nieuwe nodig.</string>
+    <string name="chat_errors_agent_limit">%1$s heeft al het maximale aantal agents. Verwijder er eerst een.</string>
+    <string name="chat_errors_agent_in_dm">Agents kunnen niet in directe berichten.</string>
+    <string name="chat_errors_agent_not_manager">Een agent kan geen kanaal beheren.</string>
+    <string name="chat_errors_agent_block">Je kunt een agent niet blokkeren. Wie hem maakte, of een beheerder, kan hem verwijderen.</string>
+    <string name="chat_errors_agent_role">De rol van een agent kan niet veranderen.</string>
+    <string name="chat_errors_agent_sponsor_not_in_channel">Een agent kan alleen in een privékanaal zitten zolang degene die hem maakte er ook in zit.</string>
+    <string name="chat_channel_people_group">Mensen</string>
+    <string name="chat_channel_add_agents">Agents toevoegen</string>
+    <string name="chat_channel_add_agents_title">Agents toevoegen aan #%1$s</string>
+    <string name="chat_agents_all_in">Al je agents zitten al in #%1$s</string>
+    <string name="chat_agents_chosen_none">Kies minstens één persoon.</string>
+
     <!-- Alleen Android (contract §6.5). -->
     <string name="chat_mode_mail">E-mail</string>
     <string name="chat_mode_switch">E-mail of chat</string>

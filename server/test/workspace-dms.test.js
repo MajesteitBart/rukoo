@@ -76,6 +76,7 @@ describe('starting a direct message', () => {
       grant: expect.stringMatching(/^g_/),
       role: 'member',
       members: 2,
+      agents: 0,
       head: 1,
       floor: 1,
       lastAt: expect.any(Number),

@@ -39,6 +39,8 @@ class WorkspaceVectorsTest {
 
     private fun JsonObject.sOrNull(key: String) = (get(key) as? JsonPrimitive)?.content
 
+    private fun JsonObject.ids(key: String) = get(key)?.jsonArray?.map { (it as JsonPrimitive).content }
+
     private val id = "([A-Za-z0-9_-]+)"
     private val routes = listOf(
         Route("GET", "", { _, _ -> list() }),
@@ -73,6 +75,13 @@ class WorkspaceVectorsTest {
         Route("GET", "/$id/blocks", { p, _ -> blocks(p[0]) }),
         Route("POST", "/$id/blocks", { p, b -> block(p[0], b.s("member")) }),
         Route("DELETE", "/$id/blocks/$id", { p, _ -> unblock(p[0], p[1]) }),
+        Route("GET", "/$id/agents", { p, _ -> agents(p[0]) }),
+        Route("POST", "/$id/agents", { p, b -> createAgent(p[0], b.s("name"), b.s("answers"), b.ids("members").orEmpty(), (b.getValue("agents") as JsonPrimitive).boolean) }),
+        Route("PATCH", "/$id/agents/(u_[A-Za-z0-9_-]+)", { p, b ->
+            updateAgent(p[0], p[1], b.sOrNull("name"), b.sOrNull("answers"), b.ids("members"), (b["agents"] as? JsonPrimitive)?.boolean)
+        }),
+        Route("POST", "/$id/agents/(u_[A-Za-z0-9_-]+)/key", { p, _ -> agentKey(p[0], p[1]) }),
+        Route("DELETE", "/$id/agents/(u_[A-Za-z0-9_-]+)", { p, _ -> removeAgent(p[0], p[1]) }),
         Route("POST", "/$id/conversations/$id/messages", { p, b -> post(p[0], p[1], RukooJson.decodeFromJsonElement(SendBody.serializer(), b)) }),
         Route("GET", "/$id/conversations/$id/operations/([0-9a-f-]+)", { p, _ -> operation(p[0], p[1], p[2]) }),
         Route("GET", "/$id/conversations/$id/events\\?(?:after=(\\d+)&)?(?:before=(\\d+)&)?limit=(\\d+)", { p, _ ->
@@ -161,7 +170,8 @@ class WorkspaceVectorsTest {
         assertTrue(WORKSPACES_FEATURE in info.features)
         assertTrue(info.teamChat)
         val ws = info.workspace!!
-        assertEquals(listOf(1), ws.versions)
+        // The server speaks the rich chat contract's version 2 too; the phone speaks 1, which it still lists.
+        assertTrue(WORKSPACE_VERSION in ws.versions)
         assertTrue(ws.inviteSignups)
         assertEquals(6, ws.limits.members)
         assertEquals(12, ws.limits.conversations)
@@ -205,6 +215,56 @@ class WorkspaceVectorsTest {
         assertEquals("dm.started", started.kind)
         assertEquals(listOf(v.id("olga"), v.id("mila")), started.members)
         assertEquals(started.members, started.data()?.members)
+    }
+
+    @Test
+    fun `agents read in the server info, the directory, the feed and an agent's reply`() {
+        val info = RukooJson.decodeFromJsonElement(ServerInfo.serializer(), v.exchange("info").body!!).workspace!!
+        assertTrue(info.agentsOn)
+        assertEquals(WorkspaceAgentLimits(max = 2, depth = 3, repliesPerHour = 120), info.agents)
+
+        // In the directory an agent is a member of kind agent, with its settings and never its key.
+        val members = RukooJson.decodeFromJsonElement(MembersPage.serializer(), v.exchange("members with agent").body!!).members
+        val clark = members.single { it.isAgent }
+        assertEquals(v.id("clark"), clark.id)
+        assertEquals("member", clark.role)
+        assertEquals(AgentSettings(sponsor = v.id("mila"), answers = "members", members = listOf(v.id("olga")), agents = true), clark.agent)
+        assertTrue(members.filter { it.id != clark.id }.none { it.isAgent || it.agent != null })
+        assertFalse(v.exchange("members with agent").body.toString().contains("rka_"))
+
+        // A feed row counts its people in members and its agents apart.
+        val feed = RukooJson.decodeFromJsonElement(FeedPage.serializer(), v.exchange("feed with agents").body!!)
+        FeedApplier.check(feed)
+        val general = feed.changes.single { it.conversation == v.id("general") }
+        assertEquals(1, general.agents)
+        assertTrue(feed.changes.filter { it.conversation != v.id("general") }.all { it.agents == 0 })
+
+        // The reply names its trigger, its depth and the person who started the chain (Olga, who asked), goes in the
+        // trigger's thread, and keeps all three in the cache's data.
+        val page = RukooJson.decodeFromJsonElement(EventPage.serializer(), v.exchange("events with agent reply").body!!)
+        FeedApplier.check(page)
+        val trigger = page.events.single { it.id == v.id("agentTrigger") }
+        val reply = page.events.single { it.id == v.id("agentReply") }
+        assertEquals(v.id("clark"), reply.actor)
+        assertEquals(v.id("agentTrigger"), reply.trigger)
+        assertEquals(1, reply.depth)
+        assertEquals(v.id("olga"), reply.origin)
+        assertEquals(trigger.actor, reply.origin)
+        assertEquals(v.id("agentTrigger"), reply.root)
+        assertEquals(EventData(trigger = v.id("agentTrigger"), depth = 1, origin = v.id("olga")), reply.data())
+        assertNull("a person's message has no trigger, depth or origin", trigger.trigger ?: trigger.depth ?: trigger.origin)
+        assertNull(trigger.data())
+
+        // The key is shown in the answers that make one, and works for that agent only.
+        val made = RukooJson.decodeFromJsonElement(MadeAgent.serializer(), v.exchange("create agent").body!!)
+        assertTrue(WorkspaceIds.isAgentKey(made.key, made.agent.id))
+        assertFalse(WorkspaceIds.isAgentKey(made.key, v.id("mila")))
+        val rekeyed = RukooJson.decodeFromJsonElement(MadeAgent.serializer(), v.exchange("agent key").body!!)
+        assertTrue(WorkspaceIds.isAgentKey(rekeyed.key, made.agent.id))
+        assertTrue("a new key is another key", rekeyed.key != made.key)
+        // Its sponsor makes it; an owner gets no key at all.
+        assertEquals("mila", v.exchange("agent key").auth)
+        assertFalse(v.exchange("agent key as owner").body.toString().contains("rka_"))
     }
 
     @Test

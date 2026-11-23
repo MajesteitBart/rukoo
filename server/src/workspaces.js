@@ -7,6 +7,8 @@ import { fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 
 import {
   ACCOUNT_NAME,
   accountObject,
+  agentLimits,
+  agentsOn,
   filesOn,
   filesOrigin,
   limitRate,
@@ -32,6 +34,9 @@ const PROTOCOL = 'rukoo.workspace.v1';
 const TICKET_PREFIX = 'rukoo.ticket.';
 
 const TOKEN = /^Bearer ([A-Za-z0-9_-]{43})\.[A-Za-z0-9_-]{43}$/i;
+// An agent's key: "rka_", the 22 characters of its member id after "u_", a dot and 43 characters of secret. Workspace
+// routes take it; the account routes never do, as their TOKEN wants a name of 43 characters.
+const AGENT_KEY = /^Bearer (rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})$/;
 const ID = (prefix) => new RegExp(`^${prefix}_[A-Za-z0-9_-]{22}$`);
 const WORKSPACE_ID = ID('w');
 const CONVERSATION_ID = ID('c');
@@ -57,6 +62,9 @@ const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
 // A reaction is one emoji as Unicode recommends it for general interchange, skin tones and sequences included.
 const EMOJI = /^\p{RGI_Emoji}$/v;
 const EMOJI_BYTES = 64;
+// The members an agent that answers 'members' may name, and the parts one trigger's reply may have.
+const AGENT_MEMBERS = 50;
+const REPLY_PARTS = 5;
 
 const encoder = new TextEncoder();
 
@@ -75,6 +83,9 @@ export async function workspaceInfo(env, url) {
     // WORKSPACE_PREVIEWS. runner, mcp, protected-recovery and push-wake are named here once this server has them.
     capabilities: capabilities(env),
     ...(filesOn(env) ? { files: { maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes, origin: filesOrigin(env, url) } } : {}),
+    // With the agents capability: how many agents a workspace may have, how deep agents answer each other, and how
+    // many replies one agent posts in an hour.
+    ...(agentsOn(env) ? { agents: agentInfo(env) } : {}),
     recovery: 'basic',
     // Whether someone without an account can sign up with a workspace invitation (POST /v1/signup, workspaceInvite),
     // and whether that sign-up also needs a code sent to the address (emailCode).
@@ -96,7 +107,12 @@ export async function workspaceInfo(env, url) {
 }
 
 export function capabilities(env) {
-  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : [])];
+  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : []), ...(agentsOn(env) ? ['agents'] : [])];
+}
+
+function agentInfo(env) {
+  const limits = agentLimits(env);
+  return { max: limits.agents, depth: limits.depth, repliesPerHour: limits.replies };
 }
 
 // A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite
@@ -156,7 +172,7 @@ export async function workspaces(request, env, url, ctx) {
   // A file link carries its own capability and no session (files.js).
   if (rest[0] === 'files' && rest.length === 2 && (method === 'PUT' || method === 'GET')) return fileRoute(request, env, id, rest[1], ctx);
 
-  const { token } = session(request);
+  const { token, agent } = workspaceSession(request, env);
   const stub = workspaceObject(env, id);
   const ask = async (op, args) => send(await stub.request(token, op, args));
   const body = () => input.readJson(request);
@@ -197,9 +213,25 @@ export async function workspaces(request, env, url, ctx) {
       return ask('blocks.list');
     case 'POST /blocks':
       return ask('block', { member: match((await body()).member, MEMBER_ID, 'member') });
+    case 'GET /agents':
+      needAgents(env);
+      return ask('agents.list');
+    case 'POST /agents':
+      needAgents(env);
+      return ask('agent.create', agentSettings(await body(), true));
+    case 'GET /agents/me':
+      needAgents(env);
+      return ask('agent.me');
   }
 
   const [area, a, b, c, d] = rest;
+  if (area === 'agents' && (rest.length === 2 || rest.length === 3)) {
+    needAgents(env);
+    const target = match(a, MEMBER_ID);
+    if (rest.length === 2 && method === 'PATCH') return ask('agent.update', { agent: target, ...agentSettings(await body(), false) });
+    if (rest.length === 2 && method === 'DELETE') return ask('agent.remove', { agent: target });
+    if (rest.length === 3 && b === 'key' && method === 'POST') return ask('agent.key', { agent: target });
+  }
   if (area === 'invites' && rest.length === 2 && method === 'DELETE') {
     return ask('invite.revoke', { invite: match(a, INVITE_ID) });
   }
@@ -244,7 +276,7 @@ export async function workspaces(request, env, url, ctx) {
   if (area === 'conversations' && rest.length >= 3) {
     const conversation = match(a, CONVERSATION_ID);
     if (rest.length === 3 && b === 'messages' && method === 'POST') {
-      const args = message(conversation, await body());
+      const args = message(conversation, await body(), agent);
       if (args.attachments.length && !filesOn(env)) throw filesOff();
       const result = await stub.request(token, 'post', args);
       // A message that was just posted gets its link cards made after the answer; a retry's 200 doesn't.
@@ -491,8 +523,42 @@ function session(request, env) {
   return { stub: env ? accountObject(env, found[1]) : null, token: found[0].slice('Bearer '.length) };
 }
 
+// The token a route under one workspace takes: an account's session token, or, while agents are on, an agent's key.
+// agent says which; the workspace checks either.
+function workspaceSession(request, env) {
+  const key = (request.headers.get('authorization') || '').match(AGENT_KEY);
+  if (!key) return { token: session(request).token, agent: false };
+  if (!agentsOn(env)) throw new HttpError(401, 'unauthorized', 'This agent key is not valid here.', {}, { scope: 'agent' });
+  return { token: key[1], agent: true };
+}
+
 function notFound() {
   return new HttpError(404, 'not_found', 'There is nothing here.');
+}
+
+// The agent routes exist only while agents are on.
+function needAgents(env) {
+  if (!agentsOn(env)) throw notFound();
+}
+
+// An agent's name and reply settings, as POST /agents makes them (creating) or PATCH /agents/{u} changes them. answers
+// is everyone, sponsor or members; members are member ids, which the workspace checks; agents is whether a mention by
+// another agent is a trigger.
+function agentSettings(body, creating) {
+  const out = {};
+  if (creating || body.name !== undefined) out.name = name(body.name, 'name');
+  if (creating || body.answers !== undefined) out.answers = oneOf(body.answers, ['everyone', 'sponsor', 'members'], 'answers');
+  if (body.members !== undefined && body.members !== null) {
+    const list = body.members;
+    const ok = Array.isArray(list) && list.length <= AGENT_MEMBERS && list.every((id) => typeof id === 'string' && MEMBER_ID.test(id));
+    if (!ok) throw invalid(`members must be a list of at most ${AGENT_MEMBERS} member ids.`, 'members');
+    out.members = [...new Set(list)];
+  }
+  if (body.agents !== undefined) {
+    if (typeof body.agents !== 'boolean') throw invalid('agents must be true or false.', 'agents');
+    out.agents = body.agents;
+  } else if (creating) out.agents = false;
+  return out;
 }
 
 function match(value, pattern, field) {
@@ -584,12 +650,25 @@ function operation(value) {
 
 // A message as the workspace stores it: the text exactly as sent, and mentions as byte ranges in that text. grant
 // and generation say under which access, and in which life of the workspace, the device wrote it. attachments are
-// uploads that are ready, in the order the message shows them; a message with files may have no text.
-function message(conversation, body) {
+// uploads that are ready, in the order the message shows them; a message with files may have no text. An agent's post
+// is a reply: it names its trigger and the part of the reply it is, 0 to 4, and carries no files.
+function message(conversation, body, agent = false) {
   const { bytes: op, time: opTime } = operation(body.operationId);
   const grant = match(body.grant, GRANT_ID, 'grant');
   if (typeof body.generation !== 'string' || !GENERATION.test(body.generation)) {
     throw invalid('generation must be the generation the workspace answered with.', 'generation');
+  }
+  const reply = {};
+  if (agent) {
+    reply.trigger = event(body.trigger, 'trigger');
+    const part = body.part === undefined || body.part === null ? 0 : body.part;
+    if (!Number.isSafeInteger(part) || part < 0 || part >= REPLY_PARTS) {
+      throw invalid(`part must be a whole number from 0 to ${REPLY_PARTS - 1}.`, 'part');
+    }
+    reply.part = part;
+    if (Array.isArray(body.attachments) && body.attachments.length) {
+      throw new HttpError(400, 'agent_attachments', 'An agent posts text only.', {}, { field: 'attachments' });
+    }
   }
   const attachments = body.attachments === undefined ? [] : body.attachments;
   const files =
@@ -638,7 +717,8 @@ function message(conversation, body) {
     size: utf8Text.length,
     mentions,
     root,
-    attachments
+    attachments,
+    ...reply
   };
 }
 

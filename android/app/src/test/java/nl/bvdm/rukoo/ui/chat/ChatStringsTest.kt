@@ -293,6 +293,27 @@ class ChatStringsTest {
         assertTrue("chat_invite_ready" !in en.names)
     }
 
+    @Test
+    fun `agents say whom they answer, that a key shows once, and that what they read goes on`() {
+        // The desktop's chat.roles.agent, chat.agents.* and chat.host.agents, mapped by the file's rule.
+        assertEquals("Agent", en.strings["chat_roles_agent"])
+        assertEquals("Answers only %1\$s", en.strings["chat_agents_answers_only"])
+        assertEquals("Antwoordt alleen %1\$s", nl.strings["chat_agents_answers_only"])
+        assertEquals("Answers only %1\$s and %2\$d others", en.plurals["chat_agents_answers_more"]?.get("other"))
+        assertEquals("Only me", en.strings["chat_agents_answers_me_option"])
+        assertEquals("Alleen mij", nl.strings["chat_agents_answers_me_option"])
+        assertEquals("Agents in a channel pass what they read there on to the system that runs them.", en.strings["chat_host_agents"])
+        assertEquals("Copy the key now. You'll see it only once.", unescape(en.strings["chat_agents_key_once"]))
+        assertEquals("The config holds the agent's key. Keep it private, as you would a password.", unescape(en.strings["chat_agents_config_private"]))
+        assertEquals(setOf("one", "other"), en.plurals["chat_agents_answers_agents_help"]?.keys)
+        // Phone wording without a desktop key sits in the Android-only part.
+        assertEquals("Add agents", en.strings["chat_channel_add_agents"])
+        // Every refusal of an agent route a person can get has its words, in both languages.
+        for (code in listOf("agent_limit", "agent_in_dm", "agent_not_manager", "agent_block", "agent_role")) {
+            assertTrue(code, "chat_errors_$code" in en.strings && "chat_errors_$code" in nl.strings)
+        }
+    }
+
     /** Android's escaped apostrophe, as the screen shows it. */
     private fun unescape(text: String?) = text?.replace("\\'", "'")
 

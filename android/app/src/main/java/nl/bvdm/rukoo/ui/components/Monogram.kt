@@ -45,8 +45,15 @@ object AvatarSize {
 }
 
 /**
+ * The shape of an agent's avatar in team chat: a rounded square (desktop styles.css `.avatar.is-agent`, 28%), so an
+ * agent never passes for a person at a glance.
+ */
+val AgentAvatarShape = RoundedCornerShape(percent = 28)
+
+/**
  * A person's avatar (ui.js `avatar`): initials on a hue generated from the address, so a sender has the same
- * color everywhere. With a [logo] (a sender's company icon) it shows that at 70% on white with an 8% ring.
+ * color everywhere. With a [logo] (a sender's company icon) it shows that at 70% on white with an 8% ring. An
+ * [agent] in team chat gets [AgentAvatarShape] instead of the disc.
  */
 @Composable
 fun Avatar(
@@ -55,6 +62,7 @@ fun Avatar(
     modifier: Modifier = Modifier,
     size: Dp = AvatarSize.Large,
     logo: Painter? = null,
+    agent: Boolean = false,
 ) {
     if (logo != null) {
         LogoDisc(logo, size, modifier, ratio = 0.7f)
@@ -63,7 +71,7 @@ fun Avatar(
     val c = Rk.colors
     val hue = rukooHue(address?.takeIf { it.isNotBlank() } ?: name)
     Box(
-        modifier.size(size).background(c.avatarBackground(hue), CircleShape),
+        modifier.size(size).background(c.avatarBackground(hue), if (agent) AgentAvatarShape else CircleShape),
         contentAlignment = Alignment.Center,
     ) {
         // 11.5px on a 32px avatar on desktop: about 36% of the disc.

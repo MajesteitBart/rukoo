@@ -318,6 +318,7 @@ describe('the feed', () => {
         grant: expect.stringMatching(/^g_/),
         role: 'member',
         members: 2,
+        agents: 0,
         head: 3,
         floor: 1,
         lastAt: expect.any(Number),

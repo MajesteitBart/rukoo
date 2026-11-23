@@ -13,7 +13,10 @@ import kotlinx.coroutines.test.runTest
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.mail.DialogChoice
 import nl.bvdm.rukoo.ui.mail.UiStrings
+import nl.bvdm.rukoo.workspaces.Agent
+import nl.bvdm.rukoo.workspaces.AgentSettings
 import nl.bvdm.rukoo.workspaces.ChatState
+import nl.bvdm.rukoo.workspaces.MadeAgent
 import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
@@ -36,6 +39,7 @@ class ChatUiSheetsTest {
         val ME = "u_" + "me".padEnd(22, 'x')
         val MILA = "u_" + "mila".padEnd(22, 'x')
         val OLGA = "u_" + "olga".padEnd(22, 'x')
+        val CLARK = "u_" + "clark".padEnd(22, 'x')
 
         val UNUSED = Proxy.newProxyInstance(Workspaces::class.java.classLoader, arrayOf(Workspaces::class.java)) { _, method, _ ->
             error("not expected: ${method.name}")
@@ -99,7 +103,9 @@ class ChatUiSheetsTest {
 
         override suspend fun leaveChannel(ws: String, channel: String, successor: String?) {
             leaves += successor
-            val sole = inside?.none { it.member != ME && it.role == "manager" } ?: true
+            // Like the server, agents don't count: with only agents beside them, the last person leaves.
+            val people = inside?.filter { it.member != CLARK }
+            val sole = people?.let { p -> p.any { it.member != ME } && p.none { it.member != ME && it.role == "manager" } } ?: true
             if (successor == null && sole) throw WorkspaceError("last_manager", status = 409, channels = listOf("c_" + "x".repeat(22)))
         }
 
@@ -130,6 +136,19 @@ class ChatUiSheetsTest {
                 renameError = null
                 throw it
             }
+        }
+
+        val removedAgents = ArrayList<String>()
+
+        override suspend fun removeAgent(ws: String, agent: String) {
+            removedAgents += agent
+        }
+
+        val rekeyed = ArrayList<String>()
+
+        override suspend fun newAgentKey(ws: String, agent: String): MadeAgent {
+            rekeyed += agent
+            return MadeAgent(Agent(agent, "Clark", ME, "sponsor"), "rka_" + agent.removePrefix("u_") + "." + "k".repeat(43))
         }
 
         val channelRoles = ArrayList<String>()
@@ -195,6 +214,91 @@ class ChatUiSheetsTest {
         advanceUntilIdle()
         assertEquals(listOf(MILA), w.leaves)
         assertNull(ui.prompt)
+    }
+
+    @Test
+    fun `a manager with only an agent beside them gets the confirmation that leaving archives the channel`() = runTest {
+        val clark = Member(CLARK, Member.KIND_AGENT, "Clark", "member", "active", agent = AgentSettings(ME, "sponsor"))
+        val directory = (members + clark).associateBy { it.id }
+        val w = FakeWorkspaces(members + clark)
+        w.inside = listOf(RoomMember(ME, "manager"), RoomMember(CLARK, "member"))
+        val ui = ui(w)
+        // The feed counts people only: the person is the channel's last.
+        ui.askLeaveChannel("w1", channel.copy(members = 1, agents = 1), directory, ME)
+        advanceUntilIdle()
+        assertNull(ui.prompt)
+        assertEquals(Strings.get(R.string.chat_channel_leave_body_last, "plans"), ui.dialog!!.message)
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertEquals(listOf<String?>(null), w.leaves)
+        // With a person beside them too, the agent still isn't offered as the successor.
+        w.leaves.clear()
+        w.inside = listOf(RoomMember(ME, "manager"), RoomMember(CLARK, "member"), RoomMember(MILA, "member"))
+        ui.askLeaveChannel("w1", channel.copy(members = 2, agents = 1), directory, ME)
+        advanceUntilIdle()
+        assertEquals(listOf("Mila Bakker"), (ui.prompt as ChatPrompt.Successor).people!!.map { it.name })
+    }
+
+    @Test
+    fun `a new agent key is asked first, as the old one stops working, and handed over once`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        val got = ArrayList<MadeAgent>()
+        ui.askNewAgentKey("w1", CLARK, "Clark") { got += it }
+        advanceUntilIdle()
+        assertEquals(Strings.get(R.string.chat_agents_new_key_title, "Clark"), ui.dialog!!.title)
+        assertTrue(ui.isBusy(ui.agentKeyKey(CLARK)))
+        ui.dialog!!.answer(DialogChoice.CANCEL)
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), w.rekeyed)
+        ui.askNewAgentKey("w1", CLARK, "Clark") { got += it }
+        advanceUntilIdle()
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertEquals(listOf(CLARK), w.rekeyed)
+        assertEquals(CLARK, got.single().agent.id)
+        assertFalse(ui.isBusy(ui.agentKeyKey(CLARK)))
+    }
+
+    @Test
+    fun `a key made from Workspace members waits for the Agents sheet once, for that workspace and agent only`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        // As Workspace members' New key does: confirm, then hold the key for the sheet it opens.
+        ui.askNewAgentKey("w1", CLARK, "Clark") { made -> ui.holdAgentKey("w1", made) }
+        advanceUntilIdle()
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertNull("another agent's sheet doesn't get it", ui.takeAgentKey("w1", MILA))
+        assertNull("and it is gone once asked for", ui.takeAgentKey("w1", CLARK))
+        ui.askNewAgentKey("w1", CLARK, "Clark") { made -> ui.holdAgentKey("w1", made) }
+        advanceUntilIdle()
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertNull("another workspace's sheet doesn't get it", ui.takeAgentKey("w2", CLARK))
+        ui.askNewAgentKey("w1", CLARK, "Clark") { made -> ui.holdAgentKey("w1", made) }
+        advanceUntilIdle()
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        val made = ui.takeAgentKey("w1", CLARK)
+        assertEquals(CLARK, made!!.agent.id)
+        assertTrue(made.key.startsWith("rka_"))
+        assertNull(ui.takeAgentKey("w1", CLARK))
+        assertEquals(listOf(CLARK, CLARK, CLARK), w.rekeyed)
+    }
+
+    @Test
+    fun `removing an agent is asked first and then said`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        ui.askRemoveAgent("w1", CLARK, "Clark")
+        advanceUntilIdle()
+        assertEquals(Strings.get(R.string.chat_agents_remove_title, "Clark"), ui.dialog!!.title)
+        assertEquals(Strings.get(R.string.chat_agents_remove_body, "Clark"), ui.dialog!!.message)
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertEquals(listOf(CLARK), w.removedAgents)
+        assertEquals(Strings.get(R.string.chat_agents_removed, "Clark"), ui.toasts.current?.message)
     }
 
     @Test

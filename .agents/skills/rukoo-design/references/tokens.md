@@ -22,7 +22,7 @@ Dark is the default on `:root`. Light overrides it on `:root.light`, which `ui.j
 | `--text` | `#ecedf1` | `#16181d` | Content, names, titles |
 | `--text-2` | `#a7adba` | `#565c69` | Supporting text, icons in toolbars |
 | `--text-3` | `#7a808e` | `#868b98` | Metadata, timestamps, counts, placeholders |
-| `--ch-text-3` | `#8a909e` | `#666b7a` | Chat's caption grey: replaces `--text-3` inside `.chat`, `.ch-nav`, `.ch-ws-switch` and `.ch-form` so chat's times and counts pass 4.5:1; mail keeps `--text-3` |
+| `--ch-text-3` | `#8a909e` | `#666b7a` | Chat's caption grey: replaces `--text-3` inside `.chat`, `.ch-nav`, `.ch-ws-switch`, `.ch-form`, `.dialog.ch-dialog` and `.ch-suggest` so chat's times and counts pass 4.5:1; mail keeps `--text-3` |
 | `--accent` | `#7aa5f5` | `#2f66d6` | Unread dot, unread stack count, accent marks |
 | `--accent-soft` | blue at 15% | blue at 10% | Accent tint behind selected or active items |
 | `--link` | `#8ab0ff` | `#2f63c8` | Links and link buttons |

@@ -1,7 +1,9 @@
 package nl.bvdm.rukoo.ui.chat
 
+import nl.bvdm.rukoo.workspaces.AgentSettings
 import nl.bvdm.rukoo.workspaces.Member
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,5 +80,21 @@ class MentionMatchTest {
     fun `guests can be mentioned like anyone in the room`() {
         val guest = member("gast", "Greta Gast", role = "guest")
         assertEquals(listOf(guest), MentionMatch.rank("gr", listOf(guest), me = null))
+    }
+
+    @Test
+    fun `agents in the room can be mentioned, also one that won't answer you, and a removed one can't`() {
+        fun agent(id: String, name: String, answers: String, state: String = "active") =
+            member(id, name, state = state).copy(kind = Member.KIND_AGENT, agent = AgentSettings(sponsor = bob.id, answers = answers))
+        val clark = agent("clark", "Clark", AgentRules.EVERYONE)
+        val revy = agent("revy", "Revy", AgentRules.SPONSOR)
+        val gone = agent("gone", "Revy Old", AgentRules.EVERYONE, state = "former")
+        val ranked = MentionMatch.rank("", listOf(clark, revy, gone, anna), me = me.id)
+        assertEquals(listOf("Clark", "Revy", "Anna Jonker"), names(ranked))
+        assertEquals(listOf(revy), MentionMatch.rank("rev", listOf(clark, revy, gone), me = me.id))
+        // The picker's note goes on the row of an agent that won't answer the person: Revy answers only Bob.
+        assertTrue(AgentRules.answers(clark.agent, me.id))
+        assertFalse(AgentRules.answers(revy.agent, me.id))
+        assertTrue(AgentRules.answers(revy.agent, bob.id))
     }
 }

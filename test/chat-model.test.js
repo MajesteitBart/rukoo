@@ -777,3 +777,218 @@ test("the composer's shortcuts are Slack's, and ':' with two characters opens th
   assert.deepEqual(emojiCode('great :tada:'), { start: 6, code: 'tada' });
   assert.equal(emojiCode('10:30:'), null);
 });
+
+// ---- agents in channels (server/WORKSPACES.md "Agents") ----
+
+const CLARK = id('u', 'clark');
+const REVY = id('u', 'revy');
+const agentOf = (over = {}, settings = {}) => ({
+  id: CLARK,
+  kind: 'agent',
+  name: 'Clark',
+  role: 'member',
+  state: 'active',
+  joinedAt: 0,
+  agent: { sponsor: SANNE, answers: 'everyone', members: [], agents: false, ...settings },
+  ...over
+});
+const withAgents = (...list) => new Map([...members, ...list.map((a) => [a.id, a])]);
+
+test('an agent has the Agent tag in both languages, and a former agent the Former member tag', async () => {
+  const { memberTag, isAgent, isPerson } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const nl = (key, params) => i18n.translate('nl', key, params);
+  assert.equal(memberTag(agentOf(), en), 'Agent');
+  assert.equal(memberTag(agentOf(), nl), 'Agent');
+  assert.equal(memberTag(agentOf({ state: 'removed' }), en), 'Former member');
+  assert.equal(isAgent(agentOf()), true);
+  assert.equal(isAgent(members.get(SANNE)), false);
+  assert.equal(isPerson(members.get(SANNE)), true);
+  assert.equal(isPerson(agentOf()), false);
+  assert.equal(isPerson({ ...members.get(SANNE), kind: 'robot' }), true, 'a kind this version does not know is a person');
+});
+
+test("an agent's row draws again when a member becomes an agent, as its tag changes", async () => {
+  const { timeline } = await loading;
+  seqs = 0;
+  const events = [msg(CLARK, T0)];
+  const message = (rows) => rows.find((r) => r.type === 'msg');
+  const before = message(timeline(events, { ...base, members: withAgents({ ...agentOf(), kind: 'human', agent: undefined }) }));
+  const after = message(timeline(events, { ...base, members: withAgents(agentOf()) }));
+  assert.equal(before.key, after.key);
+  assert.notEqual(before.sig, after.sig);
+});
+
+test('whom an agent answers: its sponsor always, everyone, or the people it lists; and the line that says so', async () => {
+  const { agentAnswers, agentAnswersText, agentMentionNote } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const nl = (key, params) => i18n.translate('nl', key, params);
+  const lf = (lang) => new Intl.ListFormat(lang, { type: 'conjunction' });
+  const everyone = agentOf();
+  const sponsorOnly = agentOf({}, { answers: 'sponsor' });
+  const chosen = agentOf({}, { answers: 'members', members: [ROB] });
+  assert.equal(agentAnswers(everyone, ME), true);
+  assert.equal(agentAnswers(sponsorOnly, ME), false);
+  assert.equal(agentAnswers(sponsorOnly, SANNE), true, 'its sponsor');
+  assert.equal(agentAnswers(chosen, ROB), true);
+  assert.equal(agentAnswers(chosen, SANNE), true);
+  assert.equal(agentAnswers(chosen, ME), false);
+  // An answers word this version doesn't know counts as not answering, as on Android; its sponsor is still answered.
+  assert.equal(agentAnswers(agentOf({}, { answers: 'channel_managers' }), ME), false, 'an answers word this version does not know');
+  assert.equal(agentAnswers(agentOf({}, { answers: 'channel_managers' }), SANNE), true, 'its sponsor, whatever the word');
+  assert.equal(agentAnswers({ ...agentOf(), agent: undefined }, ME), true, 'no settings yet');
+  assert.equal(agentAnswersText(everyone, { members, t: en }), 'Answers everyone');
+  assert.equal(agentAnswersText(sponsorOnly, { members, t: en, listFormat: lf('en') }), 'Answers only Sanne de Vries');
+  assert.equal(agentAnswersText(chosen, { members, t: en, listFormat: lf('en') }), 'Answers only Sanne de Vries and Rob');
+  assert.equal(agentAnswersText(chosen, { members, t: nl, listFormat: lf('nl') }), 'Antwoordt alleen Sanne de Vries en Rob');
+  const many = agentOf({}, { answers: 'members', members: [ROB, ME, MILA, OLGA] });
+  assert.equal(agentAnswersText(many, { members, t: en, listFormat: lf('en') }), 'Answers only Sanne de Vries, Rob and 3 others');
+  assert.equal(agentAnswersText(many, { members, t: nl, listFormat: lf('nl') }), 'Antwoordt alleen Sanne de Vries, Rob en 3 anderen');
+  // AgentOut, as the Agents dialog lists it, reads the same.
+  assert.equal(agentAnswersText({ sponsor: SANNE, answers: 'sponsor', members: [] }, { members, t: en, listFormat: lf('en') }), 'Answers only Sanne de Vries');
+  // A word this version doesn't know reads as its sponsor only, and the mention list says so to anyone else.
+  assert.equal(agentAnswersText(agentOf({}, { answers: 'channel_managers' }), { members, t: en, listFormat: lf('en') }), 'Answers only Sanne de Vries');
+  assert.equal(agentMentionNote(agentOf({}, { answers: 'channel_managers' }), ME, { members, t: en, listFormat: lf('en') }), 'Answers only Sanne de Vries');
+  // A sponsor the directory doesn't hold (a guest's directory has only the people in their channels) is never
+  // "Former member": the line says "the person who made it", or names only the people it does know.
+  const unknown = id('u', 'not in this directory');
+  assert.equal(agentAnswersText(agentOf({}, { sponsor: unknown, answers: 'sponsor' }), { members, t: en, listFormat: lf('en') }), 'Answers only the person who made it');
+  assert.equal(agentAnswersText(agentOf({}, { sponsor: unknown, answers: 'sponsor' }), { members, t: nl, listFormat: lf('nl') }), 'Antwoordt alleen wie hem maakte');
+  assert.equal(agentMentionNote(agentOf({}, { sponsor: unknown, answers: 'sponsor' }), ME, { members, t: en, listFormat: lf('en') }), 'Answers only the person who made it');
+  assert.equal(agentAnswersText(agentOf({}, { sponsor: unknown, answers: 'members', members: [ME] }), { members, t: en, listFormat: lf('en') }), 'Answers only Demo User');
+  assert.equal(agentAnswersText(agentOf({}, { sponsor: null, answers: 'sponsor' }), { members, t: en }), 'Answers only the person who made it');
+  // The mention list says it only to someone the agent won't answer.
+  assert.equal(agentMentionNote(sponsorOnly, ME, { members, t: en, listFormat: lf('en') }), 'Answers only Sanne de Vries');
+  assert.equal(agentMentionNote(sponsorOnly, SANNE, { members, t: en }), null);
+  assert.equal(agentMentionNote(everyone, ME, { members, t: en }), null);
+  assert.equal(agentMentionNote(members.get(ROB), ME, { members, t: en }), null, 'a person');
+});
+
+test('the line under an agent in the members lists says who made it and whom it answers, as on Android', async () => {
+  const { agentNote } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const nl = (key, params) => i18n.translate('nl', key, params);
+  const lf = (lang) => new Intl.ListFormat(lang, { type: 'conjunction' });
+  assert.equal(agentNote(agentOf({}, { answers: 'sponsor' }), { members, t: en, listFormat: lf('en') }), 'Made by Sanne de Vries · Answers only Sanne de Vries');
+  assert.equal(agentNote(agentOf({}, { agents: true }), { members, t: nl, listFormat: lf('nl') }), 'Gemaakt door Sanne de Vries · Antwoordt iedereen · Antwoordt andere agents');
+  // AgentOut, as the Agents dialog lists it.
+  assert.equal(agentNote({ id: CLARK, name: 'Clark', sponsor: ROB, answers: 'members', members: [ME], agents: false }, { members, t: en, listFormat: lf('en') }), 'Made by Rob · Answers only Rob and Demo User');
+  // A sponsor the directory doesn't hold: no Made by, and never "Former member".
+  const unknown = id('u', 'not in this directory');
+  assert.equal(agentNote(agentOf({}, { sponsor: unknown, answers: 'sponsor' }), { members, t: en, listFormat: lf('en') }), 'Answers only the person who made it');
+  assert.equal(agentNote(agentOf({}, { sponsor: unknown }), { members, t: en }), 'Answers everyone');
+  // A person, or an agent without settings yet, has no line.
+  assert.equal(agentNote(members.get(ROB), { members, t: en }), null);
+  assert.equal(agentNote({ ...agentOf(), agent: undefined }, { members, t: en }), null);
+});
+
+test('a new agent starts on Only me, and Chosen people with nobody picked or an unknown choice cannot be saved', async () => {
+  const { agentFormAnswers, agentFormReady, AGENT_CHOSEN_MAX } = await loading;
+  assert.equal(agentFormAnswers(null), 'sponsor', 'a new agent');
+  assert.equal(agentFormAnswers({ answers: 'everyone' }), 'everyone');
+  assert.equal(agentFormAnswers({ answers: 'members' }), 'members');
+  assert.equal(agentFormAnswers({ answers: 'channel_managers' }), 'sponsor', 'a word this version does not know');
+  assert.equal(agentFormAnswers({ answers: null }), 'sponsor', 'a directory row without settings');
+  assert.equal(agentFormReady({ answers: 'sponsor' }), true);
+  assert.equal(agentFormReady({ answers: 'everyone' }), true);
+  assert.equal(agentFormReady({ answers: 'members', chosen: 0 }), false, 'nobody picked');
+  assert.equal(agentFormReady({ answers: 'members', chosen: 1 }), true);
+  assert.equal(agentFormReady({ answers: 'members', chosen: AGENT_CHOSEN_MAX }), true);
+  assert.equal(agentFormReady({ answers: 'members', chosen: AGENT_CHOSEN_MAX + 1 }), false);
+  assert.equal(agentFormReady({ answers: 'channel_managers' }), false);
+});
+
+test("only an agent's sponsor makes it a new key; an owner or admin edits and removes it", async () => {
+  const { canRenewAgentKey, canManageAgent } = await loading;
+  const clark = agentOf();
+  assert.equal(canRenewAgentKey(clark, SANNE), true, 'its sponsor');
+  assert.equal(canRenewAgentKey(clark, ROB), false, 'an admin');
+  assert.equal(canRenewAgentKey(clark, ME), false, 'someone else');
+  assert.equal(canRenewAgentKey({ id: CLARK, sponsor: SANNE }, SANNE), true, 'AgentOut');
+  assert.equal(canRenewAgentKey({ id: CLARK, sponsor: SANNE }, null), false);
+  assert.equal(canRenewAgentKey({ ...clark, agent: undefined }, SANNE), false, 'without settings nobody is its sponsor');
+  assert.equal(canManageAgent(clark, ROB, 'admin'), true);
+  assert.equal(canManageAgent(clark, ROB, 'owner'), true);
+});
+
+test("an agent's sponsor removes the agent's messages, also once the agent is gone", async () => {
+  const { canRemove, sponsorsAuthor } = await loading;
+  seqs = 0;
+  const reply = msg(CLARK, T0);
+  const channel = { kind: 'channel', role: 'member' };
+  assert.equal(canRemove(reply, SANNE, channel, withAgents(agentOf())), true, 'its sponsor');
+  assert.equal(canRemove(reply, SANNE, channel, withAgents(agentOf({ state: 'removed' }))), true, 'a removed agent');
+  assert.equal(canRemove(reply, ME, channel, withAgents(agentOf())), false, 'someone else');
+  assert.equal(canRemove(reply, SANNE, channel), false, 'without the directory');
+  assert.equal(canRemove(msg(ROB, T0), SANNE, channel, withAgents(agentOf())), false, "a person's message");
+  assert.equal(canRemove({ ...reply, redacted: true }, SANNE, channel, withAgents(agentOf())), false);
+  assert.equal(sponsorsAuthor(reply, SANNE, [...withAgents(agentOf()).values()]), true, 'a list as directory');
+  assert.equal(sponsorsAuthor(reply, null, withAgents(agentOf())), false);
+});
+
+test('Add agents, for someone who may add only their own agents, says they are all in and never speaks for the people', async () => {
+  const { addPeopleEmpty } = await loading;
+  assert.equal(addPeopleEmpty({ rows: 0, candidates: 0, others: 4, agentsOnly: true }), 'agents');
+  assert.equal(addPeopleEmpty({ rows: 0, candidates: 0, others: 0, agentsOnly: true }), 'agents');
+  assert.equal(addPeopleEmpty({ rows: 0, candidates: 1, others: 4, query: 'zz', agentsOnly: true }), 'none');
+  assert.equal(addPeopleEmpty({ rows: 1, candidates: 1, others: 4, agentsOnly: true }), null);
+});
+
+test('who may add an agent to a channel, take it out and change it', async () => {
+  const { canAddAgent, canRemoveAgent, canManageAgent } = await loading;
+  const clark = agentOf();
+  const open = { id: id('c', 'open'), kind: 'channel', visibility: 'workspace', role: 'member', archived: false };
+  const secret = { ...open, visibility: 'private' };
+  // A manager adds any active agent to a channel the workspace can see; into a private channel only one whose sponsor
+  // is in it (the server's 409 sponsor_not_in_channel), and none while the channel's members aren't known.
+  assert.equal(canAddAgent(clark, { ...open, role: 'manager' }, ME), true);
+  assert.equal(canAddAgent(clark, { ...secret, role: 'manager' }, ME, new Set([ME, SANNE])), true);
+  assert.equal(canAddAgent(clark, { ...secret, role: 'manager' }, ME, [ME, SANNE]), true, 'a list of member IDs');
+  assert.equal(canAddAgent(clark, { ...secret, role: 'manager' }, ME, new Set([ME])), false, 'its sponsor is not in it');
+  assert.equal(canAddAgent(clark, { ...secret, role: 'manager' }, ME), false, 'the members are not known');
+  assert.equal(canAddAgent({ ...clark, agent: undefined }, { ...secret, role: 'manager' }, ME, new Set([ME])), false, 'no sponsor known');
+  assert.equal(canAddAgent(clark, { ...secret, role: 'manager' }, SANNE, new Set([SANNE])), true, 'its sponsor managing it');
+  // Its sponsor adds it to a channel the workspace can see.
+  assert.equal(canAddAgent(clark, open, SANNE), true);
+  assert.equal(canAddAgent(clark, secret, SANNE), false, "a private channel's non-manager");
+  assert.equal(canAddAgent(clark, open, ME), false, "someone else's agent where you don't manage");
+  assert.equal(canAddAgent(clark, { ...open, archived: true, role: 'manager' }, ME), false);
+  assert.equal(canAddAgent(agentOf({ state: 'removed' }), { ...open, role: 'manager' }, ME), false);
+  assert.equal(canAddAgent(members.get(ROB), { ...open, role: 'manager' }, ME), false, 'a person');
+  assert.equal(canAddAgent(clark, { ...open, kind: 'dm', role: 'manager' }, SANNE), false);
+  // Its sponsor and the channel's managers take it out, also of a private channel.
+  assert.equal(canRemoveAgent(clark, secret, SANNE), true);
+  assert.equal(canRemoveAgent(clark, { ...secret, role: 'manager' }, ME), true);
+  assert.equal(canRemoveAgent(clark, open, ME), false);
+  // Also out of an archived channel, which keeps its history and so its key's read access until the agent leaves.
+  assert.equal(canRemoveAgent(clark, { ...secret, archived: true }, SANNE), true, 'its sponsor, archived');
+  assert.equal(canRemoveAgent(clark, { ...open, archived: true, role: 'manager' }, ME), true, 'a manager, archived');
+  assert.equal(canRemoveAgent(clark, { ...open, archived: true }, ME), false, "someone else's agent, archived");
+  assert.equal(canRemoveAgent(members.get(ROB), { ...open, archived: true, role: 'manager' }, ME), false, 'a person');
+  // Its sponsor, an owner or an admin change it.
+  assert.equal(canManageAgent(clark, SANNE, 'member'), true);
+  assert.equal(canManageAgent(clark, ME, 'member'), false);
+  assert.equal(canManageAgent(clark, ME, 'admin'), true);
+  assert.equal(canManageAgent({ id: CLARK, sponsor: ME }, ME, 'member'), true, 'AgentOut');
+});
+
+test('agents are never in New message, a successor list, Message the author or Block the author', async () => {
+  const { dmPicker, successors, canMessageAuthor, canBlockAuthor } = await loading;
+  const clark = agentOf();
+  const revy = agentOf({ id: REVY, name: 'Revy' }, { sponsor: ME });
+  const dir = withAgents(clark, revy);
+  const people = [...dir.values()];
+  const picker = dmPicker(people, { me: ME, query: '' });
+  assert.ok(!picker.pick.some((m) => m.kind === 'agent'));
+  assert.ok(!picker.guests.some((m) => m.kind === 'agent'));
+  assert.deepEqual(dmPicker(people, { me: ME, query: 'cla', matches: (m) => m.name.toLowerCase().includes('cla') }).empty, 'none');
+  const collator = new Intl.Collator('en');
+  const en = (key, params) => i18n.translate('en', key, params);
+  assert.deepEqual(successors([SANNE, CLARK, REVY, ROB], dir, ME, collator, en), [ROB, SANNE]);
+  const row = (actor) => ({ type: 'msg', actor, id: id('e', 'x'), seq: 1 });
+  assert.equal(canMessageAuthor(row(CLARK), { me: ME, members: dir }), false);
+  assert.equal(canBlockAuthor(row(CLARK), { me: ME, members: dir }), false);
+  assert.equal(canBlockAuthor(row(SANNE), { me: ME, members: dir }), true);
+  assert.equal(canBlockAuthor(row(SANNE), { me: ME, members: dir, blocks: [SANNE] }), false);
+  assert.equal(canBlockAuthor(row(MILA), { me: ME, members: dir }), false, 'a guest');
+});

@@ -1098,6 +1098,8 @@ class WorkspaceService internal constructor(
             jurisdiction = i?.hosting?.jurisdiction?.takeIf { it in JURISDICTIONS },
             signups = i?.signups?.takeIf { it in SIGNUPS },
             inviteSignups = w?.inviteSignups == true,
+            agents = w?.agentsOn == true,
+            agentDepth = w?.agents?.depth?.takeIf { it in 1..AGENT_DEPTH_MAX } ?: AGENT_DEPTH,
             retention = w?.retention?.let { ChatRetention(it.contentDays, it.feedDays) },
             limits = w?.limits?.let { ChatLimits(it.workspacesPerAccount, it.members) },
             notifications = settings.value.notifyChat,
@@ -1180,13 +1182,14 @@ class WorkspaceService internal constructor(
             val row = getWs(ws) ?: return@read null
             val members = listMembers(ws)
             val me = members.firstOrNull { it.id == row.me } ?: Member(row.me.orEmpty(), "human", row.myName.orEmpty(), row.role, "active", 0)
+            val rosters = rosters(ws)
             val rooms = listRooms(ws).map { r ->
                 val preview = if (r.kind == RoomKind.DM.wire) {
                     newestOf(lastMessage(ws, r.id), keptPreview(alerts.fetchedPreview(ws, r.id)) { hasTombstone(ws, it) })
                 } else {
                     null
                 }
-                r.toRoom(preview)
+                r.toRoom(preview, rosters[r.id] ?: 0L)
             }
             val summary = known ?: summary(l, row, Totals(minOf(rooms.sumOf { it.attention }, BADGE_CAP), rooms.any { !it.muted && it.unread > 0 }))
             WorkspaceView(summary, me, rooms, members, row.membersMore, listChannels(ws), listBlocks(ws))
@@ -1222,7 +1225,7 @@ class WorkspaceService internal constructor(
             val r = getRoom(ws, room) ?: return@read null
             val events = eventsFrom(ws, room, 0, Int.MAX_VALUE)
             RoomTimeline(
-                room = r.toRoom(null),
+                room = r.toRoom(null, roster(ws, room)),
                 events = events,
                 pending = Outbox.pending(outboxForRoom(ws, room)),
                 replies = replySummaries(events),
@@ -1852,6 +1855,57 @@ class WorkspaceService internal constructor(
         confirm(s, wait = true)
     }
 
+    // ---- agents in channels ----
+
+    override suspend fun agents(ws: String): List<Agent> = onWs(ws) { _, s ->
+        s.requireUsable()
+        s.call { agents(ws) }.filter { WorkspaceIds.isMember(it.id) && WorkspaceIds.isMember(it.sponsor) }
+    }
+
+    override suspend fun createAgent(ws: String, name: String, answers: String, members: List<String>, agents: Boolean): MadeAgent = onWs(ws) { l, s ->
+        val made = write(s) { createAgent(ws, name.trim(), answers, chosen(answers, members), agents) }
+        checkKey(made)
+        afterAgents(l, s, ws)
+        made
+    }
+
+    override suspend fun updateAgent(ws: String, agent: String, name: String, answers: String, members: List<String>, agents: Boolean): Agent = onWs(ws) { l, s ->
+        val changed = write(s) { updateAgent(ws, agent, name.trim(), answers, chosen(answers, members), agents) }
+        afterAgents(l, s, ws)
+        changed
+    }
+
+    override suspend fun newAgentKey(ws: String, agent: String): MadeAgent = onWs(ws) { _, s ->
+        write(s) { agentKey(ws, agent) }.also(::checkKey)
+    }
+
+    override suspend fun removeAgent(ws: String, agent: String) {
+        onWs(ws) { l, s ->
+            try {
+                write(s) { removeAgent(ws, agent) }
+            } catch (e: WorkspaceError) {
+                // An agent already gone counts as removed.
+                if (!(e.code == "not_found" && e.scope == null)) throw e
+            }
+            afterAgents(l, s, ws)
+        }
+    }
+
+    // The people an agent answers besides its sponsor go only with `members`, each once; the server clears them else.
+    private fun chosen(answers: String, members: List<String>): List<String> = if (answers == "members") members.distinct() else emptyList()
+
+    // A key the runner config can't use is no key: the server sent something this version doesn't know.
+    private fun checkKey(made: MadeAgent) {
+        if (!WorkspaceIds.isAgentKey(made.key, made.agent.id)) throw WorkspaceError("server", message = "the answer has no key for the agent")
+    }
+
+    // An agent's settings are in the directory, so it loads again, and a run brings the rooms it left or joined.
+    private suspend fun afterAgents(l: Live, s: WorkspaceSync, ws: String) {
+        l.store.tx { updateWs(ws, mapOf("membersStale" to true)) }
+        quietly { s.directory() }
+        confirm(s)
+    }
+
     // ---- helpers ----
 
     // Runs [block]; a failure becomes null, except that cancelling the caller stays cancelling.
@@ -1873,6 +1927,9 @@ class WorkspaceService internal constructor(
 
         private const val NAME_MAX = 200
         private const val BADGE_CAP = 100
+
+        /** A depth limit beyond this from `GET /v1/info` reads as the default: no chain of agents runs that long. */
+        private const val AGENT_DEPTH_MAX = 20
 
         /** A worker waits this long for the account to load in a process it started. */
         private const val READY_WAIT = 10_000L
@@ -1924,8 +1981,11 @@ internal fun newestOf(cached: Event?, fetched: Event?): Event? = when {
 internal fun keptPreview(kept: Event?, removed: (String) -> Boolean): Event? =
     kept?.let { if (!it.redacted && removed(it.id)) it.copy(text = null, mentions = emptyList(), redacted = true) else it }
 
-/** A cached room as the UI shows it (§4.6 `Room`): `read` is this phone's `readLocal`, and a muted room asks for nothing. */
-internal fun RoomRow.toRoom(preview: Event?): Room {
+/**
+ * A cached room as the UI shows it (§4.6 `Room`): `read` is this phone's `readLocal`, and a muted room asks for
+ * nothing. [roster] is its roster revision, from WorkspaceStore.rosters.
+ */
+internal fun RoomRow.toRoom(preview: Event?, roster: Long = 0L): Room {
     val kind = RoomKind.of(kind)
     return Room(
         id = id,
@@ -1948,6 +2008,8 @@ internal fun RoomRow.toRoom(preview: Event?): Room {
         muted = muted,
         hasCache = hasCache,
         preview = preview,
+        agents = agents,
+        roster = roster,
     )
 }
 

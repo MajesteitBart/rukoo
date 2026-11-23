@@ -312,6 +312,69 @@ class FeedApplierTest {
         assertEquals("changes.inlineEvents[0].text", refusedAt(feed(good, inline = listOf(msg(5, text = "")))))
         assertEquals("changes.next", refusedAt(feed(good, next = "not a cursor")))
         assertEquals("changes.evictions", refusedAt(feed(evictions = listOf(Ids.GENERAL, Ids.GENERAL))))
+        // An agent's reply: the message it answers is an event ID, its depth 1 or more, and the person who started the
+        // chain a member ID; the room's agents can't be negative.
+        assertEquals("changes.changes[0].agents", refusedAt(feed(good.copy(agents = -1))))
+        assertEquals("changes.inlineEvents[0].trigger", refusedAt(feed(good, inline = listOf(msg(5).copy(trigger = "e_x", depth = 1)))))
+        assertEquals("changes.inlineEvents[0].depth", refusedAt(feed(good, inline = listOf(msg(5).copy(trigger = Ids.event(4), depth = 0)))))
+        assertEquals("changes.inlineEvents[0].origin", refusedAt(feed(good, inline = listOf(msg(5).copy(trigger = Ids.event(4), depth = 1, origin = "u_x")))))
+        assertEquals("changes.inlineEvents[0].origin", refusedAt(feed(good, inline = listOf(msg(5).copy(trigger = Ids.event(4), depth = 1, origin = Ids.event(3))))))
+        FeedApplier.check(feed(good.copy(agents = 2), inline = listOf(msg(5).copy(trigger = Ids.event(4), depth = 3, origin = Ids.OLGA))))
+    }
+
+    @Test
+    fun `a room keeps how many agents are in it, and an agent's reply its trigger, depth and origin until it is removed`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.sync.applier.page(feed(room(head = 2).copy(agents = 1), next = "cursor1"))
+        assertEquals(1, h.room()!!.agents)
+        assertEquals(1, h.store.read { getRoom(ws, general)!!.toRoom(null) }.agents)
+        val trigger = msg(1, actor = Ids.OLGA, mentions = listOf(mention(Ids.SAM)))
+        val reply = msg(2, actor = Ids.SAM, root = trigger.id).copy(trigger = trigger.id, depth = 1, origin = Ids.OLGA)
+        h.cache(general, listOf(trigger, reply))
+        val (asked, answered) = h.events()
+        assertEquals(EventData(), asked.data)
+        assertEquals(EventData(trigger = trigger.id, depth = 1, origin = Ids.OLGA), answered.data)
+        // Another page follows the feed's count: the agent left.
+        h.sync.applier.page(feed(room(head = 2), next = "cursor2"), sent = "cursor1")
+        assertEquals(0, h.room()!!.agents)
+        // Removed, the reply loses its trigger, depth and origin with its text, as the server drops them.
+        h.sync.applier.page(feed(room(head = 3, removed = listOf(reply.id)), next = "cursor3"), sent = "cursor2")
+        val gone = h.events().single { it.id == reply.id }
+        assertTrue(gone.redacted)
+        assertEquals(EventData(), gone.data)
+        // An events page with the reply as it was before the removal: its tombstone keeps it removed, without them.
+        h.store.tx { writeEvents(ws, general, listOf(reply)) }
+        assertEquals(EventData(), h.events().single { it.id == reply.id }.data)
+    }
+
+    @Test
+    fun `every join and leave moves a room's roster revision, also when an agent replaced by another keeps both counts`() = runTest {
+        val clark = Ids.id("u", 4, 'C')
+        val dot = Ids.id("u", 5, 'D')
+        val h = SyncHarness(this, db).start()
+        h.sync.applier.page(feed(room(head = 4).copy(agents = 1), room(Ids.RANDOM, Ids.grant(3), head = 2, name = "random"), next = "cursor1"))
+        h.cache(general, listOf(msg(1), msg(2), joined(3, clark), msg(4)))
+        h.cache(Ids.RANDOM, listOf(msg(1, room = 2), msg(2, room = 2)))
+        suspend fun shown() = h.store.read { getRoom(ws, general)!!.toRoom(null, roster(ws, general)) }
+        assertEquals(3L, shown().roster)
+        // A room without a cached join or leave is left out, and reads as 0.
+        assertEquals(mapOf(general to 3L), h.store.read { rosters(ws) })
+        assertEquals(0L, h.store.read { roster(ws, Ids.RANDOM) })
+        // A message moves the head, not the roster.
+        h.sync.applier.page(feed(room(head = 5).copy(agents = 1), inline = listOf(msg(5)), next = "cursor2"), sent = "cursor1", active = general)
+        assertEquals(5L, shown().head)
+        assertEquals(3L, shown().roster)
+        // Clark leaves and Dot comes in between two pages: still two people and one agent, but the roster moved.
+        val before = shown()
+        h.sync.applier.page(
+            feed(room(head = 7).copy(agents = 1), inline = listOf(left(6, clark), joined(7, dot)), next = "cursor3"),
+            sent = "cursor2",
+            active = general,
+        )
+        val after = shown()
+        assertEquals(before.members to before.agents, after.members to after.agents)
+        assertEquals(7L, after.roster)
+        assertEquals(mapOf(general to 7L), h.store.read { rosters(ws) })
     }
 
     @Test

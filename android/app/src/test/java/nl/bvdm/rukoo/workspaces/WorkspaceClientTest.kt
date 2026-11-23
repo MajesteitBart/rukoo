@@ -176,6 +176,63 @@ class WorkspaceClientTest {
     }
 
     @Test
+    fun `the agent routes send their method, path and body`() = runBlocking {
+        val clark = v.id("clark")
+        assertEquals(emptyList<Agent>(), recorded("agents empty") { agents(w) })
+        val made = recorded("create agent") { createAgent(w, "Clark", "sponsor", emptyList(), agents = false) }
+        assertEquals(clark, made.agent.id)
+        assertEquals(v.id("mila"), made.agent.sponsor)
+        assertEquals("sponsor", made.agent.answers)
+        assertNull(made.agent.lastSeen)
+        assertTrue(WorkspaceIds.isAgentKey(made.key, clark))
+        val changed = recorded("update agent") { updateAgent(w, clark, "Clark", "members", listOf(v.id("olga")), agents = true) }
+        assertEquals(AgentSettings(v.id("mila"), "members", listOf(v.id("olga")), agents = true), changed.settings)
+        // The sponsor adds it to a channel the workspace sees, as a person is added.
+        assertEquals(RoomMember(clark, "member"), recorded("admit agent") { admit(w, v.id("general"), clark) })
+        val listed = recorded("agents") { agents(w) }.single()
+        assertNotNull("its runner's reply counts as its last request", listed.lastSeen)
+        val rekeyed = recorded("agent key") { agentKey(w, clark) }
+        assertTrue(WorkspaceIds.isAgentKey(rekeyed.key, clark))
+        // Its sponsor removes its reply in a channel she doesn't manage.
+        assertTrue(recorded("redact agent reply as sponsor") { redact(w, v.id("general"), v.id("agentReply")) }.redacted)
+        recorded("remove agent") { removeAgent(w, clark) }
+        server.verify()
+        assertTrue("nobody was signed out", refused.isEmpty())
+    }
+
+    @Test
+    fun `agents are refused where a person goes, with codes the phone tells apart`() = runBlocking {
+        val clark = v.id("clark")
+        val full = refusal("create agent over limit") { createAgent(w, "Third", "everyone", emptyList(), agents = false) }
+        assertEquals("agent_limit", full.code)
+        assertEquals(409, full.status)
+        assertEquals("agents", full.limit)
+        assertEquals("name", refusal("create agent bad name") { createAgent(w, " ", "everyone", emptyList(), agents = false) }.field)
+        assertEquals("forbidden", refusal("create agent as guest") { createAgent(w, "Gus bot", "everyone", emptyList(), agents = false) }.code)
+        assertEquals("forbidden", refusal("update agent as guest") { updateAgent(w, clark, "Gus bot", "everyone", emptyList(), agents = false) }.code)
+        val dm = refusal("start dm with agent") { startDm(w, listOf(clark)) }
+        assertEquals("agent_in_dm", dm.code)
+        assertEquals("members", dm.field)
+        assertEquals("agent_not_manager", refusal("make agent manager") { setChannelRole(w, v.id("general"), clark, "manager") }.code)
+        assertEquals("agent_block", refusal("block agent") { block(w, clark) }.code)
+        assertEquals("agent_role", refusal("set agent role") { setRole(w, clark, "admin") }.code)
+        // Only its sponsor makes a new key, and a private channel takes an agent only while its sponsor is in it.
+        val owner = refusal("agent key as owner") { agentKey(w, clark) }
+        assertEquals("forbidden", owner.code)
+        assertEquals(403, owner.status)
+        val private = refusal("admit agent private without sponsor") { admit(w, v.id("design"), clark) }
+        assertEquals("sponsor_not_in_channel", private.code)
+        assertEquals(409, private.status)
+        assertTrue("the UI says it in its own words", private.code in WorkspaceError.UI_CODES)
+        // Removed already: a 404 without a scope, which the service counts as removed.
+        val gone = refusal("remove agent again") { removeAgent(w, clark) }
+        assertEquals("not_found", gone.code)
+        assertNull(gone.scope)
+        server.verify()
+        assertTrue(refused.isEmpty())
+    }
+
+    @Test
     fun `every request carries the bearer token, the protocol version and asks for JSON`() = runBlocking {
         recorded("members") { members(w) }
         recorded("start dm") { startDm(w, listOf(v.id("mila"))) }

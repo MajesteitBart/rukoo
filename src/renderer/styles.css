@@ -10737,11 +10737,14 @@ button.mt-person:disabled {
   container: chat / inline-size;
 }
 /* Chat's surfaces draw their captions (times, counts, "Last reply") in chat's own caption grey, which passes 4.5:1;
-   the mail around them keeps --text-3. */
+   the mail around them keeps --text-3. Chat's dialogs and its mention list open on the body, outside .chat, so they
+   take it too: an agent's "Made by Olga · Answers only Olga" there is 12px. */
 .chat,
 .ch-nav,
 .ch-ws-switch,
-.ch-form {
+.ch-form,
+.dialog.ch-dialog,
+.ch-suggest {
   --text-3: var(--ch-text-3);
 }
 .shell.chat-mode .chat {
@@ -12592,6 +12595,144 @@ button.ch-replies .ch-replies-n {
 }
 .ch-handover .ch-successors {
   max-height: min(28vh, 240px);
+}
+/* Agents in channels (server/WORKSPACES.md "Agents"): an agent's avatar is a rounded square everywhere in Chat, and
+ * the rows that name one say under its name whom it answers. */
+.avatar.is-agent {
+  border-radius: 28%;
+}
+.mention-note {
+  font-size: 12px;
+  color: var(--text-3);
+}
+/* On the row Enter picks, the selected-row grey leaves chat's caption grey at 4.2:1 in dark; the note steps up. */
+.ch-suggest [role='option'].active .mention-note {
+  color: var(--text-2);
+}
+.ch-agent-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+/* Who made it and whom it answers wraps rather than cuts off the people it names, in a narrow dialog too. */
+.ch-agent-meta,
+.dialog .ch-agent-note {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.ch-agent-row {
+  min-height: 48px;
+  padding-block: 4px;
+}
+/* A warning under a field, such as Chosen people with nobody picked; in light darker, for contrast at 12px. */
+.form .field-help.ch-warn {
+  color: var(--warn);
+}
+:root.light .form .field-help.ch-warn {
+  color: color-mix(in srgb, var(--warn) 55%, var(--text));
+}
+.ch-pick .ch-agent-pick {
+  min-height: 48px;
+}
+.dialog .ch-agents-intro {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.ch-dlg-tools-end {
+  justify-content: flex-end;
+}
+.ch-agents-none {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+/* The people an agent answers besides its sponsor, under the Chosen people option. */
+.ch-agent-people {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 4px 32px;
+  min-width: 0;
+}
+.ch-agent-people .ch-checks {
+  max-height: 180px;
+}
+.dialog .ch-agent-people .field-help {
+  margin: 0;
+}
+.form .ch-check-row.ch-agent-toggle {
+  align-items: flex-start;
+  padding: 6px;
+}
+.ch-agent-toggle input {
+  margin-top: 2px;
+}
+.dialog .ch-agent-runs {
+  margin: 0;
+}
+/* Under the Agents heading of Add people: what an agent does with the channel's messages. */
+.dialog .ch-agents-read {
+  padding: 0 8px 4px;
+  text-wrap: pretty;
+}
+/* The key, shown once, with Copy beside it; the server and the workspace ID; the runner's config. */
+.dialog .ch-agent-once {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  text-wrap: pretty;
+}
+.ch-agent-copy-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.ch-agent-copy-row label {
+  flex: 1;
+  min-width: 0;
+}
+.ch-agent-copy-row .btn,
+.ch-agent-copy-end .btn {
+  flex: none;
+  height: 32px;
+}
+.ch-agent-copy-row .btn svg,
+.ch-agent-copy-end .btn svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-agent-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+.form textarea.ch-agent-config {
+  min-height: 220px;
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  tab-size: 2;
+}
+.ch-agent-copy-end {
+  display: flex;
+}
+.dialog .ch-agent-key .field-help {
+  margin: 0;
+}
+.ch-agent-cmd {
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 /* Workspace settings: sections with a hairline between them. */
 .ch-set {

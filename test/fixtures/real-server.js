@@ -21,6 +21,14 @@
 //   const got = await server.download(bart, ws.id, ws.general, file.id);   // { status, headers, bytes }
 //   const url = await server.previewPage({ title: 'Plan', description: 'Q3', image: true });
 //
+// Agents in channels (server/WORKSPACES.md) are on, as wherever team chat is on:
+//
+//   const { agent, key } = await server.seedAgent(olga, ws.id, { name: 'Clark', answers: 'everyone' });
+//   await server.call('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/members`, { token: olga.token, body: { member: agent.id } });
+//   const asked = await server.post(bart, ws.id, ws.general, '@Clark hi', { mentions: [mention('@Clark hi', '@Clark', agent.id)] });
+//   await server.agentReply(key, ws.id, ws.general, { trigger: asked.messageId, text: 'Hello' });
+//   const me = await server.agentCall(key, 'GET', `/v1/workspaces/${ws.id}/agents/me`);   // { status, body, ... }
+//
 // In node:test files:
 //
 //   test.before(async () => { if (realServerAvailable()) server = await startRealServer(); });
@@ -784,6 +792,32 @@ function seeding(url, { pages = null, previews = null } = {}) {
     return (await res.json()).url;
   }
 
+  // ---- Agents ----
+  //
+  // Each takes the workspace as its ID or as what seedWorkspace() answered.
+
+  // An agent that person makes and sponsors: { agent, key }, agent as GET /agents lists it and key shown only here.
+  // answers is everyone, sponsor or members; members are the member IDs it answers besides person, for members;
+  // agents is whether it answers other agents.
+  async function seedAgent(person, w, { name = 'Clark', answers = 'everyone', members, agents = false } = {}) {
+    const body = { name, answers, agents, ...(members ? { members } : {}) };
+    return expect(201, call('POST', ws(wid(w), '/agents'), as(person, { body })), 'agent');
+  }
+
+  // A request with an agent's key, answered as call() answers.
+  function agentCall(key, method, route, options = {}) {
+    return call(method, route, { ...options, token: key });
+  }
+
+  // An agent's reply to trigger, a message that mentions it, as a runner sends it: the agent's own grant and the
+  // workspace's generation from the feed, a fresh operation ID unless given, and part 0 unless given (0 to 4). Answers
+  // { operationId, messageId, seq }; a refusal throws with its status and body.
+  async function agentReply(key, w, conversation, { trigger, text, mentions = [], part = 0, operationId } = {}) {
+    const a = await access({ token: key }, wid(w), conversation);
+    const body = { operationId: operationId ?? uuidv7(a.time), grant: a.grant, generation: a.generation, text, mentions, trigger, part };
+    return expect([200, 201], call('POST', ws(wid(w), `/conversations/${conversation}/messages`), { token: key, body }), 'agent reply');
+  }
+
   // The wake socket as a device opens it from Node: a ticket in the Authorization header (Node's WebSocket takes
   // headers in its init), and only the protocol's own name offered. frames collects the text frames.
   async function openSocket(person, wsId) {
@@ -827,7 +861,10 @@ function seeding(url, { pages = null, previews = null } = {}) {
     cancelUpload,
     download,
     removePreview,
-    previewPage
+    previewPage,
+    seedAgent,
+    agentCall,
+    agentReply
   };
 }
 

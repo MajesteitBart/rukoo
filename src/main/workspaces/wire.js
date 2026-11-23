@@ -79,7 +79,15 @@ const MEMBER_STATES = ['active', 'left', 'removed', 'deleted'];
 const ROOM_ROLES = ['manager', 'member'];
 const CLOSED_REASONS = ['left', 'ineligible', 'closed'];
 const SCOPES = ['account', 'workspace', 'conversation'];
-const LIMITS = ['members', 'conversations', 'invites', 'bytes', 'dailyDms', 'fileBytes', 'files', 'uploads'];
+const LIMITS = ['members', 'conversations', 'invites', 'bytes', 'dailyDms', 'fileBytes', 'files', 'uploads', 'agents'];
+// Agents in channels (server/WORKSPACES.md "Agents"): whom an agent answers, the most people it may answer besides its
+// sponsor, and the shape of its key (rka_<the 22 characters of its member ID>.<43 characters>), shown once.
+const AGENT_ANSWERS = ['everyone', 'sponsor', 'members'];
+const AGENT_CHOSEN = 50;
+const AGENT_KEY = /^rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
+// A directory answer lists a guest's or an agent's chosen people only as far as the viewer may know them; a full
+// member's lists them all. Room for a server with a higher limit than this version's.
+const AGENT_CHOSEN_WIRE = 200;
 
 const encoder = new TextEncoder();
 const utf8Length = (text) => encoder.encode(text).length;
@@ -128,7 +136,15 @@ const KEYS = {
   files_unavailable: 'chat.errors.filesUnavailable',
   invalid_state: 'chat.errors.failed',
   expired: 'chat.errors.failed',
-  unreadable: 'chat.errors.fileUnreadable'
+  unreadable: 'chat.errors.fileUnreadable',
+  // Agents in channels (server/WORKSPACES.md "Agents"): what the routes for people refuse about an agent.
+  agent_limit: 'chat.errors.agentLimit',
+  agent_in_dm: 'chat.errors.agentInDm',
+  agent_not_manager: 'chat.errors.agentNotManager',
+  agent_block: 'chat.errors.agentBlock',
+  agent_role: 'chat.errors.agentRole',
+  // An agent comes into a private channel only while the person who made it is in it.
+  sponsor_not_in_channel: 'chat.errors.agentSponsorNotInChannel'
 };
 // Never call errors: the engines turn these into outbox rows and workspace states (contract 3.15).
 const INTERNAL = new Set(['operation_conflict', 'submission_expired', 'stale_grant', 'stale_generation', 'history_regressed', 'reset_required']);
@@ -494,6 +510,9 @@ function checkRoom(v, where = 'room') {
     grant: id(v.grant, GRANT_ID, `${where}.grant`),
     role: oneOf(v.role, ROOM_ROLES, `${where}.role`),
     members: v.members === undefined ? 0 : int(v.members, `${where}.members`),
+    // The agents holding a grant in the room, which members leaves out (server/WORKSPACES.md "Agents"); 0 from a
+    // server from before them.
+    agents: v.agents === undefined ? 0 : int(v.agents, `${where}.agents`),
     head: int(v.head, `${where}.head`),
     floor: int(v.floor, `${where}.floor`),
     lastAt: v.lastAt === null || v.lastAt === undefined ? null : time(v.lastAt, `${where}.lastAt`),
@@ -612,6 +631,12 @@ function checkEvent(v, where = 'event') {
       e.attachments = attachments;
       e.previews = v.previews === undefined ? [] : checkLinkPreviews(v.previews, `${where}.previews`);
       e.reactions = v.reactions === undefined ? [] : checkReactions(v.reactions, `${where}.reactions`);
+      // An agent's reply names the message that asked for it, how deep in a chain of agents it is, and origin: the
+      // person who started the chain (server/WORKSPACES.md "Agents"). A person's message has none of the three, which
+      // is depth 0. The cache keeps them in data, and a removed message loses them.
+      if (v.trigger !== undefined && v.trigger !== null) e.trigger = id(v.trigger, EVENT_ID, `${where}.trigger`);
+      if (v.depth !== undefined && v.depth !== null) e.depth = int(v.depth, `${where}.depth`, 1, 1000);
+      if (v.origin !== undefined && v.origin !== null) e.origin = id(v.origin, MEMBER_ID, `${where}.origin`);
       break;
     }
     case 'message.redacted':
@@ -700,9 +725,12 @@ function checkEvents(v) {
   };
 }
 
+// A member of the directory. An agent is kind 'agent' with role member, and its reply settings in agent (server/
+// WORKSPACES.md "Agents"): { sponsor, answers, members, agents }, members [] unless it answers 'members'. A person has
+// no agent field. A kind this version doesn't know stays as it came; the renderer shows it as a person.
 function checkMember(v, where = 'member') {
   obj(v, where);
-  return {
+  const out = {
     id: id(v.id, MEMBER_ID, `${where}.id`),
     kind: str(v.kind, `${where}.kind`, 20, 1),
     // A deleted member's name is empty.
@@ -711,6 +739,56 @@ function checkMember(v, where = 'member') {
     state: oneOf(v.state, MEMBER_STATES, `${where}.state`),
     joinedAt: time(v.joinedAt, `${where}.joinedAt`)
   };
+  if (out.kind === 'agent' && v.agent !== undefined && v.agent !== null) out.agent = checkAgentSettings(v.agent, `${where}.agent`);
+  return out;
+}
+
+// An agent's reply settings as the directory carries them. answers is one of AGENT_ANSWERS, or a newer server's word
+// that the renderer shows nothing for; sponsor may be null when the server no longer has the sponsor's row.
+function checkAgentSettings(v, where) {
+  obj(v, where);
+  if (typeof v.answers !== 'string' || !/^[a-z][a-z_]{0,19}$/.test(v.answers)) throw refused(`${where}.answers`);
+  return {
+    sponsor: v.sponsor === null || v.sponsor === undefined ? null : id(v.sponsor, MEMBER_ID, `${where}.sponsor`),
+    answers: v.answers,
+    members: v.members === undefined || v.members === null ? [] : ids(v.members, MEMBER_ID, `${where}.members`, AGENT_CHOSEN_WIRE),
+    agents: v.agents === undefined ? false : bool(v.agents, `${where}.agents`)
+  };
+}
+
+// An agent as GET /agents lists it, and as the routes that make or change one answer (server/WORKSPACES.md AgentOut):
+// { id, name, sponsor, answers, members, agents, lastSeen, createdAt }.
+function checkAgentRow(v, where = 'agent') {
+  obj(v, where);
+  const settings = checkAgentSettings(v, where);
+  return {
+    id: id(v.id, MEMBER_ID, `${where}.id`),
+    name: str(v.name, `${where}.name`, NAME_UNITS, 1),
+    sponsor: settings.sponsor,
+    answers: settings.answers,
+    members: settings.members,
+    agents: settings.agents,
+    lastSeen: v.lastSeen === null || v.lastSeen === undefined ? null : time(v.lastSeen, `${where}.lastSeen`),
+    createdAt: time(v.createdAt, `${where}.createdAt`)
+  };
+}
+
+// GET /agents: { agents }.
+function checkAgents(v) {
+  obj(v, 'agents');
+  const agents = list(v.agents, 'agents.agents', MEMBERS_MAX).map((a, i) => checkAgentRow(a, `agents.agents[${i}]`));
+  if (new Set(agents.map((a) => a.id)).size !== agents.length) throw refused('agents.agents');
+  return { agents };
+}
+
+// PATCH /agents/{u}: { agent }; POST /agents and POST /agents/{u}/key: { agent, key }, the key shown only then. The key
+// must be the agent's own: its name is the 22 characters after u_ in the agent's ID.
+function checkAgentAnswer(v, { key = false } = {}) {
+  obj(v, 'agent');
+  const agent = checkAgentRow(v.agent, 'agent.agent');
+  if (!key) return { agent };
+  if (typeof v.key !== 'string' || !AGENT_KEY.test(v.key) || v.key.slice(4, 26) !== agent.id.slice(2)) throw refused('agent.key');
+  return { agent, key: v.key };
 }
 
 function checkWorkspaceRow(v, where) {
@@ -981,7 +1059,9 @@ function parseJson(text, fallback) {
   }
 }
 
-const DATA_FIELDS = ['name', 'visibility', 'member', 'members', 'target', 'targetSeq', 'emoji'];
+// trigger, depth and origin: an agent's reply, the message it answers, its depth and the person who started the chain
+// (checkEvent).
+const DATA_FIELDS = ['name', 'visibility', 'member', 'members', 'target', 'targetSeq', 'emoji', 'trigger', 'depth', 'origin'];
 
 // A JSON list from a column, [] for NULL or anything that isn't one.
 function jsonList(text) {
@@ -1030,6 +1110,7 @@ function toRoom(row) {
     startedBy: row.startedBy ?? null,
     role: row.role,
     members: row.members,
+    agents: row.agents ?? 0,
     head: row.head,
     floor: row.floor,
     lastAt: row.lastAt ?? null,
@@ -1161,6 +1242,15 @@ function fileIds(v, field = 'attachments') {
   return out;
 }
 
+// The people an agent answers besides its sponsor: at most 50 member IDs, each once.
+function agentMembers(v) {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > AGENT_CHOSEN) throw invalid('members');
+  const out = v.map(pattern(MEMBER_ID, 'members'));
+  if (new Set(out).size !== out.length) throw invalid('members');
+  return out;
+}
+
 // The longest path chatStage takes: Windows' extended paths go to 32,767 characters.
 const PATH_LENGTH = 32767;
 
@@ -1259,6 +1349,29 @@ const input = {
     return { name: name(v.name, 'name'), visibility: oneOfInput(v.visibility, ['workspace', 'private'], 'visibility') };
   },
   successor: orNull(pattern(MEMBER_ID, 'successor')),
+  // A new agent (server/WORKSPACES.md "Agents"): its name, whom it answers, the people it answers besides its sponsor
+  // when that is 'members', and whether it answers other agents (off unless given).
+  newAgent(v) {
+    plain(v, 'input');
+    const answers = oneOfInput(v.answers, AGENT_ANSWERS, 'answers');
+    return {
+      name: name(v.name, 'name'),
+      answers,
+      members: answers === 'members' ? agentMembers(v.members) : [],
+      agents: v.agents === undefined || v.agents === null ? false : input.bool(v.agents, 'agents')
+    };
+  },
+  // What changes of an agent: only the fields given, each checked as for newAgent.
+  agentPatch(v) {
+    plain(v, 'input');
+    const out = {};
+    if (v.name !== undefined && v.name !== null) out.name = name(v.name, 'name');
+    if (v.answers !== undefined && v.answers !== null) out.answers = oneOfInput(v.answers, AGENT_ANSWERS, 'answers');
+    if (v.members !== undefined && v.members !== null) out.members = agentMembers(v.members);
+    if (v.agents !== undefined && v.agents !== null) out.agents = input.bool(v.agents, 'agents');
+    if (!Object.keys(out).length) throw invalid('input');
+    return out;
+  },
   dmMembers(v) {
     if (!Array.isArray(v) || v.length < 1 || v.length > DM_OTHERS) throw invalid('members');
     const out = v.map(pattern(MEMBER_ID, 'members'));
@@ -1319,6 +1432,13 @@ const ARGS = {
   chatLeaveDm: (w, conv) => [ws(w), c(conv)],
   chatBlock: (w, member) => [ws(w), input.member(member)],
   chatUnblock: (w, member) => [ws(w), input.member(member)],
+  // Agents in channels (server/WORKSPACES.md "Agents"). Adding one to a channel and taking it out are
+  // chatAddToChannel and chatRemoveFromChannel.
+  chatAgents: (w) => [ws(w)],
+  chatCreateAgent: (w, x) => [ws(w), input.newAgent(x)],
+  chatUpdateAgent: (w, agent, x) => [ws(w), pattern(MEMBER_ID, 'agent')(agent), input.agentPatch(x)],
+  chatNewAgentKey: (w, agent) => [ws(w), pattern(MEMBER_ID, 'agent')(agent)],
+  chatRemoveAgent: (w, agent) => [ws(w), pattern(MEMBER_ID, 'agent')(agent)],
   // Rich messages (rich contract 4.3).
   chatReact: (w, conv, message, emoji, on) => [ws(w), c(conv), input.message(message), input.emoji(emoji), input.bool(on, 'on')],
   chatMarkUnread: (w, conv, message) => [ws(w), c(conv), input.message(message)],
@@ -1377,6 +1497,8 @@ module.exports = {
   checkRedact,
   checkMe,
   checkMemberAnswer,
+  checkAgents,
+  checkAgentAnswer,
   checkTicket,
   checkFile,
   checkLinkPreview,
@@ -1393,8 +1515,10 @@ module.exports = {
   input,
   ARGS,
   checkArgs,
-  patterns: { WORKSPACE_ID, CONVERSATION_ID, MEMBER_ID, EVENT_ID, GRANT_ID, INVITE_ID, FILE_ID, LOCAL_ID, SECRET, GENERATION, CURSOR, UUID_V7, SHA256, RGI_EMOJI, MIME },
+  patterns: { WORKSPACE_ID, CONVERSATION_ID, MEMBER_ID, EVENT_ID, GRANT_ID, INVITE_ID, FILE_ID, LOCAL_ID, SECRET, GENERATION, CURSOR, UUID_V7, SHA256, RGI_EMOJI, MIME, AGENT_KEY },
+  AGENT_ANSWERS,
   limits: {
+    AGENT_CHOSEN,
     NAME_LENGTH,
     TEXT_BYTES,
     MENTIONS_MAX,

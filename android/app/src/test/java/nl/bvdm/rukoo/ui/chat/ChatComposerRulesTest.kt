@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.ui.chat
 
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Message
+import nl.bvdm.rukoo.workspaces.AgentSettings
 import nl.bvdm.rukoo.workspaces.Channel
 import nl.bvdm.rukoo.workspaces.Event
 import nl.bvdm.rukoo.workspaces.Member
@@ -137,6 +138,35 @@ class ChatComposerRulesTest {
     }
 
     private fun member(id: String, role: String = "member", state: String = "active") = Member(id = id, name = "Sanne", role = role, state = state)
+
+    @Test
+    fun `an agent's sponsor removes its replies, also once the agent is gone, as the server lets them`() {
+        val clark = Member(id = sanne, kind = Member.KIND_AGENT, name = "Clark", role = "member", state = "active", agent = AgentSettings(me, "everyone"))
+        assertTrue(MessageRules.canRemove(message(sanne), me, room(), clark))
+        assertEquals(
+            listOf(MessageAction.REPLY, MessageAction.COPY, MessageAction.REMOVE),
+            MessageRules.actions(message(sanne), me, room(), inThread = false, "member", clark, emptySet()),
+        )
+        assertTrue("a removed agent's replies stay its sponsor's to remove", MessageRules.canRemove(message(sanne), me, room(), clark.copy(state = "removed")))
+        // Someone else's agent, a person, or an author that isn't the message's: only the usual rules.
+        assertFalse(MessageRules.canRemove(message(sanne), me, room(), clark.copy(agent = AgentSettings(u("olga"), "everyone"))))
+        assertFalse(MessageRules.canRemove(message(sanne), me, room(), member(sanne)))
+        assertFalse(MessageRules.canRemove(message(u("olga")), me, room(), clark))
+        assertFalse(MessageRules.canRemove(message(sanne, removed = true), me, room(), clark))
+        assertFalse("not while the workspace can't take writes", MessageAction.REMOVE in MessageRules.actions(message(sanne), me, room(), false, "member", clark, emptySet(), writable = false))
+    }
+
+    @Test
+    fun `an agent's reply offers no Block, which the server refuses for agents`() {
+        val clark = Member(id = sanne, kind = Member.KIND_AGENT, name = "Clark", role = "member", state = "active", agent = AgentSettings(u("olga"), "everyone"))
+        assertFalse(MessageRules.canBlock(message(sanne), me, "member", clark, emptySet()))
+        assertEquals(listOf(MessageAction.REPLY, MessageAction.COPY), MessageRules.actions(message(sanne), me, room(), inThread = false, "member", clark, emptySet()))
+        // A manager still removes it, as any message in their channel.
+        assertEquals(
+            listOf(MessageAction.COPY, MessageAction.REMOVE),
+            MessageRules.actions(message(sanne), me, room(role = "manager"), inThread = true, "owner", clark, emptySet()),
+        )
+    }
 
     @Test
     fun `the message menu offers Block on someone else's message, between Copy and Remove, as long as they can be blocked`() {

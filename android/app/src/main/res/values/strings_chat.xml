@@ -526,6 +526,100 @@
     <string name="agent_empty_title_chat">%1$s doesn\'t see team chat</string><!-- Agent panel's empty state in Chat mode. -->
     <string name="agent_empty_body_chat">Rukoo keeps workspace messages away from your personal agents. Paste what you want help with, or ask anything else.</string><!-- Its text. -->
 
+    <!-- chat.workspace.agents, chat.roles.agent(s), chat.head.agents, chat.host.agents, chat.agents.*, the agent
+         codes of chat.errors.*, chat.channel.peopleGroup, addAgents and addAgentsTitle: agents in channels
+         (WORKSPACES.md "Agents in channels"). An agent is a member that
+         answers when someone mentions it; whoever made it is its sponsor. Desktop's useMine, useNone, useMineHelp and
+         keyEnv aren't on the phone, which can't read Settings > Agents of the desktop. -->
+    <string name="chat_workspace_agents">Agents</string><!-- Workspace menu item that opens the Agents sheet. -->
+    <string name="chat_roles_agent">Agent</string><!-- Tag beside an agent's name: a message author, the mention list, members and Add people. -->
+    <string name="chat_roles_agents">Agents</string><!-- Group heading over the agents in Members and Add people. -->
+    <!-- A channel's header and details: its agents after the member count ("3 members · 1 agent"). -->
+    <plurals name="chat_head_agents">
+        <item quantity="one">%d agent</item>
+        <item quantity="other">%d agents</item>
+    </plurals>
+    <string name="chat_host_agents">Agents in a channel pass what they read there on to the system that runs them.</string><!-- Privacy line after chat.host.reads, while the server has agents on. -->
+    <string name="chat_agents_title">Agents in %1$s</string><!-- Agents sheet title. %1$s: the workspace. -->
+    <string name="chat_agents_intro">An agent answers when someone mentions it in a channel it was added to. It runs outside Rukoo, on a computer or server you choose, and connects with a key.</string><!-- Above the list. -->
+    <string name="chat_agents_add">Add an agent</string><!-- Button that opens the form. -->
+    <string name="chat_agents_none">No agents yet.</string><!-- In place of the list. -->
+    <string name="chat_agents_made_by">Made by %1$s</string><!-- Part of an agent's line: its sponsor. -->
+    <string name="chat_agents_answers_everyone">Answers everyone</string><!-- Who an agent answers. -->
+    <string name="chat_agents_answers_only">Answers only %1$s</string><!-- Who an agent answers. %1$s: one to three names. -->
+    <!-- Who an agent answers, past three people. %1$s: the first two names with a comma between. -->
+    <plurals name="chat_agents_answers_more">
+        <item quantity="one">Answers only %1$s and %2$d other</item>
+        <item quantity="other">Answers only %1$s and %2$d others</item>
+    </plurals>
+    <string name="chat_agents_answers_sponsor_gone">Answers only the person who made it</string><!-- When the phone doesn't know who made it. -->
+    <string name="chat_agents_answers_agents">Answers other agents</string><!-- Part of an agent's line. -->
+    <string name="chat_agents_last_active">Last active %1$s</string><!-- Part of an agent's line. %1$s: date and time. -->
+    <string name="chat_agents_never_active">Not connected yet</string><!-- Part of an agent's line. -->
+    <string name="chat_agents_edit">Edit agent</string><!-- Menu item. -->
+    <string name="chat_agents_new_key">New key</string><!-- Menu item. -->
+    <string name="chat_agents_remove">Remove agent</string><!-- Menu item. -->
+    <string name="chat_agents_new_key_title">Make a new key for %1$s?</string><!-- Confirmation title. -->
+    <string name="chat_agents_new_key_body">The current key stops working at once, and a runner that uses it disconnects. You\'ll see the new key only once.</string><!-- Its text. -->
+    <string name="chat_agents_new_key_confirm">Make new key</string><!-- Its button. -->
+    <string name="chat_agents_remove_title">Remove %1$s?</string><!-- Confirmation title. -->
+    <string name="chat_agents_remove_body">%1$s leaves every channel and its key stops working. Its messages stay.</string><!-- Its text. -->
+    <string name="chat_agents_remove_confirm">Remove</string><!-- Its button. -->
+    <string name="chat_agents_removed">%1$s was removed.</string><!-- Toast. -->
+    <string name="chat_agents_add_title">Add an agent</string><!-- Form title. -->
+    <string name="chat_agents_edit_title">Edit %1$s</string><!-- Form title. %1$s: the agent. -->
+    <string name="chat_agents_make">Add agent</string><!-- Form button that makes the agent and shows its key. -->
+    <string name="chat_agents_name">Name</string><!-- Form field; people mention the agent by this name. -->
+    <string name="chat_agents_name_placeholder">Assistant</string><!-- An example agent name. -->
+    <string name="chat_agents_answers">Who it answers</string><!-- Heading over the three choices. -->
+    <string name="chat_agents_answers_everyone_option">Everyone</string><!-- Choice. -->
+    <string name="chat_agents_answers_everyone_help">Anyone who can post in a channel it\'s in.</string><!-- Under Everyone. -->
+    <string name="chat_agents_answers_me_option">Only me</string><!-- Choice, for the person's own agent. -->
+    <string name="chat_agents_answers_sponsor_option">Only %1$s</string><!-- The same choice for someone else's agent. %1$s: who made it. -->
+    <string name="chat_agents_answers_only_help">It doesn\'t answer anyone else, but it still reads every message in its channels.</string><!-- Under Only me. -->
+    <string name="chat_agents_answers_chosen_option">Chosen people</string><!-- Choice. -->
+    <string name="chat_agents_answers_chosen_help">You and the people you pick.</string><!-- Under Chosen people. -->
+    <string name="chat_agents_answers_chosen_sponsor_help">%1$s and the people you pick.</string><!-- The same for someone else's agent. %1$s: who made it. -->
+    <!-- Under the people list of Chosen people. -->
+    <plurals name="chat_agents_chosen_count">
+        <item quantity="one">%d person picked</item>
+        <item quantity="other">%d people picked</item>
+    </plurals>
+    <string name="chat_agents_nobody_to_pick">Nobody else is in this workspace yet.</string><!-- In place of that list. -->
+    <string name="chat_agents_answers_agents_option">Answers other agents</string><!-- Check box. -->
+    <!-- Under it. %d: the server's depth limit. -->
+    <plurals name="chat_agents_answers_agents_help">
+        <item quantity="one">When another agent mentions it. A chain of agents answering each other stops after %d reply.</item>
+        <item quantity="other">When another agent mentions it. A chain of agents answering each other stops after %d replies.</item>
+    </plurals>
+    <string name="chat_agents_runs_note">Next you get its key and a config for the runner, the program that connects it to your own agent.</string><!-- Under the form for a new agent. -->
+    <string name="chat_agents_key_title">Key for %1$s</string><!-- Title of the step that shows the key once. -->
+    <string name="chat_agents_key_once">Copy the key now. You\'ll see it only once.</string><!-- Under the key. -->
+    <string name="chat_agents_key">Key</string><!-- Field label. -->
+    <string name="chat_agents_copy_key">Copy key</string><!-- Button. -->
+    <string name="chat_agents_key_copied">Key copied</string><!-- Toast. -->
+    <string name="chat_agents_server">Server</string><!-- Field label. -->
+    <string name="chat_agents_workspace_id">Workspace ID</string><!-- Field label. -->
+    <string name="chat_agents_config">Runner config</string><!-- Field label. -->
+    <string name="chat_agents_config_backend">Change backend to how your agent runs: runs, openai, claude, codex or command. The runner\'s README describes each.</string><!-- Under the config. -->
+    <string name="chat_agents_copy_config">Copy config</string><!-- Button. -->
+    <string name="chat_agents_config_copied">Config copied</string><!-- Toast. -->
+    <string name="chat_agents_config_run">Save it as agent.json and start the runner from the Rukoo repository:</string><!-- Before the command. -->
+    <string name="chat_agents_config_private">The config holds the agent\'s key. Keep it private, as you would a password.</string><!-- Under the command. -->
+    <string name="chat_agents_close_title">Close without copying the key?</string><!-- Asked when the key step closes before anything was copied. -->
+    <string name="chat_agents_close_body">You won\'t see this key again. Without it the agent can\'t connect, and you\'d need a new key.</string><!-- Its text. -->
+    <string name="chat_errors_agent_limit">%1$s has as many agents as it can have. Remove one first.</string><!-- 409 agent_limit. %1$s: the workspace. -->
+    <string name="chat_errors_agent_in_dm">Agents can\'t be in direct messages.</string><!-- 400 agent_in_dm. -->
+    <string name="chat_errors_agent_not_manager">An agent can\'t manage a channel.</string><!-- 400 agent_not_manager. -->
+    <string name="chat_errors_agent_block">You can\'t block an agent. The person who made it, or an admin, can remove it.</string><!-- 400 agent_block. -->
+    <string name="chat_errors_agent_role">An agent\'s role can\'t change.</string><!-- 400 agent_role. -->
+    <string name="chat_errors_agent_sponsor_not_in_channel">An agent can be in a private channel only while the person who made it is in it.</string><!-- 409 sponsor_not_in_channel: adding an agent to a private channel its sponsor isn't in. -->
+    <string name="chat_channel_people_group">People</string><!-- Heading over the people in Add people when agents are listed under them too. -->
+    <string name="chat_channel_add_agents">Add agents</string><!-- A channel's details and members, for someone who doesn't manage it but may add their own agents to it. -->
+    <string name="chat_channel_add_agents_title">Add agents to #%1$s</string><!-- The picker that opens. -->
+    <string name="chat_agents_all_in">All your agents are in #%1$s already</string><!-- That picker with nothing left to add. -->
+    <string name="chat_agents_chosen_none">Pick at least one person.</string><!-- Under Chosen people while nobody is picked, as a warning; the form's button stays off. -->
+
     <!-- Android only (contract §6.5): the phone's mode switch, list filter, join and invite sheets, room pane. -->
     <string name="chat_mode_mail">Mail</string>
     <string name="chat_mode_switch">Mail or chat</string>

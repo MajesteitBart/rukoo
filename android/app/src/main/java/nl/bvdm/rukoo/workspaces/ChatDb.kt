@@ -241,8 +241,22 @@ class ChatDb private constructor(
     }
 
     companion object {
-        /** The version in `meta.schema` this build writes and reads. */
-        const val SCHEMA_VERSION = 1
+        /**
+         * The version in `meta.schema` this build writes and reads. Version 2 keeps an agent's settings with its
+         * member row and how many agents are in each room; version 3 indexes each room's joins and leaves
+         * ([ROSTER_INDEX]). An older file migrates in place ([MIGRATIONS]).
+         */
+        const val SCHEMA_VERSION = 3
+
+        /**
+         * The events that change who is in a room: someone, a person or an agent, coming in or leaving. The index and
+         * the queries of `Room.roster` (WorkspaceStore.rosters) share this text, as SQLite uses a partial index only
+         * for a query whose WHERE repeats the index's.
+         */
+        internal const val ROSTER_EVENTS = "kind IN ('member.joined', 'member.left')"
+
+        /** Each room's joins and leaves by seq, so a room's newest one is found without reading its messages. */
+        internal const val ROSTER_INDEX = "CREATE INDEX event_roster ON event (ws, room, seq) WHERE $ROSTER_EVENTS"
 
         const val FILE_NAME = "chat.db"
 
@@ -250,9 +264,11 @@ class ChatDb private constructor(
         fun fileIn(filesDir: File): File = File(File(filesDir, "chat"), FILE_NAME)
 
         /**
-         * Opens [file], making it with the §3.5 schema when it is new. A file that fails `quick_check`, has a higher
-         * `meta.schema` than this build knows, or isn't a chat cache at all is deleted and made again; when its
-         * outbox could still be counted, [lostUnsent] says how many unsent messages went with it.
+         * Opens [file], making it with the §3.5 schema when it is new and migrating it when it has an older version.
+         * A file that fails `quick_check`, has a higher `meta.schema` than this build knows, or isn't a chat cache at
+         * all is deleted and made again; when its outbox could still be counted, [lostUnsent] says how many unsent
+         * messages went with it. A migration SQLite refuses (a full disk) keeps the file and fails with `not_saved`,
+         * so its unsent messages stay for the next start.
          *
          * When the caller is cancelled after the connection opened, withContext drops the result on its way back;
          * the connection is closed then, so it doesn't hold the file locked until the process ends.
@@ -281,7 +297,7 @@ class ChatDb private constructor(
                 driver.open(file.path).also { c ->
                     try {
                         pragmas(c)
-                        if (!hasTable(c, "meta")) createSchema(c)
+                        if (!hasTable(c, "meta")) createSchema(c) else migrate(c)
                     } catch (e: Throwable) {
                         runCatching { c.close() }
                         throw e
@@ -332,7 +348,8 @@ class ChatDb private constructor(
                     if (isBusy(e) || isTransient(e) || waitedOut(started)) return null
                     null
                 }
-                val keep = sound && schema == SCHEMA_VERSION
+                // An older version migrates when it opens; only a newer one, or none, is replaced.
+                val keep = sound && schema != null && schema in 1..SCHEMA_VERSION
                 // An empty file (or one SQLite made but nobody wrote) has no tables yet and becomes a fresh cache.
                 val empty = sound && runCatching { tableCount(c) == 0L }.getOrDefault(false)
                 if (keep || empty) return null
@@ -418,6 +435,24 @@ class ChatDb private constructor(
             }
         }
 
+        /**
+         * Brings a file of an older version up to [SCHEMA_VERSION] in one transaction with its new `meta.schema`, so a
+         * file is either still the old version or wholly the new one.
+         */
+        private fun migrate(c: SQLiteConnection) {
+            val from = schemaOf(c) ?: return
+            if (from >= SCHEMA_VERSION) return
+            run(c, "BEGIN IMMEDIATE")
+            try {
+                for (v in from + 1..SCHEMA_VERSION) for (statement in MIGRATIONS.getValue(v)) run(c, statement)
+                c.prepare("UPDATE meta SET value = ? WHERE key = 'schema'").use { it.bindText(1, SCHEMA_VERSION.toString()); it.step() }
+                run(c, "COMMIT")
+            } catch (e: Throwable) {
+                runCatching { run(c, "ROLLBACK") }
+                throw e
+            }
+        }
+
         private fun quickCheck(c: SQLiteConnection): Boolean =
             c.prepare("PRAGMA quick_check").use { st -> st.step() && st.getText(0) == "ok" }
 
@@ -460,7 +495,30 @@ class ChatDb private constructor(
             "PRAGMA busy_timeout = 2000",
         )
 
-        /** Contract §3.5, statement by statement, the same SQL as desktop's store.js. */
+        /**
+         * Each version's changes to the one before: MIGRATIONS[v] takes a file of version v - 1 to version v. The
+         * columns they add are in [SCHEMA] too, at the same place (the end of their table), so a migrated file and a
+         * new one have the same columns in the same order.
+         *
+         * Version 2: `member.agent`, an agent's settings as JSON (AgentSettings; NULL for a person), and `room.agents`,
+         * how many agents are in the room. The directory loads again, as the rows cached before lack the settings.
+         *
+         * Version 3: the index `event_roster` ([ROSTER_INDEX]), for each room's roster revision (`Room.roster`).
+         */
+        internal val MIGRATIONS: Map<Int, List<String>> = mapOf(
+            2 to listOf(
+                "ALTER TABLE member ADD COLUMN agent TEXT",
+                "ALTER TABLE room ADD COLUMN agents INTEGER NOT NULL DEFAULT 0",
+                "UPDATE ws SET membersStale = 1",
+            ),
+            3 to listOf(ROSTER_INDEX),
+        )
+
+        /**
+         * Contract §3.5, statement by statement, as of [SCHEMA_VERSION]: desktop's store.js version 1 with Android's
+         * own versions 2 and 3 ([MIGRATIONS]). Each app keeps its own file, and desktop's versions 2 and 3 (files,
+         * link cards and reactions) aren't on the phone.
+         */
         internal val SCHEMA = listOf(
             "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID",
             """CREATE TABLE ws (
@@ -497,6 +555,7 @@ class ChatDb private constructor(
   lo INTEGER, hi INTEGER,
   notified INTEGER NOT NULL DEFAULT 0,
   muted INTEGER NOT NULL DEFAULT 0,
+  agents INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (ws, id)
 ) WITHOUT ROWID""",
             """CREATE TABLE pass_room (
@@ -518,6 +577,7 @@ class ChatDb private constructor(
 ) WITHOUT ROWID""",
             "CREATE UNIQUE INDEX event_id ON event (ws, id)",
             "CREATE INDEX event_root ON event (ws, room, root, seq) WHERE root IS NOT NULL",
+            ROSTER_INDEX,
             """CREATE TABLE tombstone (
   ws TEXT NOT NULL REFERENCES ws(id) ON DELETE CASCADE,
   message TEXT NOT NULL, at INTEGER NOT NULL,
@@ -526,6 +586,7 @@ class ChatDb private constructor(
             """CREATE TABLE member (
   ws TEXT NOT NULL REFERENCES ws(id) ON DELETE CASCADE, id TEXT NOT NULL,
   kind TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, state TEXT NOT NULL, joinedAt INTEGER NOT NULL,
+  agent TEXT,
   PRIMARY KEY (ws, id)
 ) WITHOUT ROWID""",
             """CREATE TABLE channel (

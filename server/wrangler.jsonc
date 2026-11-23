@@ -110,6 +110,11 @@
     "WORKSPACE_CONVERSATIONS": 8192,
     "WORKSPACE_BYTES": 1073741824,
     "WORKSPACE_RETENTION_DAYS": 90,
+    // Agents in channels (WORKSPACES.md, Agents in channels): how many agents one workspace may have, or 0 or "off" to
+    // turn them off; how long a chain of agents answering agents may get; and replies one agent may post in an hour.
+    "WORKSPACE_AGENTS": 20,
+    "WORKSPACE_AGENT_DEPTH": 3,
+    "WORKSPACE_AGENT_REPLIES": 120,
     // Files in team chat, once the WORKSPACE_FILES bucket below is bound: the largest file in bytes (25 MiB), and the
     // bytes of files one workspace may keep, stored and reserved together (5 GiB). These are counted apart from
     // WORKSPACE_BYTES, which stays message text only.
@@ -236,6 +241,9 @@
         "WORKSPACE_CONVERSATIONS": 8192,
         "WORKSPACE_BYTES": 1073741824,
         "WORKSPACE_RETENTION_DAYS": 90,
+        "WORKSPACE_AGENTS": 20,
+        "WORKSPACE_AGENT_DEPTH": 3,
+        "WORKSPACE_AGENT_REPLIES": 120,
         // Files in team chat live in UpCloud Managed Object Storage in Frankfurt, path-style. The access key is two
         // Worker secrets: npx wrangler secret put WORKSPACE_FILES_S3_ACCESS_KEY_ID --env bvdm, and the same for
         // WORKSPACE_FILES_S3_SECRET_ACCESS_KEY. Until both are set, files stay off and the Worker logs which is

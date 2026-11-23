@@ -9,7 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
-const { startRealServer, realServerAvailable, skipWithoutServer } = require('./fixtures/real-server');
+const { startRealServer, realServerAvailable, skipWithoutServer, mention } = require('./fixtures/real-server');
 const { PASSWORD, attach, newAccount, chatService, settled, watchCalls, until } = require('./fixtures/chat-app');
 const { chatApi } = require('../src/main/workspaces/ipc');
 const wire = require('../src/main/workspaces/wire');
@@ -683,4 +683,130 @@ test('a sign-up with an invitation link sends workspaceInvite and leaves a pendi
   assert.equal(hiddenState(), true);
   await account.signOut();
   assert.equal(hiddenState(), false);
+});
+
+// ---- agents in channels (server/WORKSPACES.md "Agents") ----
+
+test('agents: make one, list, change, give a new key and remove it; the directory and the room follow', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  const bartMe = await server.seedMember(ws, bart, 'Bart');
+  const { svc, api } = await device(t, bart);
+  await settled(svc, ws.id);
+
+  // Bart makes an agent that answers only him. The key is in this answer only, and is the agent's own.
+  const made = await api.chatCreateAgent(ws.id, { name: ' Clark ', answers: 'sponsor', members: [ws.me.id] });
+  assert.equal(made.agent.name, 'Clark');
+  assert.equal(made.agent.sponsor, bartMe.id);
+  assert.equal(made.agent.answers, 'sponsor');
+  assert.deepEqual(made.agent.members, []);
+  assert.equal(made.agent.agents, false);
+  assert.equal(made.agent.lastSeen, null);
+  assert.match(made.key, wire.patterns.AGENT_KEY);
+  assert.equal(made.key.slice(4, 26), made.agent.id.slice(2));
+  const id = made.agent.id;
+  // The call returns once the directory has it: kind agent, role member, with its settings.
+  const inView = async () => (await api.chatView(ws.id)).members.find((m) => m.id === id);
+  assert.deepEqual(await inView(), {
+    id,
+    kind: 'agent',
+    name: 'Clark',
+    role: 'member',
+    state: 'active',
+    joinedAt: made.agent.createdAt,
+    agent: { sponsor: bartMe.id, answers: 'sponsor', members: [], agents: false }
+  });
+  assert.deepEqual((await api.chatAgents(ws.id)).agents, [made.agent]);
+  const me = await server.agentCall(made.key, 'GET', route(ws.id, '/agents/me'));
+  assert.equal(me.status, 200);
+
+  // Changed: it answers Olga too and other agents.
+  const changed = await api.chatUpdateAgent(ws.id, id, { answers: 'members', members: [ws.me.id], agents: true });
+  assert.deepEqual([changed.agent.answers, changed.agent.members, changed.agent.agents], ['members', [ws.me.id], true]);
+  assert.deepEqual((await inView()).agent, { sponsor: bartMe.id, answers: 'members', members: [ws.me.id], agents: true });
+
+  // Added to general, it counts as an agent of the room and not as one of its members.
+  const before = svc.store.getRoom(ws.id, ws.general).members;
+  assert.deepEqual(await api.chatAddToChannel(ws.id, ws.general, id), { member: id, role: 'member' });
+  await until(() => svc.store.getRoom(ws.id, ws.general).agents === 1, 15000, 'the room to count its agent');
+  assert.equal(svc.store.getRoom(ws.id, ws.general).members, before);
+  assert.equal((await api.chatView(ws.id)).rooms.find((r) => r.id === ws.general).agents, 1);
+  // It is never a manager, in a DM or blocked. Bart isn't a manager of general (Olga is): in a channel of his own.
+  const { channel } = await api.chatCreateChannel(ws.id, { name: 'bots', visibility: 'private' });
+  assert.deepEqual(await api.chatAddToChannel(ws.id, channel.id, id), { member: id, role: 'member' });
+  await assert.rejects(api.chatSetChannelRole(ws.id, channel.id, id, 'manager'), fails('agent_not_manager'));
+  assert.equal(await api.chatRemoveFromChannel(ws.id, channel.id, id), true);
+  // Olga's agent can't come into Bart's private channel while Olga isn't in it: the code reaches the app as it is, for
+  // its own text.
+  const revy = await server.seedAgent(olga, ws, { name: 'Revy', answers: 'sponsor' });
+  await assert.rejects(api.chatAddToChannel(ws.id, channel.id, revy.agent.id), fails('sponsor_not_in_channel'));
+  assert.equal(wire.errorKey('sponsor_not_in_channel'), 'chat.errors.agentSponsorNotInChannel');
+  await assert.rejects(api.chatStartDm(ws.id, [id]), fails('agent_in_dm'));
+  await assert.rejects(api.chatBlock(ws.id, id), fails('agent_block'));
+
+  // A reply with its key shows in the cache with the message it answers.
+  const asked = await server.post(bart, ws.id, ws.general, '@Clark hi', { mentions: [mention('@Clark hi', '@Clark', id)] });
+  const reply = await server.agentReply(made.key, ws.id, ws.general, { trigger: asked.messageId, text: 'Hello Bart' });
+  await api.chatOpen(ws.id, ws.general);
+  await until(() => svc.store.eventById(ws.id, reply.messageId), 15000, "the agent's reply");
+  const event = wire.toRenderer(svc.store.eventById(ws.id, reply.messageId));
+  assert.equal(event.actor, id);
+  assert.equal(event.root, asked.messageId);
+  // origin: the person who started the chain, Bart here.
+  assert.deepEqual(event.data, { trigger: asked.messageId, depth: 1, origin: bartMe.id });
+  assert.deepEqual(wire.toRenderer(svc.store.eventById(ws.id, asked.messageId)).data, {}, "a person's message has no trigger, depth or origin");
+  // Bart, its sponsor, removes the reply; the cache drops what it answered as the server does.
+  assert.equal(await api.chatRedact(ws.id, ws.general, reply.messageId), true);
+  assert.deepEqual(wire.toRenderer(svc.store.eventById(ws.id, reply.messageId)).data, {});
+  assert.equal(wire.toRenderer(svc.store.eventById(ws.id, reply.messageId)).redacted, true);
+  await api.chatClose();
+
+  // A new key: the old one stops at once.
+  const renewed = await api.chatNewAgentKey(ws.id, id);
+  assert.notEqual(renewed.key, made.key);
+  assert.equal(renewed.agent.id, id);
+  assert.equal((await server.agentCall(made.key, 'GET', route(ws.id, '/agents/me'))).status, 401);
+  assert.equal((await server.agentCall(renewed.key, 'GET', route(ws.id, '/agents/me'))).status, 200);
+
+  // Removed: its key fails, the directory keeps it as a former agent, and removing it twice is no error.
+  assert.equal(await api.chatRemoveAgent(ws.id, id), true);
+  assert.equal((await inView()).state, 'removed');
+  assert.equal((await inView()).kind, 'agent');
+  assert.deepEqual((await api.chatAgents(ws.id)).agents.map((a) => a.id), [revy.agent.id], "only Olga's agent is left");
+  assert.equal((await server.agentCall(renewed.key, 'GET', route(ws.id, '/agents/me'))).status, 401);
+  assert.equal(await api.chatRemoveAgent(ws.id, id), true);
+  await until(() => svc.store.getRoom(ws.id, ws.general).agents === 0, 15000, 'the room to lose its agent');
+});
+
+test("agents: someone else's agent can be changed by an owner only, and made a new key by its sponsor only; a guest can't list them", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const gus = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  await server.seedMember(ws, bart, 'Bart');
+  await server.seedMember(ws, gus, 'Gus', { role: 'guest', channels: [ws.general] });
+  const { agent } = await server.seedAgent(olga, ws, { name: 'Revy' });
+  const { svc, api } = await device(t, bart);
+  await settled(svc, ws.id);
+  await assert.rejects(api.chatUpdateAgent(ws.id, agent.id, { name: 'Mine now' }), fails('forbidden'));
+  await assert.rejects(api.chatNewAgentKey(ws.id, agent.id), fails('forbidden'));
+  await assert.rejects(api.chatRemoveAgent(ws.id, agent.id), fails('forbidden'));
+  // An ID that isn't an agent is not found, and doesn't remove the workspace.
+  await assert.rejects(api.chatUpdateAgent(ws.id, ws.me.id, { name: 'X' }), fails('not_found'));
+  assert.ok(svc.store.getWs(ws.id));
+  // A bad name never reaches the server.
+  await assert.rejects(api.chatCreateAgent(ws.id, { name: '', answers: 'everyone' }), fails('invalid', { field: 'name' }));
+  const guest = await device(t, gus);
+  await settled(guest.svc, ws.id);
+  await assert.rejects(guest.api.chatAgents(ws.id), fails('forbidden'));
+  // Olga, the owner, renames Bart's agent but can't make it a new key: that key would read Bart's private channels.
+  const clark = await server.seedAgent(bart, ws, { name: 'Clark', answers: 'sponsor' });
+  const owner = await device(t, olga);
+  await settled(owner.svc, ws.id);
+  assert.equal((await owner.api.chatUpdateAgent(ws.id, clark.agent.id, { name: 'Clark 2' })).agent.name, 'Clark 2');
+  await assert.rejects(owner.api.chatNewAgentKey(ws.id, clark.agent.id), fails('forbidden'));
+  assert.equal((await server.agentCall(clark.key, 'GET', route(ws.id, '/agents/me'))).status, 200, 'its key still works');
 });

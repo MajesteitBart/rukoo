@@ -18,7 +18,7 @@ import kotlinx.serialization.json.intOrNull
  * - [channels]: the channels a `409 last_manager` needs a successor for, at most 100 `c_` IDs.
  * - [member]: the person a `409 blocked` names.
  * - [limit]: which limit a `413 quota` or a `429 rate_limited` hit: `members`, `conversations`, `invites`, `bytes`,
- *   or `dailyDms`.
+ *   or `dailyDms`; `agents` for a `409 agent_limit`.
  */
 class WorkspaceError(
     code: String,
@@ -54,6 +54,8 @@ class WorkspaceError(
             "workspace_limit", "workspaces_full", "workspace_account_scope", "dm_unavailable", "blocked", "name_taken",
             "last_owner", "last_manager", "members_remain", "archived", "invite_gone", "quota", "invalid", "bad_link",
             "other_server", "not_saved", "paused", "server",
+            // Agents in channels: the refusals a person's session can get (WORKSPACES.md "Agents in channels").
+            "agent_limit", "agent_in_dm", "agent_not_manager", "agent_block", "agent_role", "sponsor_not_in_channel",
         )
 
         /** Answers the feed and the outbox handle themselves; none is ever shown as a call error (§3.15). */

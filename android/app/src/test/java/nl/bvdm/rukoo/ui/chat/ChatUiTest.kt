@@ -20,6 +20,7 @@ import nl.bvdm.rukoo.workspaces.RoomTimeline
 import nl.bvdm.rukoo.workspaces.ThreadTimeline
 import nl.bvdm.rukoo.workspaces.Workspaces
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -196,6 +197,67 @@ class ChatUiTest {
         }
         val off = ui(offline)
         assertNull(off.mentionMembers("w1", channel, fresh = true))
+    }
+
+    @Test
+    fun `the mention picker loads a channel's roster again when an agent comes or goes, though the people's count stays`() = runTest {
+        val roster = ArrayList(listOf("u_ann", "u_bob"))
+        var loads = 0
+        val w = object : Workspaces by UNUSED {
+            override suspend fun roomMembers(ws: String, room: String): List<RoomMember> {
+                loads += 1
+                return roster.map { RoomMember(it, "member") }
+            }
+        }
+        val ui = ui(w)
+        val channel = Room(
+            id = "c1", kind = RoomKind.CHANNEL, name = "plans", visibility = "workspace", archived = false, closedReason = null,
+            participants = null, startedBy = null, role = "member", members = 2, head = 5, floor = 1, lastAt = null, read = 5,
+            unread = 0, mentions = 0, attention = 0, muted = false, hasCache = true,
+        )
+        assertEquals(listOf("u_ann", "u_bob"), ui.mentionMembers("w1", channel))
+        // Clark is added: two people still, one agent now. The composer's key changes with it, so an open picker reloads.
+        roster += "u_clark"
+        val withClark = channel.copy(agents = 1)
+        assertNotEquals(MentionRoster.of(channel), MentionRoster.of(withClark))
+        assertEquals(listOf("u_ann", "u_bob", "u_clark"), ui.mentionMembers("w1", withClark))
+        // Clark is removed again: he isn't offered, so a mention of him can't go out and fail on the server.
+        roster -= "u_clark"
+        assertEquals(listOf("u_ann", "u_bob"), ui.mentionMembers("w1", channel))
+        assertEquals(3, loads)
+    }
+
+    @Test
+    fun `the mention picker loads a channel's roster again when one agent replaces another, though both counts stay`() = runTest {
+        val roster = ArrayList(listOf("u_ann", "u_bob", "u_clark"))
+        var loads = 0
+        val w = object : Workspaces by UNUSED {
+            override suspend fun roomMembers(ws: String, room: String): List<RoomMember> {
+                loads += 1
+                return roster.map { RoomMember(it, "member") }
+            }
+        }
+        val ui = ui(w)
+        // Two people and Clark, who came in at seq 5.
+        val channel = Room(
+            id = "c1", kind = RoomKind.CHANNEL, name = "plans", visibility = "workspace", archived = false, closedReason = null,
+            participants = null, startedBy = null, role = "member", members = 2, head = 5, floor = 1, lastAt = null, read = 5,
+            unread = 0, mentions = 0, attention = 0, muted = false, hasCache = true, agents = 1, roster = 5,
+        )
+        assertEquals(listOf("u_ann", "u_bob", "u_clark"), ui.mentionMembers("w1", channel))
+        // A message moves the head, not the roster: the composer keeps what it loaded.
+        assertEquals(listOf("u_ann", "u_bob", "u_clark"), ui.mentionMembers("w1", channel.copy(head = 6)))
+        assertEquals(1, loads)
+        // Clark leaves at seq 7 and Dot comes in at seq 8: two people and one agent still, the roster moved. The
+        // composer's key changes with it, so an open picker loads again and no longer offers Clark.
+        roster[2] = "u_dot"
+        val swapped = channel.copy(head = 8, roster = 8)
+        assertEquals(channel.members to channel.agents, swapped.members to swapped.agents)
+        assertNotEquals(MentionRoster.of(channel), MentionRoster.of(swapped))
+        assertEquals(listOf("u_ann", "u_bob", "u_dot"), ui.mentionMembers("w1", swapped))
+        assertEquals(2, loads)
+        assertEquals(listOf("u_ann", "u_bob", "u_dot"), ui.mentionMembers("w1", swapped))
+        assertEquals(2, loads)
     }
 
     @Test

@@ -39,12 +39,14 @@ import nl.bvdm.rukoo.ui.chat.ChatListModel
 import nl.bvdm.rukoo.ui.chat.TimelineScroll
 import nl.bvdm.rukoo.ui.composer.DraftStore
 import nl.bvdm.rukoo.ui.mail.UiStrings
+import nl.bvdm.rukoo.workspaces.Agent
 import nl.bvdm.rukoo.workspaces.ChatState
 import nl.bvdm.rukoo.workspaces.Draft
 import nl.bvdm.rukoo.workspaces.Event
 import nl.bvdm.rukoo.workspaces.Invite
 import nl.bvdm.rukoo.workspaces.InviteLink
 import nl.bvdm.rukoo.workspaces.InvitePreview
+import nl.bvdm.rukoo.workspaces.MadeAgent
 import nl.bvdm.rukoo.workspaces.MadeInvite
 import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.Mention
@@ -912,6 +914,11 @@ class ChatNavTest {
         override suspend fun leaveDm(ws: String, room: String) {}
         override suspend fun block(ws: String, member: String) {}
         override suspend fun unblock(ws: String, member: String) {}
+        override suspend fun agents(ws: String): List<Agent> = emptyList()
+        override suspend fun createAgent(ws: String, name: String, answers: String, members: List<String>, agents: Boolean): MadeAgent = no()
+        override suspend fun updateAgent(ws: String, agent: String, name: String, answers: String, members: List<String>, agents: Boolean): Agent = no()
+        override suspend fun newAgentKey(ws: String, agent: String): MadeAgent = no()
+        override suspend fun removeAgent(ws: String, agent: String) {}
 
         private fun no(): Nothing = throw UnsupportedOperationException()
     }

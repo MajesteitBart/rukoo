@@ -868,10 +868,15 @@ export function mountChatInput(container, opts = {}) {
       pick.list.append(h('div', { class: 'ch-suggest-none', role: 'option', 'aria-disabled': 'true', 'aria-selected': 'false', text: t('chat.mentions.none') }));
     }
     hits.forEach((m, i) => {
-      const av = h('span', { class: 'avatar mention-avatar', 'aria-hidden': 'true', text: initials({ name: m.name }) });
+      const agent = m.kind === 'agent';
+      const av = h('span', { class: `avatar mention-avatar${agent ? ' is-agent' : ''}`, 'aria-hidden': 'true', text: initials({ name: m.name }) });
       av.style.setProperty('--h', String(hue(m.id)));
-      const o = h('div', { role: 'option', id: optionId(i), 'data-i': String(i), 'data-member': m.id, 'aria-selected': 'false' }, av, h('span', { class: 'mention-who' }, h('span', { class: 'mention-name', text: m.name })));
-      if (m.role === 'guest') o.append(h('span', { class: 'mention-tag', text: t('chat.roles.guest') }));
+      // An agent that won't answer you says whom it does answer under its name (m.note, from chat-view.js).
+      const who = h('span', { class: 'mention-who' }, h('span', { class: 'mention-name', text: m.name }));
+      if (agent && m.note) who.append(h('span', { class: 'mention-note', text: m.note }));
+      const o = h('div', { role: 'option', id: optionId(i), 'data-i': String(i), 'data-member': m.id, 'aria-selected': 'false' }, av, who);
+      if (agent) o.append(h('span', { class: 'mention-tag', text: t('chat.roles.agent') }));
+      else if (m.role === 'guest') o.append(h('span', { class: 'mention-tag', text: t('chat.roles.guest') }));
       pick.list.append(o);
     });
     const keep = was ? hits.findIndex((m) => m.id === was) : -1;

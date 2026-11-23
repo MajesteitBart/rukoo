@@ -26,8 +26,9 @@ const route = (ws, rest = '') => `/v1/workspaces/${ws}${rest}`;
 // The fields of contract 4.6, so a view can't gain or lose one unnoticed.
 const ROOM_VIEW = ['at', 'complete', 'draft', 'events', 'hasOlder', 'hi', 'lo', 'pending', 'readAtOpen', 'room'];
 const THREAD_VIEW = ['complete', 'draft', 'expired', 'pending', 'replies', 'root'];
+// agents: the agents in a channel, which members leaves out (server/WORKSPACES.md "Agents").
 const ROOM = [
-  'archived', 'attention', 'closedReason', 'floor', 'hasCache', 'head', 'id', 'kind', 'lastAt', 'members', 'mentions', 'muted', 'name',
+  'agents', 'archived', 'attention', 'closedReason', 'floor', 'hasCache', 'head', 'id', 'kind', 'lastAt', 'members', 'mentions', 'muted', 'name',
   'participants', 'read', 'readMark', 'readingPaused', 'role', 'startedBy', 'unread', 'visibility'
 ];
 const EVENT = ['actor', 'at', 'attachments', 'data', 'id', 'kind', 'mentions', 'previews', 'reactions', 'redacted', 'root', 'seq', 'text'];

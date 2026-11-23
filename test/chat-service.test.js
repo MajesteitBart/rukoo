@@ -183,12 +183,12 @@ test('a server without team chat gets no workspace requests, and Chat is unavail
 const STATE_KEYS = [
   'available', 'storage', 'signedIn', 'server', 'host', 'operator', 'jurisdiction', 'signups', 'inviteSignups', 'retention', 'limits',
   'notifications', 'pendingJoin', 'unsent', 'lostUnsent', 'selected', 'connection', 'attention', 'unread', 'workspaces',
-  // Rich messages: what the server can do, and its files settings.
-  'capabilities', 'files'
+  // Rich messages: what the server can do, and its files settings. Agents in channels: their limits.
+  'capabilities', 'files', 'agents'
 ].sort();
 const SUMMARY_KEYS = ['id', 'name', 'role', 'status', 'syncing', 'socket', 'error', 'attention', 'unread'].sort();
 const ROOM_KEYS = [
-  'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'role', 'members', 'head', 'floor', 'lastAt',
+  'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'role', 'members', 'agents', 'head', 'floor', 'lastAt',
   'read', 'unread', 'mentions', 'attention', 'muted', 'hasCache', 'readMark', 'readingPaused'
 ].sort();
 
@@ -205,6 +205,9 @@ test('ChatState, WorkspaceView and the events have the shapes of contract 4.5 an
   assert.deepEqual(Object.keys(state.retention).sort(), ['contentDays', 'feedDays']);
   assert.deepEqual(Object.keys(state.limits).sort(), ['members', 'workspacesPerAccount']);
   assert.equal(state.notifications, true);
+  // The real server has agents on, with its defaults (server/src/config.js agentLimits).
+  assert.ok(state.capabilities.includes('agents'));
+  assert.deepEqual(state.agents, { max: 20, depth: 3, repliesPerHour: 120 });
   assert.equal(state.workspaces[0].status, 'ok');
   assert.equal(state.workspaces[0].socket, 'off');
   const view = await chatApi(() => svc).chatView(ws.id);

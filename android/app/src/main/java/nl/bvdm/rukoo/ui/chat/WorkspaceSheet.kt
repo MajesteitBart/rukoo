@@ -120,7 +120,8 @@ fun WorkspaceSheet(app: AppViewModel, onDismiss: () -> Unit) {
 
 /**
  * The mode switch and the workspaces; [pick] shows one. Under them, what can be done in the workspace on screen
- * (contract §5.10, §7.4): your name, Members, Invite people for owners and admins, Blocked people, Leave workspace and,
+ * (contract §5.10, §7.4): your name, Members, Invite people for owners and admins, Agents for full members while the
+ * server has agents on, Blocked people, Leave workspace and,
  * for an owner, Delete workspace, which works only while they are its only member. Then Join and Make. [act] closes
  * the drawer or the sheet before the action runs.
  */
@@ -160,7 +161,7 @@ private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -
             // write then. The service refuses a write all the same.
             val writable = chat.workspaces.firstOrNull { it.id == ws }?.status != WorkspaceStatus.UPGRADE
             Hairline(Modifier.padding(vertical = 8.dp))
-            for (action in SheetRules.workspaceActions(view, writable)) {
+            for (action in SheetRules.workspaceActions(view, writable, agents = chat.agents)) {
                 when (action) {
                     WorkspaceAction.RENAME_ME ->
                         DrawerAction(stringResource(R.string.chat_workspace_your_name), RukooIcons.Edit, hint = view.me.name) { act { ui.askRenameMe(ws, view.me.name) } }
@@ -168,6 +169,8 @@ private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -
                         DrawerAction(stringResource(R.string.chat_workspace_members), RukooIcons.People) { act { app.openChatSheet(ChatSheet.MEMBERS) } }
                     WorkspaceAction.INVITE ->
                         DrawerAction(stringResource(R.string.chat_workspace_invite), RukooIcons.Plus) { act { app.openChatSheet(ChatSheet.INVITE) } }
+                    WorkspaceAction.AGENTS ->
+                        DrawerAction(stringResource(R.string.chat_workspace_agents), RukooIcons.Sparkle) { act { app.openChatSheet(ChatSheet.AGENTS) } }
                     WorkspaceAction.BLOCKED ->
                         DrawerAction(stringResource(R.string.chat_block_list), RukooIcons.Ban) { act { app.openChatSheet(ChatSheet.BLOCKED) } }
                     // The only owner can't leave; the row stays, and opens the dialog that says how to. Alone in the

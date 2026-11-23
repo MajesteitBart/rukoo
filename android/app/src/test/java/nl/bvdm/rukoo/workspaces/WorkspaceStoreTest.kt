@@ -376,6 +376,29 @@ class WorkspaceStoreTest {
     }
 
     @Test
+    fun `an agent keeps its kind and settings in the directory, and unreadable settings leave it an agent`() = runTest {
+        val store = seeded()
+        val clark = "u_" + "clark".padEnd(22, 'x')
+        val settings = AgentSettings(sponsor = me, answers = "members", members = listOf(olga), agents = true)
+        store.tx {
+            val members = listOf(
+                Member(me, name = "Me", role = "owner", state = "active"),
+                Member(clark, Member.KIND_AGENT, "Clark", "member", "active", 5, settings),
+            )
+            replaceMembers(ws, members)
+            assertEquals(members.sortedBy { it.id }, listMembers(ws))
+            val agent = listMembers(ws).single { it.isAgent }
+            assertEquals(settings, agent.agent)
+            assertNull(listMembers(ws).single { it.id == me }.agent)
+            // A newer Rukoo's settings this version can't read: the row still shows as an agent.
+            sql.exec("UPDATE member SET agent = '{\"answers\":1}' WHERE ws = ? AND id = ?", ws, clark)
+            val odd = listMembers(ws).single { it.id == clark }
+            assertTrue(odd.isAgent)
+            assertNull(odd.agent)
+        }
+    }
+
+    @Test
     fun `the outbox keeps rows in order and holds a room back behind its first row`() = runTest {
         val store = seeded()
         store.tx {

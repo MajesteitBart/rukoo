@@ -241,8 +241,8 @@ test('checkChanges takes a page with a channel, a DM and inline events, and keep
   const out = wire.checkChanges(body);
   assert.deepEqual(Object.keys(out), ['changes', 'evictions', 'inlineEvents', 'directory', 'next', 'more']);
   assert.equal(out.changes[0].extra, undefined);
-  assert.deepEqual(out.changes[0], { ...channelRow(), participants: null, startedBy: null, closedReason: null, readMark: 0 });
-  assert.deepEqual(out.changes[1], { ...dmRow(), readMark: 0 });
+  assert.deepEqual(out.changes[0], { ...channelRow(), participants: null, startedBy: null, closedReason: null, readMark: 0, agents: 0 });
+  assert.deepEqual(out.changes[1], { ...dmRow(), readMark: 0, agents: 0 });
   assert.deepEqual(out.inlineEvents[1], { ...posted(42, { text: 'Hoi @Zoë', mentions: [{ actor: U, start: 4, end: 9 }], root: E }), attachments: [], previews: [], reactions: [] });
   assert.deepEqual(out.directory, { members: false, channels: true, blocks: false });
   // A closed DM is archived; a server from before DMs leaves out members, lastAt and directory.blocks.
@@ -425,7 +425,9 @@ const METHODS = [
   'chatBlock', 'chatUnblock',
   // Rich messages (rich contract 4.3).
   'chatReact', 'chatMarkUnread', 'chatPickFiles', 'chatStage', 'chatUnstage', 'chatRetryStage', 'chatStaged', 'chatFile',
-  'chatRemovePreview'
+  'chatRemovePreview',
+  // Agents in channels (server/WORKSPACES.md "Agents").
+  'chatAgents', 'chatCreateAgent', 'chatUpdateAgent', 'chatNewAgentKey', 'chatRemoveAgent'
 ];
 
 const zoe = vectors.mentions.find((c) => c.text.includes('Zoë') && c.bytes.length === 1);
@@ -563,7 +565,39 @@ const CALLS = {
   chatRetryStage: { ok: [[[LOCAL], [LOCAL]]], bad: [[[null], 'stage']] },
   chatStaged: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]]], bad: [[[W, C, 'e_x'], 'root']] },
   chatFile: { ok: [[[W, C, F, 'view'], [W, C, F, 'view']], [[W, C, F, 'save'], [W, C, F, 'save']]], bad: [[[W, C, E, 'view'], 'file'], [[W, C, F, 'delete'], 'action']] },
-  chatRemovePreview: { ok: [[[W, C, E, 'https://example.com/a'], [W, C, E, 'https://example.com/a']]], bad: [[[W, C, E, 'javascript:alert(1)'], 'url'], [[W, C, E, 5], 'url']] }
+  chatRemovePreview: { ok: [[[W, C, E, 'https://example.com/a'], [W, C, E, 'https://example.com/a']]], bad: [[[W, C, E, 'javascript:alert(1)'], 'url'], [[W, C, E, 5], 'url']] },
+  chatAgents: { ok: [[[W], [W]]], bad: [[[C], 'ws']] },
+  chatCreateAgent: {
+    ok: [
+      [[W, { name: ' Clark ', answers: 'everyone' }], [W, { name: 'Clark', answers: 'everyone', members: [], agents: false }]],
+      // The chosen people go only with 'members'.
+      [[W, { name: 'Clark', answers: 'sponsor', members: [U2], agents: true }], [W, { name: 'Clark', answers: 'sponsor', members: [], agents: true }]],
+      [[W, { name: 'Clark', answers: 'members', members: [U2, U3] }], [W, { name: 'Clark', answers: 'members', members: [U2, U3], agents: false }]]
+    ],
+    bad: [
+      [[W, { name: '', answers: 'everyone' }], 'name'],
+      [[W, { name: 'Clark', answers: 'nobody' }], 'answers'],
+      [[W, { name: 'Clark', answers: 'members', members: [U2, U2] }], 'members'],
+      [[W, { name: 'Clark', answers: 'members', members: Array.from({ length: 51 }, (_, i) => id('u', `p${i}`)) }], 'members'],
+      [[W, { name: 'Clark', answers: 'members', members: [E] }], 'members'],
+      [[W, { name: 'Clark', answers: 'everyone', agents: 'yes' }], 'agents'],
+      [[W, null], 'input']
+    ]
+  },
+  chatUpdateAgent: {
+    ok: [
+      [[W, U3, { name: 'Clark 2' }], [W, U3, { name: 'Clark 2' }]],
+      [[W, U3, { answers: 'members', members: [U2], agents: false }], [W, U3, { answers: 'members', members: [U2], agents: false }]]
+    ],
+    bad: [
+      [[W, E, { name: 'Clark' }], 'agent'],
+      [[W, U3, {}], 'input'],
+      [[W, U3, { answers: 'all' }], 'answers'],
+      [[W, U3, { members: 'u_x' }], 'members']
+    ]
+  },
+  chatNewAgentKey: { ok: [[[W, U3], [W, U3]]], bad: [[[W, 'u_x'], 'agent']] },
+  chatRemoveAgent: { ok: [[[W, U3], [W, U3]]], bad: [[[W, null], 'agent']] }
 };
 
 test('every IPC method of the contract has an argument check, and nothing else does', () => {
@@ -726,9 +760,10 @@ test('toRenderer, toRoom and toPending give the shapes of contract 4.6', () => {
   };
   assert.deepEqual(wire.toRoom(row), {
     id: D, kind: 'dm', name: null, visibility: 'dm', archived: false, closedReason: null, participants: [U, U2], startedBy: U,
-    role: 'member', members: 2, head: 9, floor: 1, lastAt: at, read: 7, unread: 2, mentions: 1, attention: 2, muted: false, hasCache: true,
+    role: 'member', members: 2, agents: 0, head: 9, floor: 1, lastAt: at, read: 7, unread: 2, mentions: 1, attention: 2, muted: false, hasCache: true,
     readMark: 0, readingPaused: false
   });
+  assert.equal(wire.toRoom({ ...row, kind: 'channel', name: 'general', visibility: 'workspace', participants: null, agents: 2 }).agents, 2);
   assert.deepEqual([wire.toRoom({ ...row, readMark: 3, readPaused: 1 }).readMark, wire.toRoom({ ...row, readMark: 3, readPaused: 1 }).readingPaused], [3, true]);
   assert.equal(wire.toRoom({ ...row, kind: 'channel', name: 'general', visibility: 'workspace', participants: null }).attention, 1);
   assert.equal(wire.toRoom({ ...row, muted: 1 }).attention, 0);
@@ -867,4 +902,100 @@ test('toRenderer gives a message its files, cards and reactions, and none to a r
   const reaction = wire.toRenderer({ ...row, kind: 'reaction.added', text: null, data: JSON.stringify({ target: E2, targetSeq: 2, emoji: '👍' }) });
   assert.deepEqual(reaction.data, { target: E2, targetSeq: 2, emoji: '👍' });
   assert.deepEqual(reaction.reactions, []);
+});
+
+// ---- agents in channels (server/WORKSPACES.md "Agents") ----
+
+test('an agent comes with kind agent and its settings; a person, a room and a message keep their shape', () => {
+  const at = 1763550000000;
+  const settings = { sponsor: U, answers: 'members', members: [U2], agents: true };
+  const agent = { id: U3, kind: 'agent', name: 'Clark', role: 'member', state: 'active', joinedAt: 1, agent: settings };
+  const person = { id: U, kind: 'human', name: 'Zoë', role: 'owner', state: 'active', joinedAt: 1 };
+  assert.deepEqual(wire.checkMembers({ members: [person, agent] }).members, [person, agent]);
+  // A former agent keeps its settings; one without them, and a person who carries some, keep only what they are.
+  assert.deepEqual(wire.checkMembers({ members: [{ ...agent, state: 'removed' }] }).members[0].agent, settings);
+  assert.equal('agent' in wire.checkMembers({ members: [{ ...agent, agent: undefined }] }).members[0], false);
+  assert.equal('agent' in wire.checkMembers({ members: [{ ...person, agent: settings }] }).members[0], false);
+  // A newer server's answers word stays, for the renderer to show nothing for.
+  assert.equal(wire.checkMembers({ members: [{ ...agent, agent: { ...settings, answers: 'channel_managers' } }] }).members[0].agent.answers, 'channel_managers');
+  for (const [where, bad] of [
+    ['members.members[0].agent.answers', { ...settings, answers: 'Every One' }],
+    ['members.members[0].agent.sponsor', { ...settings, sponsor: 'u_x' }],
+    ['members.members[0].agent.members', { ...settings, members: [U2, U2] }],
+    ['members.members[0].agent.agents', { ...settings, agents: 1 }],
+    ['members.members[0].agent', 'everyone']
+  ]) {
+    refusedAt(() => wire.checkMembers({ members: [{ ...agent, agent: bad }] }), where);
+  }
+
+  // A room counts its agents apart from its people; a message of an agent names its trigger and its depth.
+  const room = {
+    conversation: C, kind: 'channel', name: 'general', visibility: 'workspace', archived: false, grant: G, role: 'member', members: 3, agents: 2,
+    head: 4, floor: 1, read: 4, unread: 0, mentions: 0
+  };
+  const page = { changes: [room], evictions: [], directory: { members: false, channels: false }, next: 'cursor', more: false };
+  assert.equal(wire.checkChanges(page).changes[0].agents, 2);
+  refusedAt(() => wire.checkChanges({ ...page, changes: [{ ...room, agents: -1 }] }), 'changes.changes[0].agents');
+  const reply = { seq: 2, id: E2, kind: 'message.posted', actor: U3, at, root: E, text: 'On it', mentions: [], trigger: E, depth: 1 };
+  const checked = wire.checkEvent(reply);
+  assert.equal(checked.trigger, E);
+  assert.equal(checked.depth, 1);
+  assert.equal('trigger' in wire.checkEvent({ ...reply, trigger: undefined, depth: undefined }), false);
+  refusedAt(() => wire.checkEvent({ ...reply, trigger: 'e_x' }), 'event.trigger');
+  refusedAt(() => wire.checkEvent({ ...reply, depth: 0 }), 'event.depth');
+  // The cache keeps them in data, and the renderer gets them there.
+  const row = { seq: 2, id: E2, kind: 'message.posted', actor: U3, at, root: E, text: 'On it', mentions: '[]', data: JSON.stringify({ trigger: E, depth: 1 }), redacted: 0 };
+  assert.deepEqual(wire.toRenderer(row).data, { trigger: E, depth: 1 });
+});
+
+test("an agent's reply names the person who started the chain as origin, which the cache keeps with its trigger", () => {
+  const at = 1763550000000;
+  // Decision 4 of the agents contract: origin, a member ID, sits next to trigger and depth on message.posted.
+  const reply = { seq: 2, id: E2, kind: 'message.posted', actor: U3, at, root: E, text: 'On it', mentions: [], trigger: E, depth: 2, origin: U };
+  const checked = wire.checkEvent(reply);
+  assert.deepEqual([checked.trigger, checked.depth, checked.origin], [E, 2, U]);
+  // A person's message has none; a removed one carries none either.
+  assert.equal('origin' in wire.checkEvent({ ...reply, trigger: undefined, depth: undefined, origin: undefined }), false);
+  assert.equal('origin' in wire.checkEvent({ seq: 2, id: E2, kind: 'message.posted', actor: U3, at, redacted: true }), false);
+  refusedAt(() => wire.checkEvent({ ...reply, origin: 'u_x' }), 'event.origin');
+  refusedAt(() => wire.checkEvent({ ...reply, origin: E }), 'event.origin');
+  // A feed page with one goes through whole, so the page isn't refused.
+  const page = wire.checkEvents({ events: [reply], next: null, more: false, head: 2, floor: 1 });
+  assert.equal(page.events[0].origin, U);
+  const row = { seq: 2, id: E2, kind: 'message.posted', actor: U3, at, root: E, text: 'On it', mentions: '[]', data: JSON.stringify({ trigger: E, depth: 2, origin: U }), redacted: 0 };
+  assert.deepEqual(wire.toRenderer(row).data, { trigger: E, depth: 2, origin: U });
+});
+
+test('the agent routes answer an agent, and a key only for its own agent', () => {
+  const out = { id: U3, name: 'Clark', sponsor: U, answers: 'everyone', members: [], agents: false, lastSeen: null, createdAt: 5 };
+  const key = `rka_${U3.slice(2)}.${SECRET}`;
+  assert.deepEqual(wire.checkAgents({ agents: [out] }), { agents: [out] });
+  assert.deepEqual(wire.checkAgentAnswer({ agent: out }), { agent: out });
+  assert.deepEqual(wire.checkAgentAnswer({ agent: out, key }, { key: true }), { agent: out, key });
+  assert.equal(wire.checkAgentAnswer({ agent: { ...out, lastSeen: 9 } }).agent.lastSeen, 9);
+  // A key for another agent, or of the wrong shape, refuses the answer.
+  refusedAt(() => wire.checkAgentAnswer({ agent: out, key: `rka_${U2.slice(2)}.${SECRET}` }, { key: true }), 'agent.key');
+  refusedAt(() => wire.checkAgentAnswer({ agent: out, key: `rka_${U3.slice(2)}` }, { key: true }), 'agent.key');
+  refusedAt(() => wire.checkAgentAnswer({ agent: out }, { key: true }), 'agent.key');
+  refusedAt(() => wire.checkAgents({ agents: [out, out] }), 'agents.agents');
+  refusedAt(() => wire.checkAgents({ agents: [{ ...out, name: '' }] }), 'agents.agents[0].name');
+  refusedAt(() => wire.checkAgents({ agents: [{ ...out, createdAt: -1 }] }), 'agents.agents[0].createdAt');
+});
+
+test('the agent error codes of the routes for people keep their keys and their limit', () => {
+  for (const [code, key] of [
+    ['agent_limit', 'chat.errors.agentLimit'],
+    ['agent_in_dm', 'chat.errors.agentInDm'],
+    ['agent_not_manager', 'chat.errors.agentNotManager'],
+    ['agent_block', 'chat.errors.agentBlock'],
+    ['agent_role', 'chat.errors.agentRole'],
+    // Into a private channel an agent comes only while its sponsor is in it: its own text, not "Something went wrong".
+    ['sponsor_not_in_channel', 'chat.errors.agentSponsorNotInChannel']
+  ]) {
+    assert.equal(wire.errorKey(code), key, code);
+    const err = wire.chatError({ code, status: 400, details: { field: 'member', limit: 'agents' } });
+    assert.equal(err.code, code);
+    assert.equal(err.field, 'member');
+    assert.equal(err.limit, 'agents');
+  }
 });
