@@ -1920,6 +1920,7 @@ Object.assign(api, {
   meetingStop: (id) => voiceService().stop(meetingId(id)),
   meetingRename: (id, title) => voiceService().rename(meetingId(id), title),
   meetingDelete: (id) => voiceService().delete(meetingId(id)),
+  meetingRetry: (id) => voiceService().retry(meetingId(id)),
   meetingPause: (id) => voiceService().pause(meetingId(id)),
   meetingResume: (id) => voiceService().resume(meetingId(id)),
   meetingMark: (id, label) => voiceService().mark(meetingId(id), meetingText(label, 200) || null).then(() => true),
@@ -2080,7 +2081,13 @@ const WINDOW_CODES = new Set(['auth']);
 function windowError(err) {
   // Rukoo Voice's error codes (voice/PROTOCOL.md, plus offline and timeout) under a name of their own, so the meeting
   // view says them in its words and the chat panel never takes one for an agent's code.
-  if (err instanceof VoiceError) return { voice: String(err.code).slice(0, 40), ...(typeof err.meeting === 'string' ? { meeting: err.meeting.slice(0, 100) } : {}) };
+  if (err instanceof VoiceError) {
+    return {
+      voice: String(err.code).slice(0, 40),
+      ...(typeof err.meeting === 'string' ? { meeting: err.meeting.slice(0, 100) } : {}),
+      ...(typeof err.reason === 'string' ? { voiceReason: err.reason.slice(0, 40) } : {})
+    };
+  }
   if (err && err.booking === true && typeof err.code === 'string') {
     return typeof err.field === 'string' ? { code: err.code.slice(0, 40), field: err.field.slice(0, 200) } : { code: err.code.slice(0, 40) };
   }

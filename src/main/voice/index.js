@@ -575,6 +575,16 @@ class VoiceService extends EventEmitter {
     return true;
   }
 
+  // Transcribes a failed meeting again (meeting.retry). Voice answers at once and sends processing, then done or
+  // failed, which reach the store as for any meeting.
+  async retry(id) {
+    this.mustConnect();
+    const e = this.store.entry(id);
+    if (!e || e.removed) throw new VoiceError('not_found', 'No such meeting.');
+    await this.bridge.command('meeting.retry', { meeting: id });
+    return true;
+  }
+
   async pause(id) {
     this.mustConnect();
     await this.bridge.command('meeting.pause', { meeting: id });

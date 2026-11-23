@@ -1024,6 +1024,10 @@ fn dispatch(
             control.delete(meeting.as_str())?;
             json!({})
         }
+        CommandBody::MeetingRetry { meeting } => {
+            control.retry(meeting.as_str())?;
+            json!({})
+        }
         CommandBody::MeetingPause { meeting } => {
             control.pause(meeting.as_str())?;
             json!({})

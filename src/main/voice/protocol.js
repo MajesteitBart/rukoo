@@ -130,6 +130,7 @@ const COMMAND_ARGS = {
   },
   'meeting.stop': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.delete': (a) => pattern(a, 'meeting', MEETING_ID),
+  'meeting.retry': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.pause': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.resume': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.mark': (a) => {

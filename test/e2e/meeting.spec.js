@@ -488,6 +488,73 @@ test('the Screen menu fills in when a new line redraws the header while Voice is
   await shot('screen-menu-after-redraw');
 });
 
+test('a failed transcript is transcribed again from the header or the sidebar menu, and Voice says when it cannot', async () => {
+  const id = voiceStarts({ title: 'Model mix-up' });
+  say(id, 'call', 1000, 'Shall we look at the roadmap first?');
+  const reason = 'API error 400: Invalid model: voxtral-small-latest';
+  voice.append('meeting.state', id, { state: 'failed', at: 5000, endedAt: Date.now(), reason });
+  voice.append('status', null, { recording: null, dictating: false });
+  await openMeetings();
+  const state = () => view().locator('.mt-head .mt-state');
+  const retry = () => view().locator('[data-mt="retry"]');
+  await expect(state()).toHaveText('Transcript incomplete');
+  await expect(state()).toHaveAttribute('title', reason);
+  await expect(retry()).toHaveText('Transcribe again');
+  for (const theme of ['dark', 'light']) {
+    for (const language of ['en', 'nl']) {
+      await setTheme(theme);
+      await setLanguage(language);
+      if (language === 'nl') await expect(retry()).toHaveText('Opnieuw uitschrijven');
+      await shot(`meeting-retry-${theme}-${language}`);
+    }
+  }
+  await setLanguage('en');
+  await setTheme('dark');
+  await resizeTo(760, 900);
+  await expect(retry()).toBeVisible();
+  await shot('meeting-retry-narrow');
+  await resizeTo(1500, 950);
+
+  // What an older Voice, a meeting without its audio and Voice's Settings refuse is said in Rukoo's words.
+  const refusals = [
+    [{ code: 'unknown_command', message: 'meeting.retry' }, 'Update Rukoo Voice to transcribe a meeting again.'],
+    [{ code: 'not_available', message: 'gone', reason: 'audio' }, "The audio of this meeting is no longer on this computer, so Rukoo Voice can't transcribe it again."],
+    [{ code: 'not_available', message: 'consent', reason: 'settings' }, "Rukoo Voice can't transcribe now. Check Meetings › Transcription in Rukoo Voice's Settings."]
+  ];
+  for (const [error, text] of refusals) {
+    voice.handlers['meeting.retry'] = () => ({ error });
+    await retry().click();
+    await expect(win.locator('#toast')).toHaveText(text);
+    await expect(state()).toHaveText('Transcript incomplete');
+  }
+  delete voice.handlers['meeting.retry'];
+  await retry().click();
+  // The fake Voice sends processing with the reason retry, and done a moment later.
+  await expect(state()).toHaveText('Finishing the transcript');
+  await expect(retry()).toHaveCount(0);
+  await shot('meeting-retry-processing');
+  await expect(state()).toHaveCount(0);
+  expect(voice.commands.filter((c) => c.command === 'meeting.retry').map((c) => c.args)).toEqual(Array(4).fill({ meeting: id }));
+
+  // The sidebar's menu offers it for a failed meeting only, and the state survives a restart.
+  const other = voiceStarts({ title: 'Second try' });
+  voice.append('meeting.state', other, { state: 'failed', at: 3000, endedAt: Date.now(), reason });
+  voice.append('status', null, { recording: null, dictating: false });
+  await win.locator('.sidebar [data-mt-open]', { hasText: 'Model mix-up' }).click({ button: 'right' });
+  await expect(menu().getByText('Transcribe again')).toHaveCount(0);
+  await win.keyboard.press('Escape');
+  await closeApp(app);
+  await launch();
+  await expect.poll(connected).toBe(true);
+  await openMeetings();
+  await win.locator('.sidebar [data-mt-open]', { hasText: 'Second try' }).click();
+  await expect(state()).toHaveText('Transcript incomplete');
+  await win.locator('.sidebar [data-mt-open]', { hasText: 'Second try' }).click({ button: 'right' });
+  await menu().getByText('Transcribe again', { exact: true }).click();
+  await expect(state()).toHaveText('Finishing the transcript');
+  await expect(state()).toHaveCount(0);
+});
+
 test('older Voice hides live screen controls and an unsupported deletion keeps the meeting and notes', async () => {
   const id = voiceStarts({ title: 'Retained notes', screen: 'off' });
   await openMeetings();

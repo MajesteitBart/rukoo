@@ -362,6 +362,20 @@ const DEFAULTS = {
     this.append('meeting.removed', args.meeting, { reason: 'user' });
     return {};
   },
+  // Transcribes a failed meeting again: processing with the reason retry at once, done a moment later.
+  'meeting.retry'(args) {
+    const snap = this.snapshot(args.meeting);
+    if (!snap) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    const last = this.events.filter((e) => e.meeting === args.meeting && e.event === 'meeting.state').pop();
+    const { state, at = 0, endedAt = Date.now() } = (last && last.data) || snap.meeting;
+    if (this.status.recording === args.meeting || state === 'recording' || state === 'paused') return { error: { code: 'busy', message: 'The meeting is still recording.', meeting: args.meeting } };
+    if (state === 'done') return { error: { code: 'not_available', message: "The meeting's transcript is complete." } };
+    if (state === 'failed') {
+      this.append('meeting.state', args.meeting, { state: 'processing', at, endedAt, reason: 'retry' });
+      setTimeout(() => this.append('meeting.state', args.meeting, { state: 'done', at, endedAt }), 300);
+    }
+    return {};
+  },
   'meeting.mark'(args) {
     if (this.status.recording !== args.meeting) return { error: { code: 'not_recording', message: 'Not recording.' } };
     const n = this.events.filter((e) => e.event === 'mark').length + 1;

@@ -47,7 +47,8 @@ use crate::speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 use crate::stt::{Heard, Recognizer, TimedSpeechToText};
 use crate::transcript::{
     call_number, mic_number, taken_key, Outcome, StoredPassage, StoredSegment, Transcript,
-    BACKFILL_KEY, DIARIZE_KEY, LABELLED_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY,
+    BACKFILL_KEY, DIARIZE_KEY, LABELLED_KEY, MODE_KEY, REASON_KEY, RETRIES_KEY, RETRY_REASON,
+    SETTLED_KEY,
 };
 use crate::watcher::{
     mark_key, state_key, tracks_of, Derived, Mapper, Stop, Stretch, TimelineWatcher,
@@ -689,6 +690,22 @@ pub(crate) fn logged_keys(
 
 /// Sends a meeting event unless `emitted` says the log has it, and notes its key in
 /// `transcript.db`. The pipeline and the microphone split both send this way.
+/// A meeting that failed, or that a pipeline took up again after it failed.
+fn was_failed(outcome: &Outcome) -> bool {
+    outcome.state == MeetingState::Failed
+        || (outcome.state == MeetingState::Processing
+            && outcome.reason.as_deref() == Some(RETRY_REASON))
+}
+
+/// The key of a `meeting.state` event: the first try keeps [`state_key`], and each later try of
+/// a failed meeting has its own, so Rukoo sees its `processing` and its `failed`.
+fn retry_key(state: MeetingState, at: u64, tries: u64) -> String {
+    match tries {
+        0 => state_key(state, at),
+        n => format!("{}:retry:{n}", state_key(state, at)),
+    }
+}
+
 pub(crate) fn emit_once<E: From<LogError> + From<rusqlite::Error>>(
     log: &EventLog,
     transcript: &Transcript,
@@ -778,6 +795,8 @@ struct Worker {
     failure: Option<Failure>,
     next_track: usize,
     begun: bool,
+    /// Whether this pipeline looked for a `failed` outcome to take up again.
+    retried: bool,
     labels: Labels,
     live_speakers: bool,
     stream: Option<StreamOptions>,
@@ -839,6 +858,7 @@ impl Worker {
             failure: None,
             next_track: 0,
             begun: false,
+            retried: false,
             labels: opts.labels.clone(),
             live_speakers: opts.live_speakers,
             stream: opts.stream.clone(),
@@ -976,10 +996,7 @@ impl Worker {
             .transcript
             .outcome()?
             .is_some_and(|o| o.state == MeetingState::Done);
-        let failed = self
-            .transcript
-            .outcome()?
-            .is_some_and(|o| o.state == MeetingState::Failed);
+        let failed = self.transcript.outcome()?.is_some_and(|o| was_failed(&o));
         // Nemotron heard the whole call after the stop. The meeting can still wait for its
         // transcription, as for consent, through many Voice starts.
         let labelled = self.transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1");
@@ -1182,6 +1199,10 @@ impl Worker {
         if let Err(reason) = (self.allowed)() {
             shared.set(PipelineState::Waiting { reason });
             return Ok(Step::Idle);
+        }
+        if !self.retried {
+            self.retry_if_failed()?;
+            self.retried = true;
         }
         if self
             .failure
@@ -1858,6 +1879,47 @@ impl Worker {
         Ok(())
     }
 
+    /// Takes up a meeting that `failed` before, once the Settings let it transcribe: Rukoo sees
+    /// `processing` with the reason `retry`, and a try that fails again sends `failed` again.
+    /// Until then the meeting stays `failed`, so a missing key doesn't hide why it failed.
+    fn retry_if_failed(&mut self) -> Result<(), Error> {
+        let Some(outcome) = self.transcript.outcome()? else {
+            return Ok(());
+        };
+        if outcome.state != MeetingState::Failed {
+            return Ok(());
+        }
+        let tries = self.retries()? + 1;
+        self.transcript.meta_set(RETRIES_KEY, &tries.to_string())?;
+        self.transcript.set_outcome(&Outcome {
+            state: MeetingState::Processing,
+            at: outcome.at,
+            ended_at: outcome.ended_at,
+            reason: Some(RETRY_REASON.to_owned()),
+            done_at: None,
+        })?;
+        let change = MeetingStateChange {
+            state: MeetingState::Processing,
+            at: outcome.at,
+            ended_at: Some(outcome.ended_at),
+            reason: Some(RETRY_REASON.to_owned()),
+        };
+        self.emit(
+            retry_key(MeetingState::Processing, outcome.at, tries),
+            events::MEETING_STATE,
+            to_data(&change),
+        )
+    }
+
+    /// How many times a pipeline took up this meeting again after it failed.
+    fn retries(&self) -> Result<u64, Error> {
+        Ok(self
+            .transcript
+            .meta_get(RETRIES_KEY)?
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0))
+    }
+
     fn fail(&mut self, stop: &Stop, reason: String) -> Result<(), Error> {
         let change = MeetingStateChange {
             state: MeetingState::Failed,
@@ -1865,8 +1927,9 @@ impl Worker {
             ended_at: Some(stop.wall),
             reason: Some(reason.clone()),
         };
+        let tries = self.retries()?;
         self.emit(
-            state_key(MeetingState::Failed, stop.t),
+            retry_key(MeetingState::Failed, stop.t, tries),
             events::MEETING_STATE,
             to_data(&change),
         )?;

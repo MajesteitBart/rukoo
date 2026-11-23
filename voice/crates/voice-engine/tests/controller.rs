@@ -845,6 +845,7 @@ fn rukoo_commands_go_through_meeting_control() {
         assert_eq!(busy.meeting.as_deref(), Some(id.as_str()), "{what}");
     };
     split_busy("recording");
+    assert_eq!(control.retry(&id).unwrap_err().code, ErrorCode::Busy);
     control.pause(&id).unwrap();
     assert_eq!(control.delete(&id).unwrap_err().code, ErrorCode::Busy);
     split_busy("paused");
@@ -877,6 +878,61 @@ fn rukoo_commands_go_through_meeting_control() {
         "processing data cannot be deleted while a pipeline may write it"
     );
     split_busy("processing");
+    // meeting.retry starts the engine's pipeline once the engine set its hook, also for a meeting
+    // that still processes; the Settings and the audio can refuse it.
+    assert_eq!(control.retry(&id).unwrap_err().code, ErrorCode::Failed);
+    let followed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let allowed = Arc::new(AtomicBool::new(true));
+    control.set_retry({
+        let followed = Arc::clone(&followed);
+        let allowed = Arc::clone(&allowed);
+        Box::new(move |id| {
+            if !allowed.load(Ordering::SeqCst) {
+                return Err("Allow sending meeting audio first.".into());
+            }
+            lock(&followed).push(id.to_owned());
+            Ok(())
+        })
+    });
+    control.retry(&id).unwrap();
+    control
+        .log
+        .append(
+            "meeting.state",
+            Some(&id),
+            json!({"state": "failed", "at": 1000, "endedAt": 1793003605120_u64, "reason": "API error 400"}),
+        )
+        .unwrap();
+    control.retry(&id).unwrap();
+    assert_eq!(*lock(&followed), [id.clone(), id.clone()]);
+    allowed.store(false, Ordering::SeqCst);
+    let refused = control.retry(&id).unwrap_err();
+    assert_eq!(
+        (
+            refused.code,
+            refused.reason.as_deref(),
+            refused.message.as_str()
+        ),
+        (
+            ErrorCode::NotAvailable,
+            Some("settings"),
+            "Allow sending meeting audio first."
+        )
+    );
+    allowed.store(true, Ordering::SeqCst);
+    let audio = meeting_dir(&data, &id).join("audio");
+    std::fs::rename(&audio, audio.with_extension("away")).unwrap();
+    let refused = control.retry(&id).unwrap_err();
+    assert_eq!(
+        (refused.code, refused.reason.as_deref()),
+        (ErrorCode::NotAvailable, Some("audio"))
+    );
+    std::fs::rename(audio.with_extension("away"), &audio).unwrap();
+    assert_eq!(
+        control.retry("m-20000101-000000-0000").unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(lock(&followed).len(), 2);
     control
         .log
         .append(
@@ -885,6 +941,11 @@ fn rukoo_commands_go_through_meeting_control() {
             json!({"state": "done", "at": 1000, "endedAt": 1793003605120_u64}),
         )
         .unwrap();
+    let refused = control.retry(&id).unwrap_err();
+    assert_eq!(
+        (refused.code, refused.reason),
+        (ErrorCode::NotAvailable, None)
+    );
     // Done: the split would run, but Nemotron isn't available to this control.
     let refused = control.split_speakers(&id, Track::Mic).unwrap_err();
     assert_eq!(

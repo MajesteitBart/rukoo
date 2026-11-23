@@ -300,13 +300,21 @@ pub fn of<'a>(events: &'a [Stored], name: &str) -> Vec<&'a Value> {
         .collect()
 }
 
-/// Every (event, key) pair must be unique: no event was sent twice.
+/// Every (event, key) pair must be unique: no event was sent twice. Each try of a failed meeting
+/// sends its own `processing` (reason `retry`) and then `done` or `failed`.
 pub fn assert_no_repeats(events: &[Stored]) {
     let mut seen = std::collections::HashSet::new();
+    let mut tries = 0;
     for e in events {
+        if e.event == "meeting.state"
+            && e.data["state"] == "processing"
+            && e.data["reason"] == "retry"
+        {
+            tries += 1;
+        }
         let key = match e.event.as_str() {
             "passage" => format!("passage {} {}", e.data["id"], e.data["revision"]),
-            "meeting.state" => format!("state {} {}", e.data["state"], e.data["at"]),
+            "meeting.state" => format!("state {} {} try {tries}", e.data["state"], e.data["at"]),
             "mark" | "speaker" | "frame" => format!("{} {}", e.event, e.data["id"]),
             other => other.to_owned(),
         };

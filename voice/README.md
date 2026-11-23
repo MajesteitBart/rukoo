@@ -27,6 +27,7 @@ Voice has no meeting screens of its own. During a meeting the pill shows that it
 - Voice publishes its address and token in a file that only your user account can read. That's how Rukoo finds it.
 - You can start and stop a meeting from either app. Voice keeps recording when Rukoo isn't running.
 - Voice owns the media: audio tracks, screen frames, video and the transcript as it was recognized. Rukoo owns what you work with: notes, corrections, speaker names, the agent chat and the agent's output. Rukoo uses the calendar event's attendees to turn "Speaker 2" into a name.
+- A meeting whose transcript failed keeps its audio. Voice transcribes it again at its next start, or when you choose Transcribe again in Rukoo.
 - Rename or delete meetings in Rukoo. Renamed titles stay in Rukoo. Deleting a finished meeting permanently removes its local media and owned data and queues a bucket index tombstone, including while offline. Encrypted bucket objects follow the bucket's lifecycle rules. Chats stay with a deleted-meeting label.
 - Your agent never talks to Voice. It reaches the meeting through Rukoo's MCP tools. Everyone in the call is a third party, so Rukoo hands the transcript to the agent as untrusted content.
 - Voice captures the microphone once, for dictation and the meeting together. If you dictate during a meeting, your words also reach the call. Voice marks those stretches, so the agent knows they weren't part of the conversation.
