@@ -404,7 +404,10 @@ internal fun AgentsSheet(app: AppViewModel, target: String?, twoPane: Boolean, o
         buttons = { close ->
             when (current) {
                 AgentStep.Agents -> {
-                    Secondary(stringResource(R.string.common_actions_close)) { close() }
+                    // Close waits while a new key is made: the answer is the only place the key shows, and the old
+                    // key stops as soon as the server makes the new one.
+                    val rotating = list.orEmpty().any { ui.isBusy(ui.agentKeyKey(it.id)) }
+                    Secondary(stringResource(R.string.common_actions_close), enabled = !rotating) { close() }
                     Primary(stringResource(R.string.chat_agents_add), busy = false) { step = AgentStep.Form(null) }
                 }
                 is AgentStep.Form -> {

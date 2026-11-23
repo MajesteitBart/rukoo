@@ -351,10 +351,16 @@ function findExe(candidates, name) {
   return null;
 }
 
-// Ends a process and what it started: taskkill /T on Windows, the process group elsewhere.
+// How long a run may still hold its output pipes after its own process ended, through something it started.
+const PIPE_GRACE = 2000;
+
+// Ends a process and what it started: taskkill /T on Windows, the process group elsewhere. Elsewhere the group
+// outlives its leader, so it is killed also after the process itself ended: something it started may still run.
+// taskkill can't find what an ended process started, so on Windows runProcess closes the pipes instead.
 function killTree(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+  if (!child || !child.pid) return;
   if (WINDOWS) {
+    if (child.exitCode !== null || child.signalCode !== null) return;
     const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     killer.on('error', () => {
       try {
@@ -386,10 +392,23 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
     let outBytes = 0;
     let err = '';
     let ended = null;
+    let grace = null;
+    // The run is over once its process ended and its pipes closed. Something the process started can keep the pipes
+    // open after it ended; then the run is over PIPE_GRACE later: what it started is killed and the pipes closed, so a
+    // left-behind process can't hold the runner.
+    const letGo = () => {
+      if (grace) return;
+      grace = setTimeout(() => {
+        killTree(child);
+        for (const stream of [child.stdin, child.stdout, child.stderr]) stream.destroy();
+        finish(child.exitCode, child.signalCode);
+      }, PIPE_GRACE);
+    };
     const stop = (why) => {
       if (ended) return;
       ended = why;
       killTree(child);
+      letGo();
     };
     const timer = setTimeout(() => stop('timeout'), timeout);
     const onAbort = () => stop('stopped');
@@ -407,17 +426,26 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
     });
     child.stdin.on('error', () => {});
     child.on('error', (e) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(grace);
       if (signal) signal.removeEventListener('abort', onAbort);
       reject(new BackendError(e.code === 'ENOENT' ? `${path.basename(exe)} is not installed or not on PATH` : `Could not start ${path.basename(exe)}: ${clip(e.message, 200)}`));
     });
-    child.on('close', (code, sig) => {
+    let settled = false;
+    const finish = (code, sig) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(grace);
       if (signal) signal.removeEventListener('abort', onAbort);
       if (ended === 'timeout') return reject(new BackendError(`${path.basename(exe)} took longer than ${Math.round(timeout / 1000)} s and was stopped`));
       if (ended === 'stopped') return reject(new BackendError('Stopped'));
       resolve({ code: code === null ? -1 : code, signal: sig, stdout: Buffer.concat(out).toString('utf8'), stderr: err });
-    });
+    };
+    child.on('exit', letGo);
+    child.on('close', finish);
     child.stdin.end(input, 'utf8');
   });
 }

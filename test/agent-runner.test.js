@@ -1187,3 +1187,19 @@ test('the config takes the key from its variable and refuses plain http to anoth
   );
   assert.ok(new Runner(normalizeConfig({ server: 'http://127.0.0.1:1', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: ['x'] }, state: false }, { env: {} }), { log: () => {} }));
 });
+
+test("a command that leaves a process behind holding its output still ends the run, so the runner doesn't stall", async () => {
+  // The command prints, starts a child of its own that keeps its stdout and stderr open for 20 s, and exits at once.
+  const lingering = "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true }).unref(); process.stdout.write('answer')";
+  let started = Date.now();
+  const done = await backends.runProcess(process.execPath, ['-e', lingering], { timeout: 60000 });
+  assert.equal(done.code, 0);
+  assert.equal(done.stdout, 'answer');
+  assert.ok(Date.now() - started < 10000, `settled after ${Date.now() - started} ms, not when the child ended`);
+
+  // The same left-behind child under a command that runs past its time: the timeout ends the run too.
+  const slow = `${lingering}; setTimeout(() => {}, 20000)`;
+  started = Date.now();
+  await assert.rejects(backends.runProcess(process.execPath, ['-e', slow], { timeout: 1000 }), /took longer than 1 s and was stopped/);
+  assert.ok(Date.now() - started < 10000, `the timeout settled after ${Date.now() - started} ms`);
+});
