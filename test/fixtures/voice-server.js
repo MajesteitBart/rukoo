@@ -372,7 +372,7 @@ const DEFAULTS = {
     if (state === 'done') return { error: { code: 'not_available', message: "The meeting's transcript is complete." } };
     if (state === 'failed') {
       this.append('meeting.state', args.meeting, { state: 'processing', at, endedAt, reason: 'retry' });
-      setTimeout(() => this.append('meeting.state', args.meeting, { state: 'done', at, endedAt }), 300);
+      setTimeout(() => this.append('meeting.state', args.meeting, { state: 'done', at, endedAt }), 1500);
     }
     return {};
   },
