@@ -73,11 +73,15 @@ enum class RkButtonKind {
     DANGER,
 }
 
-/** Heights 28, 32 (desktop `.btn`) and 36 for a main tap target such as Send. */
+/**
+ * Heights 28, 32 (desktop `.btn`) and 36 for a main tap target such as Send. FIELD has the height of [RkSearchField],
+ * for a button in a row with one, such as Add people beside Find a member.
+ */
 enum class RkButtonSize(val height: Dp, val padding: Dp) {
     SMALL(28.dp, 12.dp),
     REGULAR(32.dp, 14.dp),
     LARGE(36.dp, 16.dp),
+    FIELD(RkFieldHeight, 14.dp),
 }
 
 private class Fill(val background: Color, val content: Color, val shadow: RkShadow?, val ring: Color?, val pressed: Color)
