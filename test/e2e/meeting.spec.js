@@ -1059,6 +1059,41 @@ test('records the Stand-up from its card: Rukoo hides first, the transcript stre
   await expect(view().locator('[data-mt="stop"]')).toHaveCount(0);
 });
 
+test('lines that arrive while Calendar is open show when the meeting view comes back', async () => {
+  const id = voiceStarts({ title: 'Planning' });
+  await openMeetings();
+  await expect(view().locator('.mt-title')).toHaveText('Planning');
+  say(id, 'call', 2000, 'Shall we go through the roadmap?');
+  await expect(rows()).toHaveCount(1);
+
+  // Voice goes on recording while another mode shows; the meeting ends before the view comes back.
+  await win.keyboard.press('Control+2');
+  await expect(view()).toBeHidden();
+  say(id, 'mic', 6000, 'Yes, the export comes first.');
+  say(id, 'call', 10000, 'Then billing in March.');
+  voice.append('meeting.state', id, { state: 'processing', at: 14000, endedAt: Date.now(), reason: 'user' });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(indicator()).toBeHidden();
+  // Main has them and sent its batch; a call to main after it comes back once the batch reached the hidden view.
+  await expect.poll(() => app.evaluate((_, id) => {
+    const v = global.__semVoice;
+    const m = v.store.meeting(id);
+    return Boolean(m && m.passages.length === 3 && m.meeting.state === 'processing' && !v.deltaTimer);
+  }, id)).toBe(true);
+  await win.evaluate(() => window.mail.call('voiceState'));
+
+  await win.keyboard.press('Control+3');
+  await expect(rows()).toHaveCount(3);
+  await expect(rows().nth(1).locator('.mt-text')).toHaveText('Yes, the export comes first.');
+  await expect(rows().nth(2).locator('.mt-text')).toHaveText('Then billing in March.');
+  await expect(view().locator('.mt-live')).toHaveText('Rukoo Voice is finishing the transcript…');
+
+  // What arrives after that goes on in place, as before.
+  say(id, 'mic', 13000, 'Agreed.');
+  await expect(rows()).toHaveCount(4);
+  await expect(rows().nth(3).locator('.mt-text')).toHaveText('Agreed.');
+});
+
 test('a meeting Rukoo Voice starts links the Stand-up, hides Rukoo, and the names picked from its guests survive a restart', async () => {
   test.setTimeout(120000);
   await linkEvents();
