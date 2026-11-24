@@ -12313,7 +12313,7 @@
   },
   "chat.agents.keyGone": {
     "message": "Rukoo no longer holds this key. Make a new key for {name} to connect it.",
-    "description": "Key step: line in place of the config when the key step stayed open longer than Rukoo holds a key (30 minutes); also the error of a start without a key. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Key step: line under the config when Rukoo no longer holds the key: the step stayed open longer than 10 minutes, or the window reloaded. Also the error of a start without a key. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.closeRunTitle": {
     "message": "Close without connecting {name}?",
@@ -12400,8 +12400,8 @@
     "description": "What an agent does on this computer: its runner can't reach the account server now and tries again. src/renderer/chat-agents.js (runStateText)"
   },
   "chat.agents.run.failed": {
-    "message": "Running on this computer. The last mention got no answer: {detail}",
-    "description": "What an agent does on this computer: the agent it answers with failed on the last mention. {detail}: the error, in English, from the runner. src/renderer/chat-agents.js (runStateText)"
+    "message": "Running on this computer. The last mention got no answer from {use}.",
+    "description": "What an agent does on this computer: the agent it answers with failed on the last mention, for a reason without a line of its own. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
   },
   "chat.agents.run.missing": {
     "message": "Can't answer: {use} isn't installed on this computer",
@@ -12416,8 +12416,8 @@
     "description": "What an agent does on this computer: the server of the agent it answers with refused the key from Settings, Agents. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
   },
   "chat.agents.run.problem": {
-    "message": "Can't answer: {detail}",
-    "description": "What an agent does on this computer: the agent it answers with has another problem. {detail}: the runner's line about it, in English. {use}: that agent (not used in English). src/renderer/chat-agents.js (runStateText)"
+    "message": "Can't answer: {use} isn't ready. Check it in Settings > Agents.",
+    "description": "What an agent does on this computer: the agent it answers with has a problem without a line of its own. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
   },
   "chat.agents.run.waiting": {
     "message": "Stopped unexpectedly. Starting again {time}",
@@ -12442,6 +12442,66 @@
   "chat.agents.run.cantStart": {
     "message": "Couldn't start on this computer",
     "description": "What an agent does on this computer: its runner couldn't start. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.startingOffline": {
+    "message": "Starting on this computer, but it can't reach the server yet",
+    "description": "What an agent does on this computer: its runner is starting and can't reach the account server; it keeps trying. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.stale": {
+    "message": "Running on this computer. Checking again after sleep…",
+    "description": "What an agent does on this computer: the computer woke from sleep and the runner hasn't checked the workspace since. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedHttp": {
+    "message": "Running on this computer. The last mention got no answer: {use} answered with an error (HTTP {status}).",
+    "description": "What an agent does on this computer: the server of the agent it answers with answered the last mention with an HTTP error. {use}: that agent; {status}: the HTTP status. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedTimeout": {
+    "message": "Running on this computer. The last mention got no answer: {use} took too long.",
+    "description": "What an agent does on this computer: the agent it answers with didn't answer the last mention in time. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedExit": {
+    "message": "Running on this computer. The last mention got no answer: {use} stopped with an error.",
+    "description": "What an agent does on this computer: the program it answers with (Claude Code, Codex) ended with an error on the last mention. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedEmpty": {
+    "message": "Running on this computer. The last mention got no answer: {use} answered nothing.",
+    "description": "What an agent does on this computer: the agent it answers with gave an empty answer to the last mention. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedOffline": {
+    "message": "Running on this computer. The last mention got no answer: {use} couldn't be reached.",
+    "description": "What an agent does on this computer: the server of the agent it answers with couldn't be reached for the last mention. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.changed": {
+    "message": "Stopped: {use} changed in Settings > Agents. Run it again on this computer to approve it as it is now.",
+    "description": "What an agent does on this computer: the program or address of the agent it answers with changed in Settings > Agents since it was approved, so it stopped. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.gone": {
+    "message": "Stopped: {use} is off or no longer in Settings > Agents.",
+    "description": "What an agent does on this computer: the agent it answers with was turned off or removed in Settings > Agents, so it stopped. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.runAgainHere": {
+    "message": "Run again on this computer",
+    "description": "Agents dialog: menu item of an agent set up on this computer whose agent in Settings > Agents changed; it asks for approval again. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.keyHidden": {
+    "message": "Rukoo keeps the key out of this window, so nothing shown here can read it. Copy config asks you first, then copies it with the key.",
+    "description": "Key step on the computer: line under the config, whose key is hidden. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyKeptHere": {
+    "message": "{name} runs on this computer with this key now. To run it somewhere else instead, remove it from this computer and make a new key.",
+    "description": "Key step on the computer, once the agent runs here: line under the config, whose key now lives encrypted on this computer only. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.configSaved": {
+    "message": "Config saved",
+    "description": "Toast after the key step's config was saved to a file. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.toolsWarning": {
+    "message": "{use} keeps its own tools and can use them for anyone {name} answers in a channel.",
+    "description": "Key step: line under Answers with when the agent picked keeps tools of its own (Hermes, OpenClaw, a custom agent). {use}: that agent; {name}: the team chat agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.runChanged": {
+    "message": "Settings > Agents changed while Rukoo asked. Run {name} again to approve it as it is now.",
+    "description": "Error when Run on this computer finds that the agent it answers with changed in Settings while the approval question was open. {name}: the agent. src/renderer/chat-dialogs.js (runErrorText)"
   },
   "chat.new.title": {
     "message": "New message",

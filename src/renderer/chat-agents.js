@@ -151,26 +151,41 @@ export function useName(config, id) {
   return found ? found.name : String(id || '');
 }
 
+// The line about the last mention that got no answer, by the code the runner reported (integrations/agent-runner
+// backends.js BackendError): the catalogs' words, never the runner's.
+const FAILED = { timeout: 'failedTimeout', exit: 'failedExit', empty: 'failedEmpty', offline: 'failedOffline' };
+function failureText(f, { t, use }) {
+  if (f.code === 'missing') return { text: t('chat.agents.run.missing', { use }), tone: 'error' };
+  if (f.code === 'http' && Number.isSafeInteger(f.status)) return { text: t('chat.agents.run.failedHttp', { use, status: f.status }), tone: 'warn' };
+  return { text: t(`chat.agents.run.${FAILED[f.code] || 'failed'}`, { use }), tone: 'warn' };
+}
+
 // What the Agents dialog and the key step say of an agent this computer runs (src/main/agent-runs.js, its view of a
 // setup): { text, tone }, tone ok, busy, warn, error or off for the dot before it. use: the name of the agent it
-// answers with. A detail from the runner, in English, follows only where no sentence of the catalogs covers it.
+// answers with. Main passes only codes and an HTTP status of what the runner reported, which the catalogs word.
 export function runStateText(run, { t, use = '', locale = 'en', now = Date.now() }) {
   if (!run) return null;
-  const detail = (v) => String((v && v.message) || '').slice(0, 200);
   switch (run.phase) {
     case 'starting':
+      // It tries the server again and again while it starts; until it connects it doesn't answer.
+      if (run.unreachable) return { text: t('chat.agents.run.startingOffline'), tone: 'warn' };
       return { text: t('chat.agents.run.starting'), tone: 'busy' };
     case 'running': {
+      // After the computer woke: what it said before may no longer hold, until its next pass.
+      if (run.stale) return { text: t('chat.agents.run.stale'), tone: 'busy' };
       const p = run.problem;
       if (p && p.code === 'missing') return { text: t('chat.agents.run.missing', { use }), tone: 'error' };
       if (p && p.code === 'unreachable') return { text: t('chat.agents.run.unreachable', { use }), tone: 'error' };
       if (p && p.code === 'backend_key') return { text: t('chat.agents.run.backendKey', { use }), tone: 'error' };
-      if (p) return { text: t('chat.agents.run.problem', { use, detail: detail(p) }), tone: 'error' };
+      if (p) return { text: t('chat.agents.run.problem', { use }), tone: 'error' };
       if (run.unreachable) return { text: t('chat.agents.run.offline'), tone: 'warn' };
-      if (run.failure && !(run.answeredAt > run.failure.at)) return { text: t('chat.agents.run.failed', { detail: detail(run.failure) }), tone: 'warn' };
+      if (run.failure && !(run.answeredAt > run.failure.at)) return failureText(run.failure, { t, use });
       if (run.channels === 0) return { text: t('chat.agents.run.noChannel'), tone: 'warn' };
       return { text: t('chat.agents.run.running'), tone: 'ok' };
     }
+    case 'changed':
+      // Settings, Agents name another program or address than the one approved here, or the agent is off or gone there.
+      return { text: t(run.gone ? 'chat.agents.run.gone' : 'chat.agents.run.changed', { use }), tone: 'error' };
     case 'waiting': {
       const seconds = Math.max(1, Math.round(((run.retryAt || now) - now) / 1000));
       const time = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(seconds < 90 ? seconds : Math.round(seconds / 60), seconds < 90 ? 'second' : 'minute');
@@ -181,6 +196,7 @@ export function runStateText(run, { t, use = '', locale = 'en', now = Date.now()
     case 'error': {
       const code = run.error && run.error.code;
       if (code === 'unknown_backend') return { text: t('chat.agents.run.unknownUse'), tone: 'error' };
+      if (code === 'missing') return { text: t('chat.agents.run.missing', { use }), tone: 'error' };
       if (code === 'key_unreadable') return { text: t('chat.agents.run.keyUnreadable'), tone: 'error' };
       return { text: t('chat.agents.run.cantStart'), tone: 'error' };
     }
@@ -188,6 +204,14 @@ export function runStateText(run, { t, use = '', locale = 'en', now = Date.now()
       return { text: t('chat.agents.run.stopped'), tone: 'off' };
   }
 }
+
+// The kinds of "Answers with" that keep the tools, memory and integrations of their own profile (Hermes, OpenClaw and
+// custom agents on a server), which they can use for anyone the agent answers. Claude Code and Codex run without tools.
+export const KEEPS_TOOLS = Object.freeze(['hermes', 'openclaw', 'custom']);
+export const keepsTools = (choice) => Boolean(choice) && KEEPS_TOOLS.includes(choice.kind);
+
+// The key as the config shows it on the computer, where main keeps it and the window never gets it.
+export const KEY_MASK = '••••••••••••';
 
 // Whether a runner somewhere else used the agent's key lately, so starting it here too would make two runners answer
 // its mentions: the server saw the key (lastSeen, AgentOut) within the last ten minutes, more than a minute after this

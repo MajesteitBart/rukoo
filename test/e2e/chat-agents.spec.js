@@ -40,6 +40,24 @@ const pane = () => win.locator('section.chat');
 const toast = () => win.locator('#toast');
 const picker = () => win.locator('.ch-suggest');
 const KEY = /^rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
+// The key as the config shows it on the computer, where only main has it.
+const MASK = '••••••••••••';
+
+// Copy config on the computer: main asks first, in a question the test answers, then puts the config with the key on
+// the clipboard. The window never has it. Answers the config from the clipboard.
+async function copyConfig(step) {
+  await app.evaluate(() => {
+    global.__semAgentRunAnswer = 'copy';
+    global.__semAgentRunAsked = [];
+  });
+  await app.evaluate(({ clipboard }) => clipboard.writeText(''));
+  await step.locator('[data-copy-config]').click();
+  await expect(toast()).toHaveText('Config copied');
+  const asked = await app.evaluate(() => global.__semAgentRunAsked);
+  expect(asked.map((q) => q.kind)).toEqual(['export']);
+  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).not.toBe('');
+  return JSON.parse(await app.evaluate(({ clipboard }) => clipboard.readText()));
+}
 
 // Olga's agent Revy, which answers only her, in general.
 async function olgasAgent(olga, ws) {
@@ -151,17 +169,16 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
   await expect(step.locator('[name="key"], [name="server"], [name="workspace"]')).toHaveCount(0);
   // On the computer Run on this computer leads, filled and with the focus; the runner's config, to run the agent
-  // somewhere else, is under a closed section, without the key until it opens.
+  // somewhere else, is under a closed section. Its key is hidden: the window never has it, and a line says so.
   await expect(step.locator('[data-run]')).toBeFocused();
   await expect(step.locator('[data-run]')).toHaveClass(/\bprimary\b/);
   await expect(step.locator('[data-elsewhere]')).not.toHaveAttribute('open', '');
-  await expect(step.locator('[name="config"]')).toHaveValue('');
   await step.locator('[data-elsewhere] summary').click();
-  await expect(step.locator('[name="config"]')).not.toHaveValue('');
   expect(await step.locator('[name="config"]').evaluate((el) => el.scrollTop)).toBe(0);
   const config = async () => JSON.parse(await step.locator('[name="config"]').inputValue());
-  const key = (await config()).key;
-  expect(key).toMatch(KEY);
+  expect((await config()).key).toBe(MASK);
+  expect(await win.evaluate(() => document.body.innerHTML)).not.toMatch(/rka_[A-Za-z0-9_-]{22}\./);
+  await expect(step.locator('[data-key-gone]')).toHaveText('Rukoo keeps the key out of this window, so nothing shown here can read it. Copy config asks you first, then copies it with the key.');
   // Answers with starts on Bart's default agent, which is ready; the other ready ones follow in Settings' order, and a
   // program of his own comes last. Hermes has no address, so it isn't offered.
   const use = step.locator('[name="use"]');
@@ -170,7 +187,7 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   expect(await config()).toEqual({
     server: server.url,
     workspace: ws.id,
-    key,
+    key: MASK,
     backend: { type: 'claude' },
     context: { threadMessages: 50, channelMessages: 20, maxChars: 30000 },
     instructions: ''
@@ -201,9 +218,11 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   const ask = win.locator('.scrim').last().locator('.dialog');
   await expect(ask.locator('h2')).toHaveText('Close without connecting Clark?');
   await ask.locator('.buttons button', { hasText: 'Go back' }).click();
-  await step.locator('[data-copy-config]').click();
-  await expect(toast()).toHaveText('Config copied');
-  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(await step.locator('[name="config"]').inputValue());
+  // Main asks, then copies the config the step shows, with the key in place of the mask.
+  const copied = await copyConfig(step);
+  expect(copied.key).toMatch(KEY);
+  expect({ ...copied, key: MASK }).toEqual(await config());
+  const key = copied.key;
   await expect(step.locator('[data-run]')).toHaveClass(/\bsecondary\b/);
   await expect(step).not.toHaveClass(/\bch-quiet-close\b/);
   await step.locator('.buttons button').last().click();
@@ -361,16 +380,14 @@ test('workspace members show the agents in a group of their own, with no Message
   const step = dialogBox(win);
   await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
   await step.locator('[data-elsewhere] summary').click();
-  await expect(step.locator('[name="config"]')).not.toHaveValue('');
-  const key = JSON.parse(await step.locator('[name="config"]').inputValue()).key;
+  expect(JSON.parse(await step.locator('[name="config"]').inputValue()).key).toBe(MASK);
+  const { key } = await copyConfig(step);
   expect(key).toMatch(KEY);
   expect(key).not.toBe(mine.key);
   // A new key doesn't offer to add the agent to a channel: it is in its channels already.
   await expect(step.locator('[name="join"]')).toHaveCount(0);
   expect((await server.agentCall(mine.key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(401);
   expect((await server.agentCall(key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(200);
-  await step.locator('[data-copy-config]').click();
-  await expect(toast()).toHaveText('Config copied');
   await step.locator('.buttons button').last().click();
   await dialog.locator('.buttons button').last().click();
   await expect(win.locator('.scrim')).toHaveCount(0);
@@ -522,12 +539,10 @@ test('the key step starts on the ready default agent and adds the new agent to t
   // The default agent comes first among the ready ones.
   await expect(step.locator('[name="use"] option')).toHaveText(['Codex', 'OpenClaw', 'Claude Code', 'A program of my own']);
   await step.locator('[data-elsewhere] summary').click();
-  await expect(step.locator('[name="config"]')).not.toHaveValue('');
   expect(JSON.parse(await step.locator('[name="config"]').inputValue()).backend).toEqual({ type: 'codex' });
   await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Helper to #general');
   await expect(step.locator('[name="join"]')).toBeChecked();
-  await step.locator('[data-copy-config]').click();
-  const key = JSON.parse(await step.locator('[name="config"]').inputValue()).key;
+  const { key } = await copyConfig(step);
   await step.locator('.buttons button').last().click();
   await expect(list.locator('[data-agent-row]', { hasText: 'Helper' }).locator('.ch-agent-meta')).toHaveText('Made by Bart · Answers everyone · Not connected yet', { timeout: 15000 });
   await list.locator('.buttons button').last().click();
