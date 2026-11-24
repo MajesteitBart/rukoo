@@ -910,6 +910,113 @@ test('an agent that can\'t be reached gets Try again instead of the shortcuts', 
   await expect(chip('Draft a reply')).toBeVisible();
 });
 
+const headAgent = () => win.locator('.agentpane .ap-agent');
+const recButtons = () => win.locator('.agentpane .bui-rec__foot .bui-btn');
+// The agents' states as fake.js reports them from now on, and a status update that brings them to the panel.
+async function fakeStates(states) {
+  await app.evaluate((_e, s) => (process.env.SEM_AGENT_FAKE_STATUS = s), states);
+  await win.evaluate(() => window.mail.call('agentTest', 'claude'));
+}
+
+test('a draft with text keeps its agent when that agent stops taking messages, and the person picks another', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Claude');
+  await input().fill('Keep this for Claude');
+  // Claude Code goes missing while Codex is ready. The draft was written for Claude: it stays there, and says why.
+  await fakeStates('clark=unconfigured,claude=missing');
+  await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText("Claude isn't installed on this computer.");
+  await expect(headAgent()).toHaveText('Claude');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('Set up Claude to start');
+  await expect(win.locator('.agentpane .bui-rec__body')).toHaveText('Rukoo needs a few details before it can reach Claude. Your message stays here until you set up Claude or pick another agent.');
+  await expect(recButtons()).toHaveText(['Chat with Codex', 'Chat with OpenClaw', 'Set up Claude']);
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
+  // The person picks Codex: the text comes along and goes there.
+  await recButton('Chat with Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  expect(await inputValue()).toBe('Keep this for Claude');
+  await input().press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['codex']);
+  // A fresh draft, untouched, follows the rule: Hermes isn't set up and Claude Code is missing, so Codex.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(headAgent()).toHaveText('Codex');
+  await fakeStates('clark=unconfigured');
+  await expect(headAgent()).toHaveText('Claude');
+});
+
+test('a picked agent lasts as long as its draft: kept over a new default, and the next draft starts on the rule', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Claude');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  await say('Hello there');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['codex']);
+  // Sent: New chat starts on the rule again, not on the agent picked for the last one.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(headAgent()).toHaveText('Claude');
+
+  // Picked for an unsent draft: a new default in Settings and status updates keep it.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  // The new name shows that the panel has the new config.
+  await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'openclaw', clark: { name: 'Hermes Two' } }));
+  await win.evaluate(() => window.mail.call('agentTest', 'codex'));
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await expect(agentRow('Hermes Two')).toBeVisible();
+  await win.keyboard.press('Escape');
+  await expect(headAgent()).toHaveText('Codex');
+  // A fresh draft takes the new default.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(headAgent()).toHaveText('OpenClaw');
+});
+
+test('Set up on an agent whose saved key was refused puts the keyboard on Replace', async () => {
+  await freshProfile('clark=unauthorized');
+  // The key goes into a reversible stand-in for the system keyring, as in custom-agents.spec.js.
+  await app.evaluate(() => {
+    global.__semAgents.cfg.secrets = { encrypt: (s) => `test:${Buffer.from(s).toString('hex')}`, decrypt: (s) => Buffer.from(String(s).slice(5), 'hex').toString() };
+  });
+  await win.evaluate(async () => {
+    await window.mail.call('agentUpdateConfig', { clark: { url: 'http://100.64.0.9:8642' } });
+    await window.mail.call('agentSetSecret', 'clark', 'refused-key');
+  });
+  await openChat('Call on Thursday');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Hermes').click();
+  await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText("Hermes didn't accept the API key.");
+  await recButton('Set up Hermes').click();
+  await expect(win.locator('.page.settings h1')).toHaveText('Agents');
+  await expect(win.locator('[data-a="agent-key-replace:clark"]')).toBeFocused();
+});
+
+test('Try again keeps the keyboard on it while the check runs, and hands it to the input when the card goes', async () => {
+  await freshProfile('clark=offline');
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText("Hermes can't be reached");
+  // Every time the panel draws its empty state again: what has the keyboard focus right after.
+  await win.evaluate(() => {
+    window.__focusLog = [];
+    new MutationObserver(() => {
+      const el = document.activeElement;
+      window.__focusLog.push(!el || el === document.body ? 'body' : `${el.dataset.action || el.className}|${el.textContent}`);
+    }).observe(document.querySelector('.agentpane .ap-transcript'), { childList: true });
+  });
+  await recButton('Try again').focus();
+  await win.keyboard.press('Enter');
+  await expect.poll(() => win.evaluate(() => window.__focusLog)).toContain('retry|Checking...');
+  await expect(recButton('Try again')).toBeFocused();
+  const log = await win.evaluate(() => window.__focusLog);
+  expect(log.filter((x) => !x.startsWith('retry|'))).toEqual([]);
+  // Back up: the card loses its buttons, and the keyboard goes to the input.
+  await app.evaluate(() => (process.env.SEM_AGENT_FAKE_STATUS = ''));
+  await win.keyboard.press('Space');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('What should Hermes do with this email?');
+  await expect(input()).toBeFocused();
+});
+
 test('a wide chat panel gives way, so the reader keeps its 420 px', async () => {
   await openChat('Call on Thursday');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1300, 900));

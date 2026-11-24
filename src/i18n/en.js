@@ -409,6 +409,18 @@
     "message": "Set up {name} to start",
     "description": "Chat panel empty state heading when the agent is not set up or installed."
   },
+  "agent.empty.setupBodyDraft": {
+    "message": "Rukoo needs a few details before it can reach {name}. Your message stays here until you set up {name} or pick another agent.",
+    "description": "Chat panel empty state line instead of agent.empty.setupBody when the person already wrote or attached something for this agent and it then stopped taking messages; the input is hidden meanwhile, and the message is not sent anywhere else. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.removedTitle": {
+    "message": "{name} was removed",
+    "description": "Chat panel empty state heading when the agent of the chat being written was removed in Settings > Agents (a custom agent). name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.removedBody": {
+    "message": "{name} is no longer in Settings → Agents. Pick another agent for this chat. Anything you wrote stays here.",
+    "description": "Chat panel empty state line under agent.empty.removedTitle; Chat with buttons for ready agents are below it. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
   "agent.empty.chatWith": {
     "message": "Chat with {name}",
     "description": "Chat panel empty state: button on the card of an agent that isn't set up or can't be reached; it switches this new chat to another agent that is ready, as the agent menu under the input does. name: that agent's name, e.g. Claude (emptyActions in agent/panel.js)."
@@ -500,6 +512,10 @@
   "agent.errors.disabled": {
     "message": "{name} is turned off in Settings.",
     "description": "Chat panel error: the agent is switched off."
+  },
+  "agent.errors.removed": {
+    "message": "{name} is no longer in Settings, so your message wasn't sent. Pick another agent.",
+    "description": "Chat panel error: Rukoo refused to start a chat with an agent that was removed in Settings > Agents (a custom agent), instead of sending the message to another agent. The message stays in the input. name: the agent's name."
   },
   "agent.errors.not-configured": {
     "message": "{name} isn't set up yet.",
@@ -1047,6 +1063,10 @@
     "message": "{name} isn't installed on this computer.",
     "description": "Chat panel, above the disabled input: the agent program was not found."
   },
+  "agent.setup.removed": {
+    "message": "{name} was removed in Settings.",
+    "description": "Chat panel, above the disabled input: the agent of the chat being written was removed in Settings > Agents; the agent menu beside it picks another. name: the agent's name (setupNote in agent/panel.js)."
+  },
   "agent.setup.unauthorized": {
     "message": "{name} didn't accept the API key.",
     "description": "Chat panel, above the disabled input: the agent rejected the key."
@@ -1070,6 +1090,10 @@
   "agent.status.ready": {
     "message": "Ready",
     "description": "Chat panel and Settings: agent status when it can take a message."
+  },
+  "agent.status.removed": {
+    "message": "Removed",
+    "description": "Chat panel: status of an agent that was removed in Settings > Agents (a custom agent), shown in the panel header for a chat being written for it or a chat with it."
   },
   "agent.status.starting": {
     "message": "Starting...",

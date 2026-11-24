@@ -137,6 +137,32 @@ test('add Booper, set it up, chat with it, and remove it', async () => {
   expect((await app.evaluate(() => global.__semAgents.list())).some((c) => c.agent === id)).toBe(true);
 });
 
+test('a chat with an agent removed before Send reached main is refused, never moved to the default, and the draft stays', async () => {
+  await launch();
+  const id = await win.evaluate(() => window.mail.call('agentAddCustom', 'booper').then((r) => r.id));
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  await win.keyboard.press('Control+j');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: /^Booper$/ }) }).click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Booper');
+  await input().fill('Hello Booper');
+  // Removed in main before the panel heard of it: the config changes without telling the window.
+  await app.evaluate((_e, x) => global.__semAgents.cfg.removeCustom(x), id);
+  await input().press('Enter');
+  await expect(win.locator('#toast')).toContainText("Booper is no longer in Settings, so your message wasn't sent. Pick another agent.");
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
+  // The panel says the agent is gone, keeps the message, and offers the agents that are ready.
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('Booper was removed');
+  await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText('Booper was removed in Settings.');
+  await expect(win.locator('.agentpane .bui-pb__disabled .link-btn')).toHaveCount(0);
+  await expect(win.locator('.agentpane .bui-rec__foot .bui-btn')).toHaveText(['Chat with Claude', 'Chat with Codex']);
+  await win.locator('.agentpane .bui-rec__foot .bui-btn', { hasText: 'Chat with Claude' }).click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
+  expect(await input().evaluate((el) => el.value)).toBe('Hello Booper');
+  await input().press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['claude']);
+});
+
 test('an OpenAI-compatible agent: its own toggles, and the setup most MCP clients take', async () => {
   await launch();
   await openAgents();

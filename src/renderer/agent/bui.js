@@ -1146,19 +1146,29 @@ export function contextCards(item = {}, { onOpen, labels = {} } = {}) {
 
 // ---------- recommendation card ----------
 
+// actions: [{id, label, kind, disabled, busy}]. busy: the action is under way; the button stays focusable (so the
+// keyboard stays on it) but does nothing. A label too long for the card ends in an ellipsis; the button's accessible
+// name and its tooltip keep all of it.
 export function recommendationCard({ eyebrow, title, body, actions = [], icon: eyebrowIcon = null } = {}, onAction) {
   const foot = h(
     'div',
     { class: 'bui-rec__foot' },
-    actions.map((a) =>
-      button({
-        label: a.label,
+    actions.map((a) => {
+      const el = button({
+        label: h('span', { class: 'bui-rec__label', text: a.label }),
         kind: a.kind === 'primary' ? 'primary' : a.kind === 'danger' ? 'danger' : 'secondary',
         size: 'sm',
         disabled: Boolean(a.disabled),
-        onClick: () => onAction && onAction(a.id)
-      })
-    )
+        title: a.label,
+        onClick: () => !a.busy && onAction && onAction(a.id)
+      });
+      el.dataset.action = String(a.id);
+      if (a.busy) {
+        el.setAttribute('aria-disabled', 'true');
+        el.setAttribute('aria-busy', 'true');
+      }
+      return el;
+    })
   );
   const el = h(
     'div',

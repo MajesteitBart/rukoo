@@ -8,14 +8,17 @@ import * as B from './bui.js';
 import { shortcutList, shortcutByKey, actionsFor, commandsFor, skillCommands, MEETING_ACTIONS, meetingActionByKey } from './actions.js';
 import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
-// BLOCKED: the states that keep an agent from taking a message until they are fixed in Settings.
-import { BLOCKED, startingAgent, readyAgents } from './pick.js';
+// BLOCKED: the states that keep an agent from taking a message until they are fixed in Settings. The draft's agent
+// and its hold: see the notes above startDraft() in pick.js.
+import { BLOCKED, readyAgents, startDraft, followDraft, keepDraft, pickDraft } from './pick.js';
 
 const AGENTS = ['clark', 'claude', 'codex', 'openclaw'];
 // Product names, not translated.
 const PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex', openclaw: 'OpenClaw' };
-const STATES = ['starting', 'ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'unknown'];
-const CODES = new Set(['offline', 'unauthorized', 'not-configured', 'not-installed', 'disabled', 'spawn-failed', 'busy', 'window', 'timeout', 'protocol', 'rate-limited', 'stopped', 'unknown']);
+// 'removed': an agent that is no longer in Settings (stateOf()).
+const STATES = ['starting', 'ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'removed', 'unknown'];
+// 'removed': main refused to start a chat with an agent that is no longer in Settings (hub.js create()).
+const CODES = new Set(['offline', 'unauthorized', 'not-configured', 'not-installed', 'disabled', 'removed', 'spawn-failed', 'busy', 'window', 'timeout', 'protocol', 'rate-limited', 'stopped', 'unknown']);
 // Rukoo's own tools: their kind picks the chip icon and their label is ours to translate.
 const RUKOO_TOOLS = {
   get_context: 'mail',
@@ -164,11 +167,10 @@ export function mountAgentPanel(ctx) {
     config: null,
     status: null,
     unavailable: false,
-    // The agent a new conversation goes to: the default in Settings, or the first ready agent while the default
-    // can't take a message (followStart()), or the one picked in the agent menu.
-    agentId: 'clark',
-    // The user picked agentId in the agent menu or on the setup card: it stays until the default changes in Settings.
-    picked: false,
+    // The chat being written: the agent it goes to and how it holds it ({agent, hold}, pick.js). 'auto' follows the
+    // default in Settings, or the first ready agent while the default can't take a message; 'kept' stays on the agent
+    // on screen once the person typed, attached or picked one, until the draft is sent or New chat starts another.
+    next: { agent: 'clark', hold: 'auto' },
     // The agent whose connection the empty state's Try again is checking.
     checking: null,
     conv: null,
@@ -238,23 +240,29 @@ export function mountAgentPanel(ctx) {
   transcript.addEventListener('copy', (e) => B.copySkills(e));
   const jump = $('[data-ap="jump"]', pane);
   const foot = $('.ap-foot', pane);
+  // Typing in the chat input: the draft keeps the agent on screen (noteWritten()).
+  foot.addEventListener('input', () => noteWritten());
 
   // ---------- agents ----------
 
-  const currentAgent = () => (P.conv ? P.conv.agent : P.agentId);
+  const currentAgent = () => (P.conv ? P.conv.agent : P.next.agent);
   // Custom agents (Settings > Agents > Add an agent) come after the built-in ones. A chat with one the user removed
-  // keeps its name until the panel reloads.
+  // keeps its name until the panel reloads (knownNames).
   const customOf = (id) => (P.config && Array.isArray(P.config.custom) && P.config.custom.find((x) => x.id === id)) || null;
   const agentIds = () => [...AGENTS, ...((P.config && P.config.custom) || []).map((x) => x.id)];
+  const knownNames = new Map();
   const productOf = (id) => {
     const x = customOf(id);
     return x ? t(`settings.agents.preset.${x.preset || 'runs'}`) : PRODUCTS[id];
   };
   const agentName = (id) => {
-    if (/^cx_[a-z0-9]{10}$/.test(String(id || ''))) return (customOf(id) || {}).name || t('settings.agents.removedAgent');
+    if (/^cx_[a-z0-9]{10}$/.test(String(id || ''))) return (customOf(id) || {}).name || knownNames.get(id) || t('settings.agents.removedAgent');
     return id === 'clark' ? (P.config && P.config.clark && P.config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'codex' ? 'Codex' : id === 'openclaw' ? 'OpenClaw' : String(id || '');
   };
+  // An agent the config no longer has (a custom agent the user removed) is 'removed': a draft kept on it, or a chat with
+  // it, can't send, and the panel says so.
   const stateOf = (id) => {
+    if (!P.unavailable && P.config && !agentIds().includes(id)) return 'removed';
     const s = P.unavailable ? 'unknown' : P.status && P.status[id] ? P.status[id].state : 'starting';
     return STATES.includes(s) ? s : 'unknown';
   };
@@ -263,25 +271,25 @@ export function mountAgentPanel(ctx) {
   // offered; main queues the message when the agent can't take it after all.
   const canSteer = (id) => !(P.status && P.status[id] && P.status[id].steer === false);
   const statusText = (id) => t(`agent.status.${stateOf(id)}`);
-  const agentRows = () =>
-    agentIds().map((id) => ({ id, name: agentName(id), label: agentName(id), tag: productOf(id), status: dotOf(stateOf(id)), checked: id === currentAgent() }));
+  // The agent on screen is in the menu also when it was removed, so the chip names it instead of the first agent.
+  const agentRows = () => {
+    const id = currentAgent();
+    const ids = agentIds();
+    return [...ids, ...(ids.includes(id) ? [] : [id])].map((x) => ({ id: x, name: agentName(x), label: agentName(x), tag: productOf(x) || '', status: dotOf(stateOf(x)), checked: x === id }));
+  };
 
   // The config is local and answers at once; status can wait on the network (an offline Hermes server takes
   // seconds). So the default agent and the panel come first, and the status fills in when it arrives.
   async function loadAgents() {
     try {
       const config = await api('agentConfig');
-      const before = P.config ? P.config.defaultAgent : null;
       P.config = config;
       P.shortcuts = shortcutList(config.shortcuts);
       P.unavailable = false;
-      // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
-      if (agentIds().includes(config.defaultAgent) && config.defaultAgent !== before) {
-        setAgent(config.defaultAgent);
-        // The default the user just chose in Settings counts over an agent picked in the menu before.
-        P.picked = false;
-      }
-      followStart();
+      for (const x of config.custom || []) knownNames.set(x.id, x.name);
+      // A new default in Settings applies to an untouched draft at once; a draft the person wrote in or picked an agent
+      // for keeps it, and an open chat keeps its own agent.
+      followRule();
     } catch (err) {
       // No agent support in main (yet): show the panel, but say so instead of failing quietly.
       if (!P.config) P.unavailable = true;
@@ -295,24 +303,38 @@ export function mountAgentPanel(ctx) {
     } catch (_) {
       // The status lines keep their last known state.
     }
-    followStart();
+    followRule();
     redrawAgents();
   }
 
-  // The agent for the next new chat. What was picked for the chat that has not started belongs to the agent before;
-  // the permission level stays.
-  function setAgent(id) {
-    if (!P.conv && P.agentId !== id) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
-    P.agentId = id;
+  // The rule for an untouched draft (pick.js startingAgent()), or null while there is nothing to go by.
+  const rule = () => (P.config && !P.unavailable ? { defaultAgent: P.config.defaultAgent, agents: agentIds(), status: P.status } : null);
+
+  // Every change to the draft's agent goes through here. What was picked for the draft (model, effort) belongs to the
+  // agent before; the permission level stays.
+  function setDraft(next) {
+    if (next.agent !== P.next.agent) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
+    P.next = next;
   }
 
   // A new chat starts on the default agent, or on the first ready one while the default isn't set up, is turned off,
-  // isn't installed or has its key refused (pick.js), so a fresh profile without Hermes starts on Claude Code or Codex
-  // when they are there. An agent the user picked stays, and the default in Settings is not changed.
-  function followStart() {
-    if (P.picked || P.unavailable || !P.config || !P.status) return;
-    const id = startingAgent({ defaultAgent: P.config.defaultAgent, agents: agentIds(), status: P.status });
-    if (agentIds().includes(id)) setAgent(id);
+  // isn't installed or has its key refused, so a fresh profile without Hermes starts on Claude Code or Codex when they
+  // are there. Only while the draft is untouched; the default in Settings is not changed.
+  function followRule() {
+    setDraft(followDraft(P.next, rule()));
+  }
+
+  // The draft is done (sent) or New chat starts another: the next one starts on the rule again.
+  function freshDraft() {
+    setDraft(startDraft(rule(), P.next.agent));
+    noteWritten();
+  }
+
+  // Text in the input, an attachment or a file on its way: the draft keeps the agent on screen from now on. While a
+  // chat is open the input belongs to that chat; its text becomes the draft's on New chat (freshDraft()).
+  function noteWritten() {
+    if (P.conv || P.next.hold !== 'auto' || !chat) return;
+    if (chat.getValue().trim() || hasAttachments() || holding()) P.next = keepDraft(P.next);
   }
 
   function redrawAgents() {
@@ -540,6 +562,8 @@ export function mountAgentPanel(ctx) {
   const holding = () => P.adding.length > 0 || picking > 0;
   function refreshHolding() {
     if (chat) chat.setHolding(holding(), t('agent.panel.waitFiles'));
+    // Something attached or on its way: the draft keeps its agent.
+    noteWritten();
   }
 
   function removeFile(id) {
@@ -670,12 +694,15 @@ export function mountAgentPanel(ctx) {
     const text = document.createElement('span');
     text.textContent = P.unavailable ? t('agent.status.unavailable') : t(`agent.setup.${state}`, { name });
     note.append(text);
-    if (!P.unavailable) {
+    // A removed agent has nothing to set up; the agent menu next to this note picks another.
+    if (!P.unavailable && state !== 'removed') {
       const link = document.createElement('button');
       link.type = 'button';
       link.className = 'link-btn';
       link.dataset.ap = 'setup';
       link.textContent = t('agent.panel.setUp', { name });
+      // Ends in an ellipsis for a long name; the whole label stays its accessible name and tooltip.
+      link.title = link.textContent;
       note.append(link);
     }
     return note;
@@ -1161,13 +1188,12 @@ export function mountAgentPanel(ctx) {
     chat.focus();
   }
 
-  // From the agent menu under the input, and Chat with on the setup card.
+  // From the agent menu under the input, and Chat with on the setup card. The pick stays with this draft.
   function pickAgent(id) {
     if (!agentIds().includes(id)) return;
     // A model or effort picked for one agent means nothing to another; the permission level does.
     if (id !== currentAgent()) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
-    P.agentId = id;
-    P.picked = true;
+    setDraft(pickDraft(P.next, id));
     // A conversation stays with its agent; another agent starts a new one about the same email.
     if (P.conv && P.conv.agent !== id) return showEmpty();
     renderHead();
@@ -1182,9 +1208,10 @@ export function mountAgentPanel(ctx) {
     started++;
     const meeting = contextMeeting();
     const m = meeting ? null : contextEmail();
-    // The level the menu shows: one picked for Claude Code that a Hermes chat can't have stays behind.
+    // The level the menu shows: one picked for Claude Code that a Hermes chat can't have stays behind. The agent on
+    // screen, as the draft holds it; main refuses one it doesn't have ('removed') rather than pick another.
     const conv = await api('agentCreate', {
-      agent: P.agentId,
+      agent: P.next.agent,
       message: m ? messageRef(m) : null,
       meeting: meeting ? { id: meeting.id, title: meeting.title || '', eventId: meeting.eventId || null } : null,
       model: P.draft.model,
@@ -1193,6 +1220,8 @@ export function mountAgentPanel(ctx) {
     });
     P.draft = { model: null, effort: null };
     showConversation(conv);
+    // Sent: the next new chat starts on the rule again, not on this one's agent.
+    freshDraft();
     return P.conv;
   }
 
@@ -1261,6 +1290,11 @@ export function mountAgentPanel(ctx) {
       }
       if (!action && !skill && chat && !chat.getValue()) chat.setValue(body);
       showError(err);
+      // The text is back in the input: the draft keeps the agent it was written for.
+      noteWritten();
+      // Main no longer has the draft's agent: the draft stays as it is, and the panel catches up with the agent list,
+      // which shows it as removed with the agents to pick instead.
+      if (/^removed\b/.test(why)) loadAgents();
     }
   }
 
@@ -1829,18 +1863,21 @@ export function mountAgentPanel(ctx) {
 
   // The setup card's buttons. An agent that isn't set up gets Set up (its card in Settings) and Chat with for up to two
   // ready agents, which switch this chat the way the agent menu does. One that can't be reached gets Try again, Check
-  // settings and Chat with for one ready agent. Primary last, so it sits on the right.
-  function emptyActions(id, { blocked, offline }) {
+  // settings and Chat with for one ready agent. One that was removed has nothing to set up: Chat with alone, the
+  // first one primary. Primary last, so it sits on the right.
+  function emptyActions(id, { blocked, offline, removed }) {
     if (P.unavailable || (!blocked && !offline)) return [];
     const name = agentName(id);
     const others = readyAgents({ agents: agentIds(), status: P.status, except: id, limit: blocked ? 2 : 1 });
     const actions = others.map((other) => ({ id: `chat:${other}`, label: t('agent.empty.chatWith', { name: agentName(other) }) }));
+    if (removed) return actions.map((a, i) => (i === actions.length - 1 ? { ...a, kind: 'primary' } : a));
     if (blocked) return [...actions, { id: 'setup', label: t('agent.panel.setUp', { name }), kind: 'primary' }];
+    // While the check runs Try again stays where it is, and keeps the keyboard focus: busy, not disabled.
     const checking = P.checking === id;
     return [
       ...actions,
       { id: 'setup', label: t('agent.empty.checkSettings') },
-      { id: 'retry', label: checking ? t('agent.empty.checking') : t('agent.empty.tryAgain'), kind: 'primary', disabled: checking }
+      { id: 'retry', label: checking ? t('agent.empty.checking') : t('agent.empty.tryAgain'), kind: 'primary', busy: checking }
     ];
   }
 
@@ -1853,9 +1890,11 @@ export function mountAgentPanel(ctx) {
     }
   }
 
-  // Settings > Agents, scrolled to the agent's card with its first empty field in focus (settings.js revealAgent).
+  // Settings > Agents, scrolled to the agent's card with the control its state needs in focus (settings.js
+  // revealAgent(), pick.js setupTarget()). The state goes along: Settings has none of its own until its status check
+  // answers.
   function setUp(id) {
-    return ctx.openSettings('agents', { id });
+    return ctx.openSettings('agents', { id, state: stateOf(id) });
   }
 
   // Try again on the card of an agent that can't be reached: main tests it and sends every agent's status, which
@@ -1873,8 +1912,23 @@ export function mountAgentPanel(ctx) {
     if (!P.conv) renderEmpty();
   }
 
+  // The action of the card's button the keyboard is on, or null. Drawn again (Try again, a status update), the card
+  // gives the focus back to the same action, else to its primary one, or to the chat input once it has none.
+  function emptyFocus() {
+    const el = document.activeElement;
+    return el && transcript.contains(el) && el.closest('.ap-empty .bui-rec__foot') && el.dataset.action ? el.dataset.action : null;
+  }
+  function restoreEmptyFocus(action) {
+    if (!action) return;
+    const buttons = [...transcript.querySelectorAll('.ap-empty .bui-rec__foot .bui-btn')];
+    const target = buttons.find((b) => b.dataset.action === action) || buttons[buttons.length - 1];
+    if (target) target.focus({ preventScroll: true });
+    else if (chat) chat.focus();
+  }
+
   function renderEmpty() {
     if (P.conv) return;
+    const focused = emptyFocus();
     views.clear();
     waitsFor.clear();
     toolRun = null;
@@ -1896,15 +1950,24 @@ export function mountAgentPanel(ctx) {
     const box = document.createElement('div');
     box.className = 'ap-empty';
     const blocked = P.unavailable || BLOCKED.has(state);
+    // A custom agent the user removed while this draft was kept on it: nothing to set up, only another agent to pick.
+    const removed = !P.unavailable && state === 'removed';
     // Rukoo couldn't reach the agent when it last looked: the card says so instead of offering quick actions that would
     // fail. The input stays, since the agent may be back by now.
     const offline = !blocked && state === 'offline';
     // The user turned agents' access to meetings off (Settings > Meetings): the agent gets nothing from the meeting.
     const meetingsOff = Boolean(S.data && S.data.settings && S.data.settings.meetingAgentsCanRead === false);
-    const titleKey = blocked ? 'setupTitle' : offline ? 'offlineTitle' : meeting ? 'titleMeeting' : teamChat ? 'titleChat' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
+    const titleKey = removed ? 'removedTitle' : blocked ? 'setupTitle' : offline ? 'offlineTitle' : meeting ? 'titleMeeting' : teamChat ? 'titleChat' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
     const title = t(`agent.empty.${titleKey}`, { name });
-    const body = blocked
-      ? t('agent.empty.setupBody', { name })
+    // The input is hidden while the agent can't take a message: what the person wrote is still there, and the card
+    // says so.
+    const kept = blocked && !P.unavailable && Boolean((chat && chat.getValue().trim()) || hasAttachments() || holding());
+    const body = removed
+      ? t('agent.empty.removedBody', { name })
+      : blocked
+      ? kept
+        ? t('agent.empty.setupBodyDraft', { name })
+        : t('agent.empty.setupBody', { name })
       : offline
         ? t('agent.empty.offlineBody', { name })
         : meeting
@@ -1920,7 +1983,7 @@ export function mountAgentPanel(ctx) {
               : leftOut
                 ? t('agent.empty.bodyLeftOut')
                 : t('agent.empty.bodyNoEmail', { name });
-    const card = B.recommendationCard({ eyebrow: name, title, body, actions: emptyActions(id, { blocked, offline }), icon: B.icon('sparkle', 11) }, (action) => onEmptyAction(id, action));
+    const card = B.recommendationCard({ eyebrow: name, title, body, actions: emptyActions(id, { blocked, offline, removed }), icon: B.icon('sparkle', 11) }, (action) => onEmptyAction(id, action));
     box.append(elOf(card));
     // No quick actions while the agent can't take them; the card offers the way out.
     const usable = !blocked && !offline;
@@ -1959,6 +2022,7 @@ export function mountAgentPanel(ctx) {
     }
     transcript.replaceChildren(box);
     jump.hidden = true;
+    restoreEmptyFocus(focused);
   }
 
   // ---------- actions from the transcript ----------
@@ -2254,6 +2318,9 @@ export function mountAgentPanel(ctx) {
       case 'new':
         P.detached = false;
         P.draft = { model: null, effort: null };
+        // A fresh draft: the rule picks its agent again. Text still in the input keeps the agent it then shows.
+        P.conv = null;
+        freshDraft();
         showEmpty();
         return chat.focus();
       case 'close':
