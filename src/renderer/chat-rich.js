@@ -1,5 +1,5 @@
 import { t, getLocale } from './i18n.js';
-import { icons } from './icons.js';
+import { icons, emojiGroupIcons } from './icons.js';
 import { fileSize } from './ui.js';
 import { h } from './agent/bui.js';
 import { parse } from './chat-markdown.js';
@@ -668,6 +668,7 @@ export function openEmojiPicker({ anchor, onPick, onClose, label = t('chat.emoji
       const rec = recentList();
       if (rec.length) grid.append(section('recent', t('chat.emoji.recent'), rec));
       for (const g of data.groups || []) grid.append(section(g.id, g.label, g.emoji || []));
+      markTab();
     }
     cells = [...grid.querySelectorAll('.ch-emoji-cell')];
     active = 0;
@@ -676,24 +677,79 @@ export function openEmojiPicker({ anchor, onPick, onClose, label = t('chat.emoji
     else foot.textContent = '';
   }
 
+  // A tab per group, with a line icon (icons.js emojiGroupIcons): it only scrolls to its group, so it must not look like
+  // an emoji people can pick (issue 377). The tab of the group at the top of the list shows as selected.
   function drawTabs() {
     tabs.textContent = '';
     const list = [];
-    if (recentList().length) list.push({ id: 'recent', label: t('chat.emoji.recent'), icon: svg('clock') });
-    for (const g of data.groups || []) list.push({ id: g.id, label: g.label, char: g.emoji && g.emoji[0] ? g.emoji[0].char : '' });
+    if (recentList().length) list.push({ id: 'recent', label: t('chat.emoji.recent'), icon: 'clock' });
+    for (const g of data.groups || []) list.push({ id: g.id, label: g.label, icon: emojiGroupIcons[g.id] || 'smile' });
     for (const g of list) {
-      const b = h('button', { type: 'button', class: 'ch-emoji-tab', role: 'tab', 'aria-label': g.label, title: g.label, 'data-group': g.id });
-      if (g.icon) b.append(g.icon);
-      else b.append(h('span', { text: g.char }));
+      const b = h('button', { type: 'button', class: 'ch-emoji-tab', role: 'tab', 'aria-selected': 'false', 'aria-label': g.label, title: g.label, 'data-group': g.id }, svg(g.icon));
       b.addEventListener('click', () => {
         const sec = grid.querySelector(`[data-group="${CSS.escape(g.id)}"]`);
-        if (sec) grid.scrollTo({ top: sec.offsetTop, behavior: reduced() ? 'auto' : 'smooth' });
-        const first = sec?.querySelector('.ch-emoji-cell');
+        if (!sec) return;
+        jumpTo(sec, g.id);
+        const first = sec.querySelector('.ch-emoji-cell');
         if (first) setActive(cells.indexOf(first), { focus: false });
       });
       tabs.append(b);
     }
+    markTab();
   }
+
+  // The group whose section is at the top of the list, or the last one once the list is scrolled to its end: a short
+  // group near the bottom can't reach the top.
+  function markTab(id = null) {
+    if (!id) {
+      const secs = [...grid.querySelectorAll('.ch-emoji-sec')];
+      const end = grid.scrollTop > 0 && grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 1;
+      const top = secs.filter((s) => s.offsetTop <= grid.scrollTop + 1);
+      id = ((end ? secs[secs.length - 1] : top[top.length - 1]) || secs[0])?.dataset.group || null;
+    }
+    for (const b of tabs.children) b.setAttribute('aria-selected', String(b.dataset.group === id));
+  }
+
+  // A tab's jump to its group, followed frame by frame. The groups it passes are drawn only once they come near
+  // (content-visibility in styles.css) and turn out taller than the room kept for them, so the group moves further down
+  // while the list scrolls: where the scroll stops short, it goes on to where the group is now. Its tab stays selected
+  // on the way. A wheel, a touch or a key in the list hands the scrolling back to the person.
+  let jump = null;
+  function jumpTo(sec, id) {
+    const mine = { id, until: Date.now() + 3000 };
+    jump = mine;
+    markTab(id);
+    grid.scrollTo({ top: sec.offsetTop, behavior: reduced() ? 'auto' : 'smooth' });
+    let last = -1;
+    let still = 0;
+    const step = () => {
+      if (jump !== mine || closed) return;
+      const target = Math.min(sec.offsetTop, grid.scrollHeight - grid.clientHeight);
+      if (!sec.isConnected || Date.now() > mine.until || Math.abs(grid.scrollTop - target) <= 1) {
+        jump = null;
+        return markTab(sec.isConnected && Math.abs(grid.scrollTop - target) <= 1 ? id : null);
+      }
+      still = grid.scrollTop === last ? still + 1 : 0;
+      last = grid.scrollTop;
+      if (still >= 6) grid.scrollTo({ top: target, behavior: 'auto' });
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  const handBack = () => {
+    if (jump) {
+      jump = null;
+      markTab();
+    }
+  };
+  for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) grid.addEventListener(type, handBack, { passive: true });
+  grid.addEventListener(
+    'scroll',
+    () => {
+      if (!tabs.hidden && !jump) markTab();
+    },
+    { passive: true }
+  );
 
   function drawTone() {
     toneB.textContent = TONES[tone] || TONES[0];

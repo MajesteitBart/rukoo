@@ -464,3 +464,99 @@ test('captures: a populated conversation in both themes, in Dutch, and in a narr
   await win.keyboard.press('Escape');
   expect(bartMe.id).toBeTruthy();
 });
+
+// Issue 377: the picker's group tabs showed each group's first emoji, so a click on one read as picking that emoji, and
+// nothing went in. The tabs are line icons now that only jump to their group; an emoji picked from a composer's picker
+// goes in at that composer's caret, over its selection, and the typing goes on there.
+test('an emoji picked from a composer’s picker goes in at its caret, in the conversation and in a thread, and a group tab only jumps to its group', async ({}, testInfo) => {
+  const { olga, bart, ws } = await twoPeople(server);
+  await server.post(olga, ws.id, ws.general, 'Lunch on Friday?');
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  const main = composer(win);
+  const reply = composer(win, { thread: true });
+  const value = (input) => input.evaluate((el) => el.value);
+  const picker = win.locator('.ch-emoji');
+  const tabs = picker.locator('.ch-emoji-tab');
+  async function openPicker(scope) {
+    await pane().locator(`${scope} [data-ch-compose="emoji"]`).click();
+    await expect(picker.locator('.ch-emoji-cell').first()).toBeVisible({ timeout: 10000 });
+    await expect(picker.locator('.ch-emoji-search')).toBeFocused();
+  }
+
+  // The caret in the middle of the text.
+  await main.click();
+  await win.keyboard.type('Hello world');
+  for (let i = 0; i < 6; i++) await win.keyboard.press('ArrowLeft');
+  await openPicker('.ch-main');
+  // A tab per group, drawn as a line icon with no emoji in it; the group at the top of the list is the selected one.
+  await expect(tabs).toHaveCount(9);
+  await expect(tabs.locator('svg')).toHaveCount(9);
+  expect(await picker.locator('.ch-emoji-tabs').textContent()).not.toMatch(/\p{Extended_Pictographic}/u);
+  await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+  // A tab only jumps to its group: it shows as selected, the picker stays open and the text stays as it was.
+  const people = picker.locator('.ch-emoji-tab[data-group="people-body"]');
+  await people.click();
+  await expect(people).toHaveAttribute('aria-selected', 'true');
+  await expect(tabs.first()).toHaveAttribute('aria-selected', 'false');
+  await expect(picker).toBeVisible();
+  expect(await value(main)).toBe('Hello world');
+  // Once the list is there, its group is at the top and its tab is still the selected one.
+  const grid = picker.locator('.ch-emoji-grid');
+  const settled = () => grid.evaluate((el) => {
+    const sec = (id) => el.querySelector(`.ch-emoji-sec[data-group="${id}"]`).offsetTop;
+    const end = el.scrollHeight - el.clientHeight;
+    return { top: Math.round(el.scrollTop), people: sec('people-body'), flags: Math.round(Math.min(sec('flags'), end)) };
+  });
+  await expect.poll(async () => { const s = await settled(); return s.top === s.people; }, { timeout: 5000 }).toBe(true);
+  await win.waitForTimeout(300);
+  await expect(people).toHaveAttribute('aria-selected', 'true');
+  await capture(testInfo, 'emoji-tab-jumped');
+  // A long jump to the last group, over groups not drawn yet (taller than the room kept for them): it gets there, and the
+  // groups it passes don't take the selection.
+  const flags = picker.locator('.ch-emoji-tab[data-group="flags"]');
+  await flags.click();
+  await expect.poll(async () => { const s = await settled(); return Math.abs(s.top - s.flags) <= 1; }, { timeout: 5000 }).toBe(true);
+  await win.waitForTimeout(300);
+  await expect(flags).toHaveAttribute('aria-selected', 'true');
+  await expect(picker.locator('.ch-emoji-tab[aria-selected="true"]')).toHaveCount(1);
+  expect(await value(main)).toBe('Hello world');
+  // Scrolling by hand moves the selection with the list.
+  await grid.evaluate((el) => el.scrollTo({ top: el.querySelector('.ch-emoji-sec[data-group="people-body"]').offsetTop }));
+  await expect(people).toHaveAttribute('aria-selected', 'true');
+  // An emoji goes in at the caret, and the typing goes on after it.
+  await picker.locator('.ch-emoji-sec[data-group="people-body"] .ch-emoji-cell').first().click();
+  await expect(picker).toHaveCount(0);
+  await expect(main).toBeFocused();
+  await win.keyboard.type('!');
+  expect(await value(main)).toBe('Hello👋! world');
+  // A search, then a click: the emoji takes the selection's place.
+  await win.keyboard.press('End');
+  for (let i = 0; i < 5; i++) await win.keyboard.press('Shift+ArrowLeft');
+  await openPicker('.ch-main');
+  await win.keyboard.type('tada');
+  await expect(picker.locator('.ch-emoji-head')).toHaveText('Search results');
+  await picker.locator('.ch-emoji-cell').first().click();
+  await expect(main).toBeFocused();
+  expect(await value(main)).toBe('Hello👋! 🎉');
+  await capture(testInfo, 'emoji-main-composer');
+
+  // The thread's composer, with the formatting bar open: an emoji from Recently used goes in there and nowhere else.
+  await (await hoverTool(message('Lunch on Friday?'), 'reply')).click();
+  await expect(reply).toBeFocused();
+  await win.keyboard.type('Count me in ');
+  await pane().locator('.ch-thread [data-ch-compose="format"]').click();
+  await expect(pane().locator('.ch-thread .ch-fmt')).toBeVisible();
+  await openPicker('.ch-thread');
+  await expect(tabs.first()).toHaveAttribute('data-group', 'recent');
+  await picker.locator('.ch-emoji-sec[data-group="recent"] .ch-emoji-cell').first().click();
+  await expect(picker).toHaveCount(0);
+  await expect(reply).toBeFocused();
+  await win.keyboard.type('!');
+  expect(await value(reply)).toBe('Count me in 🎉!');
+  expect(await value(main)).toBe('Hello👋! 🎉');
+  await capture(testInfo, 'emoji-thread-composer');
+  await win.keyboard.press('Enter');
+  await expect(messageRow(win, 'Count me in 🎉!', { thread: true })).toHaveAttribute('data-seq', /^\d+$/, { timeout: 15000 });
+  await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, 'Count me in 🎉!')).length, { timeout: 15000 }).toBe(1);
+});

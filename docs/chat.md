@@ -103,7 +103,7 @@ The **Aa** button under the text shows a formatting bar with the same styles. Th
 
 ### Emoji and reactions
 
-The smiley button under the text opens the emoji picker: search by name, pick from Recently used or a group, and choose a skin tone with the hand at the top. The arrow keys move through the emoji and `Enter` picks one. In the text, `:` and two letters of a name, such as `:thu`, open a list of matching emoji; typing a whole code such as `:tada:` turns it into the emoji. Recently used emoji and the skin tone are kept on this computer.
+The smiley button under the text opens the emoji picker: search by name, pick from Recently used or a group, and choose a skin tone with the hand at the top. The icons under the search field jump to a group; the emoji you click goes in where the cursor was in the message, and you type on from there. The arrow keys move through the emoji and `Enter` picks one. In the text, `:` and two letters of a name, such as `:thu`, open a list of matching emoji; typing a whole code such as `:tada:` turns it into the emoji. Recently used emoji and the skin tone are kept on this computer.
 
 **React** on a message's bar puts an emoji under it. Each emoji shows once with how many people chose it, tinted when yours is among them; pointing at it names who reacted. Clicking it adds or takes back your reaction, and the smiley button after the reactions adds another. A message can hold 20 different emoji. Reactions never notify anyone and don't count as unread.
 
