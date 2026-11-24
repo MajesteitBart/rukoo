@@ -586,3 +586,59 @@ test('moving, deleting and undoing many emails is one call to the server per fol
   assert.equal(result.deleted, trash.length);
   await engine.close();
 });
+
+// Settles with p, or fails after ms: a batch that waits for itself never settles.
+async function within(p, ms = 3000) {
+  let timer;
+  const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error('the batch never settled')), ms)));
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// #308 round 4, finding 1: Remove of a selection with an email in Inbox and one in Trash. The move to Trash goes first,
+// and while it runs the server rebuilds Trash, where the selected email's uid now names another email. The delete for
+// good goes for the email that was selected, in the generation it was selected in: nothing is deleted, and Trash syncs.
+test('a bulk Remove deletes for good only the email it looked up, also when Trash is rebuilt during the move to Trash', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const a = inbox(engine, acc)[0];
+  const selected = view(engine, acc, 'trash')[0];
+  const move = demo.move.bind(demo);
+  demo.move = async (...args) => {
+    const trash = demo.box('Trash');
+    trash.uidValidity = 'rebuilt';
+    trash.messages = trash.messages.map((m) => (m.uid === selected.uid ? { ...m, subject: 'Replacement', messageId: '<replacement@example.com>' } : m));
+    demo.persist();
+    await engine.syncFolderAndNotify(engine.account(acc.id), 'Trash');
+    return move(...args);
+  };
+  const answers = await within(engine.removeMany([a.id, selected.id]));
+  assert.equal(answers[0].where, 'trash');
+  assert.ok(answers[1].error && !answers[1].where, `not reported deleted: ${JSON.stringify(answers[1])}`);
+  assert.ok(demo.box('Trash').messages.some((m) => m.subject === 'Replacement'), 'the email that has the uid now is still there');
+  await until(() => view(engine, acc, 'trash').some((m) => m.subject === 'Replacement'));
+  await engine.close();
+});
+
+// #308 round 4, finding 1, the same shape after a send: the draft is looked up when the send begins. Drafts rebuilt
+// while the email goes out gives its uid to another draft, which stays.
+test('sending a draft discards that draft only, also when Drafts is rebuilt while the email goes out', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const draft = view(engine, acc, 'drafts')[0];
+  const send = demo.send.bind(demo);
+  demo.send = async (mail) => {
+    const drafts = demo.box('Drafts');
+    drafts.uidValidity = 'rebuilt';
+    drafts.messages = drafts.messages.map((m) => (m.uid === draft.uid ? { ...m, subject: 'Another draft', messageId: '<another-draft@example.com>' } : m));
+    demo.persist();
+    await engine.syncFolderAndNotify(engine.account(acc.id), 'Drafts');
+    return send(mail);
+  };
+  await engine.send({ accountId: acc.id, to: ['a@example.com'], subject: 'Hi', text: 'x', draftId: draft.id });
+  assert.ok(demo.box('Drafts').messages.some((m) => m.subject === 'Another draft'), 'the other draft stays');
+  await engine.close();
+});

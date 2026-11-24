@@ -2075,10 +2075,12 @@ class Engine extends EventEmitter {
     }
   }
 
-  // The emails of ids that the cache has, by account and folder, as [{ acc, folder, box, items: [{ id, uid, msg }] }].
-  // An id it can't find gets its error in out.
-  groupByFolder(ids, out) {
-    const groups = new Map();
+  // The emails of ids as the cache has them now, each looked up once: [{ id, acc, folder, uid, msg, uidValidity }],
+  // uidValidity being the generation of the folder its uid belongs to. What a move or delete does later goes by these,
+  // never by the id again: by then a sync may have given the uid to another email. An id the cache can't find gets its
+  // error in out.
+  resolve(ids, out) {
+    const entries = [];
     for (const id of ids) {
       let at;
       try {
@@ -2087,9 +2089,18 @@ class Engine extends EventEmitter {
         out.set(id, new Error(friendlyError(err)));
         continue;
       }
-      const key = `${at.acc.id}\n${at.folder}`;
-      if (!groups.has(key)) groups.set(key, { acc: at.acc, folder: at.folder, box: at.box, items: [] });
-      groups.get(key).items.push({ id, uid: at.uid, msg: at.msg });
+      entries.push({ id, acc: at.acc, folder: at.folder, uid: at.uid, msg: at.msg, uidValidity: at.box ? at.box.uidValidity : null });
+    }
+    return entries;
+  }
+
+  // Entries of resolve() by account, folder and generation, as [{ acc, folder, uidValidity, items }].
+  groupByFolder(entries) {
+    const groups = new Map();
+    for (const e of entries) {
+      const key = [e.acc.id, e.folder, e.uidValidity].join('\n');
+      if (!groups.has(key)) groups.set(key, { acc: e.acc, folder: e.folder, uidValidity: e.uidValidity, items: [] });
+      groups.get(key).items.push(e);
     }
     return [...groups.values()];
   }
@@ -2098,14 +2109,17 @@ class Engine extends EventEmitter {
   // session, which answers a Map uid → result (ImapAccount.moveMany()). Each item gets putBack and result. A session
   // that throws gives every email that error, which counts as unsure.
   async sendGroup(group, send) {
-    const { acc, folder, box, items } = group;
-    for (const it of items) it.putBack = this.removeFromCache(acc, folder, it.uid);
+    const { acc, folder, items } = group;
+    // The cache's rows of the folder are of another generation now: their uids name other emails, which stay.
+    const box = this.caches.get(acc.id).boxes[folder];
+    const same = !box || String(box.uidValidity) === String(group.uidValidity);
+    for (const it of items) it.putBack = same ? this.removeFromCache(acc, folder, it.uid) : () => {};
     this.changed(acc.id);
     let results;
     try {
-      // The uids are the ones of the generation of the folder the cache has: on a folder rebuilt since, they would
-      // name other emails, and the session sends nothing.
-      results = await this.withPendingMany(acc, folder, items, () => send(items.map((it) => it.uid), box ? box.uidValidity : null));
+      // The uids are the ones of the generation of the folder they were looked up in: on a folder rebuilt since, they
+      // would name other emails, and the session sends nothing.
+      results = await this.withPendingMany(acc, folder, items, () => send(items.map((it) => it.uid), group.uidValidity));
     } catch (err) {
       results = new Map();
       for (const it of items) results.set(it.uid, { error: err });
@@ -2129,7 +2143,13 @@ class Engine extends EventEmitter {
   // error (notMoved()), or null for an email that moved or was already there.
   async moveAll(ids, destination) {
     const out = new Map();
-    for (const group of this.groupByFolder(ids, out)) {
+    await this.moveEntries(this.resolve(ids, out), destination, out);
+    return out;
+  }
+
+  // moveAll() for entries of resolve(), putting each one's answer in out.
+  async moveEntries(entries, destination, out) {
+    for (const group of this.groupByFolder(entries)) {
       if (group.folder === destination) {
         for (const it of group.items) out.set(it.id, null);
         continue;
@@ -2153,7 +2173,6 @@ class Engine extends EventEmitter {
       if (moved && this.caches.get(acc.id).boxes[destination]) group.resync.add(destination);
       this.resync(acc, group.resync);
     }
-    return out;
   }
 
   async move(id, destination) {
@@ -2247,7 +2266,7 @@ class Engine extends EventEmitter {
     for (const items of groups.values()) {
       const { accountId, destination, folder, uidValidity } = items[0].rec;
       const acc = this.account(accountId);
-      const group = { acc, folder: destination, box: { uidValidity }, items, resync: new Set() };
+      const group = { acc, folder: destination, uidValidity, items, resync: new Set() };
       for (const it of await this.sendGroup(group, (uids) => this.session(acc).moveMany(destination, uids, folder, { expectUidValidity: uidValidity }))) {
         const { rec, result: r } = it;
         if (!r.error) {
@@ -2348,43 +2367,47 @@ class Engine extends EventEmitter {
 
   // remove() for many emails: those that go to Trash in one batch per folder (moveAll()), and those deleted for good in
   // one per folder too (ImapAccount.deleteMany()). Saved emails are deleted from the device. Returns a Map id → 'trash',
-  // 'deleted', 'confirm' or the window's error.
+  // 'deleted', 'confirm' or the window's error. Each email is looked up once, before anything goes to the server: the
+  // deletes for good wait for the moves to Trash, and a sync meanwhile can give a selected email's uid to another.
   async removeAll(ids, { force = false } = {}) {
     const out = new Map();
     const toTrash = new Map();
     const forGood = [];
+    const mail = [];
     for (const id of ids) {
-      if (String(id).startsWith('saved:')) {
+      if (!String(id).startsWith('saved:')) mail.push(id);
+      else {
         this.deleteSaved(id);
         out.set(id, 'deleted');
-        continue;
       }
-      let at;
-      try {
-        at = this.locate(id);
-      } catch (err) {
-        out.set(id, new Error(friendlyError(err)));
-        continue;
-      }
-      const trash = this.folderByRole(at.acc.id, 'trash');
-      if (trash && trash.path !== at.folder) {
-        const key = `${at.acc.id}\n${trash.path}`;
-        if (!toTrash.has(key)) toTrash.set(key, { path: trash.path, ids: [] });
-        toTrash.get(key).ids.push(id);
-      } else if (!trash && !force) out.set(id, 'confirm');
-      else forGood.push(id);
     }
-    for (const { path, ids: batch } of toTrash.values()) {
-      for (const [id, err] of await this.moveAll(batch, path)) out.set(id, err || 'trash');
+    for (const e of this.resolve(mail, out)) {
+      const trash = this.folderByRole(e.acc.id, 'trash');
+      if (trash && trash.path !== e.folder) {
+        const key = `${e.acc.id}\n${trash.path}`;
+        if (!toTrash.has(key)) toTrash.set(key, { path: trash.path, entries: [] });
+        toTrash.get(key).entries.push(e);
+      } else if (!trash && !force) out.set(e.id, 'confirm');
+      else forGood.push(e);
     }
-    await this.deleteForGood(forGood, out);
+    for (const { path, entries } of toTrash.values()) {
+      const moved = new Map();
+      await this.moveEntries(entries, path, moved);
+      for (const [id, err] of moved) out.set(id, err || 'trash');
+    }
+    await this.deleteEntries(forGood, out);
     return out;
   }
 
   // Deletes the emails of ids for good, in one batch per folder (ImapAccount.deleteMany()), and puts 'deleted' or the
   // window's error in out for each.
-  async deleteForGood(ids, out) {
-    for (const group of this.groupByFolder(ids, out)) {
+  deleteForGood(ids, out) {
+    return this.deleteEntries(this.resolve(ids, out), out);
+  }
+
+  // deleteForGood() for entries of resolve().
+  async deleteEntries(entries, out) {
+    for (const group of this.groupByFolder(entries)) {
       const { acc, folder } = group;
       group.resync = new Set();
       for (const it of await this.sendGroup(group, (uids, expectUidValidity) => this.session(acc).deleteMany(folder, uids, { expectUidValidity }))) {
@@ -2627,6 +2650,8 @@ class Engine extends EventEmitter {
   // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics.
   async send(payload, { icalEvent = null } = {}) {
     const acc = this.checkSend(payload);
+    // Looked up before the send, which takes a while; see discardDraft().
+    const draft = this.draftEntry(payload.draftId);
     const mail = await this.buildMail(acc, payload);
     if (icalEvent) mail.icalEvent = { method: icalEvent.method, content: icalEvent.content, filename: 'invite.ics' };
     const raw = await this.session(acc).send(mail);
@@ -2637,7 +2662,7 @@ class Engine extends EventEmitter {
       const sent = this.folderByRole(acc.id, 'sent');
       if (sent && !session.savesSentCopy()) await session.append(sent.path, raw, ['\\Seen']).catch(() => {});
     }
-    if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
+    if (draft) await this.discardDraft(draft.id, draft).catch(() => {});
     if (payload.replyToId) {
       // The original may have been moved in the meantime; that is fine.
       await this.setFlags(payload.replyToId, { answered: true }).catch(() => {});
@@ -2650,6 +2675,7 @@ class Engine extends EventEmitter {
     const acc = this.account(payload.accountId);
     const drafts = this.folderByRole(acc.id, 'drafts');
     if (!drafts) throw new Error(t('errors.folder.noDrafts'));
+    const draft = this.draftEntry(payload.draftId);
     const mail = await this.buildMail(acc, payload);
     // A Message-ID of our own finds the stored draft again on servers that do not report its uid.
     mail.messageId = `<${crypto.randomUUID()}@${mail.from.address.split('@')[1] || 'rukoo.invalid'}>`;
@@ -2657,7 +2683,7 @@ class Engine extends EventEmitter {
     const raw = await ImapAccount.compose({ ...mail, keepBcc: true });
     const session = this.session(acc);
     const uid = await session.append(drafts.path, raw, ['\\Seen', '\\Draft']);
-    if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
+    if (draft) await this.discardDraft(draft.id, draft).catch(() => {});
     await this.syncFolderInto(acc, drafts.path);
     this.changed(acc.id);
     const stored = uid || this.uidByMessageId(acc.id, drafts.path, mail.messageId);
@@ -2671,12 +2697,18 @@ class Engine extends EventEmitter {
     return hit ? hit.uid : null;
   }
 
-  // A draft the server refuses to delete stays in Drafts, so its row comes back.
-  async discardDraft(id) {
+  // A draft the server refuses to delete stays in Drafts, so its row comes back. found: the draft as resolve() looked it
+  // up when the send or save began (draftEntry()); a sync since may have given its uid to another draft.
+  async discardDraft(id, found = null) {
     const out = new Map();
-    await this.deleteForGood([id], out);
+    await (found ? this.deleteEntries([found], out) : this.deleteForGood([id], out));
     const r = out.get(id);
     if (r instanceof Error) throw r;
+  }
+
+  // The draft of draftId as resolve() looks it up, or null when there is none or the cache doesn't have it.
+  draftEntry(draftId) {
+    return draftId ? this.resolve([draftId], new Map())[0] || null : null;
   }
 
   async close() {
