@@ -818,6 +818,10 @@ function endSession() {
       })
       .catch(() => {});
   }
+  // Moves, deletes and Undos send no further email; once the one on its way settles, the cache is saved again with
+  // the rows of the rest.
+  const batches = engine.stopBatches();
+  if (batches) batches.then(() => engine.flush()).catch(() => {});
   engine.flush();
   if (calendars) calendars.flush();
   closeServices();
@@ -2559,7 +2563,9 @@ let quitWaited = false;
 let quitSending = false;
 app.on('will-quit', (event) => {
   if (quitSending) return event.preventDefault();
-  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length)) return;
+  // Moves, deletes and Undos send no further email; the one on its way settles within the wait below.
+  const batches = engine ? engine.stopBatches() : null;
+  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length && !batches)) return;
   quitWaited = true;
   event.preventDefault();
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2573,12 +2579,14 @@ app.on('will-quit', (event) => {
     quitSending = false;
   });
   const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
+  // The rows of the emails a stopped batch didn't send are back in the cache once it settles, and saved with it.
+  const moves = batches ? Promise.race([batches, wait(QUIT_WAIT)]).then(() => engine.flush()) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
   // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
   // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
   // installs, since Check now can still download one.
-  Promise.all([mail, agents]).finally(() => {
+  Promise.all([mail, agents, moves]).finally(() => {
     const offered = updates && updates.available;
     if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
       installer.install({ restart: restartForUpdate });

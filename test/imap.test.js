@@ -1167,6 +1167,21 @@ test('over a real connection, an EXPUNGE during the read back after a failure vo
     assert.deepEqual(inbox.messages.map((m) => m.subject), ['Stays']);
   }));
 
+// #308 round 4, finding 5: once a quit can't be called off, no further email of a batch goes to the server. The one in
+// flight gets its answer; the others are unsent, so the engine puts their rows back.
+test('over a real connection, a batch sends no further email once the quit stops it', () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s) => {
+    const uids = Array.from({ length: 4 }, (_, i) => box.put('INBOX', { subject: `Email ${i}` }).uid);
+    box.before((command) => {
+      if (/^UID MOVE /i.test(command) && s.stopBatches) s.stopBatches();
+    });
+    const out = await s.moveMany('INBOX', uids, 'Archive');
+    assert.ok(out.get(uids[0]).uid, 'the one in flight moved');
+    for (const uid of uids.slice(1)) assert.equal(out.get(uid).error.unsent, true, `uid ${uid} unsent`);
+    assert.equal(box.commands.filter((c) => /^UID MOVE /i.test(c)).length, 1);
+    assert.equal(box.folders.get('INBOX').messages.length, 3);
+  }));
+
 // #308 follow-up, finding 6: the checks must not cost a round trip per email. Counted over TCP for 500 emails; the
 // commands of the move or delete itself are one MOVE, or one STORE and one EXPUNGE, per email, as before #308.
 test('a batch of 500 moves asks one STATUS, and 500 deletes read flags once per 100 emails', () =>

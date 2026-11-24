@@ -576,9 +576,18 @@ class DemoAccount {
     return this.each(uids, async (uid) => (await this.deleteForever(p, uid)) || {});
   }
 
+  // As ImapAccount.stopBatches: the rest of a batch is unsent.
+  stopBatches() {
+    this.stopping = true;
+  }
+
   async each(uids, fn) {
     const out = new Map();
     for (const uid of uids) {
+      if (this.stopping) {
+        out.set(Number(uid), { error: Object.assign(new Error(t('errors.connection.closed')), { unsent: true }) });
+        continue;
+      }
       try {
         out.set(Number(uid), await fn(uid));
       } catch (error) {

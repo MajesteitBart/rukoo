@@ -342,6 +342,10 @@ class Engine extends EventEmitter {
     // search by account. See searchServer().
     this.searching = null;
     this.closed = false;
+    // The moves, deletes and Undos on their way to the server (tracked()), and whether a quit stopped them
+    // (stopBatches()).
+    this.batches = new Set();
+    this.stopping = false;
   }
 
   file(...parts) {
@@ -2123,6 +2127,12 @@ class Engine extends EventEmitter {
   // that throws gives every email that error, which counts as unsure.
   async sendGroup(group, send) {
     const { acc, folder, items } = group;
+    if (this.stopping) {
+      // After stopBatches(): nothing goes, and the rows stay where they are.
+      const stopped = Object.assign(new Error(t('errors.connection.closed')), { unsent: true });
+      for (const it of items) Object.assign(it, { putBack: () => {}, result: { error: stopped } });
+      return items;
+    }
     // The cache's rows of the folder are of another generation now: their uids name other emails, which stay.
     const box = this.caches.get(acc.id).boxes[folder];
     const same = !box || String(box.uidValidity) === String(group.uidValidity);
@@ -2163,7 +2173,31 @@ class Engine extends EventEmitter {
   }
 
   // moveAll() for entries of resolve(), putting each one's answer in out.
-  async moveEntries(entries, destination, out) {
+  moveEntries(entries, destination, out) {
+    return this.tracked(this.sendMoves(entries, destination, out));
+  }
+
+  // Keeps p in this.batches until it settles, so a quit can wait for it (stopBatches()). Returns p.
+  tracked(p) {
+    this.batches.add(p);
+    const done = () => this.batches.delete(p);
+    p.then(done, done);
+    return p;
+  }
+
+  // Once a quit can't be called off (main.js): no further email of a move, delete or Undo goes to the server. The
+  // sessions finish the email they are on and give the rest as unsent, whose rows come back in the cache. Settles once
+  // every batch on its way has, so the cache saved after it has those rows; null when no batch is on its way.
+  stopBatches() {
+    this.stopping = true;
+    for (const s of this.sessions.values()) if (typeof s.stopBatches === 'function') s.stopBatches();
+    if (!this.batches.size) return null;
+    return (async () => {
+      while (this.batches.size) await Promise.allSettled([...this.batches]);
+    })();
+  }
+
+  async sendMoves(entries, destination, out) {
     for (const group of this.groupByFolder(entries)) {
       if (group.folder === destination) {
         for (const it of group.items) out.set(it.id, null);
@@ -2205,7 +2239,8 @@ class Engine extends EventEmitter {
   // nobody knows: also a folder the cache doesn't hold yet, such as a destination never opened.
   resync(acc, folders) {
     const cache = this.caches.get(acc.id);
-    if (!cache) return;
+    // A quit stopped the batches: the next start syncs.
+    if (!cache || this.stopping) return;
     for (const p of new Set(folders)) {
       if (cache.boxes[p] || cache.folders.some((f) => f.path === p)) this.syncFolderAndNotify(acc, p).catch(() => {});
     }
@@ -2264,7 +2299,11 @@ class Engine extends EventEmitter {
   // the notice lasts. Anything else offers no Undo again and syncs the folders: an Undo that wasn't sent at all, one
   // whose result is unknown, and one whose folder was rebuilt since, which counts as unknown (code 'rebuilt'), since
   // the old uid no longer says where the email is.
-  async undoAll(ids) {
+  undoAll(ids) {
+    return this.tracked(this.sendUndos(ids));
+  }
+
+  async sendUndos(ids) {
     const out = new Map();
     const groups = new Map();
     // An id given twice goes once, and both get its answer.
@@ -2304,7 +2343,9 @@ class Engine extends EventEmitter {
           group.resync.add(destination);
           out.set(it.id, Object.assign(new Error(t('errors.undo.rebuilt')), { code: 'rebuilt' }));
         } else {
-          // Not sent, or nobody knows what it did: the rows come from a sync of both folders.
+          // Not sent, or nobody knows what it did: the rows come from a sync of both folders. An Undo not sent left the
+          // email where the cache had it, so a row the cache had comes back; none is made up.
+          if (!unsure(err)) it.putBack();
           group.resync.add(destination);
           if (unsure(err)) group.resync.add(folder);
           out.set(it.id, notMoved(err));
@@ -2426,7 +2467,11 @@ class Engine extends EventEmitter {
   }
 
   // deleteForGood() for entries of resolve().
-  async deleteEntries(entries, out) {
+  deleteEntries(entries, out) {
+    return this.tracked(this.sendDeletes(entries, out));
+  }
+
+  async sendDeletes(entries, out) {
     for (const group of this.groupByFolder(entries)) {
       const { acc, folder } = group;
       group.resync = new Set();

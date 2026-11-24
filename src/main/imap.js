@@ -834,6 +834,12 @@ class ImapAccount {
     const results = new Map();
     let todo = [...new Set(uids.map(Number))];
     while (todo.length) {
+      // A quit stopped the batches: what wasn't sent stays unsent.
+      if (this.stopping) {
+        const stopped = Object.assign(new Error(t('errors.connection.closed')), { unsent: true });
+        for (const uid of todo) results.set(uid, { error: stopped });
+        break;
+      }
       const turn = todo.slice(0, TURN);
       const sent = new Set();
       try {
@@ -922,7 +928,7 @@ class ImapAccount {
     let open = [];
     const clean = new Set();
     for (const uid of turn) {
-      if (client.usable === false) break;
+      if (client.usable === false || this.stopping) break;
       sent.add(uid);
       const res = await client[move ? 'messageMove' : 'messageCopy'](String(uid), destination, opts).catch(() => false);
       if (!res) {
@@ -988,7 +994,7 @@ class ImapAccount {
       const before = modseqs(client) ? await readMany(client, turn) : null;
       const stage = new Map();
       for (const uid of turn) {
-        if (client.usable === false) break;
+        if (client.usable === false || this.stopping) break;
         sent.add(uid);
         const left = await deleteOne(client, uid, before && before.get(uid));
         if (left === 'deleted') results.set(uid, {});
@@ -1048,6 +1054,12 @@ class ImapAccount {
 
   savesSentCopy() {
     return AUTO_SENT_HOSTS.test(this.account.smtp.host || '');
+  }
+
+  // A quit that can't be called off any more (engine.stopBatches()): moveMany() and deleteMany() finish the email they
+  // are on and send no further one; the rest of the batch is unsent.
+  stopBatches() {
+    this.stopping = true;
   }
 
   async close() {

@@ -643,6 +643,42 @@ test('sending a draft discards that draft only, also when Drafts is rebuilt whil
   await engine.close();
 });
 
+// #308 round 4, finding 5: a quit stops a batch. Once main.js stops the batches (the quit can't be called off any more),
+// no further email goes to the server, the one in flight settles, and the rows of the emails not sent are back in the
+// cache before the last save, so the next start lists them.
+test('a quit stops a batch after the email in flight, and the emails not sent are in the saved cache', async () => {
+  const { engine, acc, dir } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const ids = inbox(engine, acc).slice(0, 4).map((m) => m.id);
+  const move = demo.move.bind(demo);
+  const sent = [];
+  let go;
+  const gate = new Promise((r) => (go = r));
+  let started;
+  const inFlight = new Promise((r) => (started = r));
+  demo.move = async (...args) => {
+    sent.push(args[1]);
+    started();
+    await gate;
+    return move(...args);
+  };
+  const removing = engine.removeMany(ids);
+  await inFlight;
+  const stopped = engine.stopBatches ? engine.stopBatches() : Promise.resolve();
+  let settled = false;
+  stopped.then(() => (settled = true));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(settled, false, 'waits for the email in flight');
+  go();
+  await within(stopped);
+  engine.flush();
+  const listed = new Engine({ dataDir: dir }).init().listMessages({ scope: acc.id, view: 'inbox' }).map((m) => m.id);
+  for (const id of ids.slice(1)) assert.ok(listed.includes(id), `${id} is in the saved cache`);
+  assert.ok(!listed.includes(ids[0]), 'the one in flight went');
+  await within(removing);
+  assert.equal(sent.length, 1, 'one email went to the server');
+  await engine.close();
+});
 // #308 round 4, finding 6: an email given twice in one batch goes to the server once, and both get its result.
 test('an email given twice in one batch is acted on once, and both get its result', async () => {
   const { engine, acc } = await freshEngine();
