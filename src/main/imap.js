@@ -952,6 +952,7 @@ class ImapAccount {
   // before (deleteOne()) and what's left after are read once per turn, for all its emails at once.
   deleteMany(path, uids, { expectUidValidity = null } = {}) {
     return this.inTurns(path, uids, expectUidValidity, 'errors.delete.unknown', async (client, turn, results, sent) => {
+      const validity = String(client.mailbox.uidValidity);
       const before = modseqs(client) ? await readMany(client, turn) : null;
       const stage = new Map();
       for (const uid of turn) {
@@ -963,7 +964,9 @@ class ImapAccount {
         else stage.set(uid, left);
       }
       if (!stage.size) return;
-      const after = await readMany(client, [...stage.keys()]);
+      const read = await readMany(client, [...stage.keys()]);
+      // The uids name the same emails only in the generation of the folder the turn began with.
+      const after = read && client.mailbox && String(client.mailbox.uidValidity) === validity ? read : null;
       for (const [uid, at] of stage) {
         const m = after && after.get(uid);
         if (!m) results.set(uid, { error: uncertain('errors.delete.unknown') });

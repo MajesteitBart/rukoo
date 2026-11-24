@@ -535,6 +535,17 @@ test('an Undo whose folder was rebuilt counts as not confirmed, with the reason,
   await engine.close();
 });
 
+test('a single Undo whose folder was rebuilt reaches the window with code rebuilt and its reason', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  await engine.archive(target.id);
+  demo.box('Archive').uidValidity = 'rebuilt';
+  await assert.rejects(engine.undoMove(target.id), { message: t('errors.undo.rebuilt'), code: 'rebuilt' });
+  assert.ok(!engine.canUndo(target.id));
+  await engine.close();
+});
+
 // #308 follow-up, finding 6: a batch goes to the account's session once per folder, so its checks cost a round trip
 // per batch (test/imap.test.js counts the commands), and each email still gets its own outcome.
 test('moving, deleting and undoing many emails is one call to the server per folder, with an outcome per email', async () => {

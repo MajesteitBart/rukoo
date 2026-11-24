@@ -769,6 +769,35 @@ test('in a batch, a MOVE that failed between two others is refused only when the
   assert.deepEqual(m.log.filter((l) => l.startsWith('STATUS')), []);
 });
 
+// #308 follow-up, finding 1, for deletes: the read after a failed EXPUNGE proves the email stayed only in the folder's
+// generation the delete began in. Here the server gives the folder a new UIDVALIDITY in between.
+test('a failed delete whose folder got a new UIDVALIDITY before the read back is unknown, never refused', async () => {
+  const log = [];
+  const client = {
+    usable: true,
+    capabilities: new Map([['IMAP4rev1', true], ['UIDPLUS', true]]),
+    enabled: new Set(),
+    mailbox: null,
+    getMailboxLock: async (path) => {
+      client.mailbox = { path, uidValidity: 3n, permanentFlags: new Set(['\\*']) };
+      return { release: () => {} };
+    },
+    exec: async (command) => {
+      log.push(command);
+      if (command === 'UID EXPUNGE') throw Object.assign(new Error('NO'), { responseStatus: 'NO' });
+      return { response: { attributes: [] }, next: () => {} };
+    },
+    fetchAll: async (set) => {
+      log.push(`FETCH ${set}`);
+      client.mailbox.uidValidity = 4n;
+      return [{ uid: 7, flags: new Set(['\\Deleted']) }];
+    }
+  };
+  const err = await session(client).deleteForever('Trash', 7).catch((e) => e);
+  assert.deepEqual(log, ['UID STORE', 'UID EXPUNGE', 'FETCH 7']);
+  assert.ok(err.unknown && !err.refused, err.message);
+});
+
 // RFC 9051 makes MOVE part of IMAP4rev2, so a server of that version alone needn't list it. imapflow's messageMove
 // sends MOVE to such a server, and Rukoo mustn't take the COPY-and-delete way there.
 test('an IMAP4rev2 server gets MOVE without the MOVE capability, as imapflow decides it', async () => {
@@ -869,6 +898,24 @@ test('over a real connection, a MOVE that copied into a rebuilt destination is u
     assert.ok(inbox.messages.some((m) => m.subject === 'Partly moved'));
   }));
 
+// #308 follow-up, finding 1: the read after a refused MOVE has to find this email by its UID. Here another app
+// expunged it after Rukoo's MOVE was turned down, and the server answers the UID FETCH with another email's line of its
+// own accord.
+test("over a real connection, another email's FETCH in the check after a refused MOVE is no proof the email stayed", () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
+    const a = box.put('INBOX', { subject: 'Gone after the NO' });
+    const b = box.put('INBOX', { subject: 'Another email' });
+    box.refuse((command) => /^UID MOVE /i.test(command));
+    box.before((command, folder, write) => {
+      if (!/^UID FETCH /i.test(command)) return;
+      inbox.messages = inbox.messages.filter((m) => m.uid !== a.uid);
+      write(`* 1 FETCH (UID ${b.uid} FLAGS ())
+
+`);
+    });
+    await assert.rejects(s.move('INBOX', a.uid, 'Archive'), (err) => err.unknown === true && !err.refused);
+  }));
+
 test('over a real connection, a server of IMAP4rev2 alone gets UID MOVE', async () => {
   const box = await imapMailbox({ email: 'me@example.test', rev: 'IMAP4rev2', capabilities: ['UIDPLUS'] });
   const s = tcpAccount(box.port);
@@ -906,19 +953,6 @@ test('over a real connection with CONDSTORE, a refused EXPUNGE takes off the del
     assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
     box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
 
-    // Another app marks it after Rukoo read its flags and before Rukoo's STORE, which the server then turns down: the
-    // review's case. Rukoo set nothing, so it takes nothing off.
-    box.refuse((command) => /^UID STORE /i.test(command));
-    box.before((command) => {
-      if (/^UID STORE /i.test(command)) box.touch('INBOX', a.uid, (m) => m.flags.add('\\Deleted'));
-    });
-    from = box.commands.length;
-    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true, stage: 'store' });
-    assert.ok(deleted(inbox.messages[0]));
-    assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
-    box.before(null);
-    box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
-
     // The same mark set between the read and Rukoo's STORE, which then goes through: its condition fails (MODIFIED),
     // so Rukoo's flag can't be told from the other app's, and it stays after the refused EXPUNGE.
     box.refuse((command) => /^UID EXPUNGE /i.test(command));
@@ -945,21 +979,42 @@ test('over a real connection with CONDSTORE, a refused EXPUNGE takes off the del
     assert.equal(inbox.messages.length, 0);
   }));
 
-// #308 follow-up, finding 2: the review's second case. The email was already marked; the server answers the flag read
-// with another email's FETCH first, which imapflow's fetchOne took for this one.
-test("over a real connection, another email's FETCH in the flag read doesn't make a deletion mark look like Rukoo's", () =>
-  overTcp(['MOVE', 'UIDPLUS', 'CONDSTORE'], async (box, s, inbox) => {
-    const a = box.put('INBOX', { subject: 'Marked by another app', flags: ['\\Deleted'] });
-    const b = box.put('INBOX', { subject: 'Another email' });
-    box.before((command, folder, write) => {
-      if (/^UID FETCH /i.test(command)) write(`* 2 FETCH (UID ${b.uid} FLAGS () MODSEQ (${inbox.messages[1].modseq}))\r\n`);
+// #308 follow-up, finding 2: the review's first case. Another app marks the email after Rukoo read its flags and
+// before Rukoo's STORE, which the server then turns down. Rukoo set nothing, so it takes nothing off.
+test("over a real connection, a STORE refused after another app marked the email leaves that app's mark", async () => {
+  for (const capabilities of [['MOVE', 'UIDPLUS', 'CONDSTORE'], ['MOVE', 'UIDPLUS']]) {
+    await overTcp(capabilities, async (box, s, inbox) => {
+      const a = box.put('INBOX', { subject: 'Marked by another app' });
+      box.refuse((command) => /^UID STORE .*\+FLAGS/i.test(command));
+      box.before((command) => {
+        if (/^UID STORE .*\+FLAGS/i.test(command)) box.touch('INBOX', a.uid, (m) => m.flags.add('\\Deleted'));
+      });
+      await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true });
+      assert.ok(deleted(inbox.messages[0]), capabilities.join(' '));
+      assert.ok(!box.commands.some((c) => /-FLAGS/i.test(c)));
+      assert.ok(!box.commands.some((c) => /EXPUNGE/i.test(c)));
     });
-    box.refuse((command) => /^UID EXPUNGE /i.test(command));
-    const from = box.commands.length;
-    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true });
-    assert.ok(deleted(inbox.messages[0]));
-    assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
-  }));
+  }
+});
+
+// #308 follow-up, finding 2: the review's second case. The email was already marked; the server answers the flag read
+// before the delete with another email's FETCH first, which imapflow's fetchOne took for this one.
+test("over a real connection, another email's FETCH in the flag read doesn't make a deletion mark look like Rukoo's", async () => {
+  for (const capabilities of [['MOVE', 'UIDPLUS', 'CONDSTORE'], ['MOVE', 'UIDPLUS']]) {
+    await overTcp(capabilities, async (box, s, inbox) => {
+      const a = box.put('INBOX', { subject: 'Marked by another app', flags: ['\\Deleted'] });
+      const b = box.put('INBOX', { subject: 'Another email' });
+      let reads = 0;
+      box.before((command, folder, write) => {
+        if (/^UID FETCH /i.test(command) && reads++ === 0) write(`* 2 FETCH (UID ${b.uid} FLAGS ())\r\n`);
+      });
+      box.refuse((command) => /EXPUNGE/i.test(command));
+      await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true });
+      assert.ok(deleted(inbox.messages[0]), capabilities.join(' '));
+      assert.ok(!box.commands.some((c) => /-FLAGS/i.test(c)));
+    });
+  }
+});
 
 test('over a real connection without CONDSTORE, a refused EXPUNGE leaves the deletion mark and says so, and a refused STORE is a refusal', () =>
   overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
