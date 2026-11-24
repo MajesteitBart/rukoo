@@ -331,6 +331,9 @@ body.web-phone .ch-jump {
   height: 44px;
   padding: 0 16px 0 12px;
 }
+body.web-phone .ch-jump.is-up:not([hidden]) + .ch-jump.is-thread {
+  top: 60px;
+}
 /* The banner's action (Try now, Start over: a 24px .link-btn, chat-view.js setBanner) keeps its size, so the strip
    and its text stay where they are. An invisible area around it, half of what it lacks of 44px on each side, makes
    the touch target 44px; it reaches 6px past the 32px strip above and below. */
@@ -374,14 +377,12 @@ body.web-phone .tbtn {
   min-width: 44px;
   justify-content: center;
 }
-/* The thread summary under a message and its "replied to" line keep their 24px in the log; their touch area reaches
-   44px above and below without moving the rows. */
-body.web-phone .ch-replies,
-body.web-phone .ch-context {
+/* The thread summary under a message keeps its 24px in the log; its touch area reaches 44px above and below without
+   moving the rows. */
+body.web-phone .ch-replies {
   position: relative;
 }
-body.web-phone .ch-replies::after,
-body.web-phone .ch-context::after {
+body.web-phone .ch-replies::after {
   content: '';
   position: absolute;
   inset: -10px 0;

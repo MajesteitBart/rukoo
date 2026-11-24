@@ -7,33 +7,49 @@
 // which main.js turns into desktop notifications, or a toast while the main window has focus.
 //
 // The rule. After each run, also the first after the app starts, a room is due when its head is above notified (the
-// highest seq an alert covered) and it asks for attention: a DM with unread messages, a channel with mentions. A due
-// room alerts when chat notifications are on, it isn't muted and it isn't on screen in the focused window. The pass
-// that first fills a workspace sets notified to head for every room (sync.js installPass), so it alerts nothing.
+// highest seq an alert covered) and it asks for attention: a DM with unread messages, a channel with mentions, or a
+// channel with unread messages that may hold a reply to the person (below). A due room alerts when chat notifications
+// are on and it isn't muted. On screen in the focused window, a room alerts only replies for the person outside the
+// thread beside it, because the conversation doesn't show replies (issue #376). The pass that first fills a workspace
+// sets notified to head for every room (sync.js installPass), so it alerts nothing.
 //
 // What an alert shows. Title: #channel, or the DM's people as the sidebar names them, with the workspace's name after
 // it when there are several workspaces. Body: up to three of the newest messages after max(read, notified), one line
 // each as "Name: text", the first 120 characters with mentions as @Name and without Markdown's markers (rich contract
 // 3.7, plainText below); a message of only files says "Sent a file" or "Sent n files". For a channel those are the messages that
-// mention the person; for a DM every message of someone else. Removed messages and messages of people the person
-// blocked are left out. The cache gives them when it covers that range; else events?before=<head + 1>&limit=20 loads
-// them, for at most three rooms per run. Three rooms alert per run, newest first; a fourth or more make one summary,
-// "New messages in N conversations", N being the rooms the summary stands for.
+// mention the person and the replies to the person's own messages; for a DM every message of someone else. A reply's
+// line reads "Name replied: text". Removed messages and messages of people the person blocked are left out. The cache
+// gives them when it covers that range; else events?before=<head + 1>&limit=20 loads them, for at most three rooms per
+// run. Three rooms alert per run, newest first; a fourth or more make one summary, "New messages in N conversations",
+// N being the rooms the summary stands for.
+//
+// Replies to the person's messages (issue #376). The server counts a reply as unread for everyone in the conversation
+// and says nothing of whose thread it is in, so this module finds out from the messages themselves: a reply is for the
+// person when its thread's first message is theirs, by the cache or by the page it came in. A first message in neither
+// is unknown, and its replies don't alert: no request goes out for it. A channel with unread messages and no mention
+// is due only while this device holds a first message of the person's there (ownRoots), and loads its page only when it
+// wasn't looked at since the person last read it (notified at or below the read position): one page per stretch of
+// unread messages, never one per message. After that look, its newer messages alert only when the cache covers them
+// (the room on screen, or opened since), or when a mention makes the channel due and its page loads anyway. Such a
+// channel never goes into the summary on what it couldn't tell; one that found nothing, or couldn't look, gets
+// notified = head.
 //
 // After an alert, notified = head and a notice row for each message shown, so a read or a removal can take it back.
 // main.js turns the alert into a toast while the main window has focus. This module records every alert the same
 // way, because only main.js knows which it became: taking back a toast closes nothing.
 //
 // Decisions where the contract is silent:
-// - A due room the person silenced (notifications off, muted, on screen) gets notified = head too, so turning
-//   notifications on or unmuting doesn't bring back alerts for messages from while it was silent.
+// - A due room the person silenced (notifications off, muted) gets notified = head too, so turning notifications on or
+//   unmuting doesn't bring back alerts for messages from while it was silent. A room on screen does too once its
+//   cache told its replies apart, or when its cache can't tell yet: it loads no page.
 // - A due room whose new messages hold nothing to show (a channel with only an older mention) gets notified = head
 //   without an alert, but only when the cache or the loaded page saw every event after max(read, notified). That holds
 //   for the rooms beyond three too: the cache settles them when it can, and the rest go into the summary.
 // - A due room the cache can't settle and whose page of 20 holds nothing to show but doesn't reach back that far, such
 //   as a mention followed by 20 or more messages while Rukoo was closed, goes into the summary: something new may be
 //   in the part the page didn't reach. One whose messages couldn't be loaded stays due for the next run.
-// - Alert ids are stable: chat:<ws>:<room> for a room, chat:<ws>:summary for a workspace's summary.
+// - Alert ids are stable: chat:<ws>:<room> for a room, chat:<ws>:summary for a workspace's summary, and
+//   chat:<ws>:<room>:screen for a reply alerted while its conversation is on screen, which nothing takes back.
 const wire = require('./wire');
 const { t, getLocale } = require('../../i18n');
 
@@ -46,10 +62,14 @@ const summaryKey = (ws) => `chat:${ws}:summary`;
 
 // Due rooms of a workspace, the most recent activity first.
 const DUE = `SELECT * FROM room WHERE ws = ? AND head > notified
-               AND ((kind = 'dm' AND unread > 0) OR (kind <> 'dm' AND mentions > 0))
+               AND ((kind = 'dm' AND unread > 0) OR (kind <> 'dm' AND (mentions > 0 OR unread > 0)))
              ORDER BY COALESCE(lastAt, 0) DESC, head DESC, id`;
 
-const isDue = (room) => room.head > room.notified && (room.kind === 'dm' ? room.unread > 0 : room.mentions > 0);
+const isDue = (room) => room.head > room.notified && (room.kind === 'dm' ? room.unread > 0 : room.mentions > 0 || room.unread > 0);
+// A channel due only for what may be a reply to the person: unread messages without a mention.
+const repliesOnly = (room) => room.kind !== 'dm' && !(room.mentions > 0);
+// Looked at since the person last read it: an alert or a look covered more than was read.
+const looked = (room) => room.notified > Math.max(room.read, room.readLocal);
 // Read on this device or another one to the alert's position or beyond.
 const readTo = (room) => Math.max(room.read, room.readLocal) >= room.notified;
 
@@ -172,24 +192,38 @@ class Notifier {
       svc.guard(epoch);
       let room = store.getRoom(ws, id);
       if (!room || !isDue(room)) continue;
-      if (!on || room.muted || svc.isOnScreen(ws, id)) {
+      if (!on || room.muted) {
         this.mark(ws, id, room.head);
         continue;
       }
+      const only = repliesOnly(room);
+      // A channel without a mention alerts only replies to a first message of the person's that this device holds.
+      if (only && !this.ownRoots(ws, room, ctx)) {
+        this.mark(ws, id, room.head);
+        continue;
+      }
+      const screen = this.screen(ws, id);
       const after = Math.max(room.read, room.readLocal, room.notified);
       // The cache first, also for the rooms beyond three: one it shows to hold nothing new to show isn't due.
-      let messages = this.cachedMessages(ws, room, after, ctx);
+      let messages = this.cachedMessages(ws, room, after, { ...ctx, screen });
       if (messages !== null && !messages.length) {
         this.mark(ws, id, room.head);
         continue;
       }
+      // On screen, the open room's cache catches up with the feed: what it can't tell yet goes, as before replies.
+      // A channel looked at since it was last read loads no second page.
+      if (messages === null && (screen || (only && looked(room)))) {
+        this.mark(ws, id, room.head);
+        continue;
+      }
       if (slots <= 0) {
-        rest.push(room);
+        // What may be a reply waits for a run with room for it, rather than going into the summary unseen.
+        if (!only || messages !== null) rest.push(room);
         continue;
       }
       if (messages === null) {
         if (fetches <= 0) {
-          rest.push(room);
+          if (!only) rest.push(room);
           continue;
         }
         fetches -= 1;
@@ -217,7 +251,12 @@ class Notifier {
         room = { ...room, head: Math.min(room.head, head) };
         // What was read, aged out or removed while the page was on its way stays out.
         messages = this.pageMessages(ws, room, Math.max(room.read, room.readLocal, room.notified), page, ctx);
-        // The page didn't reach back to after + 1 and showed nothing: what's new may be older than the page.
+        // The page didn't reach back to after + 1 and showed nothing: what's new may be older than the page. A mention
+        // goes into the summary; a reply to the person older than the page goes without an alert.
+        if (messages === null && repliesOnly(room)) {
+          this.mark(ws, id, room.head);
+          continue;
+        }
         if (messages === null) {
           rest.push(room);
           continue;
@@ -227,7 +266,8 @@ class Notifier {
           continue;
         }
       }
-      this.alert(ws, room, messages, ctx);
+      // A room on screen got here only through its cache (no page), so screen still holds.
+      this.alert(ws, room, messages, ctx, { screen: Boolean(screen) });
       slots -= 1;
     }
     if (rest.length) this.summarize(ws, rest, ctx);
@@ -283,6 +323,7 @@ class Notifier {
   context(ws, row) {
     const store = this.svc.store;
     return {
+      ws,
       me: row.me,
       members: new Map(store.listMembers(ws).map((m) => [m.id, m])),
       blocked: new Set(store.listBlocks(ws).map((b) => b.member)),
@@ -290,13 +331,50 @@ class Notifier {
     };
   }
 
-  // Whether a message is worth showing in the room's alert: one with text or files (rich contract 3.7).
+  // The room on screen in the focused window, with the thread beside it: { thread } (thread null without one), or null.
+  screen(ws, room) {
+    const svc = this.svc;
+    if (!svc.isOnScreen(ws, room)) return null;
+    return { thread: (svc.history && svc.history.openThread && svc.history.openThread(ws, room)) || null };
+  }
+
+  // Whether this device holds a first message of the person's in the room, which a reply could answer.
+  ownRoots(ws, room, ctx) {
+    return Boolean(
+      this.svc.store.get(
+        `SELECT 1 AS one FROM event WHERE ws = ? AND room = ? AND actor = ? AND kind = 'message.posted' AND root IS NULL LIMIT 1`,
+        ws,
+        room.id,
+        ctx.me
+      )
+    );
+  }
+
+  // The author of a thread's first message: from the page it came in (ctx.roots, id -> actor), else the cache, else
+  // null (unknown).
+  rootActor(ws, room, rootId, ctx) {
+    if (ctx.roots && ctx.roots.has(rootId)) return ctx.roots.get(rootId);
+    const row = this.svc.store.get(`SELECT actor FROM event WHERE ws = ? AND id = ? AND room = ? AND root IS NULL`, ws, rootId, room.id);
+    return row ? row.actor : null;
+  }
+
+  // Whether a message is worth showing in the room's alert: one with text or files (rich contract 3.7), not the
+  // person's own or from someone they blocked. A top-level message: every one in a DM, one that mentions the person in
+  // a channel. A reply (issue #376): every one in a DM; in a channel one that mentions the person or answers a first
+  // message of theirs. ctx.screen: the room is on screen, which shows its top-level messages, so only a reply outside
+  // the thread beside it (screen.thread) alerts.
   qualifies(message, room, ctx) {
     if (message.actor === ctx.me || ctx.blocked.has(message.actor)) return false;
     if (typeof message.text !== 'string') return false;
     if (!message.text && !(Array.isArray(message.attachments) && message.attachments.length)) return false;
-    if (room.kind === 'dm') return true;
-    return Array.isArray(message.mentions) && message.mentions.some((m) => m && m.actor === ctx.me);
+    const mentioned = () => Array.isArray(message.mentions) && message.mentions.some((m) => m && m.actor === ctx.me);
+    if (message.root) {
+      if (ctx.screen && ctx.screen.thread === message.root) return false;
+      if (room.kind === 'dm' || mentioned()) return true;
+      return this.rootActor(ctx.ws, room, message.root, ctx) === ctx.me;
+    }
+    if (ctx.screen) return false;
+    return room.kind === 'dm' || mentioned();
   }
 
   // The messages to show from the cache: up to three of the newest after `after`; [] when it holds every event after
@@ -306,7 +384,7 @@ class Notifier {
     if (room.hi === null || room.hi === undefined || room.hi < room.head) return null;
     const rows = this.svc.store
       .all(
-        `SELECT id, seq, actor, text, mentions, attachments FROM event
+        `SELECT id, seq, actor, root, text, mentions, attachments FROM event
          WHERE ws = ? AND room = ? AND seq > ? AND seq <= ? AND kind = 'message.posted' AND redacted = 0 AND text IS NOT NULL
          ORDER BY seq`,
         ws,
@@ -334,10 +412,12 @@ class Notifier {
 
   pageMessages(ws, room, after, page, ctx) {
     const store = this.svc.store;
+    // The page's own first messages tell whose thread a reply in it is in.
+    const roots = new Map(page.events.filter((e) => e.kind === 'message.posted' && !e.root).map((e) => [e.id, e.actor]));
     const shown = page.events
       .filter((e) => e.kind === 'message.posted' && !e.redacted && e.seq > after && e.seq <= room.head)
       .filter((e) => e.seq >= (room.floor || 0) && !store.hasTombstone(ws, e.id))
-      .filter((e) => this.qualifies(e, room, ctx))
+      .filter((e) => this.qualifies(e, room, { ...ctx, roots }))
       .slice(-LINES);
     if (shown.length) return shown;
     const reached = !page.more || (page.events.length > 0 && page.events[0].seq <= after + 1);
@@ -360,9 +440,11 @@ class Notifier {
     return ctx.suffix ? `${title} · ${ctx.suffix}` : title;
   }
 
+  // One line of an alert: "Name: text", or "Name replied: text" for a reply, which shows only in its thread.
   line(message, ctx) {
     const files = Array.isArray(message.attachments) ? message.attachments.length : 0;
-    return t('chat.notify.body', { name: displayName(ctx.members.get(message.actor)), text: alertText(message.text, message.mentions, files) });
+    const said = { name: displayName(ctx.members.get(message.actor)), text: alertText(message.text, message.mentions, files) };
+    return message.root ? say('chat.notify.reply', said, `${said.name} replied: ${said.text}`) : t('chat.notify.body', said);
   }
 
   mark(ws, room, head) {
@@ -371,11 +453,25 @@ class Notifier {
 
   // One room's alert, which replaces the one it had. It's recorded even when main.js shows it as a toast, which it
   // decides by the window's focus at that moment: hiding a toast closes nothing.
-  alert(ws, room, messages, ctx) {
+  //
+  // screen: the room is on screen in the focused window, so this is a reply for the person that the conversation
+  // doesn't show, and main.js shows it as a toast. It goes under an id of its own and isn't recorded: reading the
+  // conversation reads past the reply at once, and taking it back would drop the toast within a second.
+  alert(ws, room, messages, ctx, { screen = false } = {}) {
     const svc = this.svc;
     const store = svc.store;
-    const id = roomKey(ws, room.id);
     const newest = messages[messages.length - 1];
+    if (screen) {
+      this.mark(ws, room.id, room.head);
+      svc.show({
+        id: `${roomKey(ws, room.id)}:screen`,
+        title: this.title(room, ctx),
+        body: messages.map((m) => this.line(m, ctx)).join('\n'),
+        open: { ws, conversation: room.id, seq: newest.seq }
+      });
+      return;
+    }
+    const id = roomKey(ws, room.id);
     store.tx(() => {
       this.mark(ws, room.id, room.head);
       store.deleteNotices(ws, room.id);

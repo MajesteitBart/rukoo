@@ -103,6 +103,7 @@ class History {
     chatClose: (svc) => svc.history.closeRoom(),
     chatOlder: (svc, ws, c, before) => svc.history.older(ws, c, before),
     chatThread: (svc, ws, c, root) => svc.history.thread(ws, c, root),
+    chatThreadShown: (svc, ws, c, root) => svc.history.threadShown(ws, c, root),
     chatRoomMembers: (svc, ws, c) => svc.history.roomMembers(ws, c),
     chatRead: (svc, ws, c, seq) => svc.history.read(ws, c, seq),
     chatMarkRead: (svc, ws, c) => svc.history.markRead(ws, c),
@@ -123,6 +124,8 @@ class History {
     this.flushes = new Map();
     // The thread last asked for: { key, low, extra: Map seq -> Event } for pages the cache couldn't keep.
     this.threadMemory = null;
+    // The thread on screen beside the open room: { ws, room, root, epoch }, or null (chatThreadShown).
+    this.shownThread = null;
     this.closed = false;
   }
 
@@ -174,6 +177,19 @@ class History {
     return Boolean(o && o.epoch === this.svc.epoch && o.ws === ws && o.room === room && a && a.ws === ws && a.room === room);
   }
 
+  // chatThreadShown: the renderer opened the thread of root beside the open room, or closed it (null). Alerts hold back
+  // the replies of the thread on screen (notify.js); the conversation itself doesn't show replies (issue #376).
+  threadShown(ws, c, root) {
+    this.shownThread = root ? { ws, room: c, root, epoch: this.svc.epoch } : null;
+    return true;
+  }
+
+  // The root of the thread on screen beside room, or null: only while that room is the one open in this session.
+  openThread(ws, room) {
+    const s = this.shownThread;
+    return s && s.epoch === this.svc.epoch && s.ws === ws && s.room === room && this.isOpen(ws, room) ? s.root : null;
+  }
+
   forget(fn) {
     for (const key of [...this.flushes.keys()]) {
       if (!fn(key)) continue;
@@ -187,6 +203,7 @@ class History {
     this.closed = true;
     this.forget(() => true);
     this.open = null;
+    this.shownThread = null;
     this.threadMemory = null;
   }
 

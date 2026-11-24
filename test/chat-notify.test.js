@@ -536,3 +536,169 @@ test('a floor past a message an alert showed takes the alert back, also when the
   assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
   assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), []);
 });
+
+// Issue #376: a reply shows only in its thread, so the author of the thread's first message is told. The server says
+// nothing of whose thread a reply is in; the notifier finds out from the first message, in the cache or in the page
+// the reply came in.
+const pages = (calls, room) => calls.filter((c) => c.route.includes(`/conversations/${room}/events?`)).length;
+
+test('a reply to your message in a channel alerts as "Name replied", once per stretch of unread messages', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, svc, account } = await scene(t);
+  const api = chatApi(() => svc);
+  // Bart's question, which this device holds because he had general open after he asked it.
+  const question = await server.post(bart, ws.id, ws.general, 'Who has the keys?');
+  await svc.sync(ws.id);
+  await api.chatOpen(ws.id, ws.general, {});
+  await until(() => svc.store.eventById(ws.id, question.messageId), 10000, 'the question in the cache');
+  await api.chatClose();
+  const calls = watchCalls(account);
+
+  // Olga answers in the thread: no mention, and the conversation doesn't show it.
+  const answer = await server.post(olga, ws.id, ws.general, 'I do, in the drawer', { root: question.messageId });
+  await svc.sync(ws.id);
+  const general = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(general.mentions, 0);
+  assert.equal(general.unread, 1, 'the server counts the reply as unread');
+  assert.deepEqual(svc.notices, [
+    {
+      id: roomKey(ws.id, ws.general),
+      title: '#general',
+      body: 'Olga replied: I do, in the drawer',
+      open: { ws: ws.id, conversation: ws.general, seq: answer.seq }
+    }
+  ]);
+  assert.equal(pages(calls, ws.general), 1, 'one page');
+
+  // Looked at since Bart last read general: a second reply loads no second page, and alerts nothing.
+  await server.post(olga, ws.id, ws.general, 'Top drawer', { root: question.messageId });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1);
+  assert.equal(pages(calls, ws.general), 1, 'still one page');
+  const after = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(after.notified, after.head);
+
+  // Bart reads general on his phone: the alert goes, and the next reply is looked at again.
+  await server.read(bart, ws.id, ws.general, after.head);
+  await svc.sync(ws.id);
+  const third = await server.post(olga, ws.id, ws.general, 'Or ask Mila', { root: question.messageId });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 2);
+  assert.equal(svc.notices[1].body, 'Olga replied: Or ask Mila');
+  assert.equal(svc.notices[1].open.seq, third.seq);
+  assert.equal(pages(calls, ws.general), 2);
+});
+
+test('a reply in someone else\'s thread alerts only when it mentions you; a channel without your messages loads nothing', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, bartMe, svc, account } = await scene(t);
+  const mila = await server.seedAccount();
+  await server.seedMember(ws, mila, 'Mila');
+  await svc.sync(ws.id);
+  const calls = watchCalls(account);
+  const hers = await server.post(olga, ws.id, ws.general, 'Lunch at noon?');
+  await svc.sync(ws.id);
+  await server.post(mila, ws.id, ws.general, 'Yes please', { root: hers.messageId });
+  await svc.sync(ws.id);
+  assert.deepEqual(svc.notices, []);
+  assert.equal(pages(calls, ws.general), 0, 'no first message of Bart here: no page');
+  const general = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(general.notified, general.head);
+
+  const named = await server.post(mila, ws.id, ws.general, '@Bart too?', { root: hers.messageId, ...mentioning('@Bart too?', bartMe.id) });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1);
+  assert.equal(svc.notices[0].body, 'Mila replied: @Bart too?', 'a reply that mentions you');
+  assert.equal(svc.notices[0].open.seq, named.seq);
+
+  // In a direct message every reply of someone else alerts, as every message there does.
+  const dm = (await server.seedDm(olga, ws.id, [bartMe.id])).conversation;
+  const first = await server.post(bart, ws.id, dm, 'Hoi');
+  await svc.sync(ws.id);
+  await server.post(olga, ws.id, dm, 'Hoi terug', { root: first.messageId });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 2);
+  assert.equal(svc.notices[1].body, 'Olga replied: Hoi terug');
+});
+
+test('on screen, a reply for you alerts unless its thread shows; muted, the setting and a block keep it away', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, bartMe, svc, settings, hidden } = await scene(t);
+  const api = chatApi(() => svc);
+  const question = await server.post(bart, ws.id, ws.general, 'Anyone?');
+  await svc.sync(ws.id);
+  svc.setFocused(true);
+  await api.chatOpen(ws.id, ws.general, {});
+  await until(() => svc.store.eventById(ws.id, question.messageId), 10000, 'the question in the cache');
+  assert.ok(svc.isOnScreen(ws.id, ws.general));
+
+  // Only the conversation shows: the reply isn't in it, so it alerts.
+  await server.post(olga, ws.id, ws.general, 'Me', { root: question.messageId });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1);
+  assert.equal(svc.notices[0].body, 'Olga replied: Me');
+  // A toast under an id of its own, not recorded: reading the conversation, which reads past the reply at once,
+  // doesn't take it down.
+  assert.equal(svc.notices[0].id, `${roomKey(ws.id, ws.general)}:screen`);
+  assert.deepEqual(svc.store.noticesForRoom(ws.id, ws.general), []);
+  await api.chatRead(ws.id, ws.general, svc.store.getRoom(ws.id, ws.general).head);
+  assert.deepEqual(hidden, []);
+  // A mention in the conversation on screen doesn't.
+  await server.post(olga, ws.id, ws.general, '@Bart also me', mentioning('@Bart also me', bartMe.id));
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1, 'the conversation on screen shows it');
+
+  // The thread shows beside it: its replies don't alert; another thread's do.
+  await api.chatThreadShown(ws.id, ws.general, question.messageId);
+  await server.post(olga, ws.id, ws.general, 'Seen in the thread', { root: question.messageId });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1);
+  const other = await server.post(bart, ws.id, ws.general, 'Second question');
+  await svc.sync(ws.id);
+  await server.post(olga, ws.id, ws.general, 'Second answer', { root: other.messageId });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 2);
+  assert.equal(svc.notices[1].body, 'Olga replied: Second answer');
+  await api.chatThreadShown(ws.id, ws.general, null);
+
+  // Muted, the setting off, and a blocked author: nothing, also on screen.
+  svc.store.setRoomFields(ws.id, ws.general, { muted: 1 });
+  await server.post(olga, ws.id, ws.general, 'muted', { root: question.messageId });
+  await svc.sync(ws.id);
+  svc.store.setRoomFields(ws.id, ws.general, { muted: 0 });
+  settings.chatNotifications = false;
+  await server.post(olga, ws.id, ws.general, 'off', { root: question.messageId });
+  await svc.sync(ws.id);
+  settings.chatNotifications = true;
+  await api.chatBlock(ws.id, ws.me.id);
+  await server.post(olga, ws.id, ws.general, 'blocked', { root: question.messageId });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 2);
+});
+
+test('an agent\'s answer in the thread of your message alerts you; asked in someone else\'s thread, it does not', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, svc } = await scene(t);
+  const api = chatApi(() => svc);
+  const { agent, key } = await server.seedAgent(olga, ws.id, { name: 'Clark', answers: 'everyone' });
+  await server.call('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/members`, { token: olga.token, body: { member: agent.id } });
+  const asked = await server.post(bart, ws.id, ws.general, '@Clark what time is it?', { mentions: [mention('@Clark what time is it?', '@Clark', agent.id)] });
+  await svc.sync(ws.id);
+  await api.chatOpen(ws.id, ws.general, {});
+  await until(() => svc.store.eventById(ws.id, asked.messageId), 10000, 'the question in the cache');
+  await api.chatClose();
+  const answered = await server.agentReply(key, ws.id, ws.general, { trigger: asked.messageId, text: 'Half past two' });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1);
+  assert.equal(svc.notices[0].body, 'Clark replied: Half past two');
+  assert.equal(svc.notices[0].open.seq, answered.seq);
+
+  // Bart asks Clark inside Olga's thread: the answer is in her thread, so it doesn't alert him. The conversation's
+  // dot and pill show it (chat.spec.js).
+  const hers = await server.post(olga, ws.id, ws.general, 'Plan for Friday');
+  const inThread = await server.post(bart, ws.id, ws.general, '@Clark weather?', { root: hers.messageId, mentions: [mention('@Clark weather?', '@Clark', agent.id)] });
+  await svc.sync(ws.id);
+  await server.agentReply(key, ws.id, ws.general, { trigger: inThread.messageId, text: 'Sunny' });
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1);
+});

@@ -4,13 +4,10 @@
 // a list format) come from the caller, so the language is the caller's.
 
 import { mentionsMember, validMentions } from './chat-text.js';
-import { plainText } from './chat-markdown.js';
 
 // A message group ends after this long without one from the same author.
 export const GROUP_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// The start of a thread's first message that a reply row quotes.
-const CONTEXT_CHARS = 120;
 
 const isMessage = (e) => Boolean(e) && e.kind === 'message.posted';
 const asMap = (members) => (members instanceof Map ? members : new Map((members || []).filter(Boolean).map((m) => [m.id, m])));
@@ -72,37 +69,49 @@ function richSig(attachments, previews, reactions, members) {
 }
 const actorIds = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 
-// The start of a message on one line, for the context line of a reply: its text without Markdown markers (RUK-211
-// contract 3.7).
-function snippet(text, mentions) {
-  let plain;
-  try {
-    plain = plainText(String(text || ''), mentions || []);
-  } catch (_) {
-    plain = String(text || '');
-  }
-  const chars = [...plain.replace(/\s+/g, ' ').trim()];
-  return chars.length > CONTEXT_CHARS ? `${chars.slice(0, CONTEXT_CHARS).join('')}…` : chars.join('');
-}
-
-// The replies to each thread among events: Map rootId -> { count, lastAt, newest, newestOther, actors }. newest is
-// the seq of the latest reply, newestOther that of the latest reply by someone other than me (0 when there is none),
-// lastAt the latest reply's time, actors the latest three distinct authors of replies that weren't removed, the
-// latest first. Counts cover the cached replies; an open room's cache reaches its head, so they are complete for
-// every root shown.
+// The replies to each thread among events: Map rootId -> { count, lastAt, newest, newestOther, others, actors }.
+// newest is the seq of the latest reply, newestOther that of the latest reply by someone other than me (0 when there
+// is none) and others the seqs of all of those that weren't removed, lastAt the latest reply's time, actors the latest
+// three distinct authors of replies that weren't removed, the latest first. Counts cover the cached replies; an open
+// room's cache reaches its head, so they are complete for every root shown.
 export function replyCounts(events, { me = null } = {}) {
   const out = new Map();
   for (const e of bySeq(events)) {
     if (!isMessage(e) || !e.root) continue;
     let s = out.get(e.root);
-    if (!s) out.set(e.root, (s = { count: 0, lastAt: null, newest: 0, newestOther: 0, actors: [] }));
+    if (!s) out.set(e.root, (s = { count: 0, lastAt: null, newest: 0, newestOther: 0, others: [], actors: [] }));
     s.count++;
     s.newest = e.seq;
-    if (e.actor !== me) s.newestOther = e.seq;
+    if (e.actor !== me) {
+      s.newestOther = e.seq;
+      if (!e.redacted) s.others.push(e.seq);
+    }
     s.lastAt = e.at;
     if (!e.redacted) s.actors = [e.actor, ...s.actors.filter((a) => a !== e.actor)].slice(0, 3);
   }
   return out;
+}
+
+// The replies of a thread that are new to the person on this visit (issue #376): by someone else, not removed, after
+// the read position the room had when it opened (readAtOpen, as for the New divider), and after the newest reply the
+// thread showed while it was open on this visit (seen: Map rootId -> seq). Nothing of this is stored or synced.
+const newIn = (s, root, readAtOpen, seen) => {
+  if (readAtOpen == null || !s) return [];
+  const from = Math.max(readAtOpen, (seen && seen.get(root)) || 0);
+  return s.others.filter((seq) => seq > from);
+};
+
+// The threads with new replies (newIn), the one with the oldest new reply first: [{ root, count, oldest }], count the
+// new replies and oldest the seq of the first of them. A reply whose root isn't loaded counts too: the thread finds its
+// root when it opens. The conversation's pill says how many there are and opens the first.
+export function newReplies(events, { me = null, readAtOpen = null, seen = null } = {}) {
+  if (readAtOpen == null) return [];
+  const out = [];
+  for (const [root, s] of replyCounts(events, { me })) {
+    const fresh = newIn(s, root, readAtOpen, seen);
+    if (fresh.length) out.push({ root, count: fresh.length, oldest: fresh[0] });
+  }
+  return out.sort((a, b) => a.oldest - b.oldest);
 }
 
 // The rows of a conversation's log, or of a thread with opts.root, in the order they show:
@@ -112,15 +121,16 @@ export function replyCounts(events, { me = null } = {}) {
 //   new    before the first message by someone else after the read position the room had when it opened
 //   sys    a system event
 //   msg    a message; in a thread, the root and its replies
-//   reply  a reply to a thread, in the main timeline, with the context line of its root
-// Every row has a stable key (the event ID, local:{id} for a pending send, or a fixed name) and a sig: a string of
-// what its DOM depends on, so the view rebuilds only rows whose sig changed.
+// A reply shows only in its thread (issue #376): the main timeline leaves replies and unsent replies out, and their
+// root carries the summary (replies). Every row has a stable key (the event ID, local:{id} for a pending send, or a
+// fixed name) and a sig: a string of what its DOM depends on, so the view rebuilds only rows whose sig changed.
 //
 // opts: me (your member ID), members (Map or list of Member), readAtOpen (the read seq when the room opened),
 // pending (Pending[] of the room), root (a thread's root ID), floor and hasOlder (from RoomView), blocked (Set of
 // member IDs you blocked), intro (passed through to the intro row: { actor, at, people }, where actor made the
-// conversation and people are the member IDs it names besides), groupMs, now, and sentLocal (Map messageId ->
-// local ID of sends that committed while the view was open, so the row keeps its key and its DOM node).
+// conversation and people are the member IDs it names besides), groupMs, now, sentLocal (Map messageId -> local ID
+// of sends that committed while the view was open, so the row keeps its key and its DOM node), and seen (Map rootId
+// -> the newest reply seq its thread showed on this visit, for newReplies).
 export function timeline(events, opts = {}) {
   const {
     me = null,
@@ -133,16 +143,17 @@ export function timeline(events, opts = {}) {
     intro = null,
     groupMs = GROUP_MS,
     now = Date.now(),
-    sentLocal = null
+    sentLocal = null,
+    seen = null
   } = opts;
   const members = asMap(opts.members);
   const list = bySeq(events);
   const messages = new Map(list.filter(isMessage).map((e) => [e.id, e]));
   const counts = replyCounts(list, { me });
-  const shown = root ? list.filter((e) => isMessage(e) && (e.id === root || e.root === root)) : list;
+  const shown = root ? list.filter((e) => isMessage(e) && (e.id === root || e.root === root)) : list.filter((e) => !(isMessage(e) && e.root));
   const committed = new Set(sentLocal ? [...sentLocal].filter(([id]) => messages.has(id)).map(([, local]) => local) : []);
   const waiting = (pending || [])
-    .filter((p) => p && p.local && !committed.has(p.local) && (root ? p.root === root : true))
+    .filter((p) => p && p.local && !committed.has(p.local) && (root ? p.root === root : !p.root))
     .slice()
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
@@ -235,7 +246,7 @@ export function timeline(events, opts = {}) {
     const mentionsMe = !removed && actor !== me && mentionsMember(text, mentions, me, { blocked: isBlocked });
     const author = members.get(actor) || null;
     const row = {
-      type: threadOf && !root ? 'reply' : 'msg',
+      type: 'msg',
       key: isPending ? `local:${item.local}` : sentLocal?.has(item.id) ? `local:${sentLocal.get(item.id)}` : item.id,
       seq: isPending ? null : item.seq,
       id: isPending ? null : item.id,
@@ -256,22 +267,14 @@ export function timeline(events, opts = {}) {
       pending: isPending ? item.state : null,
       reason: isPending ? (item.reason ?? null) : null,
       nextAt: isPending ? (item.nextAt ?? null) : null,
-      replies: null,
-      context: null
+      replies: null
     };
     if (!threadOf && !isPending) {
       const s = counts.get(item.id);
-      // Like the New divider, your own replies are never new to you.
-      if (s) row.replies = { ...s, hasNew: readAtOpen != null && s.newestOther > readAtOpen };
-    }
-    if (row.type === 'reply') {
-      const top = messages.get(threadOf);
-      if (!top) row.context = { state: 'missing', root: threadOf };
-      else if (top.redacted || top.text == null) row.context = { state: 'removed', root: threadOf };
-      else row.context = { state: 'ok', root: threadOf, actor: top.actor, author: members.get(top.actor) || null, text: snippet(top.text, top.mentions), files: listOf(top.attachments).length };
+      // Like the New divider, your own replies are never new to you, and neither are the ones its thread showed.
+      if (s) row.replies = { ...s, hasNew: newIn(s, item.id, readAtOpen, seen).length > 0 };
     }
     const r = row.replies;
-    const c = row.context;
     row.sig = [
       row.type,
       row.seq ?? '',
@@ -285,7 +288,6 @@ export function timeline(events, opts = {}) {
       memberSig(author),
       removed ? '' : mentionNames(text, mentions),
       r ? [r.count, r.hasNew ? 1 : 0, r.lastAt ?? '', r.actors.map((a) => `${a}=${members.get(a)?.name ?? ''}`).join(' ')].join(',') : '',
-      c ? [c.state, c.text ?? '', c.files ?? 0, memberSig(c.author)].join(',') : '',
       richSig(attachments, previews, reactions, members)
     ].join('\u0001');
     rows.push(row);
@@ -506,7 +508,7 @@ export function modeBadge({ attention: n = 0, unread = false } = {}) {
 // or list, is the directory that says so). Never a pending send or one already removed.
 export function canRemove(event, me, room, members = null) {
   if (!event) return false;
-  const message = event.kind ? event.kind === 'message.posted' : event.type === 'msg' || event.type === 'reply';
+  const message = event.kind ? event.kind === 'message.posted' : event.type === 'msg';
   if (!message || event.redacted || event.removed || event.pending || event.seq == null) return false;
   if (me && event.actor === me) return true;
   if (room && room.kind === 'channel' && room.role === 'manager') return true;

@@ -254,11 +254,18 @@ test('an agent made in the Agents dialog joins general through Add people, is me
     .toBe(true);
   expect(asked.text).toBe('@Clark what changed today?');
 
-  // The agent's reply, posted with its key as a runner does, shows in the thread of the question with the Agent tag.
+  // The agent's reply, posted with its key as a runner does, shows in the thread of the question with the Agent tag,
+  // and only there (issue #376): the question in the log counts it, with the dot for a reply new to Bart, who asked.
   await server.agentReply(key, ws.id, ws.general, { trigger: asked.id, text: 'Two fixes went out.' });
-  const reply = messageRow(win, 'Two fixes went out.');
+  const question = win.locator(`section.chat .ch-main .ch-log li.ch-msg[data-id="${asked.id}"]`);
+  await expect(question.locator('.ch-replies-n')).toHaveText('1 reply', { timeout: 15000 });
+  await expect(question.locator('.ch-replies')).toHaveClass(/has-new/);
+  await expect(messageRow(win, 'Two fixes went out.')).toHaveCount(0);
+  await question.locator('.ch-replies').click();
+  const reply = messageRow(win, 'Two fixes went out.', { thread: true });
   await expect(reply).toHaveCount(1, { timeout: 15000 });
   await expect(reply).toHaveAttribute('data-root', asked.id);
+  await expect(question.locator('.ch-replies')).not.toHaveClass(/has-new/);
   await expect(reply.locator('.ch-name')).toHaveText('Clark');
   await expect(reply.locator('.ch-tag')).toHaveText('Agent');
   await expect(reply.locator('.avatar')).toHaveClass(/\bis-agent\b/);

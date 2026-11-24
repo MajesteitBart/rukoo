@@ -72,7 +72,7 @@ Channel names are 1 to 80 characters on one line, shown as typed with `#` in fro
 Type in the box under the conversation and press `Enter` to send. `Shift+Enter` starts a new line. A message can be 16 KiB of text, a few thousand words, and mention 32 people at most.
 
 - **Mentions.** Type `@` and pick a person from the list. They get a notification and the message is marked for them. Typing an `@name` by hand without picking doesn't notify anyone.
-- **Threads.** Hover over a message and choose **Reply in thread**. The thread opens beside the conversation, or over it in a narrow window. Replies also show in the conversation itself, with a line saying who they answer; clicking that line opens the thread. A message with replies shows how many and when the last one came.
+- **Threads.** Hover over a message and choose **Reply in thread**. The thread opens beside the conversation, or over it in a narrow window. Replies show only in their thread, not in the conversation. The message they answer shows how many there are and when the last one came, with a dot while some came since you last read the conversation; clicking that line opens the thread, and the dot goes once the thread showed them. When such replies are in threads whose first message is out of view, a pill at the top of the conversation says so, such as "2 new replies in a thread" or "5 new replies in 3 threads", and opens the thread with the oldest of them. The dot and the pill are for this visit, like the New line: they aren't kept or synced.
 - **Removing.** You can remove your own messages, also in a closed conversation. A channel manager can remove anyone's message in that channel, and an agent's sponsor the agent's replies. Rukoo asks first. The message is replaced by "Message removed" for everyone, and its files, link previews and reactions go with it.
 - **Offline.** Messages you send without a connection wait and go out once Rukoo reconnects. A message that can't be sent says why and offers to try again or discard it. Unsent text stays as a draft in each conversation, also after a restart.
 
@@ -126,9 +126,10 @@ When a message holds a web address, the server fetches the page and adds a previ
 
 - A channel with unread messages shows bold with a count. A channel where someone mentioned you, and a direct message with unread messages, shows an accent badge with the count.
 - The Chat tab in the title bar shows the number of mentions and unread direct messages in all your workspaces, or a dot when only channels have unread messages. The taskbar badge counts mail only.
-- Rukoo marks messages read as you scroll past them while its window has focus. **Mark as read** in the More menu, or `Shift+Esc`, marks the whole conversation read. A read on your phone counts here too.
+- Rukoo marks messages read as you scroll past them while its window has focus. Replies count as unread too, and scrolling past the message before them reads them with it, as when they showed in the conversation; the dot and the pill say they came. **Mark as read** in the More menu, or `Shift+Esc`, marks the whole conversation read. A read on your phone counts here too.
 - **Mark unread** in a message's More menu makes that message and everything after it unread again: the New line moves there and the badge comes back, also on your other devices. The conversation then stops marking messages read until you open it again, so it stays unread while it's on screen.
-- Rukoo notifies you of new direct messages and of mentions, unless the conversation is on screen. Clicking a notification opens the conversation at that message. When you read the messages here or on another device, the notification goes away. **Settings → General → Team chat notifications** turns these off.
+- Rukoo notifies you of new direct messages, of mentions and of replies to your messages, such as "Olga replied: I do", unless the conversation is on screen. A reply notifies while only its conversation is on screen, because it doesn't show there, but not while its thread is open. Clicking a notification opens the conversation at that message, and a reply in its thread. When you read the messages here or on another device, the notification goes away. **Settings → General → Team chat notifications** turns these off.
+- The server doesn't say whose thread a reply is in, so Rukoo finds out from the thread's first message: on this computer, or among the newest messages it loads for a channel, at most 20, with new messages since you last read it. It loads those once until you read the channel again, so a later reply in a channel you haven't read since notifies only when the channel is open, or when the same channel has a mention for you. A reply to a message this computer doesn't have, such as one you wrote on your phone in a channel you haven't opened here since, doesn't notify.
 - **Mute** in a conversation's More menu silences it on this device: no notifications, no badges, and its row is dimmed. Mute isn't synced to your other devices.
 
 ## Blocking someone
@@ -189,7 +190,7 @@ In a private channel only its managers add agents, and only agents whose sponsor
 
 Type `@` and pick the agent from the list, as for a person. An `@name` typed by hand doesn't reach it. When the agent won't answer you, because it answers only its sponsor or chosen people, the list says so, such as "Answers only Olga", or "Answers only the person who made it" when Rukoo doesn't know its sponsor, as for a guest who shares no channel with them. You can still mention it, and the server makes sure it doesn't answer. Asking another agent to mention it doesn't help either, because whom an agent answers is about the person who started the chain ([Agents answering agents](#agents-answering-agents)).
 
-The agent answers in the thread of the message that mentioned it, or starts a thread under it, and answers each mention once. A long answer can come as up to five messages. The server checks every reply before it posts it: the agent is in the channel, the message mentions it and came after the agent was added, its author is still in the channel, and so is the person who started the chain, who must be someone the agent answers. For a message a person wrote, that person is its author. A mention made before the agent came in gets no answer.
+The agent answers in the thread of the message that mentioned it, or starts a thread under it, and answers each mention once. When you wrote that message, its answer notifies you as a reply; when you asked inside someone else's thread, the dot under that thread's first message and the pill for new replies show it. A long answer can come as up to five messages. The server checks every reply before it posts it: the agent is in the channel, the message mentions it and came after the agent was added, its author is still in the channel, and so is the person who started the chain, who must be someone the agent answers. For a message a person wrote, that person is its author. A mention made before the agent came in gets no answer.
 
 An agent's replies carry no files. A channel manager can remove an agent's reply like any other message, and so can the agent's sponsor, also after the agent was removed. The sponsor can take a link preview off a reply too. The agent itself can't remove its replies.
 
@@ -289,7 +290,7 @@ The agents in your chat panel don't see team chat. In Chat mode the panel says s
 - Direct messages with guests.
 - Workspaces on another Rukoo server than your account's.
 - Opening invitation links straight into Rukoo.
-- Notifications for replies in a thread you follow.
+- Notifications for replies in a thread you only replied in, or follow, and an unread count for replies apart from the conversation's.
 - Renaming a workspace, and deleting one that still has other members.
 - Agents in direct messages, agents posting without a mention, and files in an agent's reply.
 - Starting an agent's runner from Rukoo itself.

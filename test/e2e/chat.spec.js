@@ -4,7 +4,7 @@ const { test, expect } = require('@playwright/test');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
 const { mention } = require('../fixtures/real-server');
-const { PASSWORD, skipWithoutServer, startServer, launch, signIn, openChat, twoPeople, serverRead, roomRow } = require('./chat-helpers');
+const { PASSWORD, skipWithoutServer, startServer, launch, signIn, openChat, twoPeople, serverRead, roomRow, notices } = require('./chat-helpers');
 
 skipWithoutServer();
 
@@ -33,8 +33,9 @@ test.afterEach(async () => {
 
 const pane = () => win.locator('section.chat');
 const log = () => win.locator('section.chat .ch-log');
-// A message row by its own text (a reply's context line quotes its thread's first message).
+// A message row by its own text.
 const message = (text) => log().locator('li.ch-msg').filter({ has: win.locator('.ch-text', { hasText: text }) });
+const threadLog = () => win.locator('section.chat .ch-thread .ch-thread-log');
 
 // Settings, from wherever: back out of every page.
 async function closeSettings() {
@@ -202,28 +203,136 @@ test('a message Olga posts shows in the open room within five seconds', async ()
   await expect(message('Live from Olga').locator('.ch-vh')).toContainText('Olga Owner');
 });
 
-test('replies show in the main log with their context, and the first message sums up its thread', async () => {
+// Issue #376: a reply shows only under the message it answers, in its thread.
+test('replies stay in their thread, and the first message sums them up, with a dot for new ones, also as they come in', async () => {
   const { olga, bart, ws } = await twoPeople(server);
   const root = await server.post(olga, ws.id, ws.general, 'Plan for Friday: lunch at noon');
   await server.post(olga, ws.id, ws.general, 'I can bring snacks', { root: root.messageId });
   await server.post(bart, ws.id, ws.general, 'Count me in', { root: root.messageId });
+  const monday = await server.post(olga, ws.id, ws.general, 'Also, the office is closed on Monday');
+  await server.read(bart, ws.id, ws.general, monday.seq);
   ({ app, win } = await launch(server, { dataDir }));
   await signIn(win, bart);
   await openChat(win);
   const top = message('Plan for Friday');
   await expect(top).toBeVisible({ timeout: 15000 });
-  await expect(top).not.toHaveClass(/is-reply/);
   const summary = top.locator('.ch-replies');
   await expect(summary.locator('.ch-replies-n')).toHaveText('2 replies');
   await expect(summary.locator('.ch-replies-av .avatar')).toHaveCount(2);
   await expect(summary.locator('.ch-replies-at')).toContainText('Last reply');
-  const first = message('I can bring snacks');
-  await expect(first).toHaveClass(/is-reply/);
-  await expect(first.locator('.ch-context')).toHaveText('replied to Olga Owner: Plan for Friday: lunch at noon');
-  const mine = message('Count me in');
-  await expect(mine).toHaveClass(/is-reply/);
-  await expect(mine.locator('.ch-name')).toHaveText('Bart');
-  await expect(mine.locator('.ch-context')).toContainText('replied to Olga Owner');
+  // Bart had read them all: no dot.
+  await expect(summary).not.toHaveClass(/has-new/);
+  await expect(message('I can bring snacks')).toHaveCount(0);
+  await expect(message('Count me in')).toHaveCount(0);
+  await expect(log().locator('li.ch-msg')).toHaveCount(2);
+  await expect(win.locator('section.chat .ch-main .ch-context')).toHaveCount(0);
+  await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Connected', { timeout: 15000 });
+
+  // Olga answers again: the count and the time of the last reply follow at once, with the dot for something new, and
+  // the log doesn't move or count it as a new message below.
+  const noon = await server.post(olga, ws.id, ws.general, 'Noon works', { root: root.messageId });
+  await expect(summary.locator('.ch-replies-n')).toHaveText('3 replies', { timeout: 5000 });
+  await expect(summary).toHaveClass(/has-new/);
+  await expect(summary).toHaveAttribute('aria-label', /3 replies, some new/);
+  await expect(message('Noon works')).toHaveCount(0);
+  await expect(log().locator('li.ch-msg').last().locator('.ch-text')).toHaveText('Also, the office is closed on Monday');
+  await expect(pane().locator('.ch-jump.is-down')).toBeHidden();
+  // The first message is in view, so no pill points at it.
+  await expect(pane().locator('.ch-jump.is-thread')).toBeHidden();
+  // Reading the conversation reads the reply too, here and on the server (it has no row of its own to read).
+  await expect.poll(() => serverRead(server, bart, ws.id, ws.general), { timeout: 15000 }).toBeGreaterThanOrEqual(noon.seq);
+  await expect(roomRow(win, 'general')).not.toHaveClass(/is-unread/);
+  // The dot stays for this visit, as the New line does; the thread shows the replies, and then it goes.
+  await expect(summary).toHaveClass(/has-new/);
+  await summary.click();
+  await expect(threadLog().locator('li.ch-msg .ch-text')).toHaveText(['Plan for Friday: lunch at noon', 'I can bring snacks', 'Count me in', 'Noon works'], { timeout: 15000 });
+  await expect(summary).not.toHaveClass(/has-new/);
+});
+
+// Issue #376: the author of a thread's first message hears of a reply, which the conversation doesn't show.
+test('a reply to your message notifies "Name replied", and the notification opens the thread at it', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  const mine = await server.post(bart, ws.id, ws.general, 'Lunch on Friday?');
+  const hers = await server.post(olga, ws.id, ws.general, 'Who reviews the draft?');
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(message('Who reviews the draft?')).toBeVisible({ timeout: 15000 });
+  await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Connected', { timeout: 15000 });
+  await expect.poll(() => serverRead(server, bart, ws.id, ws.general), { timeout: 15000 }).toBeGreaterThanOrEqual(hers.seq);
+  // Bart moves to review, and the window counts as unfocused, so an alert is a notification.
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].isFocused = () => false;
+    global.__semChat.setFocused(false);
+  });
+
+  // Olga answers Bart's question: general counts it as unread, and the notification says she replied.
+  const answer = await server.post(olga, ws.id, ws.general, 'Yes, at noon', { root: mine.messageId });
+  await expect(roomRow(win, 'general').locator('.count')).toHaveText('1', { timeout: 15000 });
+  await expect.poll(async () => (await notices(app)).find((n) => String(n.body).includes('Yes, at noon')), { timeout: 20000 }).toBeTruthy();
+  const notice = (await notices(app)).find((n) => String(n.body).includes('Yes, at noon'));
+  expect(notice).toMatchObject({ title: '#general', body: 'Olga Owner replied: Yes, at noon', open: { ws: ws.id, conversation: ws.general, seq: answer.seq } });
+  // A reply in Olga's own thread is nothing for Bart: no notification.
+  await server.post(olga, ws.id, ws.general, 'I can', { root: hers.messageId });
+  await expect(roomRow(win, 'general').locator('.count')).toHaveText('2', { timeout: 15000 });
+  await win.waitForTimeout(1500);
+  expect((await notices(app)).filter((n) => String(n.body).includes('I can'))).toEqual([]);
+
+  // Clicking it opens general with the thread beside it at the reply, which isn't in the log.
+  await app.evaluate((_, open) => global.__semChatOpen(open), notice.open);
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  await expect(threadLog().locator(`li.ch-msg[data-seq="${answer.seq}"]`)).toBeVisible({ timeout: 15000 });
+  await expect(threadLog().locator(`li.ch-msg[data-id="${mine.messageId}"]`)).toBeVisible();
+  await expect(message('Yes, at noon')).toHaveCount(0);
+  await expect(message('Lunch on Friday?').locator('.ch-replies-n')).toHaveText('1 reply');
+  await expect(message('Lunch on Friday?').locator('.ch-replies')).not.toHaveClass(/has-new/);
+});
+
+// Issue #376: replies whose first message is out of view get a pill that opens their thread, the oldest first.
+test('new replies in threads out of view show a pill that opens each thread in turn, and goes once all showed', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  const sanne = await server.seedAccount();
+  await server.seedMember(ws, sanne, 'Sanne');
+  const question = await server.post(bart, ws.id, ws.general, 'Lunch on Friday?');
+  const plan = await server.post(sanne, ws.id, ws.general, 'Draft plan for the offsite');
+  // Forty messages Bart read, then two answers in the two threads, far above where he read.
+  for (let i = 1; i <= 40; i++) await server.post(i % 2 ? olga : sanne, ws.id, ws.general, `News ${i}`);
+  const read = await server.post(sanne, ws.id, ws.general, 'News 41');
+  await server.read(bart, ws.id, ws.general, read.seq);
+  const answer = await server.post(olga, ws.id, ws.general, 'Yes, at noon', { root: question.messageId });
+  const note = await server.post(olga, ws.id, ws.general, 'Looks good', { root: plan.messageId });
+  await server.post(olga, ws.id, ws.general, 'One more thing', { root: plan.messageId });
+  await server.post(sanne, ws.id, ws.general, 'News 42');
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(message('News 42')).toBeVisible({ timeout: 15000 });
+  await expect(message('Yes, at noon')).toHaveCount(0);
+  const pill = pane().locator('.ch-jump.is-thread');
+  await expect(pill).toHaveText('3 new replies in 2 threads', { timeout: 15000 });
+  await expect(pill).toHaveAttribute('aria-label', '3 new replies in 2 threads, open the thread');
+  // The oldest new reply first: Bart's question.
+  await pill.click();
+  await expect(threadLog().locator(`li.ch-msg[data-seq="${answer.seq}"]`)).toBeVisible({ timeout: 15000 });
+  await expect(threadLog().locator(`li.ch-msg[data-id="${question.messageId}"]`)).toBeVisible();
+  await expect(pill).toHaveText('2 new replies in a thread');
+  await pill.click();
+  await expect(threadLog().locator(`li.ch-msg[data-seq="${note.seq}"]`)).toBeVisible({ timeout: 15000 });
+  await expect(pill).toBeHidden();
+  await win.locator('section.chat .ch-thread [data-ch="thread-close"]').click();
+  await expect(pill).toBeHidden();
+  // Scrolled up to the question, its dot is gone too: its thread showed the reply.
+  await message('Lunch on Friday?').scrollIntoViewIfNeeded();
+  await expect(message('Lunch on Friday?').locator('.ch-replies')).not.toHaveClass(/has-new/);
+
+  // A new reply later in a thread out of view brings the pill back.
+  await server.post(sanne, ws.id, ws.general, 'News 43');
+  await message('News 43').scrollIntoViewIfNeeded();
+  await server.post(olga, ws.id, ws.general, 'Actually, half past twelve', { root: question.messageId });
+  await expect(pill).toHaveText('1 new reply in a thread', { timeout: 15000 });
 });
 
 // Main has the seeded workspace and its channels: the cache can be changed under it.

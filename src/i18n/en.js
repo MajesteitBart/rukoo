@@ -10911,17 +10911,17 @@
     "message": "Last reply {time}",
     "description": "Message list: text beside the reply count. {time}: when the newest reply came. src/renderer/chat-view.js"
   },
-  "chat.log.replyTo": {
-    "message": "replied to {name}: {text}",
-    "description": "Message list: context line above a reply in the main timeline; a click opens its thread. {name}: the author of the thread's first message; {text}: the start of that message. src/renderer/chat-view.js"
+  "chat.log.threadNew": {
+    "message": { "one": "{count} new reply in a thread", "other": "{count} new replies in a thread" },
+    "description": "Message list: pill at the top of a conversation when one thread whose first message is out of view has replies that came since you last read it; a click opens that thread. Replies show only in their thread. {count}: the new replies. src/renderer/chat-view.js"
   },
-  "chat.log.replyToRemoved": {
-    "message": "replied to a removed message",
-    "description": "Message list: context line above a reply whose thread's first message was removed. src/renderer/chat-view.js"
+  "chat.log.threadsNew": {
+    "message": { "one": "{count} new reply in {threads} threads", "other": "{count} new replies in {threads} threads" },
+    "description": "Message list: the same pill when two or more threads out of view have new replies; a click opens the thread with the oldest of them. {count}: the new replies, always 2 or more; {threads}: the threads. src/renderer/chat-view.js"
   },
-  "chat.log.replyInThread": {
-    "message": "replied in a thread",
-    "description": "Message list: context line above a reply whose thread's first message isn't on this computer. src/renderer/chat-view.js"
+  "chat.log.threadNewOpen": {
+    "message": "open the thread",
+    "description": "Message list: end of the accessible name of the new replies pill, after its text and a comma, as in \"2 new replies in a thread, open the thread\". src/renderer/chat-view.js"
   },
   "chat.sys.created": {
     "message": "{actor} made #{name}",
@@ -12450,6 +12450,10 @@
   "chat.notify.body": {
     "message": "{name}: {text}",
     "description": "Team chat notification: body line. {name}: the author; {text}: the first 120 characters of the message, with mentions as @Name. src/main/workspaces/notify.js"
+  },
+  "chat.notify.reply": {
+    "message": "{name} replied: {text}",
+    "description": "Team chat notification: body line for a reply in a thread, which shows only in its thread; a click opens the thread at it. {name}: the author; {text}: the first 120 characters of the reply, with mentions as @Name. src/main/workspaces/notify.js"
   },
   "chat.notify.summaryTitle": {
     "message": "Team chat",

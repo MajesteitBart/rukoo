@@ -2,7 +2,7 @@ import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog, dialog, esc } from './ui.js';
 import { h } from './agent/bui.js';
-import { timeline, displayName, memberTag, canRemove, closedBar, applyReaction, reacted, canMessageAuthor, canBlockAuthor, isAgent, agentMentionNote, sponsorsAuthor } from './chat-model.js';
+import { timeline, newReplies, displayName, memberTag, canRemove, closedBar, applyReaction, reacted, canMessageAuthor, canBlockAuthor, isAgent, agentMentionNote, sponsorsAuthor } from './chat-model.js';
 import { toParts, appendToDraft } from './chat-text.js';
 import { plainText } from './chat-markdown.js';
 import { mountChatInput } from './chat-input.js';
@@ -108,10 +108,12 @@ export function mountView(section, H) {
   scroll.append(older, log);
   const jumpUp = h('button', { class: 'ch-jump is-up', type: 'button', 'data-ch': 'jump-unread', hidden: true });
   const jumpDown = h('button', { class: 'ch-jump is-down', type: 'button', 'data-ch': 'jump-latest', hidden: true });
+  // New replies in threads whose first message is out of view (issue #376): it opens the thread with the oldest one.
+  const jumpThread = h('button', { class: 'ch-jump is-thread', type: 'button', 'data-ch': 'jump-thread', hidden: true });
   // Where dragged files land (contract 5.2): over the log and composer it drops into, while files are dragged.
   const drop = h('div', { class: 'ch-drop', 'aria-hidden': 'true', hidden: true }, h('div', { class: 'ch-drop-box' }, svg('clip'), h('span', { class: 'ch-drop-text' })));
   // The log and the pills over it, which sit at its own top and bottom edge.
-  const area = h('div', { class: 'ch-log-area', hidden: true }, scroll, jumpUp, jumpDown);
+  const area = h('div', { class: 'ch-log-area', hidden: true }, scroll, jumpUp, jumpThread, jumpDown);
   const compose = h('div', { class: 'ch-compose', hidden: true });
   const empty = h('div', { class: 'ch-empty', hidden: true });
   const announce = h('div', { class: 'ch-announce', 'aria-live': 'polite' });
@@ -178,13 +180,18 @@ export function mountView(section, H) {
       openError: null,
       // 'idle', 'loading' or 'failed'.
       older: 'idle',
-      // Reading (contract 3.9): the highest message seen fully in view while it counted, and the last one reported.
+      // Reading (contract 3.9): the rows seen fully in view (their seqs; 0 for the intro or floor row at the top), the
+      // highest seq that made read while it counted, and the last one reported.
       visible: new Set(),
       readBest: 0,
       readSent: 0,
       readTimer: null,
       // New messages below the view while it was scrolled up.
       unseen: 0,
+      // Replies on this visit (issue #376): rootId -> the newest reply seq its thread showed, and the threads with new
+      // replies (chat-model.js newReplies), for the dots under their first messages and the pill. View state only.
+      seen: new Map(),
+      threads: [],
       nodes: new Map(),
       // The rows on screen by key, for the tools and menus.
       rows: new Map(),
@@ -207,8 +214,8 @@ export function mountView(section, H) {
   const io = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
-        const seq = Number(e.target.dataset.seq);
-        if (!seq) continue;
+        const seq = e.target.dataset.top !== undefined ? 0 : Number(e.target.dataset.seq);
+        if (!Number.isSafeInteger(seq) || (!seq && e.target.dataset.top === undefined)) continue;
         const tall = e.rootBounds && e.intersectionRect.height >= e.rootBounds.height * 0.9;
         if (e.isIntersecting && (e.intersectionRatio >= 0.9 || tall)) V.visible.add(seq);
         else V.visible.delete(seq);
@@ -230,10 +237,28 @@ export function mountView(section, H) {
     !document.querySelector('#overlays .page, .scrim') &&
     !(T && getComputedStyle(thread).position === 'absolute');
 
+  // How far a row seen in view reads (issue #376): replies show only in their threads, so a row reads on over the
+  // events after it that have no row of their own, up to the next row with a seq; the last row reads to the newest
+  // event loaded, which is the room's head once the log has loaded. The intro or floor row at the top (0) reads to the
+  // first row. So scrolling past the conversation reads the replies in it, as it did when they showed in the log.
+  function readThrough(seq) {
+    let next = Infinity;
+    for (const li of log.querySelectorAll('li[data-seq]')) {
+      const s = Number(li.dataset.seq);
+      if (s > seq && s < next) next = s;
+    }
+    if (next !== Infinity) return next - 1;
+    let top = seq;
+    for (const e of V.events) if (e.seq > top) top = e.seq;
+    return Number.isSafeInteger(V.hi) ? Math.max(top, V.hi) : top;
+  }
+
   function considerRead() {
     if (!canRead() || V.paused || (V.room && V.room.readingPaused)) return;
+    if (!V.visible.size) return;
     let best = 0;
-    for (const s of V.visible) if (s > best) best = s;
+    for (const s of V.visible) if (s >= best) best = s;
+    best = readThrough(best);
     if (best <= V.readBest) return;
     V.readBest = best;
     clearTimeout(V.readTimer);
@@ -865,7 +890,8 @@ export function mountView(section, H) {
       V.room = { ...V.room, head: p.head, floor: p.floor };
       V.loaded = true;
       V.opening = false;
-      const arrivals = wasLoaded && !p.replace ? list.filter((e) => e.kind === 'message.posted' && e.seq > hiBefore) : [];
+      // A reply shows only in its thread: it neither fades in nor counts toward Latest in the log (issue #376).
+      const arrivals = wasLoaded && !p.replace ? list.filter((e) => e.kind === 'message.posted' && !e.root && e.seq > hiBefore) : [];
       render({ position: !wasLoaded || p.replace ? 'open' : stick ? 'bottom' : 'keep', arrivals });
       if (T) {
         const mine = list.filter(inThread);
@@ -944,6 +970,8 @@ export function mountView(section, H) {
       clearTimeout(V.readTimer);
       V.readBest = V.readSent = room.read;
       V.readAtOpen = room.read;
+      // Replies after it are new again, also those a thread showed.
+      V.seen.clear();
     }
     // Main sends a floor that moved without the events when the log shows nothing below it that it pushed: the log
     // still drops what aged out.
@@ -1020,7 +1048,7 @@ export function mountView(section, H) {
     const caps = [...H.caps()].sort().join(',');
     for (const r of rows) {
       if (r.pending) r.sig += `\u0001${lookOf(r)}`;
-      if (r.type === 'msg' || r.type === 'reply') r.sig += `\u0001${caps}`;
+      if (r.type === 'msg') r.sig += `\u0001${caps}`;
     }
     return rows;
   }
@@ -1043,14 +1071,16 @@ export function mountView(section, H) {
         blocked: H.blocks(),
         intro: introOf(),
         now: Date.now(),
-        sentLocal: V.sentLocal
+        sentLocal: V.sentLocal,
+        seen: V.seen
       })
     );
     V.rows = new Map(rows.map((r) => [r.key, r]));
+    V.threads = newReplies(V.events, { me: H.me(), readAtOpen: V.readAtOpen, seen: V.seen });
     const fresh = new Set(arrivals.map((e) => e.id));
     V.nodes = reconcile(log, V.nodes, rows, { observe: true, fresh, focusKey: V.focusKey, thread: false });
     // Visible rows that went no longer count.
-    for (const seq of [...V.visible]) if (!log.querySelector(`li[data-seq="${seq}"]`)) V.visible.delete(seq);
+    for (const seq of [...V.visible]) if (seq ? !log.querySelector(`li[data-seq="${seq}"]`) : !log.querySelector('li[data-top]')) V.visible.delete(seq);
     renderOlder();
     if (position === 'open') positionOpen();
     else if (position === 'at') positionAt();
@@ -1082,7 +1112,7 @@ export function mountView(section, H) {
         li.dataset.key = row.key;
         li.dataset.sig = row.sig;
         if (fresh.has(row.id) && !reduced()) li.classList.add('is-arriving');
-        if (observe && li.dataset.seq) io.observe(li);
+        if (observe && (li.dataset.seq || li.dataset.top !== undefined)) io.observe(li);
       }
       next.set(row.key, li);
     }
@@ -1120,7 +1150,7 @@ export function mountView(section, H) {
 
   // A selector for the same control in a row's new copy.
   function controlKey(el) {
-    const c = el.closest('[data-ch-tool], [data-emoji], .ch-react-add, [data-file], .ch-card-title, .ch-card-x, .ch-replies, .ch-context');
+    const c = el.closest('[data-ch-tool], [data-emoji], .ch-react-add, [data-file], .ch-card-title, .ch-card-x, .ch-replies');
     if (!c) return null;
     if (c.dataset.chTool) return `[data-ch-tool="${CSS.escape(c.dataset.chTool)}"]`;
     if (c.dataset.emoji) return `.ch-react[data-emoji="${CSS.escape(c.dataset.emoji)}"]`;
@@ -1128,7 +1158,7 @@ export function mountView(section, H) {
     if (c.dataset.file) return `[data-file="${CSS.escape(c.dataset.file)}"]${c.classList.contains('ch-file') ? ` .${[...el.classList].find((x) => x.startsWith('ch-file-')) || 'ch-file-main'}` : ''}`;
     if (c.classList.contains('ch-card-title')) return '.ch-card-title';
     if (c.classList.contains('ch-card-x')) return '.ch-card-x';
-    return c.classList.contains('ch-replies') ? '.ch-replies' : '.ch-context';
+    return '.ch-replies';
   }
 
   function build(row, ctx) {
@@ -1142,7 +1172,7 @@ export function mountView(section, H) {
       case 'floor': {
         // Older messages aged out. The server always says how long it keeps them; without that the row stays empty.
         const days = H.state()?.retention?.contentDays;
-        return h('li', { class: 'ch-floor' }, days ? h('span', { text: t('chat.log.retentionFloor', { count: days }) }) : null);
+        return h('li', { class: 'ch-floor', 'data-top': '' }, days ? h('span', { text: t('chat.log.retentionFloor', { count: days }) }) : null);
       }
       case 'tdiv': {
         const label = t('chat.log.replies', { count: row.count });
@@ -1159,7 +1189,7 @@ export function mountView(section, H) {
 
   function buildIntro(row) {
     const room = V.room || {};
-    const li = h('li', { class: 'ch-intro' });
+    const li = h('li', { class: 'ch-intro', 'data-top': '' });
     const name = H.roomName(room);
     const ic = h('span', { class: 'ch-intro-ic', 'aria-hidden': 'true' });
     if (room.kind === 'dm') {
@@ -1212,15 +1242,6 @@ export function mountView(section, H) {
     li.append(h('span', { class: 'ch-sys-ic', 'aria-hidden': 'true' }, svg(SYS_ICONS[row.sys] || 'info')));
     li.append(h('span', { class: 'ch-sys-text', text: sysText(row) }), timeEl(row.at, 'ch-time'));
     return li;
-  }
-
-  // A reply's context line opens its thread (contract 3.13).
-  function contextLine(c) {
-    let text;
-    if (c.state === 'ok') text = t('chat.log.replyTo', { name: displayName(c.author, t), text: c.text || summaryOf('', Array.from({ length: c.files || 0 })) });
-    else if (c.state === 'removed') text = t('chat.log.replyToRemoved');
-    else text = t('chat.log.replyInThread');
-    return h('button', { type: 'button', class: 'ch-context', 'data-ch': 'thread', 'data-root': c.root, 'data-roving': '', title: text, tabindex: '-1' }, svg('reply'), h('span', { text }));
   }
 
   // The message's Markdown (contract 3.3), its mentions named in their tooltips.
@@ -1366,6 +1387,7 @@ export function mountView(section, H) {
     clearTimeout(V.readTimer);
     V.readBest = V.readSent = read;
     V.readAtOpen = read;
+    V.seen.clear();
     if (V.loaded) render({ position: 'keep' });
     toast(t('chat.msg.markedUnread'));
   }
@@ -1489,7 +1511,6 @@ export function mountView(section, H) {
     const name = displayName(author, t);
     const cls = [
       'ch-msg',
-      row.type === 'reply' && 'is-reply',
       row.head ? 'is-head' : 'is-cont',
       row.removed && 'is-removed',
       row.mentionsMe && 'mentions-me',
@@ -1504,7 +1525,6 @@ export function mountView(section, H) {
     if (row.local) li.dataset.local = row.local;
     if (row.root) li.dataset.root = row.root;
     if (row.pending) li.dataset.state = row.pending;
-    if (row.type === 'reply' && row.head && row.context) li.append(contextLine(row.context));
     if (row.head) li.append(avatarEl(row.actor, name, { deleted, agent: isAgent(author) }));
     else li.append(timeEl(row.at, 'ch-time is-gutter'));
     const body = h('div', { class: 'ch-body' });
@@ -1732,12 +1752,21 @@ export function mountView(section, H) {
     else toBottom(false);
   }
 
-  // Opening at a notification's message: in view, outlined for two seconds; a reply opens its thread too. When the open
+  // Opening at a notification's message: in view, outlined for two seconds; a reply opens its thread at it, with its
+  // first message in view when that is loaded (a reply has no row of its own in the log, issue #376). When the open
   // didn't reach it (contract 3.7), the log goes to the event it opened at instead, unmarked and with no thread, as
   // that is another message: the end when that is the newest cached one (the requests failed), as on Android.
   function positionAt() {
     const at = V.at;
     if (!V.complete && (at === null || at === V.hi)) return toBottom(false);
+    const reply = V.complete ? V.events.find((e) => e.seq === at && e.kind === 'message.posted' && e.root) : null;
+    if (reply) {
+      const top = log.querySelector(`li.ch-msg[data-id="${CSS.escape(reply.root)}"]`);
+      if (top) top.scrollIntoView({ block: 'center' });
+      else positionOpen();
+      openThread(reply.root, { seq: at });
+      return;
+    }
     const rows = [...log.querySelectorAll('li[data-seq]')];
     const target = rows.find((li) => Number(li.dataset.seq) === at) || rows.find((li) => Number(li.dataset.seq) >= at) || rows[rows.length - 1];
     if (!target) return positionOpen();
@@ -1746,7 +1775,6 @@ export function mountView(section, H) {
     target.classList.add('is-target');
     clearTimeout(V.targetTimer);
     V.targetTimer = setTimeout(() => target.classList.remove('is-target'), TARGET_MS);
-    if (target.dataset.root) openThread(target.dataset.root, { seq: Number(target.dataset.seq) });
   }
 
   function toNew() {
@@ -1755,12 +1783,14 @@ export function mountView(section, H) {
     scroll.scrollTo({ top: Math.max(0, divider.offsetTop - scroll.clientHeight / 3), behavior: behavior() });
   }
 
-  // The pills over the log: new messages below, and unread ones above while the New divider is out of view.
+  // The pills over the log: new messages below, unread ones above while the New divider is out of view, and new replies
+  // in threads whose first message is out of view.
   function updateJumps() {
     if (mode !== 'room' || !V.loaded) {
-      jumpUp.hidden = jumpDown.hidden = true;
+      jumpUp.hidden = jumpDown.hidden = jumpThread.hidden = true;
       return;
     }
+    updateThreadPill();
     if (atBottom()) V.unseen = 0;
     if (V.unseen > 0) {
       const text = t('chat.log.latestCount', { count: V.unseen });
@@ -1783,6 +1813,42 @@ export function mountView(section, H) {
       }
       jumpUp.hidden = false;
     } else jumpUp.hidden = true;
+  }
+
+  // Whether the row of a message shows in the log's view, at least in part.
+  function inView(id) {
+    const li = log.querySelector(`li.ch-msg[data-id="${CSS.escape(id)}"]`);
+    if (!li) return false;
+    const box = li.getBoundingClientRect();
+    const view = scroll.getBoundingClientRect();
+    return box.bottom > view.top && box.top < view.bottom && box.height > 0;
+  }
+
+  // The threads with new replies (V.threads) whose first message is out of view: [] when there are none.
+  const pillThreads = () => V.threads.filter((x) => !inView(x.root));
+
+  // The pill for new replies in threads out of view (issue #376): "2 new replies in a thread", "5 new replies in 3
+  // threads". It opens the thread with the oldest of them, and goes once every such thread showed its replies.
+  function updateThreadPill() {
+    const list = pillThreads();
+    if (!list.length) {
+      jumpThread.hidden = true;
+      return;
+    }
+    const count = list.reduce((n, x) => n + x.count, 0);
+    const text = list.length === 1 ? t('chat.log.threadNew', { count }) : t('chat.log.threadsNew', { count, threads: list.length });
+    if (jumpThread.dataset.text !== text) {
+      jumpThread.textContent = '';
+      jumpThread.append(svg('thread'), h('span', { text }));
+      jumpThread.dataset.text = text;
+      jumpThread.setAttribute('aria-label', `${text}, ${t('chat.log.threadNewOpen')}`);
+    }
+    jumpThread.hidden = false;
+  }
+
+  function toThreadReply() {
+    const first = pillThreads()[0];
+    if (first) openThread(first.root, { seq: first.oldest });
   }
 
   // Messages that arrive while the window has focus are read out once each (desktop-ui 5.3).
@@ -1871,6 +1937,19 @@ export function mountView(section, H) {
     else if (position === 'anchor') tScroll.scrollTop = topBefore + (tScroll.scrollHeight - heightBefore);
     else if (position === 'restore' && restore !== null) tScroll.scrollTop = restore;
     else if (position === 'at') threadAt();
+    threadShown();
+  }
+
+  // The open thread shows its replies (issue #376): those up to its newest are no longer new on this visit, so the dot
+  // under its first message and its part of the pill go. The log draws again only when that changed.
+  function threadShown() {
+    if (!T) return;
+    let newest = 0;
+    for (const e of T.ev.values()) if (e.kind === 'message.posted' && e.root === T.root && e.seq > newest) newest = e.seq;
+    if (newest <= (V.seen.get(T.root) || 0)) return;
+    V.seen.set(T.root, newest);
+    // 'keep': this can run inside render() itself, when opening at a notification's reply opens its thread.
+    if (V.loaded) render({ position: 'keep' });
   }
 
   function threadAt() {
@@ -1944,6 +2023,8 @@ export function mountView(section, H) {
     }
     closeThread({ restoreFocus: false });
     T = { root: rootId, seq, ev: new Map(), nodes: new Map(), rows: new Map(), complete: true, expired: false, loading: true, error: null, token: 0, input: null, focusKey: null, targetTimer: null, draftDone: false };
+    // Main holds back alerts for replies in the thread on screen (notify.js).
+    api('chatThreadShown', V.ws, V.c, rootId).catch(() => {});
     for (const e of V.events) if (inThread(e)) T.ev.set(e.seq, e);
     section.dataset.thread = 'open';
     thread.hidden = false;
@@ -1991,6 +2072,7 @@ export function mountView(section, H) {
     if (!T) return;
     const root = T.root;
     const hadFocus = thread.contains(document.activeElement);
+    if (V.c) api('chatThreadShown', V.ws, V.c, null).catch(() => {});
     if (T.input) T.input.dispose();
     clearTimeout(T.targetTimer);
     T = null;
@@ -2077,6 +2159,8 @@ export function mountView(section, H) {
         return toBottom(true);
       case 'jump-unread':
         return toNew();
+      case 'jump-thread':
+        return toThreadReply();
       default:
     }
   });

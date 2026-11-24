@@ -11285,8 +11285,7 @@ body.chat-mode .titlebar-search {
 .ch-msg > .ch-time.is-gutter {
   grid-column: 1;
 }
-.ch-msg > .ch-body,
-.ch-msg > .ch-context {
+.ch-msg > .ch-body {
   grid-column: 2;
   min-width: 0;
 }
@@ -11403,38 +11402,7 @@ body.chat-mode .titlebar-search {
 .ch-msg.is-pending .ch-text {
   color: var(--text-2);
 }
-/* A reply in the main log: "replied to …" above it opens the thread. */
-.ch-context {
-  justify-self: start;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  min-height: 24px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  text-align: left;
-}
-.ch-context svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  color: var(--text-3);
-}
-.ch-context span {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-button.ch-context:hover {
-  color: var(--text);
-}
-button.ch-context:hover span {
-  text-decoration: underline;
-}
-/* A thread's summary under its first message. */
+/* A thread's summary under its first message. Replies show only in their thread; the dot marks new ones. */
 .ch-replies {
   display: inline-flex;
   align-items: center;
@@ -11562,6 +11530,16 @@ button.ch-replies .ch-replies-n {
 }
 .ch-jump.is-down {
   bottom: 8px;
+}
+/* New replies in threads out of view: at the top, under the unread pill when that shows too. */
+.ch-jump.is-thread {
+  top: 8px;
+}
+.ch-jump.is-up:not([hidden]) + .ch-jump.is-thread {
+  top: 44px;
+}
+.ch-jump.is-thread svg {
+  color: var(--accent);
 }
 /* The hover bar (RUK-211 contract 5.2): React, Reply in thread and More as round buttons in a floating pill at the
    message's top right. It rides up over the row's top edge, as the first line of a row is its name or its bubble. Tab
