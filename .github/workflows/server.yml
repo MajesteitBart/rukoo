@@ -68,6 +68,10 @@ jobs:
     environment:
       name: rukoo.io
       url: https://meet.rukoo.io
+    permissions:
+      contents: read
+      # To start a fresh run on main when this one is out of date (below).
+      actions: write
     defaults:
       run:
         working-directory: server
@@ -76,13 +80,33 @@ jobs:
         with:
           ref: ${{ needs.test.outputs.commit }}
           persist-credentials: false
+      # "Re-run failed jobs" runs this job again with the commit the earlier test job passed on, which can be older
+      # than main by now. Then this job doesn't deploy it, so older code never replaces newer: it starts a fresh run on
+      # main, which tests and deploys main's newest server code. A rerun that took the place of a waiting run is
+      # covered the same way.
+      - name: Check that main has no newer server code
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --quiet --depth=1 origin main
+          if git diff --quiet HEAD FETCH_HEAD -- src package.json package-lock.json wrangler.jsonc; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            gh workflow run server.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "::notice::main has server changes that this run's tests didn't cover, so this run doesn't deploy. A fresh run on main tests and deploys them."
+          fi
       - uses: actions/setup-node@v7
+        if: steps.newest.outputs.deploy == 'true'
         with:
           node-version: '24'
       # The Wrangler in package-lock.json, the one the tests and the dry run used. Install scripts stay off and nothing
       # else is run, so Wrangler is the only package that runs next to the token.
       - run: npm ci --ignore-scripts
+        if: steps.newest.outputs.deploy == 'true'
       - name: Deploy ${{ needs.test.outputs.commit }}
+        if: steps.newest.outputs.deploy == 'true'
         run: npx wrangler deploy --env bvdm
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -90,6 +114,7 @@ jobs:
       # Every app starts with GET /v1/info: on rukoo.io through the website's Worker, and on the server's own two
       # addresses. Each must answer it with the server's features once the new code is live.
       - name: Check that the server answers
+        if: steps.newest.outputs.deploy == 'true'
         run: |
           for url in https://rukoo.io/v1/info https://meet.rukoo.io/v1/info https://rukoo-account.bvdm.ai/v1/info; do
             ok=
