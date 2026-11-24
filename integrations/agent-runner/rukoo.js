@@ -183,16 +183,16 @@ class Rukoo {
     return (await this.ok('GET', this.ws('/members'), { signal })).members || [];
   }
 
-  async channelMembers(conversation) {
-    return (await this.ok('GET', this.ws(`/channels/${conversation}/members`))).members || [];
+  async channelMembers(conversation, { signal } = {}) {
+    return (await this.ok('GET', this.ws(`/channels/${conversation}/members`), { signal })).members || [];
   }
 
   changes(after, signal) {
     return this.ok('GET', this.ws('/changes'), { query: { after: after || undefined, limit: 100 }, signal });
   }
 
-  events(conversation, { after, before, limit = 100 } = {}) {
-    return this.ok('GET', this.ws(`/conversations/${conversation}/events`), { query: before !== undefined ? { before, limit } : { after: after || 0, limit } });
+  events(conversation, { after, before, limit = 100, signal } = {}) {
+    return this.ok('GET', this.ws(`/conversations/${conversation}/events`), { query: before !== undefined ? { before, limit } : { after: after || 0, limit }, signal });
   }
 
   // { status, body, headers }: the runner decides what each refusal means.
@@ -204,8 +204,8 @@ class Rukoo {
     return this.ok('POST', this.ws(`/conversations/${conversation}/read`), { body: { seq } });
   }
 
-  async ticket() {
-    return this.ok('POST', this.ws('/socket-ticket'));
+  async ticket({ signal } = {}) {
+    return this.ok('POST', this.ws('/socket-ticket'), { signal });
   }
 
   // The wake socket, with the ticket offered as a subprotocol next to the protocol's own name, which any WebSocket

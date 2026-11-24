@@ -422,7 +422,7 @@ class Runner {
     let after = st.done;
     let reached = false;
     while (!reached && !this.stopped) {
-      const page = await this.api.events(c, { after, limit: 100 });
+      const page = await this.api.events(c, { after, limit: 100, signal: this.abort.signal });
       for (const ev of page.events || []) {
         if (ev.seq > end || this.stopped) {
           reached = true;
@@ -477,7 +477,7 @@ class Runner {
     let oldest = null;
     let more = false;
     for (let pages = 0; pages < LOOKBACK_PAGES; pages++) {
-      const page = await this.api.events(row.conversation, { before, limit: 100 });
+      const page = await this.api.events(row.conversation, { before, limit: 100, signal: this.abort.signal });
       const events = page.events || [];
       if (pages === 0) {
         // A removed reply keeps its author but not its trigger, so it still counts as the agent's newest message.
@@ -515,7 +515,7 @@ class Runner {
     // they can't be read, this throws and the room waits with the mention for the next pass.
     await this.loadMe();
     // Who is in the channel now: whether the author and the origin still are, and whom the answer can mention.
-    const inChannel = new Set((await this.api.channelMembers(c)).map((m) => m.member));
+    const inChannel = new Set((await this.api.channelMembers(c, { signal: this.abort.signal })).map((m) => m.member));
     const why = this.skipReason(ev, inChannel);
     if (why) {
       this.stats.skipped++;
@@ -528,6 +528,15 @@ class Runner {
     try {
       answer = await this.backend.run(prompt, { id: ev.id, signal: this.abort.signal });
     } catch (err) {
+      // A pinned program that is no longer the file that was approved (backends.js pinned()): the runner stops, and
+      // nothing else runs until someone approves it again.
+      if (err instanceof BackendError && err.code === 'changed') {
+        this.fatal = err;
+        this.log('error', 'The backend program is no longer the one that was approved, so the runner stops.');
+        this.report({ type: 'changed' });
+        this.stop();
+        throw err;
+      }
       // Stopping the runner ends a turn without an outcome; it runs again after a restart.
       if (this.stopped) throw new Error('Stopped');
       this.stats.failed++;
@@ -650,7 +659,7 @@ class Runner {
   async scanBack(c, before, visit) {
     let at = before;
     for (let pages = 0; pages < CONTEXT_PAGES && at > 1; pages++) {
-      const page = await this.api.events(c, { before: at, limit: 100 });
+      const page = await this.api.events(c, { before: at, limit: 100, signal: this.abort.signal });
       const events = page.events || [];
       if (!events.length) return;
       for (let i = events.length - 1; i >= 0; i--) {
@@ -795,8 +804,9 @@ class Runner {
     this.report({ type: 'problems', problems: problems.filter((p) => p.level === 'error').map((p) => ({ code: p.code || 'other' })) });
     this.timer = setInterval(() => this.pump(), this.config.pollSeconds * 1000);
     this.socketLoop().catch((err) => this.log('warn', `The wake socket stopped: ${err.message}`));
-    await this.pump();
-    if (!this.stopped && ![...this.rooms.values()].some((row) => row.kind === 'channel' && !row.archived)) {
+    // A stop during the first pass gets the same bounded wait as one during any later pass (settle).
+    await Promise.race([this.pump(), this.finished]);
+    if (!this.stopped &&![...this.rooms.values()].some((row) => row.kind === 'channel' && !row.archived)) {
       this.log('warn', "The agent is in no channel yet. In Rukoo, open a channel's menu and choose Add agents; the runner picks it up at once.");
     }
     await this.finished;
@@ -821,7 +831,7 @@ class Runner {
     while (!this.stopped) {
       let code = null;
       try {
-        const { ticket } = await this.api.ticket();
+        const { ticket } = await this.api.ticket({ signal: this.abort.signal });
         code = await this.socketOnce(ticket, () => {
           backoff = 1000;
         });
@@ -834,7 +844,7 @@ class Runner {
       // removed. A request says which; the same goes for a socket that closed without a code.
       if (code !== 1000) {
         try {
-          await this.api.me();
+          await this.api.me({ signal: this.abort.signal });
         } catch (err) {
           if (err instanceof KeyRefused) return this.fail(err);
         }

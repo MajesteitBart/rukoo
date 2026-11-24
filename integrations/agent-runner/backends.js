@@ -26,6 +26,10 @@ const JSON_MAX = 4 * 1024 * 1024;
 const ANSWER_MAX = STDOUT_MAX;
 const SSE_LINE_MAX = 1024 * 1024;
 const ERROR_MAX = 64 * 1024;
+// After a stop: how long a run's POST may still take to answer its id, and how long the request that stops the run
+// may take. Together within the runner's STOP_GRACE (runner.js).
+const SUBMIT_GRACE = 1000;
+const STOP_REQUEST = 2500;
 
 // A backend that couldn't answer. code says what kind of failure it was, in words the runner defines, for a program
 // that shows it in its own words (Rukoo's desktop app): config, offline, timeout, http (with status), protocol,
@@ -61,7 +65,9 @@ function timeoutMs(config) {
   return (Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT) * 1000;
 }
 
-// The URL of path on a server with an optional path prefix (Hermes serves profiles under /p/<name>/).
+// The URL of path on a server with an optional path prefix (Hermes serves profiles under /p/<name>/): the url's
+// origin, its path and route, without its query, fragment or credentials. Rukoo's desktop app shows what this builds
+// before it runs an agent. A path that starts with // would read as another server's name, so it is refused.
 function endpoint(base, route) {
   let url;
   try {
@@ -71,38 +77,76 @@ function endpoint(base, route) {
     throw new BackendError('The backend\'s "url" is not an address', 'config');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BackendError('The backend\'s "url" must start with http:// or https://', 'config');
-  const out = new URL(url.pathname.replace(/\/+$/, '') + route, url.origin);
-  if (out.origin !== url.origin) throw new BackendError('Refusing a request outside the backend server', 'config');
+  const prefix = url.pathname.replace(/\/+$/, '');
+  if (prefix.startsWith('//')) throw new BackendError('The backend\'s "url" has a path that starts with //', 'config');
+  const out = new URL(`${url.origin}${prefix}${route}`);
+  if (out.origin !== url.origin || !out.pathname.startsWith(`${prefix}/`)) throw new BackendError('Refusing a request outside the backend server', 'config');
   return out;
 }
 
 // ---- Server-sent events ----
 
-// `event:`/`data:`/`id:` lines; a blank line ends a frame; lines starting with ':' are comments.
+// `event:`/`data:`/`id:` lines; a blank line ends a frame; lines starting with ':' are comments. The bytes of a line
+// and of a frame, its line ends included, are counted as they arrive, before anything is kept or handed on: a line or a
+// frame past SSE_LINE_MAX throws (too_large). Lines are split on the bytes CR and LF, which UTF-8 never uses inside a
+// character, so a line is decoded once it is whole.
 class SseParser {
   constructor(onEvent) {
     this.onEvent = onEvent;
-    this.buffer = '';
+    this.parts = [];
+    this.lineBytes = 0;
+    this.frameBytes = 0;
+    // The last byte was a CR, so an LF right after it ends no other line.
+    this.cr = false;
     this.event = '';
     this.data = [];
-    this.decoder = new TextDecoder('utf-8');
+  }
+
+  count(n) {
+    this.lineBytes += n;
+    this.frameBytes += n;
+    if (this.lineBytes > SSE_LINE_MAX) throw new BackendError('The stream sent a line that is too long', 'too_large');
+    if (this.frameBytes > SSE_LINE_MAX) throw new BackendError('The stream sent an event that is too large', 'too_large');
   }
 
   push(chunk) {
-    this.buffer += typeof chunk === 'string' ? chunk : this.decoder.decode(chunk, { stream: true });
-    const lines = this.buffer.split(/\r\n|\r|\n/);
-    this.buffer = lines.pop();
-    // A line or a frame that never ends is no answer.
-    if (this.buffer.length > SSE_LINE_MAX) throw new BackendError('The stream sent a line that is too long', 'too_large');
-    for (const line of lines) this.line(line);
-    if (this.data.reduce((n, d) => n + d.length, 0) > SSE_LINE_MAX) throw new BackendError('The stream sent an event that is too large', 'too_large');
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    let start = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const b = buf[i];
+      if (b !== 10 && b !== 13) continue;
+      if (b === 10 && this.cr && i === start) {
+        this.cr = false;
+        start = i + 1;
+        continue;
+      }
+      this.count(i - start);
+      if (i > start) this.parts.push(Buffer.from(buf.subarray(start, i)));
+      // The line end belongs to the frame.
+      this.lineBytes = 0;
+      this.count(1);
+      const text = Buffer.concat(this.parts).toString('utf8');
+      this.parts = [];
+      this.lineBytes = 0;
+      this.cr = b === 13;
+      start = i + 1;
+      this.line(text);
+    }
+    if (start < buf.length) {
+      this.count(buf.length - start);
+      this.parts.push(Buffer.from(buf.subarray(start)));
+      this.cr = false;
+    }
   }
 
   line(text) {
     if (text === '') {
-      if (this.data.length) this.onEvent({ event: this.event || 'message', data: this.data.join('\n') });
+      const data = this.data;
+      const event = this.event;
       this.event = '';
       this.data = [];
+      this.frameBytes = 0;
+      if (data.length) this.onEvent({ event: event || 'message', data: data.join('\n') });
       return;
     }
     if (text[0] === ':') return;
@@ -126,6 +170,10 @@ async function readStream(body, parser, signal) {
       parser.push(value);
     }
     parser.push('\n\n');
+  } catch (err) {
+    // A parser that refused what came, or an answer that broke off: nothing more is read.
+    cancel();
+    throw err;
   } finally {
     if (signal) signal.removeEventListener('abort', cancel);
   }
@@ -222,21 +270,36 @@ class RunsBackend {
     // The same trigger with the same input gets the run it already has; the trigger with other input (more messages
     // came, or other settings) is another run.
     const digest = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 16);
+    // A run the server took goes on until it is stopped, and only its id can stop it. So a stop or the timeout while
+    // the POST is out gives its answer SUBMIT_GRACE more, and a run id that comes then is stopped below.
+    const submit = new AbortController();
+    let graceTimer = null;
+    const onDeadline = () => {
+      graceTimer = setTimeout(() => submit.abort(), SUBMIT_GRACE);
+    };
+    if (deadline.aborted) onDeadline();
+    else deadline.addEventListener('abort', onDeadline, { once: true });
     let res;
+    let started;
     try {
-      res = await this.call('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-agent-${id}-${digest}` }, signal: deadline });
-    } catch (err) {
-      throw new BackendError(`Could not start a run: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
+      try {
+        res = await this.call('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-agent-${id}-${digest}` }, signal: submit.signal, timeout: 30000 });
+      } catch (err) {
+        throw new BackendError(`Could not start a run: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
+      }
+      if (res.status !== 200 && res.status !== 202) throw await errorOf(res);
+      started = await readJson(res);
+    } finally {
+      clearTimeout(graceTimer);
+      deadline.removeEventListener('abort', onDeadline);
     }
-    if (res.status !== 200 && res.status !== 202) throw await errorOf(res);
-    const started = await readJson(res);
     const runId = started && started.run_id;
     if (!runId) throw new BackendError('The server did not return a run id', 'protocol');
     try {
       return await this.follow(runId, deadline);
     } catch (err) {
       // Stopped or out of time: the run must not go on where nobody follows it. Within the runner's STOP_GRACE.
-      await this.call('POST', `/v1/runs/${encodeURIComponent(runId)}/stop`, { timeout: 3000 }).catch(() => {});
+      await this.call('POST', `/v1/runs/${encodeURIComponent(runId)}/stop`, { timeout: STOP_REQUEST }).catch(() => {});
       throw err instanceof BackendError ? err : new BackendError(deadline.aborted ? 'The run took longer than the timeout and was stopped' : clip(err.message, 200), deadline.aborted ? 'timeout' : 'failed');
     }
   }
@@ -404,6 +467,19 @@ function executable(file) {
   }
 }
 
+// A program a program that started the runner approved by its full path ("pin": true, as Rukoo's desktop app sets
+// it): the runner starts exactly that file, and only while the path is still absolute and canonical (no link, no
+// relative part, that file itself) and an executable file. Anything else throws a BackendError with code 'changed'.
+function pinned(file) {
+  const name = String(file || '');
+  let real = null;
+  try {
+    real = fs.realpathSync.native(name);
+  } catch {}
+  if (!name || !path.isAbsolute(name) || real !== name || !executable(name)) throw new BackendError('The program changed since it was approved', 'changed');
+  return name;
+}
+
 // The first existing file of candidates, else the first program called name on PATH. On Windows only a real .exe:
 // npm's .cmd shims need a shell, and the runner starts every program without one.
 function findExe(candidates, name) {
@@ -561,6 +637,7 @@ class ClaudeBackend {
   }
 
   exe() {
+    if (this.config.pin === true) return pinned(this.config.exe);
     const configured = String(this.config.exe || '').trim();
     const home = os.homedir();
     const found = configured ? (executable(configured) ? configured : null) : findExe([path.join(home, '.local', 'bin', WINDOWS ? 'claude.exe' : 'claude')], 'claude');
@@ -641,6 +718,7 @@ class CodexBackend {
   }
 
   exe() {
+    if (this.config.pin === true) return pinned(this.config.exe);
     const configured = String(this.config.exe || '').trim();
     if (configured) {
       if (!executable(configured)) throw new BackendError(`"exe" is not a program: ${configured}`, 'missing');
@@ -930,7 +1008,7 @@ async function checkCli() {
   try {
     exe = this.exe();
   } catch (err) {
-    return [{ level: 'error', code: 'missing', message: err.message }];
+    return [{ level: 'error', code: err.code === 'changed' ? 'changed' : 'missing', message: err.message }];
   }
   if (needsShell(exe)) return [{ level: 'error', code: 'config', message: `"exe" is ${exe}, a .cmd or .bat file, which the runner can't start: it starts programs without a shell. Set "exe" to the program's .exe.` }];
   return [{ level: 'info', message: `The backend runs ${exe}` }];
@@ -982,5 +1060,7 @@ module.exports = {
   runProcess,
   findExe,
   findProgram,
+  endpoint,
+  pinned,
   TYPES
 };
