@@ -14,7 +14,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { tempDir } = require('./tmp');
 const { startRealServer, realServerAvailable, skipWithoutServer, mention } = require('./fixtures/real-server');
-const { AgentRuns, RunError, runBackend, exportBackend, runnerEnv, runsApi, identify } = require('../src/main/agent-runs.js');
+const { AgentRuns, RunError, runBackend, exportBackend, runnerEnv, runsApi, identify, canonicalProgram, ownNetwork, plainHttp, writePrivate } = require('../src/main/agent-runs.js');
 const { AgentConfig } = require('../src/main/agents/config.js');
 
 // Reads the prompt and answers FAKE_REPLY; notes in FAKE_LOG whether a key, or the backend's secret, reached it.
@@ -37,6 +37,8 @@ const A = `u_${'a'.repeat(22)}`;
 const B = `u_${'b'.repeat(22)}`;
 const KEY = `rka_${'a'.repeat(22)}.${'b'.repeat(43)}`;
 const KEY_B = `rka_${'b'.repeat(22)}.${'c'.repeat(43)}`;
+const HOME = path.resolve('/home/me');
+const TEAM = path.join(HOME, '.claude-team');
 const KEY_NEW = `rka_${'a'.repeat(22)}.${'d'.repeat(43)}`;
 
 let server;
@@ -169,14 +171,16 @@ function makeRuns(o = {}) {
           : null),
     exportFor: o.exportFor || ((use) => (use === 'own' ? { type: 'command', command: 'my-agent' } : use === 'claude' ? { type: 'claude' } : null)),
     resolve: o.resolve || ((type, exe) => (type === 'command' ? exe : exe || `/usr/bin/${type}`)),
-    env: o.env || { HOME: '/home/me' },
-    home: '/home/me',
+    env: o.env || { HOME },
+    home: HOME,
+    memberName: o.memberName || ((ws, id) => (id === A ? 'Clark' : id === B ? 'Bea' : '')),
+    ...(o.ownerAlive ? { ownerAlive: o.ownerAlive } : {}),
     agentExists: o.agentExists,
     ask: async (q) => {
       asked.push(q);
       return o.ask ? o.ask(q) : q.kind === 'run' ? 'run' : 'copy';
     },
-    copy: (text) => copied.push(text),
+    copy: o.copy || ((text) => copied.push(text)),
     saveTo: o.saveTo || (async () => null),
     delays: o.delays || [100, 200, 400],
     steady: o.steady || 60000,
@@ -324,24 +328,11 @@ test('a setups file that cannot be written is an error, and what the window sees
   a.runs.hold(W, A, KEY, 1);
   await a.runs.start(W, A, { use: 'claude', owner: 1 });
   const file = path.join(a.dataDir, 'agent-runs.json');
-  // The profile can't be written: a folder where the temporary file goes.
-  const blockers = [`${file}.${process.pid}.tmp`];
-  for (const b of blockers) fs.mkdirSync(b, { recursive: true });
-  fs.chmodSync(file, 0o444);
-  const writable = (() => {
-    try {
-      fs.writeFileSync(file, fs.readFileSync(file));
-      return true;
-    } catch (_) {
-      return false;
-    }
-  })();
-  if (writable) {
-    // A file system that ignores the mode (root, or Windows without the read-only flag): break the writes instead.
-    a.runs.writeFile = () => {
-      throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
-    };
-  }
+  // The profile can't be written.
+  const write = a.runs.writeFile;
+  a.runs.writeFile = () => {
+    throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+  };
   await rejects(a.runs.stop(W, A), 'save_failed');
   assert.equal(viewOf(a.runs, W, A).on, true, 'Stop that could not be saved leaves it on');
   assert.equal(forks.alive().length, 1, 'and running, as after a restart');
@@ -351,8 +342,7 @@ test('a setups file that cannot be written is an error, and what the window sees
   await rejects(a.runs.start(W, B, { use: 'claude', owner: 1 }), 'save_failed');
   assert.equal(a.runs.find(W, B), null);
   assert.equal(forks.all.length, 1);
-  fs.chmodSync(file, 0o644);
-  for (const b of blockers) fs.rmSync(b, { recursive: true, force: true });
+  a.runs.writeFile = write;
 });
 
 // ---- What a runner runs is approved in main, by a person ----
@@ -374,7 +364,7 @@ test('the first Run on this computer asks the person in main, naming the agent a
   answer = 'run';
   await a.runs.start(W, A, { use: 'claude', name: 'Clark', owner: 1 });
   assert.equal(forks.all.length, 1);
-  assert.deepEqual(a.runs.find(W, A).approved, { use: 'claude', kind: 'claude', type: 'claude', program: '/usr/bin/claude', configDir: path.join('/home/me', '.claude') });
+  assert.deepEqual(a.runs.find(W, A).approved, { use: 'claude', kind: 'claude', type: 'claude', program: '/usr/bin/claude', configDir: path.join(HOME, '.claude') });
   // Start again with the same: no question.
   const stopping = a.runs.stop(W, A);
   await until(() => forks.all[0].types().includes('stop'), 1000, 'the stop');
@@ -538,9 +528,10 @@ test('running here uses up the hold; export asks first, then copies the config w
   assert.equal(forks.all[1].posts[0].key, KEY_NEW);
 });
 
-test('runsApi has no call that answers a key, and the window calls carry their document', async () => {
+test('runsApi has no call that answers a key, and the window calls carry their document and the session they came in', async () => {
   const seen = [];
   const fake = {
+    signature: () => ({ signedIn: true, server: 'https://rukoo.example', session: 'session-one' }),
     takeKey: (ws, answer, opts) => (seen.push(['take', opts]), { agent: answer.agent, held: true, runsHere: false }),
     forget: async (ws, agent) => (seen.push(['forget', ws, agent]), true),
     start: async (ws, agent, opts) => (seen.push(['start', opts]), {}),
@@ -553,26 +544,30 @@ test('runsApi has no call that answers a key, and the window calls carry their d
     chatNewAgentKey: async () => ({ agent: { id: A }, key: KEY }),
     chatRemoveAgent: async () => true
   });
-  const sender = { id: 42 };
+  // The token of the document that called (main.js documentOf).
+  const doc = '42:3';
   assert.ok(!('agentRunHeldKey' in api) && !('agentRunHeldKey' in windowApi));
-  assert.ok(!JSON.stringify(await windowApi.chatCreateAgent(sender, W, {})).includes('rka_'));
-  assert.ok(!JSON.stringify(await windowApi.chatNewAgentKey(sender, W, A)).includes('rka_'));
-  await windowApi.agentRunStart(sender, W, A, { use: 'claude' });
-  await windowApi.agentRunExport(sender, W, A, { use: 'claude' });
-  windowApi.agentRunRelease(sender, W, A);
+  assert.ok(!JSON.stringify(await windowApi.chatCreateAgent(doc, W, {})).includes('rka_'));
+  assert.ok(!JSON.stringify(await windowApi.chatNewAgentKey(doc, W, A)).includes('rka_'));
+  await windowApi.agentRunStart(doc, W, A, { use: 'claude', name: 'Not from the window' });
+  await windowApi.agentRunExport(doc, W, A, { use: 'claude', name: 'Not from the window' });
+  windowApi.agentRunRelease(doc, W, A);
   assert.deepEqual(
     seen.map(([kind, opts]) => [kind, opts && typeof opts === 'object' ? opts.owner : opts]),
     [
-      ['take', 42],
-      ['take', 42],
-      ['start', 42],
-      ['export', 42],
-      ['release', 42]
+      ['take', doc],
+      ['take', doc],
+      ['start', doc],
+      ['export', doc],
+      ['release', doc]
     ]
   );
+  // The session the call came in goes with the answer; the name the window sent goes nowhere.
+  assert.deepEqual(seen.slice(0, 2).map(([, opts]) => opts.session), ['session-one', 'session-one']);
+  assert.ok(!JSON.stringify(seen).includes('Not from the window'));
   assert.equal(await api.chatRemoveAgent(W, A), true);
   assert.deepEqual(seen.at(-1), ['forget', W, A]);
-  assert.throws(() => windowApi.agentRunStart(sender, '../x', A, {}), (err) => err.code === 'invalid');
+  assert.throws(() => windowApi.agentRunStart(doc, '../x', A, {}), (err) => err.code === 'invalid');
   assert.throws(() => api.agentRunStop(W, 'u_short'), (err) => err.code === 'invalid');
 });
 
@@ -591,12 +586,16 @@ test("a setup goes when the workspace's directory no longer has its agent, runni
   await stopping;
   const me = { id: `u_${'m'.repeat(22)}`, kind: 'human', state: 'active' };
   // A directory that lists both as active keeps both; one without anyone active in it says nothing.
-  a.runs.reconcile(W, [me, { id: A, kind: 'agent', state: 'active' }, { id: B, kind: 'agent', state: 'active' }]);
-  a.runs.reconcile(W, []);
+  a.runs.reconcile(W, [me, { id: A, kind: 'agent', state: 'active' }, { id: B, kind: 'agent', state: 'active' }], { complete: true });
+  a.runs.reconcile(W, [], { complete: true });
+  // A cache that an optimistic change or a failed reload left without them is no answer from the server.
+  a.runs.reconcile(W, [me]);
+  a.runs.reconcile(W, [me], { complete: 'yes' });
   await sleep(50);
   assert.equal(a.runs.snapshot().runs.length, 2);
-  // A removed elsewhere while it ran, B while it was stopped here.
-  a.runs.reconcile(W, [me, { id: A, kind: 'agent', state: 'removed' }]);
+  assert.equal(forks.all[0].types().includes('stop'), false);
+  // A removed elsewhere while it ran, B while it was stopped here: the server's whole member list says so.
+  a.runs.reconcile(W, [me, { id: A, kind: 'agent', state: 'removed' }], { complete: true });
   await until(() => forks.all[0].types().includes('stop'), 1000, 'the stop');
   forks.all[0].exit(0);
   await until(() => a.runs.snapshot().runs.length === 0, 1000, 'both setups to go');
@@ -641,9 +640,51 @@ test('a runner that cannot reach the server says so while it starts, and after a
   assert.equal(v.unreachable, null);
   a.runs.resume();
   assert.equal(viewOf(a.runs, W, A).stale, true);
-  assert.deepEqual(forks.all[0].types().at(-1), 'wake');
+  const wake = forks.all[0].posts.at(-1);
+  assert.equal(wake.type, 'wake');
+  // A pass that began before the wake, a connection or an unreachable server says nothing fresh: only the child's
+  // answer to this wake does.
   forks.all[0].say({ type: 'pass', channels: 1 });
+  forks.all[0].say({ type: 'connected' });
+  assert.equal(viewOf(a.runs, W, A).stale, true);
+  a.runs.resume();
+  forks.all[0].say({ type: 'woke', seq: wake.seq });
+  assert.equal(viewOf(a.runs, W, A).stale, true, 'an answer to the wake before is not an answer to this one');
+  forks.all[0].say({ type: 'woke', seq: forks.all[0].posts.at(-1).seq });
   assert.equal(viewOf(a.runs, W, A).stale, false);
+});
+
+test('a runner that is stopping says nothing more, and an expected exit never leaves the row running without a process', async (t) => {
+  const forks = fakeForks();
+  const over = {};
+  const a = makeRuns({ fork: forks, backendFor: (use) => fakeBackends(over)(use) });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  await a.runs.start(W, A, { use: 'clark', owner: 1 });
+  forks.all[0].say({ type: 'connected' });
+  assert.equal(phaseOf(a.runs, W, A), 'running');
+  // Settings name another address: the row says changed, and a late report of the old runner doesn't undo that.
+  over.clark = { backend: { url: 'https://elsewhere.example' } };
+  a.runs.settingsChanged();
+  assert.equal(phaseOf(a.runs, W, A), 'changed');
+  forks.all[0].say({ type: 'connected' });
+  forks.all[0].say({ type: 'pass', channels: 2 });
+  assert.equal(phaseOf(a.runs, W, A), 'changed');
+  forks.all[0].exit(0);
+  await sleep(20);
+  assert.equal(phaseOf(a.runs, W, A), 'changed');
+  // A restart whose new start doesn't come (signed out meanwhile) leaves it stopped, not running.
+  delete over.clark;
+  await a.runs.start(W, A, { owner: 1 }).catch(() => {});
+  const forks2 = forks.all.at(-1);
+  forks2.say({ type: 'connected' });
+  assert.equal(phaseOf(a.runs, W, A), 'running');
+  a.runs.account.signed = false;
+  const restart = a.runs.queue(`${W} ${A}`, () => a.runs.cycle(`${W} ${A}`, { restart: true }));
+  forks2.exit(0);
+  await restart;
+  assert.equal(a.runs.procs.size, 0);
+  assert.notEqual(phaseOf(a.runs, W, A), 'running');
 });
 
 test('what a runner reports reaches the window as codes and a status number, never as text', async (t) => {
@@ -669,6 +710,339 @@ test('what a runner reports reaches the window as codes and a status number, nev
   await until(() => phaseOf(a.runs, W, A) === 'waiting', 1000, 'the pause');
   assert.deepEqual(viewOf(a.runs, W, A).error, { code: 'runner' });
   assert.ok(!a.lines.join('\n').includes('SECRET'), 'nor in the log');
+});
+
+// ---- Review round 3 ----
+
+const C = `u_${'c'.repeat(22)}`;
+const KEY_C = `rka_${'c'.repeat(22)}.${'e'.repeat(43)}`;
+const unresolved = (fn) => assert.throws(fn, (err) => err instanceof RunError && err.code === 'unresolved');
+
+test('the program a person approves is a full, canonical path: relative paths are refused, a link becomes its file, and on Windows only an .exe', () => {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const d = path.join(dir, 'programs');
+  fs.mkdirSync(d, { recursive: true });
+  const real = path.join(d, `agent-program${ext}`);
+  fs.writeFileSync(real, '#!/bin/sh\n');
+  fs.chmodSync(real, 0o755);
+  const canonical = fs.realpathSync.native(real);
+  assert.equal(canonicalProgram(real), canonical);
+  // A name for PATH to find, or a path relative to some working folder, is no program anyone can see.
+  unresolved(() => canonicalProgram(`claude${ext}`));
+  unresolved(() => canonicalProgram(path.join('bin', `claude${ext}`)));
+  unresolved(() => canonicalProgram(''));
+  assert.throws(() => canonicalProgram(path.join(d, `not-there${ext}`)), (err) => err.code === 'missing');
+  // On Windows a .cmd, or a program named without .exe, is refused even when it exists.
+  const cmd = path.join(d, 'agent.cmd');
+  fs.writeFileSync(cmd, '');
+  unresolved(() => canonicalProgram(cmd, { platform: 'win32' }));
+  unresolved(() => canonicalProgram(path.join(d, 'agent-program'), { platform: 'win32' }));
+  // A link: what is approved and started is the file it points at.
+  const link = path.join(d, `agent-link${ext}`);
+  let linked = true;
+  try {
+    fs.symlinkSync(real, link);
+  } catch (_) {
+    linked = false;
+  }
+  if (linked) assert.equal(canonicalProgram(link), canonical);
+  // The folder of its settings is given in full too.
+  const b = { kind: 'claude', backend: { type: 'claude', configDir: path.join('relative', 'claude') } };
+  unresolved(() => identify('claude', b, { resolve: () => canonical, env: {}, home: HOME }));
+  unresolved(() => identify('codex', { kind: 'codex', backend: { type: 'codex' } }, { resolve: () => canonical, env: { CODEX_HOME: 'codex-home' }, home: HOME }));
+  assert.equal(identify('codex', { kind: 'codex', backend: { type: 'codex' } }, { resolve: () => canonical, env: {}, home: HOME }).configDir, path.join(HOME, '.codex'));
+});
+
+test('the runner gets exactly the approved file to start, and a program that changed under it stops it until a person says yes again', async (t) => {
+  const forks = fakeForks();
+  const a = makeRuns({ fork: forks, backendFor: fakeBackends() });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  await a.runs.start(W, A, { use: 'claude', owner: 1 });
+  const backend = forks.all[0].posts[0].config.backend;
+  assert.equal(backend.exe, '/usr/bin/claude');
+  assert.equal(backend.pin, true, 'the runner checks the file again before each turn');
+  // Before a turn the runner found another file at that path (backends.js pinned): it reports and exits with 3.
+  forks.all[0].say({ type: 'changed' });
+  forks.all[0].exit(3);
+  await until(() => phaseOf(a.runs, W, A) === 'changed', 1000, 'changed');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(a.dataDir, 'agent-runs.json'), 'utf8')).runs[0].approved, null);
+  await sleep(300);
+  assert.equal(forks.all.length, 1, 'no start again after a pause');
+  const asked = a.asked.length;
+  await a.runs.start(W, A, {});
+  assert.equal(a.asked.length, asked + 1, 'the same Settings ask again');
+  assert.equal(forks.all.length, 2);
+});
+
+test("the question names each request in full, OpenClaw's agent and main's own name for the agent; a path that would name another server is refused", async (t) => {
+  const forks = fakeForks();
+  const backends = {
+    clark: { name: 'Hermes', kind: 'hermes', backend: { type: 'runs', url: 'http://127.0.0.1:8642/p/work/' }, secret: 'hermes-secret-value' },
+    openclaw: { name: 'OpenClaw', kind: 'openclaw', backend: { type: 'openai', url: 'http://127.0.0.1:18789', model: 'openclaw/ops' }, secret: 'gateway-token-value' },
+    sneaky: { name: 'Sneaky', kind: 'custom', backend: { type: 'openai', url: 'http://127.0.0.1:18789//evil.example/v1' }, secret: '' }
+  };
+  const a = makeRuns({ fork: forks, backendFor: (use) => backends[use] || null });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  // The window sends a name of its own: main asks with the directory's.
+  await a.runs.start(W, A, { use: 'clark', name: 'Someone else', owner: 1 });
+  assert.equal(a.asked[0].message, 'Run Clark on this computer with Hermes?');
+  assert.ok(!JSON.stringify(a.asked[0]).includes('Someone else'));
+  assert.ok(a.asked[0].detail.includes('http://127.0.0.1:8642/p/work/v1/runs\n'), a.asked[0].detail);
+  assert.equal(a.runs.find(W, A).name, 'Clark');
+  // A gateway with several agents: the one that answers is in the question and in the approval.
+  a.runs.hold(W, B, KEY_B, 1);
+  await a.runs.start(W, B, { use: 'openclaw', owner: 1 });
+  assert.ok(a.asked[1].detail.includes('http://127.0.0.1:18789/v1/chat/completions\n'), a.asked[1].detail);
+  assert.ok(a.asked[1].detail.includes("the gateway's agent openclaw/ops answers"), a.asked[1].detail);
+  backends.openclaw = { ...backends.openclaw, backend: { ...backends.openclaw.backend, model: 'openclaw/finance' } };
+  a.runs.settingsChanged();
+  assert.equal(phaseOf(a.runs, W, B), 'changed', 'another agent at the same gateway is another approval');
+  // A path that starts with // is refused before any question.
+  a.runs.hold(W, C, KEY_C, 1);
+  await rejects(a.runs.start(W, C, { use: 'sneaky', owner: 1 }), 'unknown_backend');
+  assert.equal(a.asked.length, 2);
+  // OpenClaw's model header is the model, which needs no new yes; any other header does.
+  const gw = { kind: 'openclaw', backend: { type: 'openai', url: 'http://127.0.0.1:18789', model: 'openclaw/ops', headers: { 'x-openclaw-model': 'gpt-5' } } };
+  const id = identify('openclaw', gw);
+  assert.equal(id.headers, undefined);
+  assert.deepEqual(identify('openclaw', { ...gw, backend: { ...gw.backend, headers: { 'x-openclaw-model': 'other' } } }), id);
+  const extra = identify('openclaw', { ...gw, backend: { ...gw.backend, headers: { 'x-openclaw-model': 'gpt-5', 'X-Team': 'finance-secret' } } });
+  assert.match(extra.headers, /^[0-9a-f]{64}$/);
+  assert.ok(!JSON.stringify(extra).includes('finance-secret'));
+});
+
+test('a mismatch takes the approval for good, also while the runner waits to start again and across a restart; Stop keeps it', async (t) => {
+  const forks = fakeForks();
+  const over = {};
+  const a = makeRuns({ fork: forks, backendFor: (use) => fakeBackends(over)(use), delays: [5000] });
+  a.runs.hold(W, A, KEY, 1);
+  await a.runs.start(W, A, { use: 'clark', owner: 1 });
+  // Stop, then Start with the same Settings: no question.
+  const stopping = a.runs.stop(W, A);
+  forks.all[0].exit(0);
+  await stopping;
+  await a.runs.start(W, A, {});
+  assert.equal(a.asked.length, 1);
+  // It ends by itself and waits 5 s to start again; meanwhile Settings name another address, then the old one.
+  forks.all[1].exit(1);
+  await until(() => phaseOf(a.runs, W, A) === 'waiting', 1000, 'the pause');
+  over.clark = { backend: { url: 'https://elsewhere.example' } };
+  a.runs.settingsChanged();
+  assert.equal(phaseOf(a.runs, W, A), 'changed');
+  delete over.clark;
+  a.runs.settingsChanged();
+  assert.equal(phaseOf(a.runs, W, A), 'changed', 'the old Settings bring nothing back');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(a.dataDir, 'agent-runs.json'), 'utf8')).runs[0].approved, null);
+  // Nor does a restart of Rukoo.
+  await a.runs.close();
+  const b = makeRuns({ dataDir: a.dataDir, fork: forks, backendFor: fakeBackends(), ask: () => 'cancel' });
+  t.after(() => b.runs.close());
+  await sleep(50);
+  assert.equal(forks.all.length, 2, 'nothing starts without a new yes');
+  assert.equal(phaseOf(b.runs, W, A), 'changed');
+  await rejects(b.runs.start(W, A, {}), 'declined');
+  assert.equal(b.asked.length, 1);
+});
+
+test('a key hold belongs to one document and one session: an answer or a question that ends after either went keeps nothing', async (t) => {
+  const forks = fakeForks();
+  let alive = true;
+  let duringAsk = () => {};
+  let duringSave = () => {};
+  let exportAnswer = 'save';
+  const saved = path.join(dir, 'for-a-gone-document.json');
+  const a = makeRuns({
+    fork: forks,
+    backendFor: fakeBackends(),
+    ownerAlive: (o) => alive && o === '7:0',
+    ask: (q) => {
+      duringAsk();
+      return q.kind === 'run' ? 'run' : exportAnswer;
+    },
+    saveTo: async () => {
+      duringSave();
+      return saved;
+    }
+  });
+  t.after(() => a.runs.close());
+  const made = { agent: { id: A, name: 'Clark' }, key: KEY };
+  // The answer comes after the document that asked went (a reload): nothing is held, and the window hears so.
+  alive = false;
+  assert.deepEqual(a.runs.takeKey(W, made, { owner: '7:0', session: 'session-one' }), { agent: made.agent, held: false, runsHere: false });
+  assert.equal(a.runs.held.size, 0);
+  // It comes in another session than the call came in: nothing is held.
+  alive = true;
+  assert.equal(a.runs.takeKey(W, made, { owner: '7:0', session: 'session-before' }).held, false);
+  assert.equal(a.runs.held.size, 0);
+  // The document reloads while the question is open: nothing is stored or started.
+  assert.equal(a.runs.takeKey(W, made, { owner: '7:0', session: 'session-one' }).held, true);
+  duringAsk = () => (alive = false);
+  await rejects(a.runs.start(W, A, { use: 'claude', owner: '7:0' }), 'no_key');
+  assert.equal(a.runs.find(W, A), null);
+  assert.equal(forks.all.length, 0);
+  // It reloads while the save dialog is open: nothing is written.
+  alive = true;
+  duringAsk = () => {};
+  a.runs.takeKey(W, made, { owner: '7:0', session: 'session-one' });
+  duringSave = () => (alive = false);
+  await rejects(a.runs.exportConfig(W, A, { use: 'claude', owner: '7:0' }), 'no_key');
+  assert.ok(!fs.existsSync(saved));
+  // The session changes while the question is open: nothing is copied.
+  alive = true;
+  duringSave = () => {};
+  exportAnswer = 'copy';
+  a.runs.takeKey(W, made, { owner: '7:0', session: 'session-one' });
+  duringAsk = () => (a.runs.account.sessionTag = 'session-two');
+  await rejects(a.runs.exportConfig(W, A, { use: 'claude', owner: '7:0' }), 'no_key');
+  assert.deepEqual(a.copied, []);
+});
+
+test('Copy config reports copied only once the clipboard has it, and a clipboard that fails as a failure', async (t) => {
+  let fail = true;
+  const done = [];
+  const a = makeRuns({
+    fork: fakeForks(),
+    backendFor: fakeBackends(),
+    copy: async (text) => {
+      await sleep(30);
+      if (fail) throw new Error('the clipboard is busy');
+      done.push(text);
+    }
+  });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  await rejects(a.runs.exportConfig(W, A, { use: 'claude', owner: 1 }), 'copy_failed');
+  fail = false;
+  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'claude', owner: 1 }), { done: 'copied' });
+  assert.equal(done.length, 1, 'the write ended before copied came back');
+});
+
+test('a private file is written through a new temporary file that takes its place: never through a link, and none is left behind', () => {
+  const d = path.join(dir, 'private');
+  fs.mkdirSync(d, { recursive: true });
+  const file = path.join(d, 'agent.json');
+  writePrivate(file, 'one');
+  writePrivate(file, 'two');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'two');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(d), ['agent.json']);
+  // A link at the destination is replaced; the file it pointed at stays as it was.
+  const other = path.join(d, 'other.txt');
+  fs.writeFileSync(other, 'keep', { mode: 0o644 });
+  const link = path.join(d, 'link.json');
+  let linked = true;
+  try {
+    fs.symlinkSync(other, link);
+  } catch (_) {
+    linked = false;
+  }
+  if (linked) {
+    writePrivate(link, 'secret');
+    assert.equal(fs.readFileSync(other, 'utf8'), 'keep');
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), false);
+    assert.equal(fs.readFileSync(link, 'utf8'), 'secret');
+  }
+  // A destination that can't be replaced (a folder with a file in it) is an error, and no temporary file stays.
+  const blocked = path.join(d, 'blocked.json');
+  fs.mkdirSync(blocked);
+  fs.writeFileSync(path.join(blocked, 'x'), '');
+  assert.throws(() => writePrivate(blocked, 'secret'));
+  assert.deepEqual(fs.readdirSync(d).filter((n) => n.endsWith('.tmp')), []);
+  assert.deepEqual(fs.readdirSync(blocked), ['x']);
+});
+
+test('a new key the setup here cannot keep is said so, and stays held for the document, to run here again or export', async (t) => {
+  const forks = fakeForks();
+  let failing = false;
+  const secrets = fakeSecrets();
+  const seal = secrets.encrypt;
+  secrets.encrypt = (s) => {
+    if (failing) throw new Error('the keyring is locked');
+    return seal(s);
+  };
+  const a = makeRuns({ fork: forks, backendFor: fakeBackends(), secrets });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  await a.runs.start(W, A, { use: 'claude', owner: 1 });
+  failing = true;
+  const answer = a.runs.takeKey(W, { agent: { id: A }, key: KEY_NEW }, { renew: true, owner: 1 });
+  assert.deepEqual(answer, { agent: { id: A }, held: true, runsHere: false, unsaved: true });
+  await until(() => forks.all[0].types().includes('stop'), 1000, 'the old runner to stop');
+  forks.all[0].exit(0);
+  await sleep(20);
+  assert.equal(phaseOf(a.runs, W, A), 'refused');
+  // Copy config gives the new key.
+  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'claude', owner: 1 }), { done: 'copied' });
+  assert.equal(JSON.parse(a.copied.at(-1)).key, KEY_NEW);
+  // Run on this computer tries again once the keyring works, without a question: it runs what was approved.
+  failing = false;
+  const asked = a.asked.length;
+  await a.runs.start(W, A, { owner: 1 });
+  assert.equal(a.asked.length, asked);
+  assert.equal(forks.all.at(-1).posts[0].key, KEY_NEW);
+  assert.equal(a.runs.find(W, A).refused, false);
+});
+
+test("a backend's secret goes over plain http only to this computer or the person's own network, and https anywhere", async (t) => {
+  const own = ['127.0.0.1', '127.8.9.1', '[::1]', 'localhost', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.10', '100.64.0.1', '100.127.255.254', '[fd12::1]', '[fc00::1]', 'box.tail1234.ts.net'];
+  const outside = ['8.8.8.8', '172.32.0.1', '172.15.0.1', '100.63.0.1', '100.128.0.1', '192.169.0.1', '[2001:db8::1]', '[fe80::1]', 'example.com', 'ts.net', 'box.ts.net.example.com', '[::ffff:10.0.0.1]'];
+  for (const h of own) assert.equal(ownNetwork(new URL(`http://${h}/`).hostname), true, h);
+  for (const h of outside) assert.equal(ownNetwork(new URL(`http://${h}/`).hostname), false, h);
+  assert.equal(plainHttp('https://203.0.113.5:8642'), false);
+  assert.equal(plainHttp('http://203.0.113.5:8642'), true);
+  assert.equal(plainHttp('http://100.100.1.2:8642'), false);
+  const forks = fakeForks();
+  const over = { clark: { backend: { url: 'http://203.0.113.5:8642' } } };
+  const a = makeRuns({ fork: forks, backendFor: (use) => fakeBackends(over)(use) });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  await rejects(a.runs.start(W, A, { use: 'clark', owner: 1 }), 'plain_http');
+  assert.equal(a.asked.length, 0, 'refused before any question');
+  // Over https it asks, and runs after a yes.
+  over.clark = { backend: { url: 'https://hermes.example' } };
+  await a.runs.start(W, A, { use: 'clark', owner: 1 });
+  assert.equal(forks.all[0].posts[0].backendKey, 'hermes-secret-value');
+  // Settings later move it to plain http on the internet: it stops, and its secret goes nowhere.
+  over.clark = { backend: { url: 'http://203.0.113.5:8642' } };
+  a.runs.settingsChanged();
+  assert.equal(phaseOf(a.runs, W, A), 'changed');
+  assert.equal(viewOf(a.runs, W, A).gone, false);
+  forks.all[0].exit(0);
+  await rejects(a.runs.start(W, A, {}), 'plain_http');
+  assert.equal(forks.all.length, 1);
+  // A server agent without a secret may use plain http: nothing secret goes along.
+  over.clark = { backend: { url: 'http://203.0.113.5:8642' }, secret: '' };
+  await a.runs.start(W, A, {});
+  assert.equal(forks.all.length, 2);
+  assert.equal(forks.all[1].posts[0].backendKey, '');
+});
+
+test("what the runner's process writes for diagnostics is codes and counts only, never what a server said", async (t) => {
+  const { fork } = require('child_process');
+  const { CHILD } = require('../src/main/agent-runs.js');
+  const SAID = 'SERVER-SAID-THIS rka_notakey';
+  const srv = http.createServer((req, res) => res.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'down', message: SAID })));
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  t.after(() => srv.close());
+  const child = fork(CHILD, [], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: runnerEnv() });
+  let stderr = '';
+  child.stderr.on('data', (d) => (stderr += d));
+  const reports = [];
+  child.on('message', (m) => m && m.type === 'report' && reports.push(m.event));
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  const state = path.join(dir, 'diag-child', 'agent.state.json');
+  child.send({ type: 'start', config: { server: `http://127.0.0.1:${srv.address().port}`, workspace: W, backend: { type: 'command', command: [process.execPath, fakePath] }, context: {}, instructions: '', state }, key: KEY, backendKey: 'backend-secret-value' });
+  await until(() => reports.some((e) => e.type === 'unreachable'), 10000, 'the report that the server is down');
+  child.send({ type: 'wake', seq: 4 });
+  await until(() => reports.some((e) => e.type === 'woke' && e.seq === 4), 10000, 'the answer to the wake');
+  child.send({ type: 'stop' });
+  assert.equal(await exited, 0);
+  assert.deepEqual(reports.find((e) => e.type === 'unreachable'), { type: 'unreachable', code: 'http', status: 503 });
+  assert.ok(stderr.length > 0, 'it wrote lines');
+  for (const line of stderr.trim().split(/\r?\n/)) assert.match(line, /^\d{4}-\d\d-\d\dT[\d:.]+Z (info|warn|error) [a-z_]+( \d+)?$/, line);
+  assert.ok(!stderr.includes('SERVER-SAID') && !stderr.includes('rka_') && !stderr.includes('127.0.0.1'));
 });
 
 // ---- The real child, against the real server ----
@@ -798,7 +1172,7 @@ test('a key replaced elsewhere stops the runner for good; an agent removed on an
   const removed = await server.call('DELETE', `/v1/workspaces/${ws.id}/agents/${agent.id}`, { token: olga.token });
   assert.ok([200, 204].includes(removed.status), removed.text);
   // The directory the app loads next says so: the setup goes, stopped or not.
-  a.runs.reconcile(ws.id, [{ id: `u_${'m'.repeat(22)}`, kind: 'human', state: 'active' }, { id: agent.id, kind: 'agent', state: 'removed' }]);
+  a.runs.reconcile(ws.id, [{ id: `u_${'m'.repeat(22)}`, kind: 'human', state: 'active' }, { id: agent.id, kind: 'agent', state: 'removed' }], { complete: true });
   await until(() => a.runs.find(ws.id, agent.id) === null, 5000, 'the setup to go');
   assert.ok(!fs.existsSync(path.join(a.dataDir, 'agent-runs.json')));
   assert.deepEqual(fs.existsSync(path.join(a.dataDir, 'agent-runs')) ? fs.readdirSync(path.join(a.dataDir, 'agent-runs')) : [], []);
@@ -865,7 +1239,7 @@ test('setups made under another sign-in are deleted at the start, never run', as
 test('runBackend builds the backend from Settings, Agents with the secret apart, and runnerEnv drops ELECTRON_RUN_AS_NODE', () => {
   const file = path.join(dir, 'agents.json');
   const cfg = new AgentConfig({ file, secrets: fakeSecrets() }).load();
-  cfg.update({ clark: { url: 'http://127.0.0.1:8642', model: 'hermes-4' }, openclaw: { agent: 'ops', model: 'gpt-5' }, claude: { exe: '/opt/claude', configDir: '/home/me/.claude-team' } });
+  cfg.update({ clark: { url: 'http://127.0.0.1:8642', model: 'hermes-4' }, openclaw: { agent: 'ops', model: 'gpt-5' }, claude: { exe: '/opt/claude', configDir: TEAM } });
   cfg.setSecret('clark', 'hermes-secret');
   cfg.setSecret('openclaw', 'gateway-token');
   assert.deepEqual(runBackend(cfg, 'clark'), { name: 'Hermes', kind: 'hermes', backend: { type: 'runs', url: 'http://127.0.0.1:8642', model: 'hermes-4' }, secret: 'hermes-secret' });
@@ -875,7 +1249,7 @@ test('runBackend builds the backend from Settings, Agents with the secret apart,
     backend: { type: 'openai', url: 'http://127.0.0.1:18789', model: 'openclaw/ops', headers: { 'x-openclaw-model': 'gpt-5' } },
     secret: 'gateway-token'
   });
-  assert.deepEqual(runBackend(cfg, 'claude'), { name: 'Claude', kind: 'claude', backend: { type: 'claude', exe: '/opt/claude', configDir: '/home/me/.claude-team' }, secret: '' });
+  assert.deepEqual(runBackend(cfg, 'claude'), { name: 'Claude', kind: 'claude', backend: { type: 'claude', exe: '/opt/claude', configDir: TEAM }, secret: '' });
   assert.deepEqual(runBackend(cfg, 'codex'), { name: 'Codex', kind: 'codex', backend: { type: 'codex' }, secret: '' });
   const id = cfg.addCustom({ preset: 'booper' });
   cfg.setSecret(id, 'booper-key');
@@ -884,7 +1258,7 @@ test('runBackend builds the backend from Settings, Agents with the secret apart,
   assert.ok(!JSON.stringify(runBackend(cfg, 'clark').backend).includes('hermes-secret'));
   // OpenClaw is approved with the OpenClaw agent it asks.
   assert.deepEqual(identify('openclaw', runBackend(cfg, 'openclaw'), {}), { use: 'openclaw', kind: 'openclaw', type: 'openai', address: 'http://127.0.0.1:18789', agent: 'openclaw/ops' });
-  assert.deepEqual(identify('claude', runBackend(cfg, 'claude'), { resolve: (type, exe) => exe }), { use: 'claude', kind: 'claude', type: 'claude', program: '/opt/claude', configDir: '/home/me/.claude-team' });
+  assert.deepEqual(identify('claude', runBackend(cfg, 'claude'), { resolve: (type, exe) => exe }), { use: 'claude', kind: 'claude', type: 'claude', program: '/opt/claude', configDir: TEAM });
   assert.deepEqual(runnerEnv({ PATH: '/bin', ELECTRON_RUN_AS_NODE: '1', rukoo_agent_key: 'x' }), { PATH: '/bin' });
 });
 

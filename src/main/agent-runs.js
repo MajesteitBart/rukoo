@@ -9,17 +9,21 @@
 //
 // What a runner answers with. An agent of Settings, Agents (src/main/agents/config.js), by its id: main builds the
 // backend from those settings (runBackend), never from what the window sends. Running it here takes a person's yes in
-// a native question from main (ask), which names the agent and the program or the address: for Claude Code and Codex
-// the program as the runner would find it and the folder of its settings, for Hermes, OpenClaw and custom agents the
-// address the runner sends to. Main records what was approved (identify) and starts the runner only with exactly that;
-// the backend's own secret, such as a Hermes API key, goes only to the approved address. When Settings later name
-// another program or address, or the agent is off or gone there, the runner stops or doesn't start (phase 'changed')
-// until someone runs it again and approves it as it is now.
+// a native question from main (ask), which names the agent (by main's own directory, nameOf) and the program or the
+// address: for Claude Code and Codex the program as one absolute, canonical file and the full path of its settings
+// folder (canonicalProgram, identify), for Hermes, OpenClaw and custom agents each request's address as the runner's
+// endpoint() builds it and an OpenClaw gateway's agent. Main records what was approved (identify) and starts the
+// runner only with exactly that, checking it again before each start; the runner checks the program before each turn
+// (backends.js pinned()). The backend's own secret, such as a Hermes API key, goes only to the approved address, and
+// over plain http only inside the person's own network (plainHttp). When Settings later name another program or
+// address, or the agent is off or gone there, the runner stops or doesn't start (phase 'changed'), and the approval
+// is gone for good (invalidate) until someone runs it again and approves it as it is now.
 //
 // The agent's key. The server shows it once, when the agent is made and at New key; main takes it from those answers
 // (takeKey) and the window gets them without it. Main holds it in memory for the window document that made the agent
-// (hold, owner: its webContents), for ten minutes at most, and until that document navigates, reloads, crashes or
-// closes, or the person signs out. Run on this computer stores it in agent-runs.json, encrypted with safeStorage
+// (hold, owner: main.js documentOf, the page in the main window's main frame) under the session it was made in, for
+// ten minutes at most, and until that document navigates, reloads, crashes or closes, or that session ends. Every
+// step after an await checks the same document, session and hold again before the key is held, stored or exported. Run on this computer stores it in agent-runs.json, encrypted with safeStorage
 // (secrets.js), which uses up the hold; without a way to encrypt it (Linux without a keyring) the option isn't offered
 // and nothing is stored. "Run it on another computer instead" is an export main carries out (exportConfig): it asks
 // the person in a native question, then puts the config with the key on the clipboard or in a file itself. No call
@@ -42,7 +46,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { makeBackend } = require('../../integrations/agent-runner/backends.js');
+const { makeBackend, endpoint } = require('../../integrations/agent-runner/backends.js');
 
 const FILE = 'agent-runs.json';
 const DIR = 'agent-runs';
@@ -70,9 +74,14 @@ const PLACEHOLDER_BACKEND = Object.freeze({ type: 'command', command: 'my-agent'
 // The variables an exported config names for a backend's secret, as the key step shows them (chat-agents.js KEY_ENV).
 const KEY_ENV = Object.freeze({ hermes: 'HERMES_API_KEY', openclaw: 'OPENCLAW_GATEWAY_TOKEN', custom: 'AGENT_API_KEY' });
 // The codes a runner reports (agent-runner-child.js), the only words of a runner that reach the window.
-const CODES = new Set(['offline', 'http', 'timeout', 'missing', 'exit', 'empty', 'failed', 'protocol', 'config', 'server', 'too_large', 'stopped', 'backend', 'unreachable', 'backend_key', 'key_env', 'placeholder', 'runner', 'other']);
-// What an approval records, in this order.
-const IDENTITY = ['use', 'kind', 'type', 'program', 'args', 'configDir', 'address', 'agent'];
+const CODES = new Set(['offline', 'http', 'timeout', 'missing', 'exit', 'empty', 'failed', 'protocol', 'config', 'server', 'too_large', 'stopped', 'backend', 'unreachable', 'backend_key', 'key_env', 'placeholder', 'runner', 'changed', 'other']);
+// What an approval records, in this order. headers: a hash of the headers a server agent's requests carry besides
+// OpenClaw's model header, when there are any.
+const IDENTITY = ['use', 'kind', 'type', 'program', 'args', 'configDir', 'address', 'agent', 'headers'];
+// The route each server backend sends a mention to (backends.js), for the address the question names.
+const ROUTE = Object.freeze({ runs: '/v1/runs', openai: '/v1/chat/completions' });
+// The exit code of a runner whose program is no longer the approved one (agent-runner-child.js).
+const EXIT_CHANGED = 3;
 
 const text = (v) => (typeof v === 'string' ? v.trim() : '');
 const withModel = (backend, model) => (text(model) ? { ...backend, model: text(model) } : backend);
@@ -142,32 +151,99 @@ function exportBackend(cfg, use) {
   return { type, url, keyEnv, ...rest };
 }
 
-// The program the runner would start for a Claude Code or Codex backend, found as it finds it (backends.js exe()):
-// the path in Settings, else claude or codex on PATH or where its installer puts it. Throws RunError('missing').
-function resolveProgram(type, exe) {
+// A path given in full: absolute, with nothing that a working folder or a drive of the moment would decide.
+const fullPath = (p) => typeof p === 'string' && p !== '' && path.isAbsolute(p) && path.resolve(p) === path.normalize(p);
+
+// The file a program path stands for, as the runner will start it: absolute and canonical (fs.realpath: no link, no
+// relative part), an executable file, and on Windows an .exe, named so in Settings too. Throws RunError('unresolved')
+// for a path that isn't given in full or isn't an .exe on Windows, RunError('missing') for one that isn't there.
+function canonicalProgram(file, { platform = process.platform } = {}) {
+  const win = platform === 'win32';
+  if (!fullPath(file) || (win && path.extname(file).toLowerCase() !== '.exe')) throw new RunError('unresolved');
+  let real;
   try {
-    return makeBackend({ type, ...(exe ? { exe } : {}) }).exe();
+    real = fs.realpathSync.native(file);
+    if (!fs.statSync(real).isFile()) throw new Error('not a file');
+    if (!win) fs.accessSync(real, fs.constants.X_OK);
   } catch (_) {
     throw new RunError('missing');
   }
+  if (win && path.extname(real).toLowerCase() !== '.exe') throw new RunError('unresolved');
+  return real;
 }
 
-// An address as the runner sends to it: origin and path, without a query, fragment or credentials (backends.js
-// endpoint() uses no more).
-function addressOf(url) {
-  let u;
+// The program the runner starts for a Claude Code or Codex backend: the path in Settings, else claude or codex where
+// backends.js exe() looks for it (PATH, where its installer puts it), as canonicalProgram() makes it. The runner gets
+// exactly that file and looks for nothing itself. Throws RunError('missing') or RunError('unresolved').
+function resolveProgram(type, exe) {
+  let found;
   try {
-    u = new URL(text(url));
+    found = makeBackend({ type, ...(exe ? { exe } : {}) }).exe();
+  } catch (_) {
+    throw new RunError('missing');
+  }
+  return canonicalProgram(found);
+}
+
+// An address as the runner sends to it: origin and path, without a query, fragment or credentials, as backends.js
+// endpoint() builds its requests; null for one endpoint() refuses.
+function addressOf(url) {
+  try {
+    return endpoint(text(url), '/').href.replace(/\/$/, '');
   } catch (_) {
     return null;
   }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-  return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
 }
 
+// What the runner requests for each mention, built by the runner's own endpoint(): what the question names.
+function requestOf(be) {
+  try {
+    return endpoint(text(be.url), ROUTE[be.type]).href;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Whether a host is this computer or a network of the person's own: loopback, a private or carrier-grade (tailnet)
+// IPv4 range, ::1 or a unique local IPv6 address, or a Tailscale name (.ts.net), by the name alone.
+function ownNetwork(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || (host.endsWith('.ts.net') && host.length > '.ts.net'.length)) return true;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (host === '::1') return true;
+  const first = host.includes(':') ? host.split(':')[0] : null;
+  return first !== null && first !== '' && (parseInt(first, 16) & 0xfe00) === 0xfc00;
+}
+
+// Whether a backend's secret would cross the network in the clear: http to a host outside ownNetwork().
+function plainHttp(url) {
+  try {
+    const u = new URL(text(url));
+    return u.protocol === 'http:' && !ownNetwork(u.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+// A folder of settings given in full, normalized; RunError('unresolved') for one that isn't.
+function fullFolder(dir) {
+  if (!fullPath(dir)) throw new RunError('unresolved');
+  return path.normalize(dir);
+}
+
+// The name of a team chat agent as main knows it: a string from the workspace's directory or the server's answer,
+// without control or format characters (which could turn text around in a native question), at most 80 characters.
+const cleanName = (v) => (typeof v === 'string' ? v.replace(/[\p{Cc}\p{Cf}]/gu, '').trim().slice(0, 80) : '');
+
 // What a person approves when an agent runs here with b (runBackend's answer) for the Settings agent use: for a
-// program, the program and the folder of its settings; for a server, its address, and for OpenClaw the OpenClaw agent
-// it asks. Throws RunError('missing') for a program that isn't there. resolve(type, exe) and env/home: for the tests.
+// program, the program as the runner will start it and the folder of its settings, both in full; for a server, its
+// address, for OpenClaw the OpenClaw agent it asks, and a hash of any other headers. Throws RunError('missing') for a
+// program that isn't there and RunError('unresolved') for a program or folder that isn't given in full. resolve(type,
+// exe) and env/home: for the tests.
 function identify(use, b, { resolve = resolveProgram, env = process.env, home = os.homedir() } = {}) {
   const be = (b && b.backend) || {};
   const out = { use, kind: b.kind || be.type };
@@ -175,7 +251,7 @@ function identify(use, b, { resolve = resolveProgram, env = process.env, home = 
     out.type = be.type;
     out.program = resolve(be.type, text(be.exe));
     // The folder its login and settings are in: Claude Code's from Settings or CLAUDE_CONFIG_DIR, Codex's CODEX_HOME.
-    out.configDir = be.type === 'claude' ? text(be.configDir) || text(env.CLAUDE_CONFIG_DIR) || path.join(home, '.claude') : text(env.CODEX_HOME) || path.join(home, '.codex');
+    out.configDir = fullFolder(be.type === 'claude' ? text(be.configDir) || text(env.CLAUDE_CONFIG_DIR) || path.join(home, '.claude') : text(env.CODEX_HOME) || path.join(home, '.codex'));
     return out;
   }
   if (be.type === 'command') {
@@ -192,6 +268,11 @@ function identify(use, b, { resolve = resolveProgram, env = process.env, home = 
   out.type = be.type;
   out.address = address;
   if (b.kind === 'openclaw') out.agent = text(be.model);
+  const headers = Object.entries(isObj(be.headers) ? be.headers : {})
+    .filter(([k]) => k.toLowerCase() !== 'x-openclaw-model')
+    .map(([k, v]) => [k.toLowerCase(), String(v)])
+    .sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
+  if (headers.length) out.headers = crypto.createHash('sha256').update(JSON.stringify(headers)).digest('hex');
   return out;
 }
 
@@ -253,15 +334,31 @@ function runnerEnv(base = process.env) {
   return env;
 }
 
+// Writes data to file, readable only by the person: into a new file of a random name next to it, made exclusively with
+// mode 0600, which then takes file's place. A link at file is replaced, never followed. Throws when the rename fails
+// (after a few tries: Windows can refuse to replace a file another process has open for a moment), and the temporary
+// file is gone afterwards either way.
 function writePrivate(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, data, { mode: 0o600 });
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tmp = path.join(dir, `.${path.basename(file)}.${crypto.randomBytes(8).toString('hex')}.tmp`);
+  let fd = null;
   try {
-    fs.renameSync(tmp, file);
-  } catch (_) {
-    // Windows can refuse to replace a file another process has open for a moment.
-    fs.writeFileSync(file, data, { mode: 0o600 });
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, data);
+    fs.closeSync(fd);
+    fd = null;
+    for (let tries = 1; ; tries++) {
+      try {
+        fs.renameSync(tmp, file);
+        return;
+      } catch (err) {
+        if (tries >= 5 || process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(err.code)) throw err;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      }
+    }
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
     fs.rmSync(tmp, { force: true });
   }
 }
@@ -277,8 +374,10 @@ class AgentRuns extends EventEmitter {
   // workspace still has the agent (true, false or null when unknown), asked after a key stopped working.
   // ask(question): a promise of the id of the button the person chose in a native question from main ({ kind, message,
   // detail, buttons: [{ id, label }], cancel }); copy(text): the clipboard; saveTo(name): a promise of the file the
-  // person picked in a native save dialog, or null. t: the catalogs. resolve, env, home, fork, child, delays, steady,
-  // stopWait, heldFor and now can be replaced in tests. log(level, message): ids, states and codes only.
+  // person picked in a native save dialog, or null. memberName(ws, member): the member's name in main's own copy of the
+  // workspace's directory, or ''. ownerAlive(owner): whether the window document owner (main.js documentOf) is still
+  // the one on screen. t: the catalogs. resolve, env, home, fork, child, delays, steady, stopWait, heldFor and now can
+  // be replaced in tests. log(level, message): ids, states and codes only.
   constructor({
     dataDir,
     secrets,
@@ -290,6 +389,8 @@ class AgentRuns extends EventEmitter {
     ask = async (q) => q.cancel,
     copy = () => {},
     saveTo = async () => null,
+    memberName = () => '',
+    ownerAlive = () => true,
     t = require('../i18n').t,
     resolve = resolveProgram,
     env = process.env,
@@ -307,7 +408,7 @@ class AgentRuns extends EventEmitter {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, FILE);
     this.dir = path.join(dataDir, DIR);
-    Object.assign(this, { secrets, canKeep, account, backendFor, exportFor, agentExists, ask, copy, saveTo, t, resolve, env, home, fork, child, delays, steady, stopWait, now, log });
+    Object.assign(this, { secrets, canKeep, account, backendFor, exportFor, agentExists, ask, copy, saveTo, memberName, ownerAlive, t, resolve, env, home, fork, child, delays, steady, stopWait, now, log });
     this.heldFor = heldFor || HELD_FOR;
     // { version, server, session, runs: [stored run] }. A stored run: { ws, agent, name, use, key, keyAt, on, refused,
     // stoppedAt, approved }. What only this run of Rukoo knows of each (what its runner reported) is in live, by id.
@@ -317,7 +418,8 @@ class AgentRuns extends EventEmitter {
     this.procs = new Map();
     // id → the end of the queue of that agent's starts and stops.
     this.ops = new Map();
-    // id → { key, owner, timer }: the keys held for the window document that made the agent.
+    // id → { key, owner, session, name, timer }: the keys held for the window document that made the agent, under the
+    // session it was made in, with the agent's name as the server answered it.
     this.held = new Map();
     this.asking = false;
     this.followed = null;
@@ -435,21 +537,32 @@ class AgentRuns extends EventEmitter {
 
   // ---- keys held for the window ----
 
-  // Holds key for the window document owner (a webContents id) for heldFor. false for a key that isn't the agent's.
-  hold(ws, agent, key, owner) {
+  // Holds key for the window document owner (main.js documentOf) for heldFor, under the session signed in now, and
+  // with name, the agent's name as the server answered it. false for a key that isn't the agent's, or a document that
+  // is no longer on screen.
+  hold(ws, agent, key, owner, name = '') {
     if (!WS_ID.test(ws) || !MEMBER_ID.test(agent) || typeof key !== 'string' || !AGENT_KEY.test(key) || key.slice(4, 26) !== agent.slice(2) || owner == null) return false;
+    const { signedIn, session } = this.signature();
+    if (!signedIn || !this.ownerAlive(owner)) return false;
     const id = idOf(ws, agent);
     this.drop(id);
     const timer = setTimeout(() => this.drop(id), this.heldFor);
     if (timer.unref) timer.unref();
-    this.held.set(id, { key, owner, timer });
+    this.held.set(id, { key, owner, session, name: cleanName(name), timer });
     return true;
   }
 
-  // The hold of id when owner made it, or null.
+  // The hold of id when owner made it, while that document is still on screen and its session still signed in, or
+  // null. A hold whose document or session went is dropped.
   holdOf(id, owner) {
     const h = this.held.get(id);
-    return h && owner != null && h.owner === owner ? h : null;
+    if (!h || owner == null || h.owner !== owner) return null;
+    const { signedIn, session } = this.signature();
+    if (!signedIn || h.session !== session || !this.ownerAlive(owner)) {
+      this.drop(id);
+      return null;
+    }
+    return h;
   }
 
   drop(id) {
@@ -472,15 +585,25 @@ class AgentRuns extends EventEmitter {
   }
 
   // What chatCreateAgent and chatNewAgentKey answer the window: the server's answer without the key. renew: New key,
-  // which goes straight to the agent's setup here when it has one (runsHere) and else is held for owner.
-  takeKey(ws, answer, { renew = false, owner = null } = {}) {
+  // which goes straight to the agent's setup here when it has one (runsHere) and else is held for owner. session: the
+  // session signed in when the window asked; an answer that comes after that session or the document went is held
+  // for nobody, and the window, if any, hears held: false, which is "the key wasn't kept". A new key that the setup
+  // here can't keep (unsaved) stays held for owner instead, so the person can run it here again or export it.
+  takeKey(ws, answer, { renew = false, owner = null, session } = {}) {
     if (!answer || typeof answer !== 'object' || typeof answer.key !== 'string' || !answer.agent || typeof answer.agent.id !== 'string') return answer;
     const { key, ...rest } = answer;
     const agent = answer.agent.id;
-    const runsHere = renew && Boolean(this.find(ws, agent));
-    if (runsHere) this.replaceKey(ws, agent, key);
-    else this.hold(ws, agent, key, owner);
-    return { ...rest, held: this.holdOf(idOf(ws, agent), owner) !== null, runsHere };
+    const name = answer.agent.name;
+    const id = idOf(ws, agent);
+    if (session !== undefined && this.signature().session !== session) return { ...rest, held: false, runsHere: false };
+    let runsHere = false;
+    let unsaved = false;
+    if (renew && this.find(ws, agent)) {
+      runsHere = this.replaceKey(ws, agent, key) === 'saved';
+      unsaved = !runsHere;
+    }
+    if (!runsHere) this.hold(ws, agent, key, owner, name);
+    return { ...rest, held: this.holdOf(id, owner) !== null, runsHere, ...(unsaved ? { unsaved: true } : {}) };
   }
 
   // ---- setups ----
@@ -505,11 +628,26 @@ class AgentRuns extends EventEmitter {
     return value;
   }
 
-  // What runs for use now, as identify() says, or null when Settings have no such agent that is on.
+  // What runs for use now, as identify() says, or null when Settings have no such agent that is on. Throws
+  // RunError('plain_http') for a server whose secret would go over plain http outside the person's own network.
   current(use) {
     const b = this.backendFor(use);
     if (!b) return null;
+    if (b.secret && plainHttp(b.backend && b.backend.url)) throw new RunError('plain_http');
     return { b, identity: identify(use, b, { resolve: this.resolve, env: this.env, home: this.home }) };
+  }
+
+  // A saved approval that no longer matches Settings goes for good: restoring the old Settings doesn't bring it back,
+  // and only a person's yes in a new question does. In memory too when the file can't be written.
+  invalidate(id) {
+    const run = this.findId(id);
+    if (!run || !run.approved) return;
+    try {
+      this.update(id, { approved: null });
+    } catch (_) {
+      run.approved = null;
+    }
+    this.log('info', `${run.agent}'s approval no longer matches Settings, Agents`);
   }
 
   // One native question at a time: a second one while the first is open is refused.
@@ -524,13 +662,29 @@ class AgentRuns extends EventEmitter {
     }
   }
 
-  // The question before an agent runs here with what identity names, in plain words.
+  // The agent's name for a question and the list: from main's own copy of the workspace's directory, else from the
+  // server's answer that made the key held for this document, else the one stored with its setup. Never the window's.
+  nameOf(ws, agent, h = null) {
+    let fromDirectory = '';
+    try {
+      fromDirectory = cleanName(this.memberName(ws, agent));
+    } catch (_) {
+      fromDirectory = '';
+    }
+    const run = this.find(ws, agent);
+    return fromDirectory || (h && h.name) || (run && cleanName(run.name)) || '';
+  }
+
+  // The question before an agent runs here with what identity names, in plain words: for a server, the address of
+  // each request as the runner builds it, and the agent an OpenClaw gateway is asked for.
   approvalQuestion(name, b, identity) {
     const t = this.t;
     const use = identity.kind === 'claude' ? 'Claude Code' : identity.kind === 'codex' ? 'Codex' : b.name;
-    const agent = text(name) || t('native.agentRuns.thisAgent');
+    const agent = cleanName(name) || t('native.agentRuns.thisAgent');
+    const request = identity.address ? requestOf(b.backend) || identity.address : '';
+    const address = identity.agent ? `${request}\n${t('native.agentRuns.gatewayAgent', { agent: identity.agent })}` : request;
     const detail = identity.address
-      ? t('native.agentRuns.runServer', { name: agent, use, address: identity.address })
+      ? t('native.agentRuns.runServer', { name: agent, use, address })
       : t('native.agentRuns.runProgram', { name: agent, use, program: [identity.program, ...(identity.args || [])].join(' '), folder: identity.configDir || '' });
     return {
       kind: 'run',
@@ -545,33 +699,38 @@ class AgentRuns extends EventEmitter {
   }
 
   // Run on this computer, or Start: the key this document holds when it has one, else the stored key. use: the
-  // Settings agent that answers (the stored one when left out). name: the agent's name, for the list and the process.
-  // owner: the window document that asks. Asks the person first unless the setup already runs exactly this.
-  async start(ws, agent, { use = '', name = '', owner = null } = {}) {
+  // Settings agent that answers (the stored one when left out). owner: the window document that asks. The agent's
+  // name comes from main (nameOf). Asks the person first unless the setup already runs exactly this. After the
+  // question the same document, session and hold must still be there, or nothing is kept.
+  async start(ws, agent, { use = '', owner = null } = {}) {
     if (this.closed) throw new RunError('closed');
     if (!WS_ID.test(ws) || !MEMBER_ID.test(agent)) throw new RunError('invalid');
     if (!this.signedIn()) throw new RunError('signed_out');
     if (!this.canKeep()) throw new RunError('no_keyring');
     const id = idOf(ws, agent);
+    const session = this.signature().session;
     const existing = this.find(ws, agent);
-    if (!this.holdOf(id, owner) && !existing) throw new RunError('no_key');
-    if (existing && existing.refused && !this.holdOf(id, owner)) throw new RunError('refused');
+    const h0 = this.holdOf(id, owner);
+    if (!h0 && !existing) throw new RunError('no_key');
+    if (existing && existing.refused && !h0) throw new RunError('refused');
     const wanted = text(use) || (existing && existing.use) || '';
     const now = this.current(wanted);
     if (!now) throw new RunError('unknown_backend');
-    const label = text(name) || (existing && existing.name) || '';
+    const label = this.nameOf(ws, agent, h0);
     if (!(existing && existing.use === wanted && sameIdentity(existing.approved, now.identity))) {
       const answer = await this.askOnce(this.approvalQuestion(label, now.b, now.identity));
       if (answer !== 'run') throw new RunError('declined');
     }
     return this.queue(id, async () => {
       if (this.closed) throw new RunError('closed');
-      if (!this.signedIn()) throw new RunError('signed_out');
+      if (!this.signedIn() || this.signature().session !== session) throw new RunError('signed_out');
       // Settings that changed while the question was open don't run: what runs is what the person saw.
       const again = this.current(wanted);
       if (!again) throw new RunError('unknown_backend');
       if (!sameIdentity(again.identity, now.identity)) throw new RunError('changed');
       const h = this.holdOf(id, owner);
+      // The key this document held when it asked, and no other.
+      if (h0 && h !== h0) throw new RunError('no_key');
       const run = this.find(ws, agent);
       if (!h && !run) throw new RunError('no_key');
       const key = h ? this.encrypt(h.key) : null;
@@ -579,7 +738,7 @@ class AgentRuns extends EventEmitter {
       const next = {
         ...(run || { ws, agent, name: '', key: null, keyAt: at, refused: false }),
         ...(key ? { key, keyAt: at, refused: false } : {}),
-        name: label.slice(0, 80),
+        name: this.nameOf(ws, agent, h) || label,
         use: wanted,
         on: true,
         stoppedAt: null,
@@ -642,8 +801,11 @@ class AgentRuns extends EventEmitter {
   // The workspace's directory as the app loaded it now (GET /members, store.listMembers): a setup whose agent isn't an
   // active member of it goes, whether its runner runs, stopped or was refused. A directory with no active person in it
   // says nothing. Setups are only ever of the person's own agents, which the directory of a full member always lists
-  // while they are active, and which the server removes when the person becomes a guest.
-  reconcile(ws, members) {
+  // while they are active, and which the server removes when the person becomes a guest. Only an authoritative list
+  // counts (complete): the whole member list the server just answered (sync.js, a 'directory' event with members),
+  // never a cache an optimistic change or a failed reload may have left short.
+  reconcile(ws, members, { complete = false } = {}) {
+    if (complete !== true) return;
     if (!Array.isArray(members) || !members.some((m) => m && m.kind !== 'agent' && m.state === 'active')) return;
     const active = new Set(members.filter((m) => m && m.state === 'active').map((m) => m.id));
     for (const run of this.data.runs.filter((r) => r.ws === ws)) {
@@ -653,8 +815,9 @@ class AgentRuns extends EventEmitter {
     }
   }
 
-  // New key: the setup takes the new key, and a runner that is on starts again with it. Answers whether the agent has
-  // a setup here.
+  // New key: the setup takes the new key, and a runner that is on starts again with it. Answers 'saved' when the setup
+  // keeps it, 'unsaved' when it can't be encrypted or written (takeKey then holds it for the document), and false
+  // without a setup here.
   replaceKey(ws, agent, key) {
     const id = idOf(ws, agent);
     const run = this.findId(id);
@@ -671,30 +834,33 @@ class AgentRuns extends EventEmitter {
       } catch (__) {
         // A restart tries the old key, which the server refuses.
       }
+      this.log('warn', `${agent}'s new key could not be kept on this computer`);
       this.queue(id, () => this.endProcess(id)).catch(() => {});
       this.changed();
-      return true;
+      return 'unsaved';
     }
     if (next.on) {
       this.state(id).failures = 0;
       this.queue(id, () => this.cycle(id, { restart: true })).catch(() => {});
     } else this.changed();
-    return true;
+    return 'saved';
   }
 
   // "Run it on another computer instead": the config the key step shows for use, with the key this document holds, on
   // the clipboard or in a file the person picks, after they said so in a native question. { done: 'copied' | 'saved'
   // | null }. The key never goes to the window.
-  async exportConfig(ws, agent, { use = '', name = '', owner = null } = {}) {
+  // After each await, the same document, session and hold must still be there (holdOf, and the very hold h0), or
+  // nothing is copied or written.
+  async exportConfig(ws, agent, { use = '', owner = null } = {}) {
     if (!WS_ID.test(ws) || !MEMBER_ID.test(agent)) throw new RunError('invalid');
     if (!this.signedIn()) throw new RunError('signed_out');
     const id = idOf(ws, agent);
-    if (!this.holdOf(id, owner)) throw new RunError('no_key');
+    const h0 = this.holdOf(id, owner);
+    if (!h0) throw new RunError('no_key');
     const backend = this.exportFor(text(use));
     if (!backend) throw new RunError('unknown_backend');
     const t = this.t;
-    const run = this.find(ws, agent);
-    const label = text(name) || (run && run.name) || t('native.agentRuns.thisAgent');
+    const label = this.nameOf(ws, agent, h0) || t('native.agentRuns.thisAgent');
     const answer = await this.askOnce({
       kind: 'export',
       message: t('native.agentRuns.exportTitle', { name: label }),
@@ -707,19 +873,25 @@ class AgentRuns extends EventEmitter {
       cancel: 'cancel'
     });
     if (answer === 'cancel') return { done: null };
-    // The document navigated or the hold ran out while the question was open.
-    const h = this.holdOf(id, owner);
-    if (!h) throw new RunError('no_key');
-    const config = { server: String(this.signature().server || '').replace(/\/+$/, ''), workspace: ws, key: h.key, backend, context: { ...RUNNER_CONTEXT }, instructions: '' };
-    const out = `${JSON.stringify(config, null, 2)}\n`;
+    // The document navigated, its session ended, or the hold ran out or was replaced while a question was open.
+    const still = () => {
+      if (this.holdOf(id, owner) !== h0) throw new RunError('no_key');
+    };
+    const out = () => `${JSON.stringify({ server: String(this.signature().server || '').replace(/\/+$/, ''), workspace: ws, key: h0.key, backend, context: { ...RUNNER_CONTEXT }, instructions: '' }, null, 2)}\n`;
+    still();
     if (answer === 'copy') {
-      this.copy(out);
+      try {
+        await this.copy(out());
+      } catch (_) {
+        throw new RunError('copy_failed');
+      }
       return { done: 'copied' };
     }
     const file = await this.saveTo('agent.json');
     if (!file) return { done: null };
+    still();
     try {
-      this.writeFile(file, out);
+      this.writeFile(file, out());
     } catch (_) {
       throw new RunError('save_failed');
     }
@@ -728,37 +900,45 @@ class AgentRuns extends EventEmitter {
 
   // Settings, Agents changed: a runner whose Settings agent now names another program or address, or is off or gone,
   // stops until it is run again; one with other details (a model, a secret) starts again with them.
+  // A setup whose approval no longer matches loses it for good (invalidate), whether its runner runs, waits for its
+  // next start, or was stopped.
   settingsChanged() {
-    for (const run of this.data.runs) {
+    for (const run of [...this.data.runs]) {
       const id = idOf(run.ws, run.agent);
-      const s = this.live.get(id);
-      if (!run.on || run.refused || !s || !this.procs.has(id)) continue;
+      if (!run.approved) continue;
       let now = null;
+      // Settings still have the agent, but what they name can't run (unresolved, plain_http): changed, not gone.
+      let refusedNow = false;
       try {
         now = this.current(run.use);
       } catch (_) {
-        now = null;
+        refusedNow = true;
       }
+      const s = this.live.get(id);
       if (now && sameIdentity(now.identity, run.approved)) {
-        if (this.fingerprint(now.b, now.identity) !== s.fingerprint) this.queue(id, () => this.cycle(id, { restart: true })).catch(() => {});
+        if (run.on && !run.refused && s && this.procs.has(id) && this.fingerprint(now.b, now.identity) !== s.fingerprint) this.queue(id, () => this.cycle(id, { restart: true })).catch(() => {});
         continue;
       }
-      this.queue(id, async () => {
-        const st = this.live.get(id);
-        if (st) this.mark(st, 'changed', { gone: !now });
-        await this.endProcess(id);
-      }).catch(() => {});
+      this.invalidate(id);
+      if (!run.on || run.refused) continue;
+      const st = this.state(id);
+      this.clearTimer(st);
+      this.mark(st, 'changed', { gone: !now && !refusedNow });
+      // At once, so nothing the old runner still reports can say otherwise (report ignores a process that stops).
+      this.endProcess(id);
     }
   }
 
-  // The computer woke: what each runner said before is stale until its next pass, which a wake asks for now.
+  // The computer woke: what each runner said before is stale until it answers this wake (report 'woke' with its seq),
+  // after the pass the wake asks for now.
   resume() {
     for (const [id, s] of this.live) {
       const p = this.procs.get(id);
-      if (!p || s.child !== p.child) continue;
+      if (!p || s.child !== p.child || p.stopping) continue;
       s.stale = true;
+      s.wake = (s.wake || 0) + 1;
       try {
-        p.child.post({ type: 'wake' });
+        p.child.post({ type: 'wake', seq: s.wake });
       } catch (_) {
         // Gone; its exit follows.
       }
@@ -867,6 +1047,7 @@ class AgentRuns extends EventEmitter {
     }
     if (!now || !sameIdentity(now.identity, run.approved)) {
       this.log('warn', `${run.agent} answers with something that changed in Settings, Agents: it runs again once approved`);
+      this.invalidate(id);
       return this.mark(s, 'changed', { gone: !now });
     }
     let key = '';
@@ -878,8 +1059,14 @@ class AgentRuns extends EventEmitter {
     if (!AGENT_KEY.test(key)) return fail('key_unreadable');
     const identity = now.identity;
     const backend = { ...now.b.backend };
-    // The program that was approved, as it was found then.
-    if (identity.type === 'claude' || identity.type === 'codex') backend.exe = identity.program;
+    // Exactly the program that was approved, which the runner checks again before each turn (backends.js pinned()),
+    // and the folder of its settings in full when Settings name one.
+    if (identity.type === 'claude' || identity.type === 'codex') {
+      backend.exe = identity.program;
+      backend.pin = true;
+      if (backend.configDir) backend.configDir = identity.configDir;
+    }
+    if (identity.type === 'command') backend.command = [identity.program, ...(identity.args || [])];
     // The backend's secret goes only to the address that was approved.
     const secret = identity.address ? (addressOf(backend.url) === identity.address ? now.b.secret || '' : '') : now.b.secret || '';
     const config = {
@@ -923,9 +1110,12 @@ class AgentRuns extends EventEmitter {
     this.changed();
   }
 
+  // What a runner reported. A process that was asked to stop has nothing more to say: whoever stopped it says what the
+  // setup is now.
   report(id, child, msg) {
     const s = this.live.get(id);
-    if (!s || s.child !== child || !msg || msg.type !== 'report' || !isObj(msg.event)) return;
+    const p = this.procs.get(id);
+    if (!s || s.child !== child || !p || p.child !== child || p.stopping || !msg || msg.type !== 'report' || !isObj(msg.event)) return;
     const e = msg.event;
     const now = this.now();
     const coded = () => ({ code: codeOf(e.code), status: statusOf(e.status), at: now });
@@ -934,7 +1124,6 @@ class AgentRuns extends EventEmitter {
         s.phase = 'running';
         s.connectedAt = now;
         s.unreachable = null;
-        s.stale = false;
         break;
       case 'problems':
         s.problems = (Array.isArray(e.problems) ? e.problems : []).slice(0, 5).map((p) => ({ code: codeOf(p && p.code) }));
@@ -943,18 +1132,24 @@ class AgentRuns extends EventEmitter {
         // A pass comes at every wake and every 30 seconds: the window hears of one when what it shows changed, and
         // of the time of the last one at most once a minute.
         const channels = Number.isSafeInteger(e.channels) ? e.channels : null;
-        const same = s.phase === 'running' && !s.unreachable && !s.stale && s.channels === channels && s.passAt && now - s.passAt < 60000;
+        const same = s.phase === 'running' && !s.unreachable && s.channels === channels && s.passAt && now - s.passAt < 60000;
         if (s.phase === 'starting') s.phase = 'running';
         s.unreachable = null;
-        s.stale = false;
         s.channels = channels;
         if (same) return;
         s.passAt = now;
         break;
       }
+      case 'woke':
+        // The pass after the last wake ended: what the runner says is fresh again. An answer to an older wake isn't.
+        if (!s.stale || e.seq !== s.wake) return;
+        s.stale = false;
+        break;
+      case 'changed':
+        s.changedSeen = true;
+        break;
       case 'unreachable':
         s.unreachable = coded();
-        s.stale = false;
         break;
       case 'answered':
         s.answeredAt = now;
@@ -1010,9 +1205,20 @@ class AgentRuns extends EventEmitter {
         );
       return;
     }
-    // Asked to stop: whoever asked says what it is now.
+    const changedProgram = code === EXIT_CHANGED || s.changedSeen;
+    s.changedSeen = false;
+    // The program is no longer the file that was approved: the approval goes, as after a change in Settings.
+    if (changedProgram && !proc.stopping) {
+      this.clearTimer(s);
+      this.invalidate(id);
+      this.log('warn', `${run.agent}'s program is no longer the one that was approved`);
+      return this.mark(s, 'changed');
+    }
+    // Asked to stop: whoever asked says what it is now, and without a process it isn't starting or running.
     if (proc.stopping || !run.on || this.closed) {
       if (!run.on && !['refused', 'changed'].includes(s.phase)) s.phase = 'stopped';
+      else if (['starting', 'running'].includes(s.phase)) s.phase = 'stopped';
+      s.stale = false;
       this.changed();
       return;
     }
@@ -1139,15 +1345,18 @@ class AgentRuns extends EventEmitter {
 
 // The IPC methods of Run on this computer, and the chat* methods they wrap so main keeps the keys. get: () => the
 // AgentRuns. chat: the chat* methods as workspaces/ipc.js made them, whose arguments those check. windowApi's methods
-// take the sender first (main.js windowApi): the document that made an agent is the one that holds its key. Nothing
-// here answers a key.
+// take first the window document that calls (main.js documentOf, a token of the main window's main frame and the page
+// in it): the document that made an agent is the one that holds its key. The session signed in when a call came is
+// what its answer must still find (takeKey). Nothing here answers a key, and the agent's name the window sends is
+// left out: main names the agent itself.
 function runsApi(get, chat) {
   const id = (v, re) => {
     if (typeof v !== 'string' || !re.test(v)) throw new RunError('invalid');
     return v;
   };
   const plain = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
-  const owner = (sender) => (sender && Number.isSafeInteger(sender.id) ? sender.id : null);
+  const owner = (doc) => (typeof doc === 'string' && doc ? doc : null);
+  const session = () => get().signature().session;
   const api = {
     chatRemoveAgent: async (ws, agent) => {
       const done = await chat.chatRemoveAgent(ws, agent);
@@ -1159,19 +1368,25 @@ function runsApi(get, chat) {
     agentRunForget: (ws, agent) => get().forget(id(ws, WS_ID), id(agent, MEMBER_ID))
   };
   const windowApi = {
-    chatCreateAgent: async (sender, ws, input) => get().takeKey(ws, await chat.chatCreateAgent(ws, input), { owner: owner(sender) }),
-    chatNewAgentKey: async (sender, ws, agent) => get().takeKey(ws, await chat.chatNewAgentKey(ws, agent), { renew: true, owner: owner(sender) }),
-    agentRunStart: (sender, ws, agent, opts) => {
-      const o = plain(opts);
-      return get().start(id(ws, WS_ID), id(agent, MEMBER_ID), { use: text(o.use).slice(0, 40), name: text(o.name).slice(0, 80), owner: owner(sender) });
+    chatCreateAgent: async (doc, ws, input) => {
+      const at = session();
+      return get().takeKey(ws, await chat.chatCreateAgent(ws, input), { owner: owner(doc), session: at });
     },
-    agentRunExport: (sender, ws, agent, opts) => {
-      const o = plain(opts);
-      return get().exportConfig(id(ws, WS_ID), id(agent, MEMBER_ID), { use: text(o.use).slice(0, 40), name: text(o.name).slice(0, 80), owner: owner(sender) });
+    chatNewAgentKey: async (doc, ws, agent) => {
+      const at = session();
+      return get().takeKey(ws, await chat.chatNewAgentKey(ws, agent), { renew: true, owner: owner(doc), session: at });
     },
-    agentRunRelease: (sender, ws, agent) => get().release(id(ws, WS_ID), id(agent, MEMBER_ID), owner(sender))
+    agentRunStart: (doc, ws, agent, opts) => {
+      const o = plain(opts);
+      return get().start(id(ws, WS_ID), id(agent, MEMBER_ID), { use: text(o.use).slice(0, 40), owner: owner(doc) });
+    },
+    agentRunExport: (doc, ws, agent, opts) => {
+      const o = plain(opts);
+      return get().exportConfig(id(ws, WS_ID), id(agent, MEMBER_ID), { use: text(o.use).slice(0, 40), owner: owner(doc) });
+    },
+    agentRunRelease: (doc, ws, agent) => get().release(id(ws, WS_ID), id(agent, MEMBER_ID), owner(doc))
   };
   return { api, windowApi };
 }
 
-module.exports = { AgentRuns, RunError, runBackend, exportBackend, identify, resolveProgram, runsApi, runnerEnv, forkRunner, customKeyEnv, DELAYS, STEADY, HELD_FOR, STOP_WAIT, RUNNER_CONTEXT, CHILD };
+module.exports = { AgentRuns, RunError, runBackend, exportBackend, identify, resolveProgram, canonicalProgram, ownNetwork, plainHttp, writePrivate, runsApi, runnerEnv, forkRunner, customKeyEnv, DELAYS, STEADY, HELD_FOR, STOP_WAIT, RUNNER_CONTEXT, CHILD };

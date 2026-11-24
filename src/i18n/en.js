@@ -4264,6 +4264,10 @@
     "message": "Rukoo sends every mention {name} answers, with what came before it in the channel, to this address:\n{address}\n\nThe key or token of {use} in Settings > Agents goes along. {use} keeps its own tools and can use them for anyone {name} answers.",
     "description": "Native question before running a team chat agent with Hermes, OpenClaw or a custom agent on a server: the detail. {name}: the team chat agent; {use}: the agent of Settings > Agents; {address}: the address Rukoo sends to. src/main/agent-runs.js (approvalQuestion)"
   },
+  "native.agentRuns.gatewayAgent": {
+    "message": "At that address, the gateway's agent {agent} answers.",
+    "description": "Native question before running a team chat agent with an OpenClaw gateway, which hosts several agents: the line under the address naming the one that answers. {agent}: its id at the gateway, such as openclaw/default. src/main/agent-runs.js (approvalQuestion)"
+  },
   "native.agentRuns.run": {
     "message": "Run on this computer",
     "description": "Native question before running a team chat agent on this computer: the button that runs it. src/main/agent-runs.js (approvalQuestion)"
@@ -12387,6 +12391,18 @@
     "message": "Couldn't start {name} on this computer.",
     "description": "Error when Run on this computer or Start fails for a reason without its own line. {name}: the agent. src/renderer/chat-dialogs.js (runErrorText)"
   },
+  "chat.agents.copyFailed": {
+    "message": "Couldn't copy the config. Try again, or save it to a file.",
+    "description": "Key step of a team chat agent on the computer: Copy config was approved, but the config couldn't be put on the clipboard. src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.saveFailed": {
+    "message": "Rukoo couldn't save that on this computer.",
+    "description": "Key step or Agents dialog on the computer: the setups file or the exported config couldn't be written. src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.newKeyUnsaved": {
+    "message": "Rukoo couldn't keep the new key for {name} on this computer, so {name} doesn't run here now. Run on this computer tries again, and Copy config gives you the key.",
+    "description": "Key step after New key for an agent set up on this computer: the new key could not be encrypted or written, so the setup here has none that works; main holds the new key for this window. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
   "chat.agents.stoppedHereSent": {
     "message": "{name} is stopped on this computer, so it won't answer unless it runs somewhere else.",
     "description": "Toast after sending a message that mentions an agent set up on this computer and stopped there. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
@@ -12454,6 +12470,14 @@
   "chat.agents.run.cantStart": {
     "message": "Couldn't start on this computer",
     "description": "What an agent does on this computer: its runner couldn't start. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.unresolved": {
+    "message": "Can't start: Rukoo needs the full path of {use}'s program, an .exe on Windows, and of its settings folder. Set them in Settings > Agents.",
+    "description": "What an agent does on this computer, or why Run on this computer was refused: the program of Claude Code or Codex, or its settings folder, isn't given in full (a relative path, or a program found on PATH through a relative folder), or on Windows the program isn't an .exe. {use}: Claude Code or Codex. src/renderer/chat-agents.js (runStateText), src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.run.plainHttp": {
+    "message": "Can't start: Rukoo sends {use}'s key over plain http only to this computer or your own network. Use an https address in Settings > Agents.",
+    "description": "What an agent does on this computer, or why Run on this computer was refused: the agent of Settings > Agents it answers with has a key and an http address outside loopback, private and tailnet addresses. {use}: that agent. src/renderer/chat-agents.js (runStateText), src/renderer/chat-dialogs.js (runErrorText)"
   },
   "chat.agents.run.startingOffline": {
     "message": "Starting on this computer, but it can't reach the server yet",

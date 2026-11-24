@@ -1736,19 +1736,51 @@ delete api.chatCreateAgent;
 delete api.chatNewAgentKey;
 Object.assign(api, agentRunsIpc.api);
 
-// The documents that hold an agent's key (agent-runs.js hold): a navigation, a reload, a crash or closing the window
-// ends what each held. Watched once per webContents, from its first call.
-const keyHolders = new WeakSet();
+// A session's permission handlers with clipboard-read refused, both when a page asks (navigator.clipboard.read and
+// readText) and when it checks; every other permission as Electron grants it without handlers.
+function denyClipboardRead(ses) {
+  ses.setPermissionRequestHandler((_contents, permission, callback) => callback(permission !== 'clipboard-read'));
+  ses.setPermissionCheckHandler((_contents, permission) => permission !== 'clipboard-read');
+}
+
+// The documents that hold an agent's key (agent-runs.js hold), each by a token: the webContents id and how many pages
+// its main frame showed before this one. A navigation, a reload, a crash or closing the window ends the document and
+// what it held, and an answer that comes for it later finds it gone (documentAlive). Watched once per webContents,
+// from its first call.
+const keyHolders = new Map();
 function watchKeyHolder(contents) {
-  if (keyHolders.has(contents)) return;
-  keyHolders.add(contents);
+  if (keyHolders.has(contents.id)) return;
   const id = contents.id;
-  const drop = () => agentRuns && agentRuns.releaseOwner(id);
+  keyHolders.set(id, { page: 0, gone: false });
+  const drop = () => {
+    const doc = keyHolders.get(id);
+    if (doc) doc.page += 1;
+    if (agentRuns) agentRuns.releaseOwner(`${id}:${doc ? doc.page - 1 : 0}`);
+  };
   contents.on('did-start-navigation', (details) => {
     if (details && details.isMainFrame && !details.isSameDocument) drop();
   });
   contents.on('render-process-gone', drop);
-  contents.once('destroyed', drop);
+  contents.once('destroyed', () => {
+    drop();
+    const doc = keyHolders.get(id);
+    if (doc) doc.gone = true;
+  });
+}
+// The token of the document that sent a call, when it came from the main frame of the main window; else null.
+function documentOf(event) {
+  const contents = event && event.sender;
+  const frame = event && event.senderFrame;
+  const main = contents && contents.mainFrame;
+  if (!contents || !fromMainWindow(contents) || !frame || !main || frame.processId !== main.processId || frame.routingId !== main.routingId) return null;
+  watchKeyHolder(contents);
+  return `${contents.id}:${keyHolders.get(contents.id).page}`;
+}
+// Whether the document of a token is still the one on screen.
+function documentAlive(owner) {
+  const [id, page] = String(owner || '').split(':').map(Number);
+  const doc = keyHolders.get(id);
+  return Boolean(doc && !doc.gone && doc.page === page && win && !win.isDestroyed() && win.webContents.id === id);
 }
 
 // A question about a team chat agent this computer runs (agent-runs.js ask): { kind, message, detail, buttons: [{ id,
@@ -2142,12 +2174,14 @@ const windowApi = {
 };
 
 // ---- chat agents ----
-// Run on this computer's calls that need the window document (agent-runs.js runsApi): the main window's only.
+// Run on this computer's calls that need the window document (agent-runs.js runsApi): from the main frame of the main
+// window only, with the token of the document that called (documentOf). They take the IPC event, for its frame.
+const documentApi = {};
 for (const [name, fn] of Object.entries(agentRunsIpc.windowApi)) {
-  windowApi[name] = (sender, ...args) => {
-    if (!fromMainWindow(sender)) throw new Error('unknown');
-    watchKeyHolder(sender);
-    return fn(sender, ...args);
+  documentApi[name] = (event, ...args) => {
+    const doc = documentOf(event);
+    if (!doc) throw new Error('unknown');
+    return fn(doc, ...args);
   };
 }
 // ---- /chat agents ----
@@ -2198,10 +2232,14 @@ function windowError(err) {
 
 ipcMain.handle('mail:call', async (event, method, args) => {
   const own = Object.prototype.hasOwnProperty;
-  if (!own.call(api, method) && !own.call(windowApi, method)) return { ok: false, error: `Onbekende actie: ${method}` };
+  if (!own.call(api, method) && !own.call(windowApi, method) && !own.call(documentApi, method)) return { ok: false, error: `Onbekende actie: ${method}` };
   const started = Date.now();
   try {
-    const result = own.call(windowApi, method) ? await windowApi[method](event.sender, ...(args || [])) : await api[method](...(args || []));
+    const result = own.call(documentApi, method)
+      ? await documentApi[method](event, ...(args || []))
+      : own.call(windowApi, method)
+        ? await windowApi[method](event.sender, ...(args || []))
+        : await api[method](...(args || []));
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err), ...windowError(err) };
@@ -2354,6 +2392,10 @@ app.on('second-instance', (e, argv, workingDirectory) => {
 });
 
 app.whenReady().then(() => {
+  // Rukoo's windows never read the clipboard themselves: paste by the person (the keyboard, the edit menu through
+  // main's nativeEdit) is no permission request and keeps working. What main put on the clipboard, such as an agent's
+  // exported config, stays out of reach of a page.
+  denyClipboardRead(session.defaultSession);
   windowState = new WindowState(path.join(app.getPath('userData'), 'window-state.json'));
   // Tests run offline: no logo downloads unless asked for.
   logos = new Logos(path.join(app.getPath('userData'), 'logos'), { enabled: !process.env.SEM_HIDDEN || Boolean(process.env.SEM_LOGOS) });
@@ -2526,8 +2568,17 @@ app.whenReady().then(() => {
     // After a key stopped working: whether the agent is still in the workspace, or was removed.
     agentExists: (ws, agent) => workspaces.manage.agents(ws).then((res) => res.agents.some((a) => a.id === agent), () => null),
     ask: askAgentRun,
-    copy: (text) => clipboard.writeText(text),
+    // Awaited, so a write that fails is a failure and "copied" means copied.
+    copy: async (text) => {
+      await clipboard.writeText(text);
+    },
     saveTo: saveAgentRunConfig,
+    // The agent's name as main's copy of the workspace's directory has it, for the native questions.
+    memberName: (ws, member) => {
+      const found = (chatDirectory(ws) || []).find((m) => m && m.id === member);
+      return found && typeof found.name === 'string' ? found.name : '';
+    },
+    ownerAlive: documentAlive,
     log: (level, message) => diag.write(level, 'agent-runs', message)
   }).init();
   if (process.env.SEM_HIDDEN) global.__semAgentRuns = agentRuns;
@@ -2536,7 +2587,8 @@ app.whenReady().then(() => {
   // an agent set up here, as after it was removed on another device, does too.
   workspaces.on('event', (e) => {
     if (e && e.kind === 'removed') agentRuns.forgetWorkspace(e.ws);
-    if (e && e.kind === 'directory') agentRuns.reconcile(e.ws, chatDirectory(e.ws));
+    // Only right after the server's whole member list replaced the cached one (sync.js: members).
+    if (e && e.kind === 'directory' && e.members === true) agentRuns.reconcile(e.ws, chatDirectory(e.ws), { complete: true });
   });
   // Settings, Agents changed: a runner whose agent there names another program or address stops until it is run again.
   hub.on('settings', () => agentRuns.settingsChanged());

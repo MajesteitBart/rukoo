@@ -416,6 +416,9 @@ async function directory(svc, ws, guard = null) {
   // line also changes the channel directory, as the server bumps only the members for a role change: a promoted guest
   // has no channel directory yet and a demoted member one too many. The channels load below reads the row again.
   let meChanged = false;
+  // The server's whole member list replaced the cached one in this run: what the 'directory' event says (members),
+  // for a reader that may act only on the server's own answer (agent-runs.js reconcile).
+  let membersReplaced = false;
   await load('membersStale', async () => {
     const res = wire.checkMembers(await svc.call(ws, 'GET', '/members'));
     guard();
@@ -423,6 +426,7 @@ async function directory(svc, ws, guard = null) {
       const row = store.getWs(ws);
       if (!row) return;
       store.replaceMembers(ws, res.members, res.more);
+      membersReplaced = !res.more;
       const mine = row.me && res.members.find((m) => m.id === row.me);
       if (mine && (mine.role !== row.role || mine.name !== row.myName)) {
         // store.roleChanged clears the directory of a demoted guest and marks it stale for a promoted one.
@@ -457,7 +461,7 @@ async function directory(svc, ws, guard = null) {
     guard();
     if (store.getWs(ws)) store.replaceBlocks(ws, res.blocks);
   });
-  if (changed && store.getWs(ws)) svc.emitChat({ kind: 'directory', ws });
+  if (changed && store.getWs(ws)) svc.emitChat({ kind: 'directory', ws, ...(membersReplaced ? { members: true } : {}) });
   if (meChanged) svc.stateChanged();
   return changed;
 }
