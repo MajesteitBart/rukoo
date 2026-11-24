@@ -1203,3 +1203,101 @@ test("a command that leaves a process behind holding its output still ends the r
   await assert.rejects(backends.runProcess(process.execPath, ['-e', slow], { timeout: 1000 }), /took longer than 1 s and was stopped/);
   assert.ok(Date.now() - started < 10000, `the timeout settled after ${Date.now() - started} ms`);
 });
+
+// ---- --check ----
+
+const errorsOf = (list) => list.filter((p) => p.level === 'error').map((p) => p.message);
+
+test("--check's backend checks fail a command that isn't there, the placeholder my-agent and a missing CLI, and name the next step", async () => {
+  const placeholder = await backends.makeBackend({ type: 'command', command: 'my-agent' }).check({ env: process.env });
+  assert.equal(errorsOf(placeholder).length, 1);
+  assert.match(errorsOf(placeholder)[0], /still my-agent, the placeholder from Rukoo\. Put your own program there/);
+
+  const missing = await backends.makeBackend({ type: 'command', command: ['no-such-program-for-rukoo-tests', 'answer.py'] }).check({ env: process.env });
+  assert.match(errorsOf(missing)[0], /program no-such-program-for-rukoo-tests was not found on PATH\. Set "command" to a program on this computer/);
+
+  const relative = await backends.makeBackend({ type: 'command', command: ['./bin/answer'], cwd: dir }).check({ env: process.env });
+  assert.match(errorsOf(relative)[0], /program \.\/bin\/answer was not found\. Set "command"/);
+
+  // A program on PATH, and one by its full path, pass with the program they run.
+  const node = await backends.makeBackend({ type: 'command', command: [process.execPath, fakePath] }).check({ env: process.env });
+  assert.deepEqual(node, [{ level: 'info', message: `The backend runs ${process.execPath}` }]);
+  const onPath = await backends.makeBackend({ type: 'command', command: 'node' }).check({ env: { PATH: path.dirname(process.execPath) } });
+  assert.deepEqual(errorsOf(onPath), []);
+  assert.equal(path.dirname(onPath[0].message.replace('The backend runs ', '')), path.dirname(process.execPath));
+
+  const claude = await backends.makeBackend({ type: 'claude', exe: path.join(dir, 'no-claude-here') }).check();
+  assert.match(errorsOf(claude)[0], /"exe" is not a program/);
+  const codex = await backends.makeBackend({ type: 'codex', exe: process.execPath }).check();
+  assert.deepEqual(codex, [{ level: 'info', message: `The backend runs ${process.execPath}` }]);
+});
+
+test("--check's backend checks fail an unset key variable, an address where nothing answers and a refused key, and pass a server that answers", async () => {
+  // A port nothing listens on: one the system gave out and took back.
+  const probe = http.createServer();
+  const port = await new Promise((resolve) => probe.listen(0, '127.0.0.1', () => resolve(probe.address().port)));
+  await new Promise((resolve) => probe.close(resolve));
+  const nobody = await backends.makeBackend({ type: 'runs', url: `http://127.0.0.1:${port}`, keyEnv: 'TEST_CHECK_HERMES_KEY' }).check({ env: {}, timeout: 2000 });
+  const nobodyErrors = errorsOf(nobody);
+  assert.equal(nobodyErrors.length, 2, nobodyErrors.join('\n'));
+  assert.match(nobodyErrors[0], /^TEST_CHECK_HERMES_KEY is not set, and the backend needs it for its key or token\. Set it in the terminal or service that starts the runner/);
+  assert.match(nobodyErrors[1], new RegExp(`^Nothing answers at http://127\\.0\\.0\\.1:${port} \\(.+\\)\\. Start the Hermes or Booper server there, or correct the backend's "url"\\.$`));
+
+  // Hermes: /health without a key, /v1/capabilities with it.
+  const hermes = await fakeHttp((req, body, res) => {
+    if (req.url === '/health') return res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"ok"}');
+    if (req.url === '/v1/capabilities') return res.writeHead(req.headers.authorization === 'Bearer right-key' ? 200 : 401).end('{}');
+    res.writeHead(404).end();
+  });
+  try {
+    const backend = backends.makeBackend({ type: 'runs', url: hermes.url, keyEnv: 'TEST_CHECK_HERMES_KEY' });
+    assert.deepEqual(await backend.check({ env: { TEST_CHECK_HERMES_KEY: 'right-key' } }), [{ level: 'info', message: `The backend answers at ${hermes.url}` }]);
+    assert.match(errorsOf(await backend.check({ env: { TEST_CHECK_HERMES_KEY: 'wrong-key' } }))[0], /refused the backend's key \(HTTP 401\)\. Check the key or token in TEST_CHECK_HERMES_KEY/);
+    assert.match(errorsOf(await backends.makeBackend({ type: 'runs', url: hermes.url }).check({ env: {} }))[0], /asks for a key \(HTTP 401\)\. Add "keyEnv" to the backend/);
+    assert.equal(hermes.seen.find((s) => s.url === '/health').headers.authorization, undefined);
+  } finally {
+    await hermes.close();
+  }
+
+  // Chat Completions: /v1/models, which needs the key on OpenClaw. A 404 there is a server without that route: it answers.
+  const gateway = await fakeHttp((req, body, res) => {
+    if (req.url === '/v1/models') return res.writeHead(req.headers.authorization === 'Bearer token' ? 200 : 403).end('{"data":[]}');
+    res.writeHead(404).end();
+  });
+  try {
+    assert.deepEqual(errorsOf(await backends.makeBackend({ type: 'openai', url: gateway.url, key: 'token' }).check({ env: {} })), []);
+    assert.match(errorsOf(await backends.makeBackend({ type: 'openai', url: gateway.url, key: 'other' }).check({ env: {} }))[0], /refused the backend's key \(HTTP 403\)\. Check the key or token in "key"/);
+    assert.deepEqual(errorsOf(await backends.makeBackend({ type: 'openai', url: `${gateway.url}/elsewhere` }).check({ env: {} })), []);
+  } finally {
+    await gateway.close();
+  }
+});
+
+test('the command line --check exits with 1 for a backend that cannot answer, and warns with the next step for an agent in no channel', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  const { key } = await server.seedAgent(olga, ws, { name: 'Clark', answers: 'everyone' });
+  const run = (backend) =>
+    new Promise((resolve) => {
+      const configPath = path.join(dir, `check-${++counter}.json`);
+      fs.writeFileSync(configPath, JSON.stringify({ server: server.url, workspace: ws.id, key, backend }));
+      const child = spawn(process.execPath, [RUNNER, '--config', configPath, '--check'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let err = '';
+      child.stderr.on('data', (c) => (err += c));
+      child.on('close', (code) => resolve({ code, err }));
+    });
+
+  // The config Rukoo used to give by default: the key works, the backend never answers.
+  const placeholder = await run({ type: 'command', command: 'my-agent' });
+  assert.equal(placeholder.code, 1, placeholder.err);
+  assert.match(placeholder.err, /error The backend's "command" is still my-agent/);
+  assert.match(placeholder.err, /Connected as agent u_/);
+  assert.match(placeholder.err, /error The backend can't answer yet: fix the problem above and check again\./);
+
+  // A backend that answers, for an agent nobody added to a channel yet: it passes, and says what to do.
+  const fine = await run({ type: 'command', command: [process.execPath, fakePath] });
+  assert.equal(fine.code, 0, fine.err);
+  assert.match(fine.err, /warn The agent is in no channel yet, so no mention can reach it\. In Rukoo, open a channel's menu and choose Add agents/);
+  assert.match(fine.err, /info The check passed\. Start the runner without --check\./);
+});

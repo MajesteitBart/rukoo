@@ -678,6 +678,43 @@ class Runner {
     });
   }
 
+  // ---- Checking ----
+
+  // What the backend needs before the first mention (backends.js, "Checks"): [{ level, message }].
+  async backendProblems() {
+    if (typeof this.backend.check !== 'function') return [];
+    try {
+      return await this.backend.check({ env: process.env });
+    } catch (err) {
+      return [{ level: 'error', message: `Could not check the backend: ${err.message}` }];
+    }
+  }
+
+  // The channels the agent is in now, by id.
+  async channels() {
+    await this.feed();
+    return [...this.rooms.values()].filter((row) => row.kind === 'channel' && !row.archived).map((row) => row.conversation);
+  }
+
+  // --check: the backend, the server and the key, and the agent's channels, each said in a line with what to do.
+  // Answers the exit code: 0 when the agent can answer (a warning when it is in no channel yet), 1 when the backend
+  // can't answer as configured. A key that doesn't work throws KeyRefused, which main() makes 2.
+  async check() {
+    const problems = await this.backendProblems();
+    for (const p of problems) this.log(p.level, p.message);
+    await this.connect();
+    const rooms = await this.channels();
+    if (rooms.length) this.log('info', `The agent is in ${rooms.length} ${rooms.length === 1 ? 'channel' : 'channels'}: ${rooms.join(', ')}`);
+    else this.log('warn', 'The agent is in no channel yet, so no mention can reach it. In Rukoo, open a channel\'s menu and choose Add agents, or Add people when you manage the channel.');
+    const errors = problems.filter((p) => p.level === 'error').length;
+    if (errors) {
+      this.log('error', `The backend can't answer yet: fix ${errors === 1 ? 'the problem' : `the ${errors} problems`} above and check again.`);
+      return 1;
+    }
+    this.log('info', 'The check passed. Start the runner without --check.');
+    return 0;
+  }
+
   // ---- Running ----
 
   // One pass, then done: for a scheduled job, and the tests.
@@ -706,9 +743,14 @@ class Runner {
         if (this.stopped) return;
       }
     }
+    // What would keep every answer from going out, said at the start rather than at the first mention.
+    for (const p of await this.backendProblems()) if (p.level === 'error') this.log('warn', p.message);
     this.timer = setInterval(() => this.pump(), this.config.pollSeconds * 1000);
     this.socketLoop().catch((err) => this.log('warn', `The wake socket stopped: ${err.message}`));
     await this.pump();
+    if (!this.stopped && ![...this.rooms.values()].some((row) => row.kind === 'channel' && !row.archived)) {
+      this.log('warn', "The agent is in no channel yet. In Rukoo, open a channel's menu and choose Add agents; the runner picks it up at once.");
+    }
     await this.finished;
     if (this.fatal) throw this.fatal;
   }
@@ -815,7 +857,7 @@ class Runner {
 // ---- Command line ----
 
 function usage() {
-  return 'Usage: node runner.js --config <agent.json> [--once] [--check]\n\n  --once   one pass over the workspace, then exit\n  --check  check the config and the key, then exit\n';
+  return 'Usage: node runner.js --config <agent.json> [--once] [--check]\n\n  --once   one pass over the workspace, then exit\n  --check  check the backend, the key and the agent\'s channels, then exit\n';
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -851,16 +893,7 @@ async function main(argv = process.argv.slice(2)) {
   process.on('SIGINT', quit);
   process.on('SIGTERM', quit);
   try {
-    if (check) {
-      await runner.connect();
-      // A CLI backend's program, found now rather than at the first mention.
-      if (typeof runner.backend.exe === 'function') defaultLog('info', `The backend runs ${runner.backend.exe()}`);
-      const rooms = [];
-      await runner.feed();
-      for (const row of runner.rooms.values()) if (row.kind === 'channel') rooms.push(row.conversation);
-      defaultLog('info', `The agent is in ${rooms.length} ${rooms.length === 1 ? 'channel' : 'channels'}${rooms.length ? `: ${rooms.join(', ')}` : ''}`);
-      return 0;
-    }
+    if (check) return await runner.check();
     if (once) await runner.once();
     else await runner.run();
     return 0;

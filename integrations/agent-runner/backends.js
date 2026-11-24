@@ -639,6 +639,126 @@ class CommandBackend {
   }
 }
 
+// ---- Checks (--check) ----
+//
+// What a backend needs before the first mention comes, as a list of { level, message }: 'error' when it can't answer
+// as configured, 'info' for what was found. Each error says what to do next. The runner's --check prints them and
+// exits with 1 for an error; a normal start prints them as warnings and runs anyway, since a server can come up later.
+
+const CHECK_TIMEOUT = 5000;
+// The backend command of a config made without one of the person's agents (src/renderer/chat-agents.js).
+const PLACEHOLDER_COMMAND = 'my-agent';
+
+// The value of a variable, whatever its case on Windows, where a copy of process.env loses the case-insensitivity.
+function envValue(env, name) {
+  if (!WINDOWS) return env[name];
+  const key = Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase());
+  return key === undefined ? undefined : env[key];
+}
+
+// The program spawn() starts for file without a shell: a path, relative to cwd, or a name on PATH. On Windows, as
+// libuv does, a name is looked for in cwd first, and one without an extension also as .com and .exe; a .cmd or .bat
+// is never started.
+function findProgram(file, { cwd = process.cwd(), env = process.env } = {}) {
+  const name = String(file || '').trim();
+  if (!name) return null;
+  const forms = (base) => (WINDOWS && !path.extname(base) ? [base, `${base}.com`, `${base}.exe`] : [base]);
+  if (path.isAbsolute(name) || /[\\/]/.test(name)) return forms(path.resolve(cwd, name)).find(executable) || null;
+  const dirs = [...(WINDOWS ? [cwd] : []), ...String(envValue(env, 'PATH') || '').split(path.delimiter).filter(Boolean)];
+  for (const dir of dirs) {
+    const found = forms(path.join(dir, name)).find(executable);
+    if (found) return found;
+  }
+  return null;
+}
+
+// A backend that names a variable for its secret, with that variable empty, sends no key at all.
+function keyProblem(config, env) {
+  if (typeof config.key === 'string' && config.key.trim()) return null;
+  const name = typeof config.keyEnv === 'string' ? config.keyEnv.trim() : '';
+  if (!name || String(envValue(env, name) || '').trim()) return null;
+  return { level: 'error', message: `${name} is not set, and the backend needs it for its key or token. Set it in the terminal or service that starts the runner, then start it again.` };
+}
+
+// Whether something answers at a backend's address: { status } for any HTTP answer, else { reason }.
+async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT } = {}) {
+  let target;
+  try {
+    target = endpoint(url, route);
+  } catch (err) {
+    return { reason: err.message };
+  }
+  try {
+    const res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeout) });
+    res.body?.cancel().catch(() => {});
+    return { status: res.status };
+  } catch (err) {
+    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return { reason: `no answer within ${Math.round(timeout / 1000)} s` };
+    const cause = err && err.cause;
+    return { reason: clip((cause && (cause.code || cause.message)) || (err && err.message) || 'no answer', 120) };
+  }
+}
+
+// The checks of an HTTP backend: its address answers (health, a route that needs no key), and when keyed (keyed, a
+// route that needs the key) it doesn't refuse the key.
+async function checkHttp(backend, { env, timeout, health, keyed, what }) {
+  const config = backend.config;
+  const out = [];
+  const missing = keyProblem(config, env);
+  if (missing) out.push(missing);
+  const url = String(config.url || '').trim();
+  const first = await probe(url, health, { timeout });
+  if (first.reason) {
+    out.push({ level: 'error', message: `Nothing answers at ${url} (${first.reason}). Start ${what} there, or correct the backend's "url".` });
+    return out;
+  }
+  if (missing) return out;
+  const key = secret(config, env);
+  const second = keyed === health && !key ? first : await probe(url, keyed, { timeout, headers: key ? { Authorization: `Bearer ${key}` } : {} });
+  if (second.status === 401 || second.status === 403) {
+    out.push({
+      level: 'error',
+      message: key
+        ? `${url} refused the backend's key (HTTP ${second.status}). Check the key or token in ${config.keyEnv ? config.keyEnv : '"key"'}.`
+        : `${url} asks for a key (HTTP ${second.status}). Add "keyEnv" to the backend and set that variable to its key or token.`
+    });
+  } else out.push({ level: 'info', message: `The backend answers at ${url}` });
+  return out;
+}
+
+RunsBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT } = {}) {
+  return checkHttp(this, { env, timeout, health: '/health', keyed: '/v1/capabilities', what: 'the Hermes or Booper server' });
+};
+
+OpenAiBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT } = {}) {
+  return checkHttp(this, { env, timeout, health: '/v1/models', keyed: '/v1/models', what: 'the server' });
+};
+
+// Claude Code and Codex: the program is found where the runner looks for it.
+async function checkCli() {
+  try {
+    return [{ level: 'info', message: `The backend runs ${this.exe()}` }];
+  } catch (err) {
+    return [{ level: 'error', message: err.message }];
+  }
+}
+ClaudeBackend.prototype.check = checkCli;
+CodexBackend.prototype.check = checkCli;
+
+CommandBackend.prototype.check = async function check({ env = process.env } = {}) {
+  const program = this.argv[0];
+  if (program === PLACEHOLDER_COMMAND) {
+    return [{ level: 'error', message: `The backend's "command" is still ${PLACEHOLDER_COMMAND}, the placeholder from Rukoo. Put your own program there: it gets the prompt on stdin and answers on stdout. Or pick one of your agents when you copy the config.` }];
+  }
+  const cwd = this.config.cwd ? path.resolve(String(this.config.cwd)) : process.cwd();
+  const found = findProgram(program, { cwd, env: { ...env, ...(this.config.env || {}) } });
+  if (!found) {
+    const shim = WINDOWS && !path.extname(program) ? ` On Windows a .cmd or .bat file needs ["cmd", "/c", "${program}.cmd"].` : '';
+    return [{ level: 'error', message: `The backend's program ${program} was not found${/[\\/]/.test(program) ? '' : ' on PATH'}. Set "command" to a program on this computer.${shim}` }];
+  }
+  return [{ level: 'info', message: `The backend runs ${found}` }];
+};
+
 const TYPES = { runs: RunsBackend, openai: OpenAiBackend, claude: ClaudeBackend, codex: CodexBackend, command: CommandBackend };
 
 // hide: { hideNames, hideValues } that child processes must not get, such as the agent's key.
@@ -663,5 +783,6 @@ module.exports = {
   codexArgs,
   runProcess,
   findExe,
+  findProgram,
   TYPES
 };
