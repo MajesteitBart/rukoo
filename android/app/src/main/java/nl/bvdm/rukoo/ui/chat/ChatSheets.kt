@@ -1474,7 +1474,7 @@ private fun BrowseSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
                         stringResource(R.string.chat_channel_make_title),
                         { app.openChatSheet(ChatSheet.NEW_CHANNEL) },
                         kind = RkButtonKind.PRIMARY,
-                        size = RkButtonSize.SMALL,
+                        size = RkButtonSize.FIELD,
                         icon = RukooIcons.Plus,
                     )
                 }
@@ -1820,7 +1820,7 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) { RkSearchField(query, { query = it }, placeholder = stringResource(R.string.chat_members_search)) }
                 if (manager) {
-                    RkButton(stringResource(R.string.chat_head_add_people), { app.openChatSheet(ChatSheet.ADD_PEOPLE, room.id) }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = RukooIcons.Plus)
+                    RkButton(stringResource(R.string.chat_head_add_people), { app.openChatSheet(ChatSheet.ADD_PEOPLE, room.id) }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.FIELD, icon = RukooIcons.Plus)
                 }
             }
         }

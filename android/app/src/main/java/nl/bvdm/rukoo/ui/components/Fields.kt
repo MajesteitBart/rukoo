@@ -182,6 +182,9 @@ fun RkTextField(
     }
 }
 
+/** The search field's least height. A button beside it takes [RkButtonSize.FIELD] to line up with it. */
+val RkFieldHeight = 40.dp
+
 /**
  * The search field: a `chip` field with the search icon, a placeholder such as "Search in Inbox" and a
  * clear button once there is text. The keyboard's action key searches.
@@ -210,7 +213,7 @@ fun RkSearchField(
         cursorBrush = SolidColor(c.accent),
         decorationBox = { inner ->
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 40.dp).background(c.chip, shape).padding(start = 12.dp, end = 2.dp),
+                Modifier.fillMaxWidth().heightIn(min = RkFieldHeight).background(c.chip, shape).padding(start = 12.dp, end = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
