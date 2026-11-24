@@ -44,8 +44,9 @@ import okio.ByteString
  *   [pacing], which the service keeps per workspace, so a new socket for the same workspace waits them out too. An
  *   attempt that [close] cuts short counts as a failed one, so a network that comes and goes doesn't ask for a ticket
  *   each time.
- * - **One lifetime.** [stop] parks the socket until [start]. [close] ends it for good: it cancels the socket's own
- *   scope, and nothing called on it afterwards connects again.
+ * - **One lifetime.** [stop] parks the socket until [start], closing an open connection with `1000`. [close] ends it
+ *   for good: it cancels the connection and the socket's own scope, and nothing called on it afterwards connects
+ *   again.
  *
  * [client] should come from the app's shared one; the socket derives its own with [Timing.upgradeTimeout] for the
  * upgrade only, without OkHttp's own pings and without redirects. Listener calls run on OkHttp's and [scope]'s
@@ -163,14 +164,16 @@ class WorkspaceSocket(
 
     /**
      * Ends this socket for good: closed, its timers and attempt cancelled with its scope, and [start], [nudge] and
-     * [check] do nothing from now on. An attempt under way counts as a failed one in [pacing].
+     * [check] do nothing from now on. An attempt under way counts as a failed one in [pacing]. An open connection is
+     * cancelled instead of closed with a handshake, so a peer that never answers can't keep it beside the socket that
+     * replaces this one; the server treats both the same.
      */
     fun close() {
         synchronized(lock) {
             if (closed) return
             closed = true
             if (_state.value == SocketState.CONNECTING) pacing.failed(now(), random(), timing.backoff)
-            parkLocked()
+            parkLocked(cancel = true)
         }
         job.cancel()
     }
@@ -466,13 +469,13 @@ class WorkspaceSocket(
         }
     }
 
-    private fun parkLocked() {
+    private fun parkLocked(cancel: Boolean = false) {
         wanted = false
         token++
         connectJob?.cancel()
         connectJob = null
         clearTimersLocked()
-        closeSocketLocked(1000)
+        closeSocketLocked(1000, cancel)
         _state.value = SocketState.OFF
     }
 
@@ -485,13 +488,16 @@ class WorkspaceSocket(
         pongJob = null
     }
 
-    /** Closes an open socket with [code]; one still upgrading is cancelled, since its close frame would only queue. */
-    private fun closeSocketLocked(code: Int) {
+    /**
+     * Closes an open socket with [code], or cancels it when [cancel]; one still upgrading is cancelled, since its close
+     * frame would only queue.
+     */
+    private fun closeSocketLocked(code: Int, cancel: Boolean = false) {
         val s = socket ?: return
         val wasOpen = opened
         socket = null
         opened = false
-        runCatching { if (!wasOpen || !s.close(code, null)) s.cancel() }
+        runCatching { if (cancel || !wasOpen || !s.close(code, null)) s.cancel() }
     }
 
     private inline fun safe(block: () -> Unit) {

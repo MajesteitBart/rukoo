@@ -7,7 +7,9 @@ import java.net.SocketTimeoutException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -77,10 +79,11 @@ class WorkspaceSocketTest {
     }
 
     /** The server's end of each upgraded socket: it records what the phone sends and answers `ping` unless told not to. */
-    private class ServerSide(val pong: Boolean = true) : WebSocketListener() {
+    private class ServerSide(val pong: Boolean = true, val answerClose: Boolean = true) : WebSocketListener() {
         val sockets = LinkedBlockingQueue<WebSocket>()
         val received = CopyOnWriteArrayList<String>()
         val closes = CopyOnWriteArrayList<Int>()
+        val failures = AtomicInteger()
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             sockets += webSocket
@@ -93,7 +96,11 @@ class WorkspaceSocketTest {
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             closes += code
-            webSocket.close(code, null)
+            if (answerClose) webSocket.close(code, null)
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            failures.incrementAndGet()
         }
 
         fun next(): WebSocket = sockets.poll(5, TimeUnit.SECONDS) ?: throw AssertionError("no socket opened")
@@ -439,6 +446,19 @@ class WorkspaceSocketTest {
         Thread.sleep(200)
         assertEquals(1, tickets())
         await("the ticket once the wait is over") { tickets() == 2 }
+    }
+
+    @Test
+    fun `closing for good drops the connection at once, also when the peer never answers the close`() {
+        val side = ServerSide(answerClose = false)
+        server.answer("ticket")
+        upgrade(side)
+        val s = socket()
+        s.start()
+        side.next()
+        await("open") { s.state.value == SocketState.OPEN }
+        s.close()
+        await("the connection ended", timeoutMs = 3_000) { side.failures.get() > 0 }
     }
 
     @Test
