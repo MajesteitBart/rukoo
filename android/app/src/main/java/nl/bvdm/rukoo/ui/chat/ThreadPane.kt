@@ -31,6 +31,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -217,10 +218,16 @@ private fun ThreadContent(app: AppViewModel, ws: String, room: String, root: Str
                 if (t.loading) return@LaunchedEffect
                 val target = ChatTimeline.openingTarget(items, at, complete = true)
                 if (target != null) {
-                    snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
-                    listState.scrollToItem(target)
-                    val item = snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target } }.first { it != null }!!
-                    listState.scrollBy(ChatTimeline.openingScroll(item.offset, item.size, listState.layoutInfo.viewportEndOffset, margin))
+                    try {
+                        snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
+                        listState.scrollToItem(target)
+                        val item = snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target } }.first { it != null }!!
+                        listState.scrollBy(ChatTimeline.openingScroll(item.offset, item.size, listState.layoutInfo.viewportEndOffset, margin))
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                        // A drag took the scroll over: the thread is where the person put it, and has settled there.
+                        // When the effect itself was cancelled, this throws again.
+                        ensureActive()
+                    }
                 }
                 settled = true
                 app.threadTargetShown(root)
