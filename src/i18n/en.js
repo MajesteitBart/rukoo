@@ -3157,15 +3157,15 @@
   },
   "errors.delete.refused": {
     "message": "The mail server didn't delete the email.",
-    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft. The email stays and its row comes back. Shown in a notice, and as the {error} of mailbox.delete.deletedSome. src/main/imap.js (deleteForever); src/main/demo.js (refuse)"
+    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft. The email stays and its row comes back. Shown in a notice, also when the editor closes after Delete draft, and as the {error} of mailbox.delete.deletedSome. src/main/imap.js (deleteForever); src/main/demo.js (refuse); src/renderer/composer.js (dropDraft)"
   },
   "errors.delete.stillMarked": {
-    "message": "The mail server didn't finish deleting the email. It is still marked for deletion.",
-    "description": "Notice after an IMAP delete failed and Rukoo could not clear the deletion flag. src/main/imap.js (deleteForever)"
+    "message": "The mail server didn't finish deleting the email. It's still marked for deletion.",
+    "description": "errors > delete. The IMAP server didn't finish deleting an email for good, and Rukoo couldn't take the \\Deleted flag off it again, so another mail app may still expunge it. The email's row comes back and the folder syncs. Shown in a notice. src/main/imap.js (deleteForever)"
   },
   "errors.delete.unknown": {
     "message": "Rukoo couldn't confirm whether the mail server deleted the email.",
-    "description": "Notice after the mail server did not confirm a permanent delete and Rukoo could not confirm the email's state. src/main/imap.js (deleteForever)"
+    "description": "errors > delete. The IMAP server didn't confirm deleting an email for good, and Rukoo couldn't read the email back to see whether it is gone. The email's row comes back and the folder syncs, which shows what happened. Shown in a notice. src/main/imap.js (deleteForever)"
   },
   "errors.flags.refused": {
     "message": "The mail server didn't save the change.",
@@ -3525,7 +3525,7 @@
   },
   "errors.move.copied": {
     "message": "The mail server copied the email but didn't confirm removing the original. Check both folders before trying again.",
-    "description": "A server without the IMAP MOVE command copied the email but did not confirm removing the original. Notice after Move, Archive, Delete or Undo. src/main/imap.js (move)"
+    "description": "errors > move. A server without the IMAP MOVE command copied the email but didn't confirm removing the original. Rukoo keeps the copy, so the email may be in both folders; both folders sync. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (move)"
   },
   "errors.move.refused": {
     "message": "The mail server didn't move the email.",
@@ -3650,7 +3650,7 @@
   },
   "mailbox.delete.deletedSome": {
     "message": "Deleted {count} of {total} emails. {error}",
-    "description": "Message list: notice after deleting selected emails for good when the mail server refused some of them, which stay in the list. {count}: emails deleted, {total}: emails selected, {error}: the server's first refusal, a full sentence. src/renderer/app.js (removeMessages)"
+    "description": "Message list: notice after deleting selected emails for good when the mail server refused some of them, which stay in the list. {count}: emails deleted, {total}: emails selected, {error}: the server's first refusal, a full sentence. Also shown after Empty Trash or Empty Spam, where {total} is the emails in the folder. src/renderer/app.js (removeMessages, emptyCurrent)"
   },
   "mailbox.delete.deletedOne": {
     "message": "Deleted",

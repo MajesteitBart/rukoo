@@ -139,3 +139,20 @@ test('Empty Trash reports a refused delete and leaves the email visible', async 
   await expect(row(subject)).toBeVisible();
   await win.screenshot({ path: testInfo.outputPath('refused-empty-trash.png'), animations: 'disabled' });
 });
+
+test('a draft the server refuses to delete stays in Drafts, and the editor says why instead of Draft deleted', async ({}, testInfo) => {
+  const subject = 'Holiday ideas';
+  await win.click('.nav-item[data-view="drafts"]');
+  await row(subject).dblclick();
+  await expect(win.locator('.composer')).toBeVisible();
+  await readOnly('Drafts', true);
+
+  await win.click('[data-c="discard"]');
+  await win.click('.scrim .buttons button:text-is("Delete")');
+  await expect(win.locator('.composer')).toHaveCount(0);
+  await expect(notice()).toContainText("The mail server didn't delete the email.");
+  await expect(notice()).not.toContainText('Draft deleted');
+  await expect(row(subject)).toBeVisible();
+  expect(await inView('drafts')).toContain(subject);
+  await win.screenshot({ path: testInfo.outputPath('refused-draft-discard.png'), animations: 'disabled' });
+});

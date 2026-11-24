@@ -258,6 +258,21 @@ test('a refused delete for good keeps the email in Trash, and a refused draft di
   await engine.close();
 });
 
+test('emptying a folder says how many emails the server deleted and why the rest stayed', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const trash = engine.folderByRole(acc.id, 'trash');
+  const total = view(engine, acc, 'trash').length;
+  assert.ok(total > 0);
+  demo.box(trash.path).readOnly = true;
+  assert.deepEqual(await engine.emptyFolder(acc.id, trash.path), { count: 0, total, error: t('errors.delete.refused') });
+  assert.equal(view(engine, acc, 'trash').length, total);
+  demo.box(trash.path).readOnly = false;
+  assert.deepEqual(await engine.emptyFolder(acc.id, trash.path), { count: total, total, error: null });
+  assert.equal(view(engine, acc, 'trash').length, 0);
+  await engine.close();
+});
+
 test('a move that left a copy behind keeps the original, offers no Undo, and syncs the copy into view', async () => {
   const { engine, acc } = await freshEngine();
   const demo = engine.session(engine.account(acc.id));
