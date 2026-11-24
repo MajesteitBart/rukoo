@@ -361,7 +361,8 @@
     <string name="chat_channel_leave_body_public">You can join again from Browse channels.</string><!-- Leaving a workspace-visible channel. -->
     <string name="chat_channel_leave_body_private">Someone has to add you again before you can read it.</string><!-- Leaving a private channel. -->
     <string name="chat_channel_leave_body_last">You\'re the last one here, so leaving archives #%1$s.</string><!-- Leaving as the last member. -->
-    <string name="chat_channel_leave_agent">Your agent %1$s leaves with you.</string><!-- Leaving a private channel, or handing it over and leaving, with one agent the user made in it. %1$s: its name. -->
+    <string name="chat_channel_leave_agent">Your agent %1$s leaves with you.</string><!-- Leaving a private channel, leaving any channel as its last person, or handing a private channel over and leaving, with one agent the user made in it. %1$s: its name. -->
+    <string name="chat_channel_leave_agents_unknown">Any agents of yours in this channel leave with you.</string><!-- The same when the channel's members couldn't be loaded, so the agents can't be named. It must be true whether or not any are in it. -->
     <string name="chat_channel_leave_agents">Your agents %1$s leave with you.</string><!-- The same with two or three. %1$s: their names as the language lists them. -->
     <!-- The same, for more than three agents. -->
     <plurals name="chat_channel_leave_agents_many">

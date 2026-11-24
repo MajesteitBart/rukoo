@@ -625,8 +625,9 @@ class ChatUi(
      * Leave a channel (desktop-ui 6.9). The only manager of a channel with others in it picks a successor from its full
      * members ([members] is the directory) in [prompt], without a confirmation first; anyone else is asked, with what
      * leaving means here. When the channel's members don't load, the server's `last_manager` opens the prompt instead.
-     * Leaving a private channel takes the person's agents out of it too, and both say so; the channel's members load
-     * for that only when the directory holds an agent of theirs.
+     * Leaving a private channel, or any channel as its last person, takes the person's agents out of it too, and both
+     * say so; the channel's members load for that only when the directory holds an agent of theirs. When they don't
+     * load, the line says so without names.
      */
     fun askLeaveChannel(ws: String, room: Room, members: Map<String, Member>, me: String?) = launch("leave:${room.id}", context(ws)) {
         val managed = SheetRules.sharedManaged(listOf(room)).isNotEmpty()
@@ -673,7 +674,7 @@ class ChatUi(
                 throw e2
             } catch (e2: Exception) {
                 if (prompt === asking) {
-                    prompt = asking.copy(people = emptyList())
+                    prompt = asking.copy(people = emptyList(), agents = leavingAgentsLine(room, null, members, me))
                     promptError = errorText(e2, context(ws))
                 }
             }
@@ -682,10 +683,12 @@ class ChatUi(
 
     /**
      * What leaving [room] says about the agents [me] made among its members ([inside]), or null (desktop's
-     * chat-dialogs.js `leavingAgentsLine`): up to three names, past that how many.
+     * chat-dialogs.js `leavingAgentsLine`): up to three names, past that how many, and without names when the members
+     * didn't load ([inside] null).
      */
     private fun leavingAgentsLine(room: Room, inside: List<RoomMember>?, members: Map<String, Member>, me: String?): String? {
         val agents = SheetRules.leavingAgents(room, inside, members, me, collator())
+            ?: return strings.get(R.string.chat_channel_leave_agents_unknown)
         if (agents.isEmpty()) return null
         if (agents.size > SheetRules.LEAVING_AGENTS_NAMED) return strings.plural(R.plurals.chat_channel_leave_agents_many, agents.size, agents.size)
         val names = chatNames(strings)

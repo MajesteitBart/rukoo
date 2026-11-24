@@ -11825,7 +11825,7 @@
   },
   "chat.channel.leaveAgent": {
     "message": "Your agent {name} leaves with you.",
-    "description": "Leave a private channel, or hand it over and leave: second paragraph when one agent the user made is in it, since a private channel keeps someone's agents only while they are in it. {name}: the agent's name. Android chat_channel_leave_agent. src/renderer/chat-model.js (leavingAgentsText)"
+    "description": "Leave a private channel, leave any channel as its last person, or hand a private channel over and leave: second paragraph when one agent the user made is in it, since a private channel keeps someone's agents only while they are in it and the last person's leaving archives the channel and takes every agent out. {name}: the agent's name. Android chat_channel_leave_agent. src/renderer/chat-model.js (leavingAgentsText)"
   },
   "chat.channel.leaveAgents": {
     "message": "Your agents {names} leave with you.",
@@ -11834,6 +11834,10 @@
   "chat.channel.leaveAgentsMany": {
     "message": { "one": "Your {count} agent in this channel leaves with you.", "other": "Your {count} agents in this channel leave with you." },
     "description": "The same as chat.channel.leaveAgents, for more than three agents. {count}: how many. Android chat_channel_leave_agents_many. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsUnknown": {
+    "message": "Any agents of yours in this channel leave with you.",
+    "description": "The same as chat.channel.leaveAgent, when the channel's members couldn't be loaded, so the user's agents in it can't be named. It must be true whether or not any are in it. Android chat_channel_leave_agents_unknown. src/renderer/chat-model.js (leavingAgentsText)"
   },
   "chat.channel.leave": {
     "message": "Leave",

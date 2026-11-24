@@ -1334,8 +1334,9 @@ function redrawPicker(box, html) {
 
 // Leave a channel (desktop-ui 6.9). The only manager of a channel with others in it picks a successor at once,
 // without a confirmation first; anyone else is asked. When the members don't load, the server's last_manager decides.
-// Leaving a private channel takes the person's agents out of it too, and both dialogs name them; the channel's members
-// load for that only when the directory holds an agent of theirs.
+// Leaving a private channel, or any channel as its last person, takes the person's agents out of it too, and both
+// dialogs name them; the channel's members load for that only when the directory holds an agent of theirs. When they
+// don't load, the line says so without names.
 export async function leaveChannel(room) {
   const ws = K.CH.ws;
   if (!ws || !room) return false;
@@ -1372,6 +1373,8 @@ async function chooseSuccessor(room, inside = null) {
   const ws = K.CH.ws;
   let finish = null;
   let busy = false;
+  // Whether the members failed to load: the agents line then speaks without names.
+  let failed = false;
   const label = t('chat.channel.successorTitle', { name: room.name || '' });
   const primary = (scrim) => scrim?.querySelector('.buttons button:last-child');
   const pickOf = (body) => body.querySelector('[name="successor"]:checked');
@@ -1381,7 +1384,7 @@ async function chooseSuccessor(room, inside = null) {
     box.className = 'ch-picker';
     redrawPicker(box, successorPicker(successorsFrom(inside), 'successor', label));
     const agents = body.querySelector('[data-agents]');
-    const line = leavingAgentsLine(room, inside);
+    const line = leavingAgentsLine(room, failed ? null : inside);
     agents.textContent = line || '';
     agents.hidden = !line;
     // The person picked may have gone with the directory.
@@ -1428,6 +1431,7 @@ async function chooseSuccessor(room, inside = null) {
         })
         .catch((err) => {
           inside = [];
+          failed = true;
           fill(body);
           showError(body, '', K.errorText(err));
         });

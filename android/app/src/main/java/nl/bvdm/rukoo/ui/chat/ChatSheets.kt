@@ -342,20 +342,22 @@ object SheetRules {
 
     /**
      * Whether leaving [room] may take agents [me] made with it, so the confirmation needs the channel's members to say
-     * so (desktop's chat-model.js `mayTakeAgents`): a private channel with other people and agents in it, while the
-     * directory holds an active agent of theirs. The server takes a sponsor's agents out of a private channel with them;
-     * the last person's leaving archives it, which takes every agent out, and [LeaveBody.LAST] says that already.
+     * so (desktop's chat-model.js `mayTakeAgents`): the directory holds an active agent of theirs, the channel holds
+     * agents, and it is private or they are its last person. This follows the server's `#endGrant`: a private channel
+     * keeps someone's agents only while they are in it, archived or not, and the last person's leaving archives a
+     * channel of either kind and takes every agent out.
      */
     fun mayTakeAgents(room: Room, members: Map<String, Member>, me: String?): Boolean =
-        me != null && room.kind == RoomKind.CHANNEL && !room.archived && room.visibility == "private" && room.members > 1 &&
+        me != null && room.kind == RoomKind.CHANNEL && (room.visibility == "private" || room.members <= 1) &&
             room.agents > 0 && members.values.any { it.isAgent && it.state == "active" && it.agent?.sponsor == me }
 
     /**
      * The agents that leave [room] with [me]: the active agents of theirs among the channel's members ([inside]), by
-     * name. Empty for a channel leaving doesn't take agents out of, or when the members didn't load.
+     * name. Empty for a channel leaving doesn't take agents out of; null when it may and the members didn't load.
      */
-    fun leavingAgents(room: Room, inside: List<RoomMember>?, members: Map<String, Member>, me: String?, compare: Comparator<String>): List<Member> {
-        if (inside == null || !mayTakeAgents(room, members, me)) return emptyList()
+    fun leavingAgents(room: Room, inside: List<RoomMember>?, members: Map<String, Member>, me: String?, compare: Comparator<String>): List<Member>? {
+        if (!mayTakeAgents(room, members, me)) return emptyList()
+        if (inside == null) return null
         return inside.map { it.member }.distinct().mapNotNull { members[it] }
             .filter { it.isAgent && it.state == "active" && it.agent?.sponsor == me }
             .sortedWith { a, b -> compare.compare(a.name, b.name) }

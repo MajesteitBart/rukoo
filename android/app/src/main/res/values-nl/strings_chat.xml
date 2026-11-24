@@ -341,6 +341,7 @@
     <string name="chat_channel_leave_body_private">Iemand moet je opnieuw toevoegen voordat je het kunt lezen.</string>
     <string name="chat_channel_leave_body_last">Je bent de laatste hier, dus als je vertrekt wordt #%1$s gearchiveerd.</string>
     <string name="chat_channel_leave_agent">Je agent %1$s vertrekt met je mee.</string>
+    <string name="chat_channel_leave_agents_unknown">Agents van jou in dit kanaal vertrekken met je mee.</string>
     <string name="chat_channel_leave_agents">Je agents %1$s vertrekken met je mee.</string>
     <plurals name="chat_channel_leave_agents_many">
         <item quantity="one">Je %d agent in dit kanaal vertrekt met je mee.</item>

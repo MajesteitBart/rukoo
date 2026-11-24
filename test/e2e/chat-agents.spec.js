@@ -573,3 +573,55 @@ test('leaving a private channel names your agents in it, which leave with you; a
   expect(inside.sort()).toEqual([ws.me.id, revy.agent.id].sort());
   expect(inside).not.toContain(bee.agent.id);
 });
+
+// The server's #endGrant takes a person's agents out of a private channel whenever their grant ends, archived or not,
+// and takes every agent out of a channel whose last person leaves, which archives it. The confirmation names your
+// agents in each case. When the channel's members don't load, it says what holds without names, and Leave still works.
+test('leaving names your agents in an archived private channel and as the last person, and speaks without names when the members fail', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const clark = await server.seedAgent(bart, ws, { name: 'Clark' });
+  // Olga's private #vault with Bart and Clark, which she archives while Bart has it open; Bart's open #solo with only
+  // Clark beside him; Olga's private #secret with Bart and Clark.
+  const vault = await server.seedChannel(olga, ws.id, { name: 'vault', visibility: 'private', members: [bartMe.id, clark.agent.id] });
+  await server.seedChannel(bart, ws.id, { name: 'solo', members: [clark.agent.id] });
+  const secret = await server.seedChannel(olga, ws.id, { name: 'secret', visibility: 'private', members: [bartMe.id, clark.agent.id] });
+  await ready(bart);
+  const paragraphs = () => dialogBox(win).locator('.dialog-body p');
+
+  // #vault, archived: Clark leaves with Bart, and the server takes him out.
+  await roomRow(win, 'vault').click();
+  const archived = await server.call('PATCH', `/v1/workspaces/${ws.id}/channels/${vault.id}`, { token: olga.token, body: { archived: true } });
+  expect(archived.status).toBe(200);
+  await expect(pane().locator('.ch-main .ch-bar .ch-bar-text')).toHaveText('#vault is archived. You can still read it.', { timeout: 15000 });
+  await roomMenu(win, 'Leave channel');
+  await expect(dialogBox(win).locator('h2')).toHaveText('Leave #vault?');
+  await expect(paragraphs()).toHaveText(['Someone has to add you again before you can read it.', 'Your agent Clark leaves with you.'], { timeout: 15000 });
+  await dialogBox(win).locator('.buttons button').last().click();
+  await expect(roomRow(win, 'vault')).toHaveCount(0, { timeout: 15000 });
+  const inVault = (await serverGet(server, olga, ws.id, `/channels/${vault.id}/members`)).members.map((m) => m.member);
+  expect(inVault).toEqual([ws.me.id]);
+
+  // #solo, open, with Bart its last person: leaving archives it and takes Clark out, so both are said.
+  await roomRow(win, 'solo').click();
+  await roomMenu(win, 'Leave channel');
+  await expect(dialogBox(win).locator('h2')).toHaveText('Leave #solo?');
+  await expect(paragraphs()).toHaveText(["You're the last one here, so leaving archives #solo.", 'Your agent Clark leaves with you.'], { timeout: 15000 });
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // #secret while the server is down: the members don't load, and the line holds without Clark's name.
+  await roomRow(win, 'secret').click();
+  await server.stop();
+  try {
+    await roomMenu(win, 'Leave channel');
+    await expect(dialogBox(win).locator('h2')).toHaveText('Leave #secret?', { timeout: 30000 });
+    await expect(paragraphs()).toHaveText(['Someone has to add you again before you can read it.', 'Any agents of yours in this channel leave with you.']);
+    await expect(dialogBox(win).locator('.buttons button').last()).toBeEnabled();
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.scrim')).toHaveCount(0);
+  } finally {
+    await server.start();
+  }
+  const inSecret = (await serverGet(server, olga, ws.id, `/channels/${secret.id}/members`)).members.map((m) => m.member);
+  expect(inSecret.sort()).toEqual([ws.me.id, bartMe.id, clark.agent.id].sort());
+});
