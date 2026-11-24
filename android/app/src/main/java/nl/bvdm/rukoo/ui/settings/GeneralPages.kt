@@ -105,7 +105,8 @@ fun NotificationsPage(app: AppViewModel) {
             )
             // Team chat's switch, only where Chat shows (contract §3.1, §3.10).
             val workspaces = s.workspaces
-            val chatAvailable = workspaces?.state?.collectAsStateWithLifecycle()?.value?.available == true
+            val chatState = workspaces?.state?.collectAsStateWithLifecycle()?.value
+            val chatAvailable = chatState?.available == true
             if (chatAvailable) {
                 SettingsSwitchRow(
                     title = stringResource(R.string.settings_general_chat_notifications),
@@ -118,8 +119,8 @@ fun NotificationsPage(app: AppViewModel) {
                 )
             }
             // How soon a message notifies with Rukoo in the background: Android's battery setting, and Phone tools.
-            // It shows with the switch on or off; its line says what the switch's state means.
-            if (BatteryTexts.showUnderChat(chatAvailable)) {
+            // It shows with the switch on or off, while someone is signed in; its line says what the switch's state means.
+            if (BatteryTexts.showUnderChat(chatAvailable, signedIn = chatState?.signedIn == true)) {
                 val phoneTools = s.mcp.status.collectAsStateWithLifecycle().value.running
                 BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools, notifyChat = settings.notifyChat)
             }

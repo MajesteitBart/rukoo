@@ -49,8 +49,12 @@ object BatteryTexts {
         }
     }
 
-    /** Settings > Notifications shows the row whenever it shows the Team chat notifications switch, on or off. */
-    fun showUnderChat(chatAvailable: Boolean): Boolean = chatAvailable
+    /**
+     * Settings > Notifications shows the row with the Team chat notifications switch, on or off, while someone is
+     * signed in to the Rukoo account: signed out, nothing checks for messages, so its line would promise what can't
+     * happen.
+     */
+    fun showUnderChat(chatAvailable: Boolean, signedIn: Boolean): Boolean = chatAvailable && signedIn
 }
 
 /**

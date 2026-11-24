@@ -44,8 +44,10 @@ class BatteryTextsTest {
     }
 
     @Test
-    fun `Notifications shows the row whenever the team chat notifications switch shows, on or off`() {
-        assertTrue(BatteryTexts.showUnderChat(chatAvailable = true))
-        assertFalse(BatteryTexts.showUnderChat(chatAvailable = false))
+    fun `Notifications shows the row with the team chat notifications switch while someone is signed in`() {
+        assertTrue(BatteryTexts.showUnderChat(chatAvailable = true, signedIn = true))
+        assertFalse(BatteryTexts.showUnderChat(chatAvailable = false, signedIn = true))
+        // Signed out, nothing checks for messages: no row, whatever the server offers.
+        assertFalse(BatteryTexts.showUnderChat(chatAvailable = true, signedIn = false))
     }
 }
