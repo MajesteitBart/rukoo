@@ -216,11 +216,12 @@ interface ChatAlertWords {
  * Replies (issue #376) show only in their thread, and the server counts them as unread for everyone without saying
  * whose thread they are in. A reply is for the person when its thread's first message is theirs, by the cache or by
  * the page it came in; a first message in neither is unknown and its replies don't alert, with no request for it. A
- * channel with unread messages and no mention is due only while the cache holds a first message of the person's
- * there, and loads its page only when it wasn't looked at since the person last read it ([ChatAlertRules.looked]):
- * one page per stretch of unread messages. Such a channel never goes into the summary on what it couldn't tell. On
- * screen in the resumed app a room alerts only replies for the person outside the thread beside it, as the
- * conversation doesn't show replies; it loads no page then. Desktop's notify.js does the same.
+ * channel with unread messages and no mention loads its page only when it wasn't looked at since the person last read
+ * it ([ChatAlertRules.looked]): one page per stretch of unread messages, within the run's three, after the DMs and
+ * mention channels of the run. Such a channel never goes into the summary on what it couldn't tell. On screen in the
+ * resumed app a room alerts only replies for the person outside the thread beside it, as the conversation doesn't
+ * show replies; it loads no page then, and what its cache can't tell yet (the loader's catch-up failed) waits for a
+ * later run. Desktop's notify.js does the same.
  *
  * Where the contract is silent this follows desktop: a due room that is silenced, or whose new messages hold nothing
  * to show, gets `notified = head` without an alert, so unmuting doesn't bring old messages back; one whose messages
@@ -240,8 +241,11 @@ class ChatAlertEngine(
     /** The root of the thread on screen with the room, or null (issue #376). */
     private val threadOnScreen: (ws: String, room: String) -> String? = { _, _ -> null },
 ) {
-    /** What an alert on screen stands for: a room's messages, or the rooms of a summary. */
-    private class Shown(val ws: String, val room: String?, val messages: Set<String>, val rooms: MutableSet<String>)
+    /**
+     * What an alert on screen stands for: a room's messages, or the rooms of a summary. [screen]: an alert of replies
+     * posted while their room was on screen (`chat:<ws>:<room>:screen`), which a read doesn't take back.
+     */
+    private class Shown(val ws: String, val room: String?, val messages: Set<String>, val rooms: MutableSet<String>, val screen: Boolean = false)
 
     private val lock = Any()
     private val shown = HashMap<String, Shown>()
@@ -250,7 +254,10 @@ class ChatAlertEngine(
     // process started.
     private val settled = HashSet<String>()
 
-    private class Context(val me: String, val myName: String, val members: Map<String, Member>, val blocked: Set<String>, val suffix: String?)
+    private class Context(val me: String, val myName: String, val members: Map<String, Member>, val blocked: Set<String>, val suffix: String?) {
+        /** The same with the block list as it stands now, after a page that was on its way. */
+        fun withBlocks(now: Set<String>) = Context(me, myName, members, now, suffix)
+    }
 
     // The newest message a fetch for a DM's alert loaded, by "ws/room": the DM row's preview while the cache doesn't
     // hold it yet (§7.4). It stays out of the cache, whose range the room loader owns.
@@ -314,8 +321,13 @@ class ChatAlertEngine(
         settleSummary(ws, store)
         val me = row.me ?: return
         if (row.state != FeedApplier.STATE_OK || row.fresh) return
+        // DMs and channels with mentions first, then channels that may hold a reply to the person, so those never take
+        // a page or an alert from the others; each the most recent activity first.
         val due = store.read { listRooms(ws).filter(ChatAlertRules::due) }
-            .sortedWith(compareByDescending<RoomRow> { it.lastAt ?: 0 }.thenByDescending { it.head }.thenBy { it.id })
+            .sortedWith(
+                compareBy<RoomRow> { if (ChatAlertRules.repliesOnly(it)) 1 else 0 }
+                    .thenByDescending { it.lastAt ?: 0 }.thenByDescending { it.head }.thenBy { it.id },
+            )
         if (due.isEmpty()) return
         val ctx = store.read {
             val members = listMembers(ws).associateBy { it.id }
@@ -339,12 +351,7 @@ class ChatAlertEngine(
                 continue
             }
             val only = ChatAlertRules.repliesOnly(room)
-            // A channel without a mention alerts only replies to a first message of the person's that the cache holds.
-            if (only && !ownRoots(store, ws, room.id, ctx.me)) {
-                mark(store, ws, room.id, room.head, rev)
-                continue
-            }
-            val screen = screen(ws, room.id)
+            var screen = screen(ws, room.id)
             val after = maxOf(room.read, room.readLocal, room.notified)
             // The cache first, also for the rooms beyond three: one it shows to hold nothing new to show isn't due.
             var messages = cached(store, ws, room, after, ctx, screen)
@@ -352,9 +359,11 @@ class ChatAlertEngine(
                 mark(store, ws, room.id, room.head, rev)
                 continue
             }
-            // On screen the open room's cache catches up with the feed: what it can't tell yet goes, as before replies.
+            // On screen the room loader caught the open room up before this run (WorkspaceSync); when that failed, what
+            // the cache can't tell yet waits for the run that brings it, without a page, rather than counting as notified.
+            if (messages == null && screen != null) continue
             // A channel looked at since it was last read loads no second page.
-            if (messages == null && (screen != null || (only && ChatAlertRules.looked(room)))) {
+            if (messages == null && only && ChatAlertRules.looked(room)) {
                 mark(store, ws, room.id, room.head, rev)
                 continue
             }
@@ -382,14 +391,18 @@ class ChatAlertEngine(
                 // The page belongs to the cache as it stood: after a reset or restore it may hold removed messages.
                 if (store.revision(ws) != rev) return
                 if (room.kind == RoomKind.DM.wire) keepNewest(store, ws, room, page, rev)
-                // Meanwhile the person may have read it, muted it or opened it.
+                // Meanwhile the person may have read it, muted it, blocked someone or opened it: the room, its read
+                // position and the block list are read again, and a room opened meanwhile shows the page's top-level
+                // messages but not its replies.
                 room = store.read { getRoom(ws, d.id) } ?: continue
                 if (!ChatAlertRules.due(room)) continue
-                if (silenced(ws, room)) {
+                if (ChatAlertRules.silenced(enabled(), room.muted, onScreen = false)) {
                     mark(store, ws, room.id, room.head, rev)
                     continue
                 }
-                messages = fetched(store, ws, page, room, after, ctx)
+                screen = screen(ws, room.id)
+                val now = ctx.withBlocks(store.read { listBlocks(ws).mapTo(HashSet()) { it.member } })
+                messages = fetched(store, ws, page, room, maxOf(room.read, room.readLocal, room.notified), now, screen)
                 // The page didn't reach back to after + 1 and showed nothing: what's new may be older than the page. A
                 // mention goes into the summary; a reply to the person older than the page goes without an alert.
                 if (messages == null && ChatAlertRules.repliesOnly(room)) {
@@ -452,13 +465,25 @@ class ChatAlertEngine(
         val noticed = store.read { if (getRoom(ws, room) != null) noticesForRoom(ws, room).map { it.message }.toSet() else emptySet() }
         val entry = synchronized(lock) { shown[ChatAlertRules.roomKey(ws, room)] }
         if (ids.any { it in noticed || (entry != null && it in entry.messages) }) takeBack(ws, room, store, summary = false)
+        // The alert posted while the room was on screen goes with a message it showed.
+        val onScreen = synchronized(lock) { shown[screenKey(ws, room)] }
+        if (onScreen != null && ids.any { it in onScreen.messages }) takeBackScreen(ws, room)
     }
 
-    /** The person lost the room: its alert goes, and the summary stops counting it. Its notice rows went with the room. */
+    /** The person lost the room: its alerts go, and the summary stops counting it. Its notice rows went with the room. */
     fun onEvicted(ws: String, room: String) {
         dropPreview(ws, room)
         forget(ws, room)
         sink.hide(ChatAlertRules.roomKey(ws, room))
+        takeBackScreen(ws, room)
+    }
+
+    private fun screenKey(ws: String, room: String) = ChatAlertRules.roomKey(ws, room) + ":screen"
+
+    // The alert posted while the room was on screen goes, when this process posted one.
+    private fun takeBackScreen(ws: String, room: String) {
+        val key = screenKey(ws, room)
+        if (synchronized(lock) { shown.remove(key) } != null) sink.hide(key)
     }
 
     // The alerts of the reset that left [value] are taken back: its marker goes, unless a newer reset replaced it.
@@ -507,18 +532,8 @@ class ChatAlertEngine(
 
     // ---- alerts ----
 
-    private fun silenced(ws: String, room: RoomRow) = ChatAlertRules.silenced(enabled(), room.muted, onScreen(ws, room.id))
-
     // The room on screen in the resumed app, with the thread beside it or over it, or null.
     private fun screen(ws: String, room: String) = if (onScreen(ws, room)) ChatAlertRules.ShownThread(threadOnScreen(ws, room)) else null
-
-    // Whether the cache holds a first message of the person's in the room, which a reply could answer.
-    private suspend fun ownRoots(store: WorkspaceStore, ws: String, room: String, me: String): Boolean = store.read {
-        sql.query(
-            "SELECT 1 FROM event WHERE ws = ? AND room = ? AND actor = ? AND kind = 'message.posted' AND root IS NULL LIMIT 1",
-            ws, room, me,
-        ) { true }.isNotEmpty()
-    }
 
     // The author of a thread's first message: from the page it came in ([roots], id to actor), else the cache, else
     // null (unknown).
@@ -559,14 +574,16 @@ class ChatAlertEngine(
      * range. Empty only when the page saw every event after [after]: it held the oldest there are or reached back to
      * after + 1. A full page of other events that stops short of that gives null.
      */
-    private suspend fun fetched(store: WorkspaceStore, ws: String, page: EventPage, room: RoomRow, after: Long, ctx: Context): List<Event>? {
+    private suspend fun fetched(
+        store: WorkspaceStore, ws: String, page: EventPage, room: RoomRow, after: Long, ctx: Context, screen: ChatAlertRules.ShownThread?,
+    ): List<Event>? {
         val gone = store.read { page.events.filter { it.isMessage && hasTombstone(ws, it.id) }.mapTo(HashSet()) { it.id } }
         // The page's own first messages tell whose thread a reply in it is in.
         val roots = page.events.filter { it.kind == WireEvent.MESSAGE_POSTED && it.root == null }.associate { it.id to it.actor }
         val shownEvents = page.events
             .filter { it.seq > after && it.seq <= room.head && it.id !in gone }
             .map { Event(it.seq, it.id, it.kind, it.actor, it.at, it.root, it.text, it.mentions, it.redacted) }
-            .filter { qualifies(store, ws, it, room, ctx, screen = null, roots = roots) }
+            .filter { qualifies(store, ws, it, room, ctx, screen, roots = roots) }
             .takeLast(ChatAlertRules.LINES)
         if (shownEvents.isNotEmpty()) return shownEvents
         val reached = !page.more || (page.events.isNotEmpty() && page.events.first().seq <= after + 1)
@@ -612,8 +629,9 @@ class ChatAlertEngine(
     //
     // [screen]: the room is on screen, so these are replies for the person that the conversation doesn't show. Their
     // alert has a tag of its own (`chat:<ws>:<room>:screen`) and no notice rows: reading the conversation reads past the
-    // replies at once, and taking the alert back would cancel it within a second. A tap or a swipe clears it, and so do
-    // a reset, the workspace going, the end of the session and the next start (reconcile).
+    // replies at once, and taking the alert back would cancel it within a second. It is kept in [shown] with its
+    // messages, so a removal of one of them and an eviction take it back; a tap or a swipe clears it, and so do a reset,
+    // the workspace going, the end of the session and the next start (reconcile).
     private suspend fun alert(store: WorkspaceStore, ws: String, room: RoomRow, messages: List<Event>, ctx: Context, rev: Long, screen: Boolean = false): Boolean {
         val w = words()
         val key = if (screen) ChatAlertRules.roomKey(ws, room.id) + ":screen" else ChatAlertRules.roomKey(ws, room.id)
@@ -627,7 +645,7 @@ class ChatAlertEngine(
             true
         }
         if (!current) return false
-        if (!screen) synchronized(lock) { shown[key] = Shown(ws, room.id, messages.mapTo(HashSet()) { it.id }, HashSet()) }
+        synchronized(lock) { shown[key] = Shown(ws, room.id, messages.mapTo(HashSet()) { it.id }, HashSet(), screen = screen) }
         val lines = messages.map { m ->
             AlertLine(m.id, m.seq, m.at, w.names.display(ctx.members[m.actor]), ChatAlertRules.alertText(m.text.orEmpty(), m.mentions), reply = m.root != null)
         }
@@ -723,12 +741,18 @@ class ChatAlertEngine(
         if (had || force) sink.hide(ChatAlertRules.roomKey(ws, room))
     }
 
-    // After a run: the rooms with an alert that were read to it, here or on another device, or are gone.
+    // After a run: the rooms with an alert that were read to it, here or on another device, or are gone. An alert posted
+    // while its room was on screen stays on a read, and goes with the room.
     private suspend fun takeBackRead(ws: String, store: WorkspaceStore) {
         val rooms = LinkedHashSet<String>(store.read { sql.query("SELECT DISTINCT room FROM notice WHERE ws = ?", ws) { it.text(0) } })
+        val screens = ArrayList<String>()
         synchronized(lock) {
             for (entry in shown.values) {
                 if (entry.ws != ws) continue
+                if (entry.screen) {
+                    entry.room?.let { screens += it }
+                    continue
+                }
                 entry.room?.let { rooms += it }
                 rooms += entry.rooms
             }
@@ -737,6 +761,7 @@ class ChatAlertEngine(
             val row = store.read { getRoom(ws, room) }
             if (row == null || ChatAlertRules.readTo(row)) takeBack(ws, room, store, force = row == null)
         }
+        for (room in screens) if (store.read { getRoom(ws, room) } == null) takeBackScreen(ws, room)
     }
 
     // A summary posted before this process started, which nothing here tracks: it goes once no room of the workspace

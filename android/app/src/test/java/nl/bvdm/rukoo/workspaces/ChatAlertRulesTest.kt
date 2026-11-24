@@ -736,7 +736,7 @@ class ChatAlertRulesTest {
     }
 
     @Test
-    fun `a reply in someone else's thread alerts only when it mentions me, and a channel without my messages loads nothing`() = runTest {
+    fun `a reply in someone else's thread alerts only when it mentions me, and a cached channel loads nothing`() = runTest {
         val s = setup()
         val hers = Ids.event(1)
         s.room(room(head = 2, unread = 2), msg(1, text = "Lunch?"), msg(2, actor = Ids.SAM, text = "Yes", root = hers))
@@ -779,6 +779,115 @@ class ChatAlertRulesTest {
         s.run()
         assertEquals(1, s.sink.shown.size)
         assertEquals(4L, s.row().notified)
+    }
+
+    // Review of #376, finding 2: on screen, what the cache can't tell yet stays eligible until a run's cache holds it.
+    @Test
+    fun `on screen a reply the cache doesn't hold yet waits for it, and then alerts once`() = runTest {
+        val s = setup()
+        val mine = Ids.event(1)
+        s.screen = Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.GENERAL)
+        s.room(room(head = 1, read = 1), msg(1, actor = Ids.ME, text = "Anyone?"))
+        s.run()
+        // The feed moved the head past the cache: the loader's catch-up failed this run.
+        s.room(room(head = 3, read = 1, unread = 2))
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+        assertTrue("no page for a room on screen", s.fetched.isEmpty())
+        assertTrue("the range the cache couldn't tell stays eligible", s.row().notified < 3L)
+        // The next run's catch-up brought it.
+        s.room(room(head = 3, read = 1, unread = 2), msg(2, text = "chatter"), msg(3, text = "Me", root = mine))
+        s.run()
+        val alert = s.sink.shown.single()
+        assertEquals("Olga replied: Me", alert.body)
+        assertEquals(ChatAlertRules.roomKey(ws, Ids.GENERAL) + ":screen", alert.key)
+        assertEquals(3L, s.row().notified)
+        s.run()
+        assertEquals("exactly one alert", 1, s.sink.shown.size)
+        assertTrue(s.fetched.isEmpty())
+    }
+
+    // Review of #376, finding 8: an alert posted while its room was on screen is tracked with its messages.
+    @Test
+    fun `an alert posted while its room was on screen stays on a read and goes on a removal or an eviction`() = runTest {
+        val s = setup()
+        val mine = Ids.event(1)
+        val key = ChatAlertRules.roomKey(ws, Ids.GENERAL) + ":screen"
+        s.screen = Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.GENERAL)
+        s.room(room(head = 1, read = 1), msg(1, actor = Ids.ME, text = "Anyone?"))
+        s.room(room(head = 2, read = 1, unread = 1), msg(2, text = "Me", root = mine))
+        s.run()
+        assertEquals(key, s.sink.shown.single().key)
+        s.readAll(Ids.GENERAL)
+        s.engine.onRead(ws, Ids.GENERAL, s.store)
+        s.run()
+        assertTrue("a read leaves it", key in s.sink.activeKeys())
+        s.engine.onRemoved(ws, Ids.GENERAL, listOf(Ids.event(9)), s.store)
+        assertTrue("another message's removal leaves it", key in s.sink.activeKeys())
+        s.engine.onRemoved(ws, Ids.GENERAL, listOf(Ids.event(2)), s.store)
+        assertFalse("the removal of its reply takes it back", key in s.sink.activeKeys())
+
+        s.room(room(head = 3, read = 2, unread = 1), msg(3, text = "Again", root = mine))
+        s.run()
+        assertTrue(key in s.sink.activeKeys())
+        s.engine.onEvicted(ws, Ids.GENERAL)
+        assertFalse("the eviction takes it back", key in s.sink.activeKeys())
+    }
+
+    // Review of #376, finding 10: what changed while an alert's page was on its way counts.
+    @Test
+    fun `an alert page leaves out the people blocked and the messages read while it was on its way`() = runTest {
+        val s = setup()
+        s.room(room(head = 1, unread = 1, mentions = 1))
+        val blocking = EventPage(listOf(msg(1, mentions = listOf(Mention(Ids.ME, 0, 3)))), head = 1, floor = 1)
+        s.engine.afterRun(ws, s.store) { _ ->
+            s.store.tx { replaceBlocks(ws, listOf(Block(Ids.OLGA, 1))) }
+            blocking
+        }
+        assertTrue(s.sink.shown.isEmpty())
+        assertEquals("nothing to show: notified", 1L, s.row().notified)
+
+        s.store.tx { replaceBlocks(ws, emptyList()) }
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2))
+        val page = EventPage(listOf(msg(1, text = "read meanwhile", room = 4), msg(2, text = "still unread", room = 4)), head = 2, floor = 1)
+        s.engine.afterRun(ws, s.store) { _ ->
+            s.store.tx { setRoomFields(ws, Ids.DM, mapOf("readLocal" to 1L)) }
+            page
+        }
+        assertEquals(listOf("still unread"), s.sink.shown.single().lines.map { it.text })
+    }
+
+    // Requirement 11 of #376: an unread channel not looked at since it was last read gets one page, whether or not the
+    // cache holds a message of mine there, within the run's three and after the DMs and mention channels. The cost:
+    // three pages a run at most, one per channel per stretch of unread messages.
+    @Test
+    fun `ten unread channels cost one page each, three a run at most, after a mention`() = runTest {
+        val s = setup()
+        s.room(room(head = 1, unread = 1, mentions = 1))
+        val ids = (31..40).map { Ids.id("c", it) }
+        ids.forEachIndexed { i, id -> s.room(room(id, name = "busy$i", head = 5, unread = 1)) }
+        val pages = HashMap<String, EventPage>()
+        pages[Ids.GENERAL] = EventPage(listOf(msg(1, text = "@Me first", mentions = listOf(Mention(Ids.ME, 0, 3)))), head = 1, floor = 1)
+        ids.forEachIndexed { i, id -> pages[id] = EventPage(listOf(msg(5, text = "news", room = 31 + i)), head = 5, floor = 1) }
+        // My question in busy0 is in its page only, as if asked on another device.
+        pages[ids[0]] = EventPage(listOf(msg(4, actor = Ids.ME, text = "Who has the keys?", room = 31), msg(5, text = "I do", root = Ids.event(4, 31), room = 31)), head = 5, floor = 1)
+        s.pages = pages
+        val perRun = (1..5).map {
+            val before = s.fetched.size
+            s.run()
+            s.fetched.size - before
+        }
+        assertEquals("three pages a run at most, eleven in all, then none", listOf(3, 3, 3, 2, 0), perRun)
+        assertEquals("one page per room", (listOf(Ids.GENERAL) + ids).toSet(), s.fetched.toSet())
+        assertEquals(11, s.fetched.size)
+        assertEquals("the mention took the first page", "Olga: @Me first", s.sink.shown.first().body)
+        assertEquals("a first message found on the page counts", "Olga replied: I do", s.sink.shown.single { it.room == ids[0] }.body)
+        assertEquals(2, s.sink.shown.size)
+        assertTrue(s.sink.shown.none { it.summary })
+        // New messages in channels looked at since they were read cost nothing.
+        ids.take(3).forEach { s.room(room(it, head = 6, unread = 2)) }
+        s.run()
+        assertEquals(11, s.fetched.size)
     }
 
     @Test
