@@ -1126,6 +1126,8 @@ export function mountAgentPanel(ctx) {
       return openConversation(found.id, current);
     }
     if (P.conv && P.conv.meeting && P.conv.meeting.id === m.id) return refreshComposer();
+    // As for an email: what was written while main looked keeps the agent it was written under.
+    if (inputHolds()) setDraft({ agent: currentAgent(), hold: 'kept' });
     showEmpty();
   }
 
