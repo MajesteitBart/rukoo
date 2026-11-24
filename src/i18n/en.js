@@ -3155,6 +3155,10 @@
     "message": "Yahoo didn't accept this password. Yahoo Mail only works here with an app password, not your normal Yahoo password. Create one and try again.",
     "description": "errors > connection. Shown in the setup form and under Server settings when Yahoo turns down the password of an account. The setup form shows a Create app password link under it. src/main/imap.js (friendlyError, verifyError)"
   },
+  "errors.delete.noUidExpunge": {
+    "message": "This mail server can't delete a single email for good.",
+    "description": "errors > delete. The IMAP server lacks UIDPLUS, so it has no UID EXPUNGE: its only expunge removes every email in the folder marked for deletion, also ones another mail app marked. Rukoo then sends nothing, the email stays without a deletion mark and its row comes back. Shown in a notice after Delete forever, Empty Trash or a draft discard, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteMany)"
+  },
   "errors.delete.refused": {
     "message": "The mail server didn't delete the email.",
     "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft, and the email is still there without a deletion mark. The email stays and its row comes back. Shown in a notice, also when the editor closes after Delete draft, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteMany); src/main/demo.js (refuse); src/renderer/composer.js (dropDraft)"
@@ -3526,6 +3530,10 @@
   "errors.move.copied": {
     "message": "The mail server copied the email but didn't confirm removing the original. Check both folders before trying again.",
     "description": "errors > move. A server without the IMAP MOVE command copied the email but didn't confirm removing the original. Rukoo keeps the copy, so the email may be in both folders; both folders sync. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (moveTurn)"
+  },
+  "errors.move.noUidExpunge": {
+    "message": "This mail server can't move a single email on its own.",
+    "description": "errors > move. The IMAP server has neither MOVE nor UIDPLUS, so moving one email would mean a copy and an expunge that removes every email in the folder marked for deletion, also ones another mail app marked. Rukoo then sends nothing, the email stays where it was and its row comes back. Shown in a notice after Move, Archive, Delete to Trash, Mark as spam or Empty Spam, and after mailbox.outcome.stayed when several emails were moved. src/main/imap.js (moveTurn)"
   },
   "errors.move.refused": {
     "message": "The mail server didn't move the email.",

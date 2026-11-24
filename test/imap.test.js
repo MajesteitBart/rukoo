@@ -1056,8 +1056,7 @@ test('over a real connection, a delete that lost its answer, or whose email went
 test('over a real connection, a server without MOVE keeps the copy when the EXPUNGE is refused, and takes off only its own mark', async () => {
   for (const [capabilities, cleared] of [
     [['UIDPLUS', 'CONDSTORE'], true],
-    [['UIDPLUS'], false],
-    [['CONDSTORE'], true]
+    [['UIDPLUS'], false]
   ]) {
     await overTcp(capabilities, async (box, s, inbox) => {
       const b = box.put('INBOX', { subject: 'Moves later' });
@@ -1074,6 +1073,32 @@ test('over a real connection, a server without MOVE keeps the copy when the EXPU
       box.touch('INBOX', b.uid, (m) => m.flags.delete('\\Deleted'));
       await s.deleteForever('INBOX', b.uid);
       assert.equal(inbox.messages.length, 0);
+    });
+  }
+});
+
+// #308 round 4, finding 2: a plain EXPUNGE removes every email of the folder that carries \Deleted, also one another
+// app marked and one whose earlier delete failed. On a server without UIDPLUS, which has no UID EXPUNGE, Rukoo deletes
+// nothing for good and, without MOVE, moves nothing: it sends no STORE, COPY or EXPUNGE, and says why.
+test('over a real connection without UIDPLUS, Rukoo deletes nothing for good, copies nothing to move, and never sends a plain EXPUNGE', async () => {
+  for (const capabilities of [['MOVE'], ['MOVE', 'CONDSTORE'], [], ['CONDSTORE']]) {
+    await overTcp(capabilities, async (box, s, inbox) => {
+      const label = capabilities.join(' ') || 'no capabilities';
+      const a = box.put('INBOX', { subject: 'To delete' });
+      box.put('INBOX', { subject: 'Marked by another app', flags: ['\\Deleted'] });
+      const out = await s.deleteMany('INBOX', [a.uid]);
+      assert.equal(out.get(a.uid).error.message, t('errors.delete.noUidExpunge'), label);
+      assert.equal(out.get(a.uid).error.unsent, true, label);
+      assert.deepEqual(inbox.messages.map((m) => [m.subject, deleted(m)]), [['To delete', false], ['Marked by another app', true]], label);
+      if (capabilities.includes('MOVE')) {
+        // MOVE takes nothing else along; only its new uid is unknown without UIDPLUS.
+        assert.deepEqual(await s.move('INBOX', a.uid, 'Archive'), { uid: null, uidValidity: null }, label);
+      } else {
+        await assert.rejects(s.move('INBOX', a.uid, 'Archive'), (err) => err.message === t('errors.move.noUidExpunge') && err.unsent === true, label);
+        assert.equal(box.folders.get('Archive').messages.length, 0, label);
+      }
+      assert.ok(!box.commands.some((c) => /^(UID )?(STORE|EXPUNGE|COPY)/i.test(c)), `${label}: ${box.commands.join(' | ')}`);
+      assert.ok(inbox.messages.some((m) => m.subject === 'Marked by another app'), label);
     });
   }
 });

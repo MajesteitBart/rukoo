@@ -48,12 +48,13 @@ const uidSets = (uids) => uidChunks(uids).map((c) => c.set);
 // What a move or delete that didn't go as asked gives for an email. refused: the server turned it down, and Rukoo read
 // back that nothing changed: the email is still in its folder, by its own UID in the folder's generation the command
 // used, and the destination of a move took nothing in (moveTurn()). unsent: Rukoo never sent the command for the
-// email (the connection or the folder didn't open, or the folder was rebuilt since, code 'UIDVALIDITY'), so it
-// changed nothing, though it read nothing back either. unknown: anything else, such as an answer that never came or
+// email (the connection or the folder didn't open, the folder was rebuilt since, code 'UIDVALIDITY', or the server
+// has no UID EXPUNGE for a delete), so it changed nothing, though it read nothing back either. unknown: anything else, such as an answer that never came or
 // one that proves nothing; the engine syncs the folders involved before anything is retried. copied: a server
 // without MOVE kept the copy it made (moveTurn()).
 const refusal = (key, extra = {}) => Object.assign(new Error(t(key)), { refused: true, ...extra });
 const uncertain = (key, extra = {}) => Object.assign(new Error(t(key)), { unknown: true, ...extra });
+const unsent = (key) => Object.assign(new Error(t(key)), { unsent: true });
 
 // How many emails of a batch go under one mailbox lock, one turn on the connection. Between turns the user's other
 // commands get their go. The flags a delete reads first, and the checks after failures, cover a turn at a time.
@@ -160,12 +161,13 @@ async function storeDeleted(client, uid, op, since = null) {
   }
 }
 
-// The EXPUNGE of uid, once it carries \Deleted: UID EXPUNGE with UIDPLUS, which leaves other emails marked for
-// deletion alone, and a plain EXPUNGE without it, as imapflow's messageDelete sends. 'ok', or failedAs().
+// The EXPUNGE of uid, once it carries \Deleted: UID EXPUNGE (UIDPLUS), which leaves other emails marked for deletion
+// alone. Rukoo never sends a plain EXPUNGE, which removes every email of the folder that carries \Deleted: one another
+// app marked, or one whose earlier delete failed. Without UIDPLUS nothing gets this far (deleteMany(), moveTurn()).
+// 'ok', or failedAs().
 async function expungeOne(client, uid) {
-  const byUid = has(client, 'UIDPLUS');
   try {
-    const response = await client.exec(byUid ? 'UID EXPUNGE' : 'EXPUNGE', byUid ? [{ type: 'SEQUENCE', value: String(uid) }] : false);
+    const response = await client.exec('UID EXPUNGE', [{ type: 'SEQUENCE', value: String(uid) }]);
     response.next();
     return 'ok';
   } catch (err) {
@@ -887,6 +889,12 @@ class ImapAccount {
   async moveTurn(client, turn, destination, results, sent) {
     const opts = { uid: true };
     const move = canMove(client);
+    // Without MOVE a move is a COPY and a delete, which needs UID EXPUNGE (expungeOne()): nothing is sent, so nothing
+    // is copied or marked.
+    if (!move && !has(client, 'UIDPLUS')) {
+      for (const uid of turn) results.set(uid, { error: unsent('errors.move.noUidExpunge') });
+      return;
+    }
     const validity = String(client.mailbox.uidValidity);
     // For the deletes after a COPY: the flags before, where MODSEQs can show which \Deleted is Rukoo's.
     const before = !move && modseqs(client) ? await readMany(client, turn) : null;
@@ -934,7 +942,7 @@ class ImapAccount {
   // in destination and that folder's UIDVALIDITY. A server without MOVE gets a COPY and then a delete (deleteOne());
   // imapflow's messageMove does the same, but answers false both when the COPY failed and when the delete failed after
   // the copy was made. After a failed delete the copy stays (errors.move.copied): another app may already have
-  // expunged the original.
+  // expunged the original. A server with neither MOVE nor UIDPLUS gets nothing (errors.move.noUidExpunge, unsent).
   moveMany(path, uids, destination, { expectUidValidity = null } = {}) {
     return this.inTurns(path, uids, expectUidValidity, 'errors.move.unknown', (client, turn, results, sent) => this.moveTurn(client, turn, destination, results, sent));
   }
@@ -949,9 +957,15 @@ class ImapAccount {
   // Deletes uids from path for good and returns what each got (inTurns()): {} for an email that's gone, or { error }.
   // refused, with stage 'store' or 'expunge' for the command that failed, when the email is still there by its UID;
   // with errors.delete.stillMarked and marked when it still carries \Deleted. unknown when Rukoo can't tell. The flags
-  // before (deleteOne()) and what's left after are read once per turn, for all its emails at once.
+  // before (deleteOne()) and what's left after are read once per turn, for all its emails at once. A server without
+  // UIDPLUS gets nothing (errors.delete.noUidExpunge, unsent).
   deleteMany(path, uids, { expectUidValidity = null } = {}) {
     return this.inTurns(path, uids, expectUidValidity, 'errors.delete.unknown', async (client, turn, results, sent) => {
+      // Without UID EXPUNGE no email is deleted on its own (expungeOne()): nothing is sent, so nothing is marked.
+      if (!has(client, 'UIDPLUS')) {
+        for (const uid of turn) results.set(uid, { error: unsent('errors.delete.noUidExpunge') });
+        return;
+      }
       const validity = String(client.mailbox.uidValidity);
       const before = modseqs(client) ? await readMany(client, turn) : null;
       const stage = new Map();
