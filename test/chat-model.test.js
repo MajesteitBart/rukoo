@@ -531,7 +531,16 @@ test('leaving a private channel names the agents you made that leave it with you
   assert.deepEqual(agentsLeavingWith(room, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
   assert.deepEqual(agentsLeavingWith(room, inside, dir, ROB, collator, en).map((m) => m.name), ['Robbot']);
   assert.deepEqual(agentsLeavingWith({ ...room, archived: true }, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
-  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
+  const alone = [ME, clark.id, bee.id, robs.id].map((member) => ({ member, role: 'member' }));
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, alone, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
+  // The members just loaded outrank the room's count: someone who joined an open channel since keeps the agents in.
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, inside, dir, ME, collator, en), [], 'another person is in it by now');
+  assert.deepEqual(agentsLeavingWith({ ...room, members: 1 }, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark'], 'a private channel takes them either way');
+  // A channel that needs a successor has someone else in it: an open one then says nothing, loaded or not.
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, null, dir, ME, collator, en, { others: true }), []);
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, alone, dir, ME, collator, en, { others: true }), []);
+  assert.equal(agentsLeavingWith(room, null, dir, ME, collator, en, { others: true }), null, 'a private one still does');
+  assert.equal(agentsLeavingWith({ ...open, members: 1 }, null, dir, ME, collator, en), null, "the last person, and the members didn't load");
   assert.equal(agentsLeavingWith(room, null, dir, ME, collator, en), null, "the members didn't load");
   assert.deepEqual(agentsLeavingWith(open, inside, dir, ME, collator, en), []);
   assert.deepEqual(agentsLeavingWith(open, null, dir, ME, collator, en), [], 'nothing to say, loaded or not');

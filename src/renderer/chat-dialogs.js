@@ -1269,9 +1269,9 @@ async function roomMembersOrNull(ws, id) {
 const successorsFrom = (roomMembers) => successors((roomMembers || []).map((m) => m.member), K.CH.members, K.me(), collator(), t);
 
 // What leaving room says about the person's agents among its members (roomMembers), or null: leaving a private
-// channel takes them out of it too.
-const leavingAgentsLine = (room, roomMembers) =>
-  leavingAgentsText(agentsLeavingWith(room, roomMembers, K.CH.members, K.me(), collator(), t), { t, listFormat: listFormat() });
+// channel takes them out of it too. others: someone else is known to be in the channel, as when it needs a successor.
+const leavingAgentsLine = (room, roomMembers, others = false) =>
+  leavingAgentsText(agentsLeavingWith(room, roomMembers, K.CH.members, K.me(), collator(), t, { others }), { t, listFormat: listFormat() });
 
 // A successor picker: a search field above more than six people, then a radio row per person with none checked, so
 // nobody gets a channel the person didn't choose. group names the radios, so a dialog can hold one per channel.
@@ -1384,7 +1384,7 @@ async function chooseSuccessor(room, inside = null) {
     box.className = 'ch-picker';
     redrawPicker(box, successorPicker(successorsFrom(inside), 'successor', label));
     const agents = body.querySelector('[data-agents]');
-    const line = leavingAgentsLine(room, failed ? null : inside);
+    const line = leavingAgentsLine(room, failed ? null : inside, true);
     agents.textContent = line || '';
     agents.hidden = !line;
     // The person picked may have gone with the directory.

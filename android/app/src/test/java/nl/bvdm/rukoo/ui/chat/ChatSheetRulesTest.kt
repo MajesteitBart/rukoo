@@ -488,7 +488,20 @@ class ChatSheetRulesTest {
         assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(room, inside, dir, me, byName)?.map { it.name })
         assertEquals(listOf("Revy"), SheetRules.leavingAgents(room, inside, dir, bo, byName)?.map { it.name })
         assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(room.copy(archived = true), inside, dir, me, byName)?.map { it.name })
-        assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(open.copy(members = 1), inside, dir, me, byName)?.map { it.name })
+        val alone = listOf(me, clark, revy, bee).map { RoomMember(it, "member") }
+        assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(open.copy(members = 1), alone, dir, me, byName)?.map { it.name })
+        // The members just loaded outrank the room's count: someone who joined an open channel since keeps the agents in.
+        assertEquals("another person is in it by now", emptyList<Member>(), SheetRules.leavingAgents(open.copy(members = 1), inside, dir, me, byName))
+        assertEquals(
+            "a private channel takes them either way",
+            listOf("Bee", "Clark"),
+            SheetRules.leavingAgents(room.copy(members = 1), inside, dir, me, byName)?.map { it.name },
+        )
+        // A channel that needs a successor has someone else in it: an open one then says nothing, loaded or not.
+        assertEquals(emptyList<Member>(), SheetRules.leavingAgents(open.copy(members = 1), null, dir, me, byName, others = true))
+        assertEquals(emptyList<Member>(), SheetRules.leavingAgents(open.copy(members = 1), alone, dir, me, byName, others = true))
+        assertNull("a private one still does", SheetRules.leavingAgents(room, null, dir, me, byName, others = true))
+        assertNull("the last person, and the members didn't load", SheetRules.leavingAgents(open.copy(members = 1), null, dir, me, byName))
         assertNull("the members didn't load", SheetRules.leavingAgents(room, null, dir, me, byName))
         assertEquals(emptyList<Member>(), SheetRules.leavingAgents(open, inside, dir, me, byName))
         assertEquals("nothing to say, loaded or not", emptyList<Member>(), SheetRules.leavingAgents(open, null, dir, me, byName))

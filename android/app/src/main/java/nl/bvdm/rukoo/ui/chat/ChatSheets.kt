@@ -354,10 +354,23 @@ object SheetRules {
     /**
      * The agents that leave [room] with [me]: the active agents of theirs among the channel's members ([inside]), by
      * name. Empty for a channel leaving doesn't take agents out of; null when it may and the members didn't load.
+     * A channel everyone can see keeps its agents while another person is in it, and the room's own count can be older
+     * than that: the members just loaded decide, and so does [others], for a caller that knows someone else is in it
+     * (the server asked for a successor).
      */
-    fun leavingAgents(room: Room, inside: List<RoomMember>?, members: Map<String, Member>, me: String?, compare: Comparator<String>): List<Member>? {
+    fun leavingAgents(
+        room: Room,
+        inside: List<RoomMember>?,
+        members: Map<String, Member>,
+        me: String?,
+        compare: Comparator<String>,
+        others: Boolean = false,
+    ): List<Member>? {
         if (!mayTakeAgents(room, members, me)) return emptyList()
+        val open = room.visibility != "private"
+        if (open && others) return emptyList()
         if (inside == null) return null
+        if (open && inside.any { it.member != me && members[it.member]?.isAgent != true }) return emptyList()
         return inside.map { it.member }.distinct().mapNotNull { members[it] }
             .filter { it.isAgent && it.state == "active" && it.agent?.sponsor == me }
             .sortedWith { a, b -> compare.compare(a.name, b.name) }

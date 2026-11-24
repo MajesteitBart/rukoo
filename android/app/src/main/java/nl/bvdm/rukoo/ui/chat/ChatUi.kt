@@ -638,7 +638,8 @@ class ChatUi(
                 expectGone(room.id)
                 promptError = null
                 prompt = ChatPrompt.Successor(
-                    ws, room, SheetRules.successors(inside.map { it.member }, members, me, collator()), leavingAgentsLine(room, inside, members, me),
+                    ws, room, SheetRules.successors(inside.map { it.member }, members, me, collator()),
+                    leavingAgentsLine(room, inside, members, me, others = true),
                 )
                 return@launch
             }
@@ -667,14 +668,14 @@ class ChatUi(
                 if (prompt === asking) {
                     prompt = asking.copy(
                         people = SheetRules.successors(loaded.map { it.member }, members, me, collator()),
-                        agents = leavingAgentsLine(room, loaded, members, me),
+                        agents = leavingAgentsLine(room, loaded, members, me, others = true),
                     )
                 }
             } catch (e2: CancellationException) {
                 throw e2
             } catch (e2: Exception) {
                 if (prompt === asking) {
-                    prompt = asking.copy(people = emptyList(), agents = leavingAgentsLine(room, null, members, me))
+                    prompt = asking.copy(people = emptyList(), agents = leavingAgentsLine(room, null, members, me, others = true))
                     promptError = errorText(e2, context(ws))
                 }
             }
@@ -684,10 +685,10 @@ class ChatUi(
     /**
      * What leaving [room] says about the agents [me] made among its members ([inside]), or null (desktop's
      * chat-dialogs.js `leavingAgentsLine`): up to three names, past that how many, and without names when the members
-     * didn't load ([inside] null).
+     * didn't load ([inside] null). [others]: someone else is known to be in the channel, as when it needs a successor.
      */
-    private fun leavingAgentsLine(room: Room, inside: List<RoomMember>?, members: Map<String, Member>, me: String?): String? {
-        val agents = SheetRules.leavingAgents(room, inside, members, me, collator())
+    private fun leavingAgentsLine(room: Room, inside: List<RoomMember>?, members: Map<String, Member>, me: String?, others: Boolean = false): String? {
+        val agents = SheetRules.leavingAgents(room, inside, members, me, collator(), others)
             ?: return strings.get(R.string.chat_channel_leave_agents_unknown)
         if (agents.isEmpty()) return null
         if (agents.size > SheetRules.LEAVING_AGENTS_NAMED) return strings.plural(R.plurals.chat_channel_leave_agents_many, agents.size, agents.size)

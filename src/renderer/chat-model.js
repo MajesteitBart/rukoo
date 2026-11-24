@@ -558,10 +558,16 @@ export function mayTakeAgents(room, members, me) {
 
 // The agents that leave room with me: the active agents me made among the channel's members ([{ member, role }]), by
 // name. Empty for a channel leaving doesn't take agents out of; null when it may and the members didn't load.
-export function agentsLeavingWith(room, roomMembers, members, me, collator, t) {
+// A channel everyone can see keeps its agents while another person is in it, and the room's own count can be older
+// than that: the members just loaded decide, and so does others, for a caller that knows someone else is in it (the
+// server asked for a successor).
+export function agentsLeavingWith(room, roomMembers, members, me, collator, t, { others = false } = {}) {
   if (!mayTakeAgents(room, members, me)) return [];
+  const open = room.visibility !== 'private';
+  if (open && others) return [];
   if (!roomMembers) return null;
   const map = asMap(members);
+  if (open && roomMembers.some((m) => m.member !== me && !isAgent(map.get(m.member)))) return [];
   return [...new Set(roomMembers.map((m) => m.member))]
     .map((id) => map.get(id))
     .filter((m) => isAgent(m) && m.state === 'active' && m.agent?.sponsor === me)
