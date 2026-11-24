@@ -8,14 +8,16 @@
 // email that comes, goes on its way or leaves, and main writes the list to the profile each time (held.json,
 // heldmail.js), so a crash or a killed process during the wait loses none: the next start opens them in compose
 // windows, unsent (#256). An email the server refuses main keeps there too, before failed() returns, until its editor
-// answers for it (#309). A draft the editor had saved stays on the server until the email is sent too, because
-// Engine.send deletes it only afterwards.
+// answers for it (#309). The list has an email from the moment it is queued until the server took it: queue() refuses
+// an email the list can't take, and one that can't be listed as on its way doesn't go. A draft the editor had saved
+// stays on the server until the email is sent too, because Engine.send deletes it only afterwards.
 const crypto = require('crypto');
 
 class Outbox {
-  // send(payload): sends one email (engine.send). sent(entry) runs after it went, failed(entry, err) after it was
-  // refused, and flush() waits for both. changed(list) gets journal() after each change to the emails held or their
-  // state. timers and now are the clock, which the tests replace.
+  // send(payload, accepted): sends one email (engine.send), calling accepted() the moment the server took it. sent(entry)
+  // runs after it went, failed(entry, err) after it was refused, and flush() waits for both. changed(list) gets
+  // journal() after each change to the emails held or their state, and throws when it can't keep it. timers and now
+  // are the clock, which the tests replace.
   constructor({ send, sent = () => {}, failed = () => {}, changed = () => {}, timers = { setTimeout, clearTimeout }, now = Date.now }) {
     this.sendMail = send;
     this.afterSent = sent;
@@ -23,21 +25,24 @@ class Outbox {
     this.onChange = changed;
     this.timers = timers;
     this.now = now;
-    // id -> { id, payload, restore, origin, until, state: 'waiting' | 'sending', timer, done }
+    // id -> { id, payload, restore, origin, until, state: 'waiting' | 'sending' | 'sent', timer, done }. 'sent': the
+    // server took it, and sent() is still to run.
     this.entries = new Map();
   }
 
-  // What the profile keeps of each email held, to open its editor again: { id, restore, origin, state }. Not the
-  // payload, which the editor builds anew from restore.
+  // What the profile keeps of each email held until the server took it, to open its editor again: { id, restore,
+  // origin, state }. Not the payload, which the editor builds anew from restore.
   journal() {
-    return [...this.entries.values()].map(({ id, restore, origin, state }) => ({ id, restore, origin, state }));
+    return [...this.entries.values()].filter((e) => e.state !== 'sent').map(({ id, restore, origin, state }) => ({ id, restore, origin, state }));
   }
 
+  // Hands journal() to changed(). Returns the error when it couldn't keep it, or null.
   changed() {
     try {
       this.onChange(this.journal());
-    } catch (_) {
-      // The journal is a safety net; the outbox goes on without it.
+      return null;
+    } catch (err) {
+      return err || new Error('The list of emails to send could not be written.');
     }
   }
 
@@ -52,13 +57,19 @@ class Outbox {
   }
 
   // Holds an email for ms, then sends it. restore: what opens its editor again (composer.js undoState); origin:
-  // 'main' when it was written in the main window, 'window' for a compose window. Returns { id, until }.
+  // 'main' when it was written in the main window, 'window' for a compose window. Returns { id, until }. Throws what
+  // changed() threw when the list couldn't take it; the email is then not held, and its editor stays open.
   queue({ payload, restore = null, origin = 'main', ms }) {
     const id = crypto.randomUUID();
     const entry = { id, payload, restore, origin, until: this.now() + ms, state: 'waiting', timer: null, done: null };
     entry.timer = this.timers.setTimeout(() => this.go(entry), ms);
     this.entries.set(id, entry);
-    this.changed();
+    const failed = this.changed();
+    if (failed) {
+      this.timers.clearTimeout(entry.timer);
+      this.entries.delete(id);
+      throw failed;
+    }
     return { id, until: entry.until };
   }
 
@@ -112,16 +123,22 @@ class Outbox {
     return Promise.all([...this.entries.values()].map((entry) => entry.done)).then(() => {});
   }
 
-  // The email stays held until sent() or failed() is done, so the journal keeps it while failed() tries Drafts.
+  // The email stays held until sent() or failed() is done, so the journal keeps it while failed() tries Drafts. It is
+  // listed as on its way before it goes, so a kill meanwhile reopens it with the note to check Sent first; when the
+  // list can't say so, it doesn't go and failed() gets that error. Once the server took it, the list leaves it out.
   go(entry) {
     if (entry.state !== 'waiting') return entry.done;
     entry.state = 'sending';
-    this.changed();
+    const unlisted = this.changed();
     entry.done = Promise.resolve()
-      .then(() => this.sendMail(entry.payload))
+      .then(() => {
+        if (unlisted) throw unlisted;
+        return this.sendMail(entry.payload, () => this.accepted(entry));
+      })
       .then(
         () => this.afterSent(entry),
-        (err) => this.afterFailed(entry, err)
+        // What fails after the server took the email, such as its Sent copy, doesn't make it refused.
+        (err) => (entry.state === 'sent' ? this.afterSent(entry) : this.afterFailed(entry, err))
       )
       .catch(() => {})
       .finally(() => {
@@ -129,6 +146,13 @@ class Outbox {
         this.changed();
       });
     return entry.done;
+  }
+
+  // The server took the email: nothing brings it back from here on.
+  accepted(entry) {
+    if (entry.state !== 'sending') return;
+    entry.state = 'sent';
+    this.changed();
   }
 }
 

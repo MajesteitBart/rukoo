@@ -276,6 +276,16 @@ function addressList(list) {
   return (list || []).map((a) => (typeof a === 'string' ? { name: '', address: a.trim() } : a)).filter((a) => a && a.address);
 }
 
+// Tells a caller of send() or saveDraft() how far it got. What the caller does with it can't undo what the server did.
+function tell(hook, ...args) {
+  if (typeof hook !== 'function') return;
+  try {
+    hook(...args);
+  } catch (_) {
+    // The caller's own business; the send or save goes on.
+  }
+}
+
 class Engine extends EventEmitter {
   // limits: other window sizes than LIMITS, and search: other sizes than SEARCH, for tests. log(level, target,
   // message): where each sync's line goes (main's diaglog.js); none in tests.
@@ -2393,12 +2403,15 @@ class Engine extends EventEmitter {
   }
 
   // icalEvent: an iCalendar part for the message ({ method, content }), only from the main process: the answer to an
-  // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics.
-  async send(payload, { icalEvent = null } = {}) {
+  // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics. accepted():
+  // called the moment the server took the email, before its Sent copy and the removal of its draft, so a caller that
+  // keeps the email for a crash (outbox.js, heldmail.js) lets it go then.
+  async send(payload, { icalEvent = null, accepted = null } = {}) {
     const acc = this.checkSend(payload);
     const mail = await this.buildMail(acc, payload);
     if (icalEvent) mail.icalEvent = { method: icalEvent.method, content: icalEvent.content, filename: 'invite.ics' };
     const raw = await this.session(acc).send(mail);
+    tell(accepted);
     // Sending takes a while. New account settings meanwhile close the session it started on, so the Sent copy goes
     // through the session the account has now; an account removed meanwhile keeps no copy.
     if (this.accounts.includes(acc)) {
@@ -2415,7 +2428,10 @@ class Engine extends EventEmitter {
     return true;
   }
 
-  async saveDraft(payload) {
+  // A caller that keeps the email for a crash (heldmail.js) hears appending({ accountId, messageId }) right before the
+  // server gets the draft, so the next start can look for it, and accepted() the moment the server has it, before the
+  // draft it replaces goes.
+  async saveDraft(payload, { appending = null, accepted = null } = {}) {
     const acc = this.account(payload.accountId);
     const drafts = this.folderByRole(acc.id, 'drafts');
     if (!drafts) throw new Error(t('errors.folder.noDrafts'));
@@ -2425,12 +2441,26 @@ class Engine extends EventEmitter {
     // Keep Bcc in the stored draft so it survives reopening.
     const raw = await ImapAccount.compose({ ...mail, keepBcc: true });
     const session = this.session(acc);
+    tell(appending, { accountId: acc.id, messageId: mail.messageId });
     const uid = await session.append(drafts.path, raw, ['\\Seen', '\\Draft']);
+    tell(accepted);
     if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
     await this.syncFolderInto(acc, drafts.path);
     this.changed(acc.id);
     const stored = uid || this.uidByMessageId(acc.id, drafts.path, mail.messageId);
     return stored ? encodeId(acc.id, drafts.path, stored) : null;
+  }
+
+  // The draft with this Message-ID in the account's Drafts, as the server has it now, or null. For an email whose save
+  // was on its way when Rukoo ended (heldmail.js recover()).
+  async findDraft(accountId, messageId) {
+    const acc = this.account(accountId);
+    const drafts = this.folderByRole(acc.id, 'drafts');
+    if (!drafts) return null;
+    await this.syncFolderInto(acc, drafts.path);
+    this.changed(acc.id);
+    const uid = this.uidByMessageId(acc.id, drafts.path, messageId);
+    return uid ? encodeId(acc.id, drafts.path, uid) : null;
   }
 
   uidByMessageId(accountId, folderPath, messageId) {
