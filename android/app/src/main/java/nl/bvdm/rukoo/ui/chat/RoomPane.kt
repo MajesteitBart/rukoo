@@ -397,9 +397,14 @@ private fun RoomLog(
     // opens again behind it (the app in the background, the room folded behind the list), until the sync replaces the
     // room's cached range.
     val readAt = opening.readPosition(t)
-    val rows = remember(t, me, blocked, readAt) {
-        ChatTimeline.rows(t.events, t.pending, me, readAt, floor = t.room.floor, hasOlder = t.hasOlder, blocked = blocked, replies = t.replies)
+    // The newest reply each thread of this room showed on this visit (issue #376): no longer new on its summary.
+    val threadsSeen by app.threadsSeen.collectAsStateWithLifecycle()
+    val seenHere = threadsSeen.of(ws, room, opening.count)
+    val rows = remember(t, me, blocked, readAt, seenHere) {
+        ChatTimeline.rows(t.events, t.pending, me, readAt, floor = t.room.floor, hasOlder = t.hasOlder, blocked = blocked, replies = t.replies, seen = seenHere)
     }
+    // The threads with replies new on this visit, for the pill while their first message is out of view.
+    val newThreads = remember(t, me, readAt, seenHere) { ChatTimeline.newReplies(t.events, me, readAt, seenHere) }
     // Bottom up: the newest row is item 0.
     val items = remember(rows) { rows.asReversed() }
     // Both belong to this opening: a new one starts at the bottom with the New divider still to place. The view model
@@ -486,12 +491,27 @@ private fun RoomLog(
         }
         val newIndex = items.indexOfFirst { it is ChatTimeline.New }
         val lastVisible by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 } }
+        // New replies in threads whose first message is out of view (issue #376): the pill opens the thread with the
+        // oldest of them, and goes once every such thread showed its replies.
+        val visibleKeys by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.mapNotNullTo(HashSet()) { it.key as? String } } }
+        val pillThreads = newThreads.filter { it.root !in visibleKeys }
+        if (pillThreads.isNotEmpty()) {
+            val replies = pillThreads.sumOf { it.count }
+            val label = if (pillThreads.size == 1) {
+                pluralStringResource(R.plurals.chat_log_thread_new, replies, replies)
+            } else {
+                pluralStringResource(R.plurals.chat_log_threads_new, replies, replies, pillThreads.size)
+            }
+            ThreadPill(label, Modifier.align(Alignment.TopCenter).padding(top = 8.dp)) {
+                pillThreads.first().let { app.openThreadAt(it.root, it.oldest) }
+            }
+        }
         if (newIndex > 0 && newIndex > lastVisible) {
             val unread = items.subList(0, newIndex).count { it is ChatTimeline.Message && it.pending == null && it.actor != me }
             JumpPill(
                 pluralStringResource(R.plurals.chat_log_jump_unread, unread, unread),
                 up = true,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = if (pillThreads.isNotEmpty()) 48.dp else 8.dp),
             ) { scope.launch { showDivider(listState, newIndex, viewport) } }
         }
         if (!pinned) {
@@ -522,7 +542,9 @@ private fun RoomLog(
         if (placed == count || viewport == 0 || rows.isEmpty()) return@LaunchedEffect
         if (at != null) {
             if (!reached || !ChatTimeline.holds(t.events, opening.oldest)) return@LaunchedEffect
-            val target = ChatTimeline.openingTarget(items, at, opening.complete)
+            // A reply shows only in its thread (issue #376), which opens beside or over the room: the room goes to its
+            // first message when that is loaded.
+            val target = ChatTimeline.openingTarget(items, ChatTimeline.openingSeq(t.events, at), opening.complete)
             if (target != null && target > 0) {
                 showDivider(listState, target, viewport, animate = false)
                 pinned = false
@@ -641,7 +663,9 @@ private fun RoomLog(
 
     // Reading (§3.9): the newest message fully in view, 1 second after the last change, when higher than the last
     // report, while the room may report, once this opening placed its New divider, and not while a saved position
-    // waits for its row (the list then shows rows at a clamped index that nobody scrolled to).
+    // waits for its row (the list then shows rows at a clamped index that nobody scrolled to). It reads on over the
+    // replies after that message, which show only in their thread (ChatTimeline.readableSeq).
+    val newestEvent = t.events.maxOfOrNull { it.seq }
     val holding = anchor.holding
     val currentRead by rememberUpdatedState(t.room.read)
     LaunchedEffect(listState, rows, canRead, positioned, holding) {
@@ -652,7 +676,7 @@ private fun RoomLog(
                 .filter { it.offset >= info.viewportStartOffset && it.offset + it.size <= info.viewportEndOffset }
                 .mapNotNull { it.key as? String }
         }.collectLatest { keys ->
-            val seq = ChatTimeline.readableSeq(rows, keys) ?: return@collectLatest
+            val seq = ChatTimeline.readableSeq(rows, keys, newestEvent) ?: return@collectLatest
             seen = RoomReading.seen(seen, seq, anchor)
             delay(READ_REPORT_DELAY_MS)
             RoomReading.report(seq, currentRead, anchor, reports)?.let { workspaces.markRead(ws, room, it) }
@@ -683,6 +707,29 @@ private fun JumpPill(label: String, up: Boolean, modifier: Modifier = Modifier, 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RkIcon(if (up) RukooIcons.Up else RukooIcons.Down, null, size = 14.dp, tint = c.text2)
+        Text(label, style = Rk.type.text12_5.medium, color = c.text, maxLines = 1)
+    }
+}
+
+/**
+ * The pill for new replies in threads out of view (issue #376): a 32dp pill like [JumpPill], with the reply icon in
+ * the accent colour; a tap opens the thread with the oldest new reply.
+ */
+@Composable
+private fun ThreadPill(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val c = Rk.colors
+    val shape = Rk.shapes.pill
+    Row(
+        modifier
+            .rkShadow(Rk.elevation.shadow, shape)
+            .background(c.raised, shape)
+            .rkClickable(shape, onClick = onClick)
+            .heightIn(min = 32.dp)
+            .padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RkIcon(RukooIcons.Reply, null, size = 14.dp, tint = c.accent)
         Text(label, style = Rk.type.text12_5.medium, color = c.text, maxLines = 1)
     }
 }
@@ -834,7 +881,6 @@ private fun MessageRow(row: ChatTimeline.Message, ctx: RowContext) {
             if (row.head) Avatar(if (author?.state == "deleted") "?" else author?.name, row.actor, size = 32.dp, agent = author?.isAgent == true)
         }
         Column(Modifier.weight(1f)) {
-            if (row.reply && row.head) row.context?.let { ReplyContext(it, ctx) }
             if (row.head) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(name, style = Rk.type.text13.semibold, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
@@ -899,29 +945,6 @@ private fun Tag(text: String) {
     )
 }
 
-/** A reply row's line about the message it answers; a tap opens the thread. */
-@Composable
-private fun ReplyContext(context: ChatTimeline.Context, ctx: RowContext) {
-    val c = Rk.colors
-    val text = when (context) {
-        is ChatTimeline.Context.Quote -> stringResource(R.string.chat_log_reply_to, ctx.names.display(ctx.members[context.actor]), context.text)
-        is ChatTimeline.Context.Missing -> stringResource(R.string.chat_log_reply_in_thread)
-        is ChatTimeline.Context.Removed -> stringResource(R.string.chat_log_reply_to_removed)
-    }
-    val open = ctx.onOpenThread
-    Row(
-        Modifier
-            .padding(bottom = 2.dp)
-            .then(if (open != null) Modifier.rkClickable(Rk.shapes.chip, onClick = { open(context.root) }) else Modifier)
-            .heightIn(min = 24.dp)
-            .padding(end = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RkIcon(RukooIcons.Reply, null, size = 14.dp, tint = c.text3)
-        Text(text, style = Rk.type.text12, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
 
 /** "3 replies · Last reply 10:42" with up to three repliers, and a dot while a reply is new; opens the thread. */
 @Composable

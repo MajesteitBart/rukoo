@@ -160,9 +160,14 @@
         <item quantity="other">%d antwoorden, waarvan nieuwe</item>
     </plurals>
     <string name="chat_log_last_reply">Laatste antwoord %1$s</string>
-    <string name="chat_log_reply_to">antwoordde %1$s: %2$s</string>
-    <string name="chat_log_reply_to_removed">antwoordde op een verwijderd bericht</string>
-    <string name="chat_log_reply_in_thread">antwoordde in een thread</string>
+    <plurals name="chat_log_thread_new">
+        <item quantity="one">%d nieuw antwoord in een thread</item>
+        <item quantity="other">%d nieuwe antwoorden in een thread</item>
+    </plurals>
+    <plurals name="chat_log_threads_new">
+        <item quantity="one">%1$d nieuw antwoord in %2$d threads</item>
+        <item quantity="other">%1$d nieuwe antwoorden in %2$d threads</item>
+    </plurals>
 
     <!-- chat.sys.* -->
     <string name="chat_sys_created">%1$s heeft #%2$s gemaakt</string>
@@ -492,6 +497,8 @@
 
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string>
+    <string name="chat_notify_reply">%1$s antwoordde: %2$s</string>
+    <string name="chat_notify_reply_text">antwoordde: %1$s</string>
     <string name="chat_notify_summary_title">Teamchat</string>
     <plurals name="chat_notify_summary_body">
         <item quantity="one">Nieuwe berichten in %d gesprek</item>

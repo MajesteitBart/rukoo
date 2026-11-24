@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -59,6 +60,7 @@ import nl.bvdm.rukoo.ui.chat.ChatFilter
 import nl.bvdm.rukoo.ui.chat.ChatListModel
 import nl.bvdm.rukoo.ui.chat.ChatUi
 import nl.bvdm.rukoo.ui.chat.ChatUiHost
+import nl.bvdm.rukoo.ui.chat.ThreadsSeen
 import nl.bvdm.rukoo.ui.chat.TimelineScroll
 import nl.bvdm.rukoo.ui.composer.ComposerFiles
 import nl.bvdm.rukoo.ui.composer.Recipients
@@ -858,6 +860,23 @@ class AppViewModel(
 
     /** The thread of [root] scrolled to the reply a notification opened it at. */
     fun threadTargetShown(root: String) = set { it.threadTargetShown(root) }
+
+    private val _threadsSeen = MutableStateFlow(ThreadsSeen())
+
+    /** The newest reply each thread of the open room showed on this opening (issue #376), for its summaries and pill. */
+    val threadsSeen: StateFlow<ThreadsSeen> = _threadsSeen.asStateFlow()
+
+    /**
+     * The thread of [root] in [room] showed its replies up to [seq]: the dot under its first message and its part of the
+     * room's pill go, for the room's current opening. View state only; the read position doesn't change.
+     */
+    fun threadShown(ws: String, room: String, root: String, seq: Long) {
+        val opening = _roomOpening.value?.takeIf { it.ws == ws && it.room == room }?.count ?: return
+        _threadsSeen.update { it.with(ws, room, opening, root, seq) }
+    }
+
+    /** Opens the thread of [root] at the reply [at]: the room's pill for new replies in threads out of view. */
+    fun openThreadAt(root: String, at: Long) = set { it.openThread(root, at) }
 
     fun openChatSheet(sheet: ChatSheet, target: String? = null) = set { it.openChatSheet(sheet, target) }
 

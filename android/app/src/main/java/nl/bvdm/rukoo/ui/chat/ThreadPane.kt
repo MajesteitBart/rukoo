@@ -121,6 +121,10 @@ private fun ThreadContent(app: AppViewModel, ws: String, room: String, root: Str
         val rows = remember(t, me, blocked) { ChatTimeline.rows(listOfNotNull(t.root) + t.replies, t.pending, me, root = root, blocked = blocked) }
         // Bottom up, like the room: the newest reply is item 0, so the thread opens at its latest replies.
         val items = remember(rows) { rows.asReversed() }
+        // The replies it shows are no longer new on this opening of the room (issue #376): the dot under the first
+        // message and the room's pill for them go. View state only: the thread still reports no reads.
+        val newestReply = remember(rows) { rows.filterIsInstance<ChatTimeline.Message>().filter { it.root == root && it.pending == null }.maxOfOrNull { it.seq ?: 0L } }
+        LaunchedEffect(newestReply) { newestReply?.let { app.threadShown(ws, room, root, it) } }
         val locale = LocalConfiguration.current.locales[0]
         val today = stringResource(R.string.common_dates_today)
         val yesterday = stringResource(R.string.common_dates_yesterday)

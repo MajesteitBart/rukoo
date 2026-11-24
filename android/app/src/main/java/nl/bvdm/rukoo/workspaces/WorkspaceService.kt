@@ -255,7 +255,7 @@ class WorkspaceService internal constructor(
     // null before that, as the first state (signed out, no workspaces) says nothing about the account.
     private val scheduled = MutableStateFlow<Boolean?>(null)
 
-    private val alerts = ChatAlertEngine(sink, words, { settings.value.notifyChat }, ::isOnScreen, timing.notifyRooms)
+    private val alerts = ChatAlertEngine(sink, words, { settings.value.notifyChat }, ::isOnScreen, timing.notifyRooms, ::threadOnScreen)
 
     private data class PendingJoin(val link: InviteLink, val tag: String, val at: Long)
 
@@ -1395,6 +1395,9 @@ class WorkspaceService internal constructor(
     }
 
     private fun isOnScreen(ws: String, room: String): Boolean = ChatAlertRules.onScreen(screen.current, ws, room)
+
+    // The thread on screen with the room, whose replies get no alert (issue #376).
+    private fun threadOnScreen(ws: String, room: String): String? = onScreenNow.takeIf { it.ws == ws && it.room == room }?.thread
 
     override suspend fun refresh(ws: String?) {
         val l = live ?: return
