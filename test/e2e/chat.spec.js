@@ -973,9 +973,18 @@ test('a thread opened at its oldest new reply keeps the dot for the replies belo
   await message('Lunch on Friday?').scrollIntoViewIfNeeded();
   const line = message('Lunch on Friday?').locator('.ch-replies');
   await expect(line).toHaveClass(/has-new/);
-  // Shown to the end: the dot goes.
+  // Opened again at its newest replies, the ones between were never in view: the dot stays until they were.
   await line.click();
   await expect(newest).toBeInViewport({ timeout: 15000 });
+  await expect(line).toHaveClass(/has-new/);
+  await win.evaluate(async () => {
+    const scroll = document.querySelector('section.chat .ch-thread .ch-thread-scroll');
+    for (let top = scroll.scrollTop; top > 0; top -= scroll.clientHeight / 3) {
+      scroll.scrollTop = top;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    scroll.scrollTop = 0;
+  });
   await expect(line).not.toHaveClass(/has-new/);
   // Scrolled up in the thread, a new reply comes in below the view: it keeps its cue.
   await win.evaluate(() => {

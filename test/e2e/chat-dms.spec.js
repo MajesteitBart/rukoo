@@ -180,7 +180,9 @@ test('a chat toast in the focused window goes when its alert is taken back', asy
   await expect(title()).toHaveText('general', { timeout: 15000 });
   await expect(dmRow('Olga Owner')).toBeVisible({ timeout: 15000 });
   const posted = await server.post(olga, ws.id, dm.conversation, 'Can you call me?');
-  await expect(toast()).toHaveText('Olga Owner: Can you call me?', { timeout: 20000 });
+  // The alert's text, and Open, which goes where a click on the notification would.
+  await expect(toast()).toHaveText('Olga Owner: Can you call me?Open', { timeout: 20000 });
+  await expect(toast().locator('button')).toHaveText('Open');
   await expect(toast()).toHaveClass(/show/);
   expect(await notices(app)).toEqual([]);
   // The pointer on the toast keeps it up, so only taking the alert back can take it down: Bart reads the
