@@ -48,10 +48,10 @@ const uidSets = (uids) => uidChunks(uids).map((c) => c.set);
 // What a move or delete that didn't go as asked gives for an email. refused: the server turned it down, and Rukoo read
 // back that nothing changed: the email is still in its folder, by its own UID in the folder's generation the command
 // used, and the destination of a move took nothing in (moveTurn()). unsent: Rukoo never sent the command for the
-// email (the connection or the folder didn't open, the folder was rebuilt since, code 'UIDVALIDITY', or the server
-// has no UID EXPUNGE for a delete), so it changed nothing, though it read nothing back either. unknown: anything else, such as an answer that never came or
-// one that proves nothing; the engine syncs the folders involved before anything is retried. copied: a server
-// without MOVE kept the copy it made (moveTurn()).
+// email (the connection or the folder didn't open, the folder was rebuilt since, code 'UIDVALIDITY', the server has
+// no UID EXPUNGE for it, or a quit stopped the batch), so it changed nothing, though it read nothing back either.
+// unknown: anything else, such as an answer that never came or one that proves nothing; the engine syncs the folders
+// involved before anything is retried. copied: a server without MOVE kept the copy it made (moveTurn()).
 const refusal = (key, extra = {}) => Object.assign(new Error(t(key)), { refused: true, ...extra });
 const uncertain = (key, extra = {}) => Object.assign(new Error(t(key)), { unknown: true, ...extra });
 const unsent = (key) => Object.assign(new Error(t(key)), { unsent: true });
