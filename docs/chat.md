@@ -130,7 +130,7 @@ When a message holds a web address, the server fetches the page and adds a previ
 - **Mark unread** in a message's More menu makes that message and everything after it unread again: the New line moves there and the badge comes back, also on your other devices. The conversation then stops marking messages read until you open it again, so it stays unread while it's on screen.
 - Rukoo notifies you of new direct messages and of mentions, unless the conversation is on screen. Clicking a notification opens the conversation at that message. When you read the messages here or on another device, the notification goes away. **Settings → General → Team chat notifications** turns these off.
 - **Mute** in a conversation's More menu silences it on this device: no notifications, no badges, and its row is dimmed. Mute isn't synced to your other devices.
-- The desktop app notifies only while it runs, also with its window closed to the tray. After a restart nothing notifies until Rukoo runs again, unless **Settings → General → Open when you sign in** is on: then the installed app starts hidden when you sign in. It's off by default.
+- The desktop app notifies only while it runs, also with its window closed to the tray. After a restart nothing notifies until Rukoo runs again, unless **Settings → General → Open when you sign in** is on: then the installed app starts hidden when you sign in to Windows or macOS. It's off by default.
 
 ## Blocking someone
 

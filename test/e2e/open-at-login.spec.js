@@ -1,23 +1,30 @@
 // End-to-end tests for Settings > General > Open when you sign in (src/main/loginitem.js) and the hidden start it sets
-// up. Test mode never touches the system's login items: on Linux the autostart entry goes to the test profile's
-// autostart folder, on Windows and macOS main keeps the login item in memory (memoryLogin). A real sign-in is checked by
-// hand on an installed build.
+// up. Test mode never touches the system's login items: main keeps the login item in memory (memoryLogin), behaving as
+// Electron does on Windows or on a Mac. A Linux machine, which has no switch itself, runs both through SEM_LOGIN_ITEM;
+// Windows and macOS run their own. A real sign-in is checked by hand on an installed build.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
-const { closeApp } = require('./close');
+const { closeApp, kill } = require('./close');
 
-const MAC = process.platform === 'darwin';
 const LINUX = process.platform === 'linux';
+// Whether this system has a tray icon for a hidden window; a Mac has the Dock.
+const TRAY = process.platform !== 'darwin';
+const SHAPES = LINUX ? ['win32', 'darwin'] : [process.platform];
+// The program the Windows-shaped login item registers in test mode (main.js TEST_LOGIN_EXE): the default path for all
+// users, with its spaces.
+const WIN_EXE = 'C:\\Program Files\\Rukoo Mail\\Rukoo Mail.exe';
 
 let app;
 let win;
 let dataDir;
 let running;
 
-async function launch(args = []) {
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1' };
+// shape: the system main's login item plays; env: more of the environment, such as SEM_LOGIN_OPENED.
+async function launch({ shape, args = [], env: more = {} } = {}) {
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', ...more };
+  if (shape) env.SEM_LOGIN_ITEM = shape;
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.', ...args], cwd: path.join(__dirname, '..', '..'), env });
   running = true;
@@ -25,12 +32,23 @@ async function launch(args = []) {
   win = await app.firstWindow();
 }
 
-test.beforeEach(async () => {
-  dataDir = tempDir('sem-e2e-');
-  await launch();
+// A profile with the demo account, closed again unless open.
+function writeSettings(settings) {
+  fs.mkdirSync(path.join(dataDir, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'en', ...settings }));
+}
+
+async function demoProfile({ shape, open = true, settings = {}, env = {} } = {}) {
+  writeSettings(settings);
+  await launch({ shape, env });
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  if (!open) await closeApp(app);
+}
+
+test.beforeEach(() => {
+  dataDir = tempDir('sem-e2e-');
 });
 
 test.afterEach(async () => {
@@ -38,65 +56,14 @@ test.afterEach(async () => {
   removeDir(dataDir);
 });
 
-const entryFile = () => path.join(dataDir, 'autostart', 'rukoo-mail.desktop');
-// What the system has: Linux's autostart entry in the profile, or the login item main keeps in memory.
-const registered = async () => {
-  if (LINUX) return fs.existsSync(entryFile()) ? fs.readFileSync(entryFile(), 'utf8') : null;
-  return app.evaluate(() => {
-    const { state } = global.__semLoginItem.system;
-    return state.openAtLogin && state.enabled ? `${state.path} ${state.args.join(' ')}` : null;
-  });
-};
-// What the system's own settings do: GNOME and KDE turn the entry off in place, Windows' Startup apps and macOS's
-// Login Items turn the item off.
-const turnOffInSystem = async () => {
-  if (LINUX) fs.appendFileSync(entryFile(), 'Hidden=true\n');
-  else await app.evaluate(() => global.__semLoginItem.system.off());
-};
-
+// What the system has: the Windows Run value, or the Mac's SMAppService status.
+const system = () => app.evaluate(() => global.__semLoginItem.system.state);
+// What the system's own settings do: Windows' Startup apps turns the entry off, and turning Rukoo off under the Mac's
+// Login Items leaves it waiting for approval.
+const turnOffInSystem = () => app.evaluate(() => global.__semLoginItem.system.off());
 const row = () => win.locator('.settings [data-a="open-at-login"]');
-
-test('the switch turns the login item on and off, starts off, and shows what the system has', async () => {
-  await win.click('[data-action="settings"]');
-  await expect(row()).toContainText(MAC ? 'Open at login' : 'Open when you sign in');
-  await expect(row()).toContainText('new mail and team chat notify you without opening Rukoo first');
-  await expect(row().locator('.switch')).not.toHaveClass(/\bon\b/);
-  expect(await registered()).toBeNull();
-
-  await row().click();
-  await expect(row().locator('.switch')).toHaveClass(/\bon\b/);
-  await expect(row()).toBeFocused();
-  // Started hidden, by this profile's program; the test run never registers Electron or its own folder.
-  const entry = await registered();
-  expect(entry).toContain('--start-hidden');
-  if (LINUX) expect(entry).toContain(`Exec="${path.join(dataDir, 'Rukoo Mail')}" --start-hidden`);
-
-  // Turned off in the system's own settings: coming back to Rukoo shows it off.
-  await turnOffInSystem();
-  await win.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(row().locator('.switch')).not.toHaveClass(/\bon\b/);
-
-  // On again here, and off.
-  await row().click();
-  await expect(row().locator('.switch')).toHaveClass(/\bon\b/);
-  expect(await registered()).toContain('--start-hidden');
-  await row().click();
-  await expect(row().locator('.switch')).not.toHaveClass(/\bon\b/);
-  expect(await registered()).toBeNull();
-});
-
-test('a copy that may not register shows why, without a switch, and main refuses it too', async () => {
-  // What loginTarget() gives a portable or unpacked copy and a run from source.
-  await app.evaluate(() => (global.__semLoginItem.target = null));
-  await win.click('[data-action="settings"]');
-  const line = win.locator('.settings [data-login]');
-  await expect(line).toContainText(MAC ? 'Move Rukoo Mail to Applications and open it there first.' : 'Only the installed app can open when you sign in.');
-  await expect(line.locator('.switch')).toHaveCount(0);
-  await expect(row()).toHaveCount(0);
-  const refused = await win.evaluate(() => window.mail.call('setOpenAtLogin', true).then(() => 'set', (err) => err.message));
-  expect(refused).toContain('Only the installed app');
-  expect(await registered()).toBeNull();
-});
+const isOn = () => expect(row().locator('.switch')).toHaveClass(/\bon\b/);
+const isOff = () => expect(row().locator('.switch')).not.toHaveClass(/\bon\b/);
 
 // The main window, as main sees it.
 const main = () =>
@@ -105,39 +72,187 @@ const main = () =>
     return w ? { visible: w.isVisible(), focused: w.isFocused() } : null;
   });
 
-test('started by the login item, the window stays hidden with a tray icon, also with close to tray off', async () => {
-  // Close to tray and minimize to tray off, as on Linux by default.
-  await win.evaluate(() => window.mail.call('updateSettings', { closeToTray: false, minimizeToTray: false }));
-  await closeApp(app);
-  await launch(['--start-hidden']);
-  await win.waitForLoadState('domcontentloaded');
-  await expect(win.locator('.item').first()).toBeAttached({ timeout: 15000 });
-  // It stays hidden, and nothing took the focus.
-  await win.waitForTimeout(1500);
-  expect(await main()).toEqual({ visible: false, focused: false });
-  if (!MAC) expect(await app.evaluate(() => Boolean(global.__semTray))).toBe(true);
+for (const shape of SHAPES) {
+  const MAC = shape === 'darwin';
+  // How a start from the login item looks: the flag on Windows, the start itself on a Mac.
+  const loginStart = MAC ? { env: { SEM_LOGIN_OPENED: '1' } } : { args: ['--start-hidden'] };
 
-  // The login item starting Rukoo again changes nothing; the person starting it shows the window.
-  await app.evaluate(({ app }) => app.emit('second-instance', {}, ['rukoo', '--start-hidden'], process.cwd()));
-  await win.waitForTimeout(500);
-  expect((await main()).visible).toBe(false);
-  await app.evaluate(({ app }) => app.emit('second-instance', {}, ['rukoo'], process.cwd()));
-  await expect.poll(async () => (await main()).visible).toBe(true);
-  // The tray icon stays for this run.
-  if (!MAC) expect(await app.evaluate(() => Boolean(global.__semTray))).toBe(true);
+  test.describe(MAC ? 'a Mac login item' : 'a Windows login item', () => {
+    test('the switch turns the login item on and off, starts off, and shows what the system has', async () => {
+      await demoProfile({ shape });
+      await win.click('[data-action="settings"]');
+      await expect(row()).toContainText(MAC ? 'Open at login' : 'Open when you sign in');
+      await expect(row()).toContainText('new mail and team chat notify you without opening Rukoo first');
+      await isOff();
 
-  // With close to tray off, closing the window quits, as that setting says.
-  if (!MAC) {
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html')).close());
-    await expect.poll(() => running, { timeout: 30000 }).toBe(false);
-  }
-});
+      await row().click();
+      await isOn();
+      await expect(row()).toBeFocused();
+      if (MAC) {
+        // The Mac registers the app bundle itself, without a path or arguments.
+        expect((await system()).status).toBe('enabled');
+        const sets = await app.evaluate(() => global.__semLoginItem.system.calls.filter(([c]) => c === 'set').map(([, s]) => s));
+        expect(sets).toEqual([{ openAtLogin: true }]);
+      } else {
+        // The installed program, quoted for its spaces, started hidden.
+        expect((await system()).run).toEqual({ 'nl.bvdm.rukoo-mail': `"${WIN_EXE}" --start-hidden` });
+      }
+
+      // Turned off in the system's own settings: coming back to Rukoo shows it.
+      await turnOffInSystem();
+      await win.evaluate(() => window.dispatchEvent(new Event('focus')));
+      if (MAC) {
+        // Still registered, waiting for approval: on, with the way out.
+        await expect(row()).toContainText('or turn this off to cancel');
+        await isOn();
+        await row().click();
+        await isOff();
+        await expect(row()).not.toContainText('Login Items');
+        expect((await system()).status).toBe('not-registered');
+      } else {
+        await isOff();
+        // On again here approves it again, and off removes it.
+        await row().click();
+        await isOn();
+        expect((await system()).approved).toEqual({});
+        await row().click();
+        await isOff();
+        expect((await system()).run).toEqual({});
+      }
+    });
+
+    test('a copy that may not register shows why, without a switch, and main refuses it too', async () => {
+      await demoProfile({ shape });
+      // What loginTarget() gives a portable or unpacked copy and a run from source.
+      await app.evaluate(() => (global.__semLoginItem.target = null));
+      // The Mac's start asked whether it came from the login item; nothing asks the system from here on.
+      const asked = await app.evaluate(() => global.__semLoginItem.system.calls.length);
+      await win.click('[data-action="settings"]');
+      const line = win.locator('.settings [data-login]');
+      await expect(line).toContainText(MAC ? 'Move Rukoo Mail to Applications and open it there first.' : 'Only the installed app can open when you sign in.');
+      await expect(line.locator('.switch')).toHaveCount(0);
+      await expect(row()).toHaveCount(0);
+      const refused = await win.evaluate(() => window.mail.call('setOpenAtLogin', true).then(() => 'set', (err) => err.message));
+      expect(refused).toContain('Only the installed app');
+      expect(await app.evaluate(() => global.__semLoginItem.system.calls.length)).toBe(asked);
+    });
+
+    test('started by the login item, the window stays hidden with a tray icon, also with close to tray off', async () => {
+      // Close to tray and minimize to tray off, as on Linux by default.
+      await demoProfile({ shape, open: false, settings: { closeToTray: false, minimizeToTray: false } });
+      await launch({ shape, ...loginStart });
+      await win.waitForLoadState('domcontentloaded');
+      await expect(win.locator('.item').first()).toBeAttached({ timeout: 15000 });
+      // It stays hidden, and nothing took the focus.
+      await win.waitForTimeout(1500);
+      expect(await main()).toEqual({ visible: false, focused: false });
+      if (TRAY) expect(await app.evaluate(() => Boolean(global.__semTray))).toBe(true);
+
+      if (!MAC) {
+        // The login item starting Rukoo again changes nothing; the flag after "--" is no flag.
+        await app.evaluate(({ app }) => app.emit('second-instance', {}, ['rukoo', '--start-hidden'], process.cwd()));
+        await win.waitForTimeout(500);
+        expect((await main()).visible).toBe(false);
+        await app.evaluate(({ app }) => app.emit('second-instance', {}, ['rukoo', '--', '--start-hidden'], process.cwd()));
+      } else {
+        await app.evaluate(({ app }) => app.emit('second-instance', {}, ['rukoo'], process.cwd()));
+      }
+      // The person starting it shows the window.
+      await expect.poll(async () => (await main()).visible).toBe(true);
+      // The tray icon stays for this run.
+      if (TRAY) expect(await app.evaluate(() => Boolean(global.__semTray))).toBe(true);
+
+      // With close to tray off, closing the window quits, as that setting says.
+      if (TRAY) {
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html')).close());
+        await expect.poll(() => running, { timeout: 30000 }).toBe(false);
+      }
+    });
+
+    test('a profile without any account starts with its window, also from the login item', async () => {
+      writeSettings({ closeToTray: false, minimizeToTray: false });
+      await launch({ shape, ...loginStart });
+      await win.waitForSelector('.provider-grid');
+      await expect.poll(async () => (await main()).visible).toBe(true);
+      expect(await app.evaluate(() => Boolean(global.__semTray))).toBe(false);
+    });
+
+    test('mail the last run left unsent waits on disk until the window first shows', async () => {
+      // Undo send on for 30 seconds, so the email waits in the outbox (main.js undoSendDelay).
+      await demoProfile({ shape, settings: { undoSend: 30 }, env: { SEM_UNDO_SEND: '1' } });
+      // Held mail: an email that waits out its Undo notice when Rukoo is killed (held.json).
+      await app.evaluate(() => {
+        global.__semEngine.send = () => new Promise(() => {});
+      });
+      await win.click('[data-action="compose"]');
+      const c = win.locator('.composer');
+      await c.locator('[data-rinput="to"]').fill('someone@example.com');
+      await c.locator('[data-rinput="to"]').press('Enter');
+      await c.locator('[data-field="subject"]').fill('Held at sign-in');
+      await c.locator('.editor').click();
+      await win.keyboard.type('Kept through the restart.');
+      await c.locator('[data-c="send"]').click();
+      await expect(c).toHaveCount(0, { timeout: 10000 });
+      const heldFile = path.join(dataDir, 'data', 'held.json');
+      const unsentFile = path.join(dataDir, 'data', 'unsent.json');
+      await expect.poll(() => fs.existsSync(heldFile)).toBe(true);
+      const exited = app.waitForEvent('close');
+      kill(app.process());
+      await exited;
+      // Unsent mail: what a quit couldn't send or keep in Drafts (unsent.json), here the same email under another subject.
+      const [held] = JSON.parse(fs.readFileSync(heldFile, 'utf8'));
+      const restore = JSON.parse(JSON.stringify(held.restore));
+      restore.state.subject = 'Unsent at sign-in';
+      fs.writeFileSync(unsentFile, JSON.stringify([{ id: 'unsent-1', restore, error: 'Mailbox full' }]));
+
+      await launch({ shape, ...loginStart, env: { ...(loginStart.env || {}), SEM_UNDO_SEND: '1' } });
+      await expect(win.locator('.item').first()).toBeAttached({ timeout: 15000 });
+      await win.waitForTimeout(2000);
+      // Nothing opened at sign-in, and both files keep their emails.
+      expect(app.windows().length).toBe(1);
+      expect((await main()).visible).toBe(false);
+      expect(fs.existsSync(unsentFile)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(heldFile, 'utf8')).map((e) => e.restore.state.subject)).toEqual(['Held at sign-in']);
+
+      // No autosave settles an email before the test looks.
+      await app.evaluate(() => {
+        global.__semEngine.saveDraft = () => Promise.reject(new Error('No connection'));
+      });
+      await app.evaluate(({ app }) => app.emit('second-instance', {}, ['rukoo'], process.cwd()));
+      await expect.poll(async () => (await main()).visible).toBe(true);
+      await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(3);
+      const subjects = [];
+      for (const w of app.windows().filter((w) => w !== win)) {
+        await w.waitForSelector('.composer .editor');
+        subjects.push(await w.locator('[data-field="subject"]').inputValue());
+      }
+      expect(subjects.sort()).toEqual(['Held at sign-in', 'Unsent at sign-in']);
+      expect(fs.existsSync(unsentFile)).toBe(false);
+    });
+  });
+}
 
 test('a normal start shows the window and leaves the tray as the settings say', async () => {
-  await win.evaluate(() => window.mail.call('updateSettings', { closeToTray: false, minimizeToTray: false }));
-  await closeApp(app);
-  await launch();
+  await demoProfile({ shape: SHAPES[0], open: false, settings: { closeToTray: false, minimizeToTray: false } });
+  await launch({ shape: SHAPES[0] });
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
   expect((await main()).visible).toBe(true);
   expect(await app.evaluate(() => Boolean(global.__semTray))).toBe(false);
+});
+
+test('Linux has no switch: the row says the desktop starts Rukoo', async () => {
+  test.skip(!LINUX, 'Linux only');
+  await demoProfile();
+  await win.click('[data-action="settings"]');
+  const line = win.locator('.settings [data-login]');
+  await expect(line).toContainText('Open when you sign in');
+  await expect(line).toContainText("Your desktop's own startup settings can start Rukoo when you sign in.");
+  await expect(line).not.toContainText('hidden in the tray');
+  await expect(line.locator('.switch')).toHaveCount(0);
+  const refused = await win.evaluate(() => window.mail.call('setOpenAtLogin', true).then(() => 'set', (err) => err.message));
+  expect(refused).toContain('Only the installed app');
+  // A start with the flag is an ordinary start there.
+  await closeApp(app);
+  await launch({ args: ['--start-hidden'] });
+  await expect.poll(async () => (await main()).visible).toBe(true);
 });

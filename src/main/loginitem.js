@@ -5,33 +5,25 @@
 //
 // Windows and macOS keep the login item themselves, through Electron's app.setLoginItemSettings: Windows in the Run key
 // of the current user, which Windows Settings > Apps > Startup turns on and off; macOS under System Settings > General >
-// Login Items. Linux desktops start what the XDG autostart folder holds, so there Rukoo writes a desktop entry to
-// ~/.config/autostart. The switch shows what the system has now: an entry someone turned off in the system's own
-// settings shows off.
+// Login Items. The switch shows what the system has now: an item someone turned off in the system's own settings shows
+// off. Linux isn't offered the switch: its desktops start what their own startup settings hold.
 //
-// Only an installed app registers (loginTarget): the copy the Windows installer put down, the Mac app in Applications,
-// the .deb package or an AppImage. A run from a checkout, a test profile, the portable .exe (which runs from a temporary
-// copy) and an unpacked build never do, so a login never starts Electron or a folder that is gone by then.
+// Only an installed app registers (loginTarget): the copy the Windows installer put down and the Mac app in
+// Applications. A run from a checkout, a test profile, the portable .exe (which runs from a temporary copy) and an
+// unpacked build never do, so a login never starts Electron or a folder that is gone by then.
 //
-// The system is a seam: electronLogin() for Windows and macOS, linuxAutostart() for Linux and memoryLogin() for tests.
-// Tests never reach the system's own login items.
+// The system is a seam: electronLogin() for Windows and macOS, memoryLogin() for tests, which behaves as Electron's
+// does on the platform it plays. Tests never reach the system's own login items.
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
-// What the login item starts Rukoo with on Windows and Linux. macOS says so itself (wasOpenedAtLogin).
+// What the Windows login item starts Rukoo with. macOS says so itself (wasOpenedAtLogin).
 const HIDDEN_FLAG = '--start-hidden';
-// The autostart entry's file name, the same as the desktop entry the .deb package installs.
-const AUTOSTART = 'rukoo-mail.desktop';
 // electron-builder's NSIS installer puts its uninstaller beside the program; an unpacked build has none.
 const UNINSTALLER = 'Uninstall Rukoo Mail.exe';
-
-// Whether the .deb package installed Rukoo here: its desktop entry is in one of the applications folders.
-function packageInstalled(env, exists) {
-  const roots = [env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), ...(env.XDG_DATA_DIRS || '/usr/local/share:/usr/share').split(':')];
-  return roots.filter((root) => path.isAbsolute(root)).some((root) => exists(path.join(root, 'applications', AUTOSTART)));
-}
+// The name Electron gives the Run value: the AppUserModelID of the installed app (main.js APP_ID).
+const APP_ID = 'nl.bvdm.rukoo-mail';
 
 // The program a login starts, as { exe }, or null where this copy of Rukoo may not register itself.
 // inApplications: macOS's app.isInApplicationsFolder(), asked only on a Mac.
@@ -50,12 +42,55 @@ function loginTarget({ platform = process.platform, packaged, env = process.env,
     }
     return installed ? { exe: execPath } : null;
   }
-  if (platform === 'linux') {
-    // The AppImage the person keeps, not its temporary mount (execPath).
-    if (env.APPIMAGE) return path.isAbsolute(env.APPIMAGE) && !/[\0\r\n]/.test(env.APPIMAGE) ? { exe: env.APPIMAGE } : null;
-    return packageInstalled(env, exists) ? { exe: execPath } : null;
-  }
   return null;
+}
+
+// Whether argv carries HIDDEN_FLAG as one of Rukoo's own switches: before a "--", after which everything is an
+// argument. The first start and a second one (second-instance) both ask this.
+function hiddenFlag(argv) {
+  for (const arg of Array.isArray(argv) ? argv.slice(1) : []) {
+    if (arg === '--') return false;
+    if (arg === HIDDEN_FLAG) return true;
+  }
+  return false;
+}
+
+// Windows' quoting of one argument, as CommandLineToArgvW reads it back: Electron's AddQuoteForArg
+// (shell/common/command_line_util_win.cc), which quotes anything with a space, a backslash or a double quote.
+function winQuote(arg) {
+  if (!/[ \\"]/.test(arg)) return arg;
+  let out = '"';
+  for (let i = 0; i < arg.length; i++) {
+    if (arg[i] === '\\') {
+      let end = i + 1;
+      while (end < arg.length && arg[end] === '\\') end++;
+      const run = end - i;
+      out += '\\'.repeat(end === arg.length || arg[end] === '"' ? run * 2 : run);
+      i = end - 1;
+    } else if (arg[i] === '"') out += '\\"';
+    else out += arg[i];
+  }
+  return `${out}"`;
+}
+
+// The Run value Electron writes for a program and its arguments (browser_win.cc FormatCommandLineString): the
+// program's surrounding quotes taken off, then every part quoted as Windows reads it.
+function winCommand(exe, args = []) {
+  const bare = exe.length >= 2 && exe.startsWith('"') && exe.endsWith('"') ? exe.slice(1, -1) : exe;
+  return [winQuote(bare), ...args.map(winQuote)].join(' ');
+}
+
+// The program of a Windows command line, as CommandLineToArgvW reads its first part: up to the next quote when it
+// starts with one, otherwise up to the first space or tab. Electron reads both the Run values and the path it is asked
+// about this way (base::CommandLine::FromString(...).GetProgram()), so an unquoted path with a space reads as the part
+// before that space.
+function winProgram(command) {
+  const s = String(command).replace(/^[ \t]+/, '');
+  if (s.startsWith('"')) {
+    const end = s.indexOf('"', 1);
+    return end < 0 ? s.slice(1) : s.slice(1, end);
+  }
+  return s.split(/[ \t]/)[0];
 }
 
 // Windows and macOS: Electron's login items. Only main makes one, and only for a loginTarget().
@@ -66,141 +101,75 @@ function electronLogin(app) {
   };
 }
 
-// Tests: Electron's login items in memory, for every platform. off() is what the system's own settings do.
-function memoryLogin() {
-  const state = { openAtLogin: false, path: null, args: [], enabled: true, wasOpenedAtLogin: false, status: 'not-registered' };
+// Tests: Electron's login items in memory, behaving as Electron 44 does on the platform it plays. On Windows it keeps
+// Run values as command lines and Startup apps' state beside them, and reads them back the way browser_win.cc does;
+// on a Mac it keeps SMAppService's status. off() is what the system's own settings do: Startup apps turns the entry
+// off, and on a Mac removing Rukoo under Login Items leaves it waiting for approval again.
+function memoryLogin({ platform = process.platform, execPath = process.execPath, opened = false } = {}) {
+  const state = { run: {}, approved: {}, status: 'not-registered', needsApproval: false, wasOpenedAtLogin: opened === true };
   const calls = [];
+  const win = platform === 'win32';
   return {
     state,
     calls,
     get(options = {}) {
       calls.push(['get', options]);
-      const here = state.openAtLogin && (!options.path || options.path === state.path);
+      if (!win) {
+        return { openAtLogin: state.status === 'enabled', status: state.status, wasOpenedAtLogin: state.wasOpenedAtLogin };
+      }
+      const exe = options.path || execPath;
+      const wanted = winProgram(exe).toLowerCase();
+      const items = Object.entries(state.run)
+        .filter(([, command]) => winProgram(command).toLowerCase() === wanted)
+        .map(([name, command]) => ({ name, command, enabled: state.approved[name] === undefined || state.approved[name] === 2 }));
       return {
-        openAtLogin: here,
-        executableWillLaunchAtLogin: here && state.enabled,
-        wasOpenedAtLogin: state.wasOpenedAtLogin,
-        status: state.status,
-        launchItems: here ? [{ name: 'nl.bvdm.rukoo-mail', path: state.path, args: state.args, scope: 'user', enabled: state.enabled }] : []
+        openAtLogin: state.run[APP_ID] === winCommand(exe, options.args || []),
+        executableWillLaunchAtLogin: items.some((i) => i.enabled),
+        launchItems: items.map((i) => ({ name: i.name, path: winProgram(i.command), scope: 'user', enabled: i.enabled }))
       };
     },
     set(settings) {
       calls.push(['set', settings]);
-      state.openAtLogin = settings.openAtLogin === true;
-      state.path = state.openAtLogin ? settings.path || null : null;
-      state.args = state.openAtLogin ? settings.args || [] : [];
-      state.enabled = settings.enabled !== false;
-      state.status = state.openAtLogin ? (state.needsApproval ? 'requires-approval' : 'enabled') : 'not-registered';
-    },
-    off() {
-      state.enabled = false;
-      state.status = 'not-registered';
-    }
-  };
-}
-
-// The XDG autostart folder: $XDG_CONFIG_HOME/autostart, or ~/.config/autostart.
-function autostartDir(env = process.env) {
-  const config = env.XDG_CONFIG_HOME && path.isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : path.join(os.homedir(), '.config');
-  return path.join(config, 'autostart');
-}
-
-// One argument of a desktop entry's Exec key, quoted as the Desktop Entry Specification says: inside double quotes,
-// a backslash before " ` $ and \, every backslash doubled again for the string escape, and % doubled for field codes.
-function execArg(value) {
-  const quoted = String(value).replace(/["`$\\]/g, (c) => `\\${c}`);
-  return `"${quoted.replace(/\\/g, '\\\\').replace(/%/g, '%%')}"`;
-}
-
-// The autostart entry for exe, which a login runs with HIDDEN_FLAG.
-function autostartEntry(exe) {
-  return [
-    '[Desktop Entry]',
-    'Type=Application',
-    'Name=Rukoo Mail',
-    'Comment=Starts Rukoo Mail hidden, so new mail and team chat notify you',
-    `Exec=${execArg(exe)} ${HIDDEN_FLAG}`,
-    'Icon=rukoo-mail',
-    'Terminal=false',
-    'X-GNOME-Autostart-enabled=true',
-    ''
-  ].join('\n');
-}
-
-// The keys of a desktop entry's [Desktop Entry] group.
-function entryKeys(text) {
-  const keys = {};
-  let group = null;
-  for (const raw of String(text).split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const head = line.match(/^\[(.+)\]$/);
-    if (head) {
-      group = head[1];
-      continue;
-    }
-    if (group !== 'Desktop Entry') continue;
-    const eq = line.indexOf('=');
-    if (eq > 0) keys[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-  }
-  return keys;
-}
-
-// Linux: the autostart entry in dir. Synchronous, so the AppImage update can move it during the quit (moved()).
-function linuxAutostart({ dir = autostartDir(), files = fs } = {}) {
-  const file = path.join(dir, AUTOSTART);
-  return {
-    file,
-    read() {
-      try {
-        return files.readFileSync(file, 'utf8');
-      } catch (_) {
-        return null;
+      if (!win) {
+        state.status = settings.openAtLogin ? (state.needsApproval ? 'requires-approval' : 'enabled') : 'not-registered';
+        return;
+      }
+      if (settings.openAtLogin) {
+        state.run[APP_ID] = winCommand(settings.path || execPath, settings.args || []);
+        if (settings.enabled === false) state.approved[APP_ID] = 3;
+        else delete state.approved[APP_ID];
+      } else {
+        delete state.run[APP_ID];
+        delete state.approved[APP_ID];
       }
     },
-    write(text) {
-      files.mkdirSync(dir, { recursive: true });
-      const tmp = `${file}.tmp`;
-      files.writeFileSync(tmp, text, { mode: 0o644 });
-      files.renameSync(tmp, file);
-    },
-    remove() {
-      files.rmSync(file, { force: true });
+    off() {
+      if (win) state.approved[APP_ID] = 3;
+      else if (state.status === 'enabled') state.status = 'requires-approval';
     }
   };
 }
 
 class LoginItem {
-  // target: loginTarget(), or null where this copy may not register. system: electronLogin(), linuxAutostart() or
-  // memoryLogin(), by platform.
+  // target: loginTarget(), or null where this copy may not register. system: electronLogin() or memoryLogin().
   constructor({ platform = process.platform, target, system }) {
     this.platform = platform;
     this.target = target || null;
     this.system = system;
   }
 
-  get linux() {
-    return this.platform === 'linux';
-  }
-
-  // Windows compares the program and its arguments with the Run key's; macOS ignores both.
+  // Windows reads the program it is asked about as a command line, so a path with a space (Program Files, "Rukoo
+  // Mail.exe") goes quoted; Electron takes the quotes off again when it writes the Run value. macOS ignores both.
   options() {
-    return this.platform === 'win32' ? { path: this.target.exe, args: [HIDDEN_FLAG] } : {};
+    return this.platform === 'win32' ? { path: `"${this.target.exe}"`, args: [HIDDEN_FLAG] } : {};
   }
 
-  // What Settings shows: { available, on, approval, platform }. approval: macOS waits for the person to allow it under
-  // Login Items. available: false where this copy may not register; the system isn't asked then.
+  // What Settings shows: { available, on, approval, platform }. approval: macOS has the login item but waits for the
+  // person to allow it under Login Items. available: false where this copy may not register; the system isn't asked.
   status() {
     const base = { available: Boolean(this.target), on: false, approval: false, platform: this.platform };
     if (!this.target) return base;
     try {
-      if (this.linux) {
-        const text = this.system.read();
-        if (text === null) return base;
-        const keys = entryKeys(text);
-        const off = /^true$/i.test(keys.Hidden || '') || /^false$/i.test(keys['X-GNOME-Autostart-enabled'] || '');
-        return { ...base, on: !off };
-      }
       const s = this.system.get(this.options()) || {};
       if (this.platform === 'darwin') {
         if (s.status) return { ...base, on: s.status === 'enabled', approval: s.status === 'requires-approval' };
@@ -217,47 +186,18 @@ class LoginItem {
   // Turns the login item on or off and says what the system has now. Throws where this copy may not register.
   set(on) {
     if (!this.target) throw new Error('unavailable');
-    if (this.linux) {
-      if (on) this.system.write(autostartEntry(this.target.exe));
-      else this.system.remove();
-      return this.status();
-    }
     if (this.platform === 'darwin') this.system.set({ openAtLogin: Boolean(on) });
     // enabled: Windows' Startup apps turns it back on too, when someone had turned it off there.
     else this.system.set({ openAtLogin: Boolean(on), ...this.options(), enabled: Boolean(on) });
     return this.status();
   }
 
-  // At startup: on Linux an autostart entry for another program, such as an AppImage the person renamed or moved, now
-  // starts this one. One the desktop turned off stays off. Windows and macOS need nothing: an update installs the new
-  // version over the old one, at the same path. True when it rewrote the entry.
-  refresh() {
-    if (!this.target || !this.linux) return false;
-    try {
-      const text = this.system.read();
-      if (text === null) return false;
-      const wanted = autostartEntry(this.target.exe);
-      if (entryKeys(text).Exec === entryKeys(wanted).Exec || !this.status().on) return false;
-      this.system.write(wanted);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  // The AppImage update moved Rukoo to a file with the new version in its name (electron-updater's
-  // appimage-filename-updated): the autostart entry follows, during the quit that installs it.
-  moved(exe) {
-    if (!this.target || !this.linux || !exe || !path.isAbsolute(exe)) return false;
-    this.target = { exe };
-    return this.refresh();
-  }
-
-  // Whether this start came from the login item, so the main window stays hidden. Windows and Linux pass HIDDEN_FLAG;
-  // macOS says it of the start itself, asked only of an installed app.
-  startedHidden(argv = process.argv) {
-    if (argv.includes(HIDDEN_FLAG)) return true;
-    if (this.platform !== 'darwin' || !this.target) return false;
+  // Whether a start with argv came from the login item: only an installed copy's. Windows passes HIDDEN_FLAG; macOS
+  // says it of the start itself, so only the first start can ask it (first).
+  fromLogin(argv, { first = false } = {}) {
+    if (!this.target) return false;
+    if (this.platform === 'win32') return hiddenFlag(argv);
+    if (this.platform !== 'darwin' || !first) return false;
     try {
       return this.system.get({}).wasOpenedAtLogin === true;
     } catch (_) {
@@ -266,4 +206,4 @@ class LoginItem {
   }
 }
 
-module.exports = { LoginItem, loginTarget, electronLogin, memoryLogin, linuxAutostart, autostartDir, autostartEntry, entryKeys, execArg, HIDDEN_FLAG, AUTOSTART, UNINSTALLER };
+module.exports = { LoginItem, loginTarget, electronLogin, memoryLogin, hiddenFlag, winQuote, winCommand, winProgram, HIDDEN_FLAG, UNINSTALLER, APP_ID };

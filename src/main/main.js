@@ -50,7 +50,7 @@ const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
-const { LoginItem, loginTarget, electronLogin, linuxAutostart, memoryLogin, HIDDEN_FLAG } = require('./loginitem');
+const { LoginItem, loginTarget, electronLogin, memoryLogin } = require('./loginitem');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
 const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
@@ -642,18 +642,22 @@ async function refreshMailClient() {
   if (client) await client.refresh({ portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE) });
 }
 
-// The login item (loginitem.js). Only an installed app gets the system's own; a run from a checkout, a development or
-// test profile and a portable or unpacked copy get none (loginTarget). Test mode never touches the system: Linux's
-// autostart entry goes to the test profile, Windows' and macOS' login item lives in memory, and a spec reads both
-// through global.__semLoginItem.
+// The login item (loginitem.js). Only an installed app on Windows or macOS gets the system's own; a run from a
+// checkout, a development or test profile, a portable or unpacked copy and Linux get none (loginTarget). Test mode
+// never touches the system: the login item lives in memory and a spec reads it through global.__semLoginItem. It plays
+// this platform, or the one SEM_LOGIN_ITEM names (win32, darwin), so a Linux test machine checks both; Linux itself has
+// no switch. SEM_LOGIN_OPENED=1 says the start came from the login item on a Mac.
+const TEST_LOGIN_EXE = { win32: 'C:\\Program Files\\Rukoo Mail\\Rukoo Mail.exe', darwin: '/Applications/Rukoo Mail.app/Contents/MacOS/Rukoo Mail' };
 function makeLoginItem() {
-  const platform = process.platform;
   if (process.env.SEM_HIDDEN) {
-    const system = platform === 'linux' ? linuxAutostart({ dir: path.join(app.getPath('userData'), 'autostart') }) : memoryLogin();
-    return new LoginItem({ platform, target: { exe: path.join(app.getPath('userData'), 'Rukoo Mail') }, system });
+    const platform = TEST_LOGIN_EXE[process.env.SEM_LOGIN_ITEM] ? process.env.SEM_LOGIN_ITEM : process.platform;
+    const exe = TEST_LOGIN_EXE[platform];
+    const system = memoryLogin({ platform, execPath: exe, opened: process.env.SEM_LOGIN_OPENED === '1' });
+    return new LoginItem({ platform, target: exe ? { exe } : null, system });
   }
+  const platform = process.platform;
   const target = loginTarget({ platform, packaged: app.isPackaged, inApplications: () => app.isInApplicationsFolder() });
-  return new LoginItem({ platform, target, system: platform === 'linux' ? linuxAutostart() : electronLogin(app) });
+  return new LoginItem({ platform, target, system: target ? electronLogin(app) : null });
 }
 
 // Links never navigate an app window; they open in the browser or, for mailto:, in a compose window.
@@ -2299,7 +2303,7 @@ app.on('second-instance', (e, argv, workingDirectory) => {
   const file = link ? null : icsFromArgs(argv, workingDirectory);
   if (link) mailtoQueue.accept(link);
   else if (file) icsQueue.accept(file);
-  else if (engine && windowState && !argv.includes(HIDDEN_FLAG)) showWindow();
+  else if (engine && windowState && !(loginItem && loginItem.fromLogin(argv))) showWindow();
 });
 
 app.whenReady().then(() => {
@@ -2414,9 +2418,9 @@ app.whenReady().then(() => {
   installer.on('changed', () => broadcast('updates', updatesState()));
   loginItem = makeLoginItem();
   if (process.env.SEM_HIDDEN) global.__semLoginItem = loginItem;
-  startHidden = loginItem.startedHidden(process.argv);
-  // The AppImage update renames Rukoo's file during the quit; the autostart entry follows it.
-  installer.on('moved', (file) => loginItem.moved(file));
+  // A start from the login item stays hidden, unless the profile has neither a mail account nor a signed-in Rukoo
+  // account: nothing would notify then, and the person needs the setup page.
+  startHidden = loginItem.fromLogin(process.argv, { first: true }) && (engine.accounts.length > 0 || account.signedIn);
   // ---- voice ----
   // Before the hub, whose meeting tools use it, and before the first window, which it may have to hide. A development
   // or test profile (SEM_DATA_DIR) only finds a Voice paired through RUKOO_VOICE_BRIDGE, never the installed one.
@@ -2479,11 +2483,13 @@ app.whenReady().then(() => {
   win.once('ready-to-show', () => {
     mailtoQueue.start();
     icsQueue.start();
-    // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json).
-    reopenHeld(reopenUnsent());
+    // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json). After a start
+    // from the login item they stay on disk until the person first shows the window, so no editor takes the focus.
+    const recover = () => reopenHeld(reopenUnsent());
+    if (startHidden) win.once('show', recover);
+    else recover();
   });
   refreshMailClient().catch(() => {});
-  loginItem.refresh();
   updateTray();
   scheduleSync();
   engine.syncAll().catch(() => {});

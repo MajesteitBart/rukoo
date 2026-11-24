@@ -129,7 +129,7 @@ Sound for new mail, in Settings → General, plays a short coo when mail comes i
 
 Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
 
-Notifications come only while Rukoo runs. Settings → General → Open when you sign in (Open at login on a Mac) starts the installed app hidden when you sign in to the computer, so new mail and team chat notify you after a restart without opening Rukoo first. It's off by default. [Platforms](platforms.md) says how each system shows it.
+Notifications come only while Rukoo runs. On Windows and macOS, Settings → General → Open when you sign in (Open at login on a Mac) starts the installed app hidden when you sign in to the computer, so new mail and team chat notify you after a restart without opening Rukoo first. It's off by default. [Platforms](platforms.md) says how each system shows it.
 
 Rukoo checks your accounts for new mail on the sync schedule in Settings → General, every 5 minutes unless you change it. When you bring its window forward, from the tray, the taskbar or another app, it also checks each account that last synced more than a minute ago, starting with the inbox. With the schedule set to manual, it only syncs when you ask, with `F5` or Sync in the tray menu.
 

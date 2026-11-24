@@ -33,27 +33,47 @@
 !macroend
 
 ; Settings > General > Open when you sign in (src/main/loginitem.js): Electron writes a Run value named after the app's
-; AppUserModelID (APP_ID in src/main/main.js), the program, quoted or not, followed by --start-hidden. Uninstalling
-; removes it when it starts this installation, so Windows doesn't look for a program that is gone at every sign-in.
-; An update keeps it: the new version installs at the same path.
+; AppUserModelID (APP_ID in src/main/main.js): the program in double quotes, which a path with a backslash always gets,
+; then --start-hidden. Uninstalling removes it when its program is exactly this installation's, so Windows doesn't look
+; for a program that is gone at every sign-in. An update keeps it: the new version installs at the same path.
+; Only the Windows user who uninstalls: the uninstaller reaches that user's registry alone, so after an install for
+; all users, others who turned it on keep their entry until they remove it under Startup apps.
 !macro rukooRemoveLoginItem
   Push $0
   Push $1
-  Push $2
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "nl.bvdm.rukoo-mail"
-  StrCpy $1 $0 1
-  ${if} $1 == '"'
-    StrCpy $0 $0 "" 1
-  ${endIf}
-  StrLen $2 "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
-  StrCpy $1 $0 $2
+  !insertmacro rukooRunProgram
   ${if} $1 == "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "nl.bvdm.rukoo-mail"
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "nl.bvdm.rukoo-mail"
   ${endIf}
-  Pop $2
   Pop $1
   Pop $0
+!macroend
+
+; The program of the Run value in $0, as $1: what stands between its first two double quotes, or "" when it doesn't
+; start with one. Electron's always does. test/loginitem.test.js runs it when it finds makensis.
+!macro rukooRunProgram
+  Push $2
+  StrCpy $1 ""
+  StrCpy $2 $0 1
+  ${if} $2 == '"'
+    ; $2: the position of the closing quote.
+    StrCpy $2 1
+    ${do}
+      StrCpy $1 $0 1 $2
+      ${ifThen} $1 == '"' ${|} ${break} ${|}
+      ${ifThen} $1 == "" ${|} ${break} ${|}
+      IntOp $2 $2 + 1
+    ${loop}
+    ${if} $1 == '"'
+      IntOp $2 $2 - 1
+      StrCpy $1 $0 $2 1
+    ${else}
+      StrCpy $1 ""
+    ${endIf}
+  ${endIf}
+  Pop $2
 !macroend
 
 ; Removes that registration again when it starts this installation; one that starts a portable copy stays. An update

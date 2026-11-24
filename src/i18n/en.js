@@ -5442,15 +5442,19 @@
   },
   "settings.general.openAtLogin": {
     "message": "Open when you sign in",
-    "description": "settings > general. Settings > General on Windows and Linux: title of the switch that makes Rukoo start, hidden in the tray, when the person signs in to the computer. Off by default; it shows what the system has now. After Minimize to the tray. src/renderer/settings.js (loginRow)"
+    "description": "settings > general. Settings > General on Windows and Linux: title of the switch that makes Rukoo start, hidden in the tray, when the person signs in to the computer. Off by default; it shows what the system has now. After Minimize to the tray. On Linux the row has no switch and says the desktop's own settings do this (openAtLoginLinux). src/renderer/settings.js (loginRow)"
   },
   "settings.general.openAtLoginHelp": {
     "message": "Rukoo starts hidden in the tray when you sign in to the computer, so new mail and team chat notify you without opening Rukoo first.",
-    "description": "settings > general. Settings > General on Windows and Linux: explanation below Open when you sign in, saying what it is for. src/renderer/settings.js (loginRow)"
+    "description": "settings > general. Settings > General on Windows: explanation below Open when you sign in, saying what it is for. src/renderer/settings.js (loginRow)"
   },
   "settings.general.openAtLoginUnavailable": {
     "message": "Only the installed app can open when you sign in.",
-    "description": "settings > general. Settings > General on Windows and Linux, below Open when you sign in, in the portable Windows app, an unpacked build or a run from source, which can't register themselves; the switch isn't there then. Also the error if the switch is used there. src/renderer/settings.js (loginRow), src/main/main.js (setOpenAtLogin)"
+    "description": "settings > general. Settings > General on Windows, below Open when you sign in, in the portable Windows app, an unpacked build or a run from source, which can't register themselves; the switch isn't there then. Also the error if the switch is used there. src/renderer/settings.js (loginRow), src/main/main.js (setOpenAtLogin)"
+  },
+  "settings.general.openAtLoginLinux": {
+    "message": "Your desktop's own startup settings can start Rukoo when you sign in.",
+    "description": "settings > general. Settings > General on Linux, below Open when you sign in, in place of the switch: Rukoo doesn't add itself to the startup programs there, and the desktop's own settings, such as GNOME Tweaks or KDE's Autostart, can. src/renderer/settings.js (loginRow)"
   },
   "settings.general.openAtLoginMac": {
     "message": "Open at login",
@@ -5465,8 +5469,8 @@
     "description": "settings > general. Settings > General on macOS, below Open at login, for a copy that runs from the disk image, Downloads or source, which may not register itself. src/renderer/settings.js (loginRow)"
   },
   "settings.general.openAtLoginMacApproval": {
-    "message": "Allow Rukoo Mail under System Settings › General › Login Items to finish.",
-    "description": "settings > general. Settings > General on macOS, below Open at login, while macOS waits for the person to allow the new login item. Name the System Settings panes as macOS does in this language. src/renderer/settings.js (loginRow)"
+    "message": "Allow Rukoo Mail under System Settings › General › Login Items to finish, or turn this off to cancel.",
+    "description": "settings > general. Settings > General on macOS, below Open at login in place of its explanation, while macOS waits for the person to allow the login item: a new one, or one they turned off under Login Items. The switch shows on then, and turning it off removes the login item. Name the System Settings panes as macOS does in this language. src/renderer/settings.js (loginRow)"
   },
   "settings.general.openAtLoginFailed": {
     "message": "Rukoo couldn't change this. Try again, or check the startup apps in your system's settings.",

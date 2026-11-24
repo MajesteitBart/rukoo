@@ -487,20 +487,27 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     api('openAtLoginState')
       .then((next) => (loginState = next))
       .catch(() => null);
-  const loginKey = (kind) => `settings.general.openAtLogin${window.mail.platform === 'darwin' ? 'Mac' : ''}${kind}`;
-  // A switch where this copy of Rukoo may register itself; elsewhere a static row that says why it can't.
+  // The wording follows the system main plays (loginState.platform), which a test can set.
+  const loginPlatform = () => (loginState && loginState.platform) || window.mail.platform;
+  const loginKey = (kind) => `settings.general.openAtLogin${loginPlatform() === 'darwin' ? 'Mac' : ''}${kind}`;
+  // A switch where this copy of Rukoo may register itself; elsewhere a static row that says why it can't. Linux has
+  // no switch: the desktop's own startup settings start Rukoo there.
   const loginRow = () => {
     const title = esc(t(loginKey('')));
     const help = esc(t(loginKey('Help')));
     if (loginState && !loginState.available) {
+      const linux = loginPlatform() === 'linux';
       return `<div class="row static" data-login>
-        <div class="text"><div class="title">${title}</div><div class="desc">${help}</div>
-        <div class="value">${esc(t(loginKey('Unavailable')))}</div></div>
+        <div class="text"><div class="title">${title}</div>${linux ? '' : `<div class="desc">${help}</div>`}
+        <div class="value">${esc(t(linux ? 'settings.general.openAtLoginLinux' : loginKey('Unavailable')))}</div></div>
       </div>`;
     }
-    // macOS keeps a new login item waiting until the person allows it under Login Items.
-    const value = loginState && loginState.approval ? esc(t('settings.general.openAtLoginMacApproval')) : '';
-    return row({ title, desc: help, value, action: 'open-at-login', toggle: Boolean(loginState && loginState.on) });
+    // macOS keeps a login item waiting until the person allows it under Login Items, also after they turned it off
+    // there. It is registered, so the switch is on and turning it off removes it. The way to allow it takes the place
+    // of the help line, which wraps where a value line would be cut off.
+    const waiting = Boolean(loginState && loginState.approval);
+    const desc = waiting ? esc(t('settings.general.openAtLoginMacApproval')) : help;
+    return row({ title, desc, action: 'open-at-login', toggle: Boolean(loginState && (loginState.on || waiting)) });
   };
   // Draws the row again with what the system has now, keeping the keyboard on it. focus: the switch was just used, and
   // was disabled meanwhile, which took the focus away.
@@ -1557,7 +1564,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       return render();
     }
     if (a === 'open-at-login') {
-      const want = !(loginState && loginState.on);
+      const want = !(loginState && (loginState.on || loginState.approval));
       b.disabled = true;
       try {
         loginState = await api('setOpenAtLogin', want);
