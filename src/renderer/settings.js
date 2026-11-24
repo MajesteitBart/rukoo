@@ -358,12 +358,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
 
   // preview: markup shown under the value, such as a signature as it will be sent.
   // disabled: a switch that can't change now, such as the last tab that shows.
+  // toggle: the row is a switch. The button that takes the focus carries the role and its state, so a screen reader
+  // hears it as a switch with the row's text for its name; the drawn switch beside it is only the picture of it.
   const row = ({ title, desc, value, preview, action, toggle, sep, cls = '', lead = '', disabled = false }) => `
-    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}${disabled ? ' disabled' : ''}>
+    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}${toggle !== undefined ? ` role="switch" aria-checked="${Boolean(toggle)}"` : ''}${disabled ? ' disabled' : ''}>
       ${lead}
       <div class="text"><div class="title ${cls.includes('danger') ? 'danger' : ''}">${title}</div>
       ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}${preview || ''}</div>
-      ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
+      ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" aria-hidden="true"></span>` : ''}
     </button>`;
 
   // Marks the default account in the overview and the default address on the sender addresses page.
@@ -932,10 +934,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       return false;
     }
   }
+  // A switch row's state changes in place: the drawn switch, and the row's own aria-checked (row()).
   const flip = (b, on) => {
-    const sw = b.querySelector('.switch');
-    sw.classList.toggle('on', on);
-    sw.setAttribute('aria-checked', String(on));
+    b.querySelector('.switch').classList.toggle('on', on);
+    b.setAttribute('aria-checked', String(on));
   };
 
   async function testAgent(id) {

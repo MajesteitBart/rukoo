@@ -183,9 +183,9 @@ test('the sound for new mail is off by default, a switch in Settings, and plays 
   const sound = settings().locator('[data-a="toggle:newMailSound"]');
   await expect(sound).toContainText('Sound for new mail');
   await expect(sound).toContainText('Play a short coo when new emails arrive.');
-  await expect(sound.locator('.switch')).toHaveAttribute('aria-checked', 'false');
+  await expect(sound).toHaveAttribute('aria-checked', 'false');
   await sound.click();
-  await expect(sound.locator('.switch')).toHaveAttribute('aria-checked', 'true');
+  await expect(sound).toHaveAttribute('aria-checked', 'true');
   await settings().locator('[data-a="back"]').click();
   await expect(settings()).toHaveCount(0);
 
