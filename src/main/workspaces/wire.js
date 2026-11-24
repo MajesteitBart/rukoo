@@ -1396,8 +1396,6 @@ const ARGS = {
   chatClose: () => [],
   chatOlder: (w, conv, before) => [ws(w), c(conv), input.before(before)],
   chatThread: (w, conv, root) => [ws(w), c(conv), pattern(EVENT_ID, 'root')(root)],
-  // The thread on screen beside the open room, or null once it closed (issue #376).
-  chatThreadShown: (w, conv, root) => [ws(w), c(conv), input.root(root)],
   chatRoomMembers: (w, conv) => [ws(w), c(conv)],
   chatRead: (w, conv, seq) => [ws(w), c(conv), input.seq(seq)],
   chatMarkRead: (w, conv) => [ws(w), c(conv)],

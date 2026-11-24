@@ -476,6 +476,7 @@
     <string name="chat_errors_not_saved">Rukoo kon dit bericht niet op deze telefoon bewaren, dus het is niet verstuurd. Maak opslagruimte vrij en probeer het opnieuw.</string><!-- phone wording -->
     <string name="chat_errors_paused">%1$s is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.</string>
     <string name="chat_errors_mentions">Iemand die je noemde, zit niet meer in dit gesprek.</string>
+    <string name="chat_errors_root_removed">Het bericht waarop je antwoordde, is verwijderd.</string>
     <string name="chat_errors_quota">%1$s is vol.</string>
     <string name="chat_errors_quota_members">%1$s heeft zoveel leden als er passen.</string>
     <string name="chat_errors_quota_conversations">%1$s kan geen kanalen of gesprekken meer bevatten.</string>
@@ -504,7 +505,7 @@
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string>
     <string name="chat_notify_reply">%1$s antwoordde: %2$s</string>
-    <string name="chat_notify_reply_text">antwoordde: %1$s</string>
+    <string name="chat_notify_replied">%1$s antwoordde</string>
     <string name="chat_notify_summary_title">Teamchat</string>
     <plurals name="chat_notify_summary_body">
         <item quantity="one">Nieuwe berichten in %d gesprek</item>

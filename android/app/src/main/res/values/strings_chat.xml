@@ -502,6 +502,7 @@
     <string name="chat_errors_not_saved">Rukoo couldn\'t save this message on this phone, so it wasn\'t sent. Free up storage space and try again.</string><!-- The outbox could not store the message. --><!-- phone wording -->
     <string name="chat_errors_paused">%1$s is paused. Start over to use it again.</string><!-- An action in a paused workspace. -->
     <string name="chat_errors_mentions">Someone you mentioned isn\'t in this conversation any more.</string><!-- A mention the server refused. -->
+    <string name="chat_errors_root_removed">The message you replied to was removed.</string><!-- A reply in a thread the server refused because the thread's first message was removed meanwhile. -->
     <string name="chat_errors_quota">%1$s is full.</string><!-- 413 quota without a known kind. -->
     <string name="chat_errors_quota_members">%1$s has as many members as it can hold.</string><!-- 413 quota, members. -->
     <string name="chat_errors_quota_conversations">%1$s can\'t hold more channels or conversations.</string><!-- 413 quota, conversations. -->
@@ -530,7 +531,7 @@
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string><!-- Notification text. -->
     <string name="chat_notify_reply">%1$s replied: %2$s</string><!-- Notification text of a reply in a thread, which shows only in its thread. -->
-    <string name="chat_notify_reply_text">replied: %1$s</string><!-- A reply's text after its author's name in a conversation notification. -->
+    <string name="chat_notify_replied">%1$s replied</string><!-- The sender of a reply in a conversation notification; Android puts a colon and the reply's text after it, as in "Olga replied: I do". -->
     <string name="chat_notify_summary_title">Team chat</string><!-- Title of the summary notification. -->
     <!-- Its text. -->
     <plurals name="chat_notify_summary_body">

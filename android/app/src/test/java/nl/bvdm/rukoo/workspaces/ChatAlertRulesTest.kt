@@ -78,8 +78,6 @@ class ChatAlertRulesTest {
     private class Setup(val store: WorkspaceStore, val sink: RecordingSink, val engine: ChatAlertEngine) {
         var enabled = true
         var screen = Screen()
-        // The thread on screen with the room, as WorkspaceService.onScreen knows it.
-        var thread: String? = null
         val fetched = CopyOnWriteArrayList<String>()
         var pages: Map<String, EventPage> = emptyMap()
     }
@@ -100,7 +98,7 @@ class ChatAlertRulesTest {
         }
         lateinit var s: Setup
         val sink = RecordingSink()
-        val engine = ChatAlertEngine(sink, { Words }, { s.enabled }, { w, r -> ChatAlertRules.onScreen(s.screen, w, r) }, threadOnScreen = { _, _ -> s.thread })
+        val engine = ChatAlertEngine(sink, { Words }, { s.enabled }, { w, r -> ChatAlertRules.onScreen(s.screen, w, r) })
         s = Setup(store, sink, engine)
         return s
     }
@@ -678,17 +676,15 @@ class ChatAlertRulesTest {
         assertFalse(ChatAlertRules.repliesOnly(row("dm", 5, 0, 3, 0)))
         assertTrue("looked at past the read position", ChatAlertRules.looked(row("channel", 5, 4, 3, 0, read = 3)))
         assertFalse("read since the last look", ChatAlertRules.looked(row("channel", 5, 4, 3, 0, read = 4)))
-        // A reply counts in a channel when it mentions me or answers my message, never in the thread on screen.
-        fun q(root: String?, rootActor: String?, mentions: List<Mention> = emptyList(), dm: Boolean = false, screen: ChatAlertRules.ShownThread? = null) =
-            ChatAlertRules.qualifies(Ids.OLGA, "text", mentions, false, dm, Ids.ME, emptySet(), root, rootActor, screen)
+        // A reply counts in a channel when it mentions me or answers my message.
+        fun q(root: String?, rootActor: String?, mentions: List<Mention> = emptyList(), dm: Boolean = false) =
+            ChatAlertRules.qualifies(Ids.OLGA, "text", mentions, false, dm, Ids.ME, emptySet(), root, rootActor)
         assertTrue(q("e_1", Ids.ME))
         assertFalse(q("e_1", Ids.SAM))
         assertFalse("an unknown first message", q("e_1", null))
         assertTrue(q("e_1", null, mentions = listOf(Mention(Ids.ME, 0, 2))))
         assertTrue("every reply in a DM", q("e_1", null, dm = true))
-        assertTrue("on screen, a reply outside the thread beside it", q("e_1", Ids.ME, screen = ChatAlertRules.ShownThread(null)))
-        assertFalse(q("e_1", Ids.ME, screen = ChatAlertRules.ShownThread("e_1")))
-        assertFalse("on screen, a top-level message shows already", q(null, null, mentions = listOf(Mention(Ids.ME, 0, 2)), screen = ChatAlertRules.ShownThread(null)))
+        assertFalse("a top-level message in a channel needs a mention", q(null, Ids.ME))
         assertTrue(ChatAlertRules.silenced(notifyChat = false, muted = false, onScreen = false))
         assertTrue(ChatAlertRules.silenced(notifyChat = true, muted = true, onScreen = false))
         assertTrue(ChatAlertRules.silenced(notifyChat = true, muted = false, onScreen = true))
@@ -758,80 +754,45 @@ class ChatAlertRulesTest {
     }
 
     @Test
-    fun `on screen a reply for me alerts unless its thread shows, and a mention there doesn't`() = runTest {
+    fun `on screen a reply for me alerts nothing, and from Mail it alerts under the room's tag`() = runTest {
         val s = setup()
         val mine = Ids.event(1)
         s.screen = Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.GENERAL)
         s.room(room(head = 1, read = 1), msg(1, actor = Ids.ME, text = "Anyone?"))
         s.room(room(head = 3, read = 1, unread = 2, mentions = 1), msg(2, text = "Me", root = mine), msg(3, text = "Me look", mentions = listOf(Mention(Ids.ME, 0, 2))))
         s.run()
-        assertEquals("Olga replied: Me", s.sink.shown.single().body)
-        // A tag of its own and no notice rows: reading the conversation, which reads past the reply, leaves it up.
-        assertEquals(ChatAlertRules.roomKey(ws, Ids.GENERAL) + ":screen", s.sink.shown.single().key)
-        assertTrue(s.notices().isEmpty())
-        s.readAll(Ids.GENERAL)
-        s.engine.onRead(ws, Ids.GENERAL, s.store)
-        assertTrue(s.sink.hidden.none { it.startsWith(ChatAlertRules.roomKey(ws, Ids.GENERAL)) })
-        assertEquals(setOf(ChatAlertRules.roomKey(ws, Ids.GENERAL) + ":screen"), s.sink.activeKeys())
+        assertTrue("the dot and the pill are the cue", s.sink.shown.isEmpty())
+        assertTrue(s.fetched.isEmpty())
+        assertEquals("notified, as for a message there", 3L, s.row().notified)
 
-        s.thread = mine
-        s.room(room(head = 4, read = 1, unread = 3, mentions = 1), msg(4, text = "Seen in the thread", root = mine))
-        s.run()
-        assertEquals(1, s.sink.shown.size)
-        assertEquals(4L, s.row().notified)
-    }
-
-    // Review of #376, finding 2: on screen, what the cache can't tell yet stays eligible until a run's cache holds it.
-    @Test
-    fun `on screen a reply the cache doesn't hold yet waits for it, and then alerts once`() = runTest {
-        val s = setup()
-        val mine = Ids.event(1)
-        s.screen = Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.GENERAL)
-        s.room(room(head = 1, read = 1), msg(1, actor = Ids.ME, text = "Anyone?"))
-        s.run()
-        // The feed moved the head past the cache: the loader's catch-up failed this run.
-        s.room(room(head = 3, read = 1, unread = 2))
-        s.run()
-        assertTrue(s.sink.shown.isEmpty())
-        assertTrue("no page for a room on screen", s.fetched.isEmpty())
-        assertTrue("the range the cache couldn't tell stays eligible", s.row().notified < 3L)
-        // The next run's catch-up brought it.
-        s.room(room(head = 3, read = 1, unread = 2), msg(2, text = "chatter"), msg(3, text = "Me", root = mine))
+        // In Mail, with general read: the next reply alerts as any alert does, with notice rows a read takes back.
+        s.screen = Screen(foreground = true)
+        s.room(room(head = 3, read = 3))
+        s.room(room(head = 4, read = 3, unread = 1), msg(4, text = "Me too", root = mine))
         s.run()
         val alert = s.sink.shown.single()
-        assertEquals("Olga replied: Me", alert.body)
-        assertEquals(ChatAlertRules.roomKey(ws, Ids.GENERAL) + ":screen", alert.key)
-        assertEquals(3L, s.row().notified)
-        s.run()
-        assertEquals("exactly one alert", 1, s.sink.shown.size)
-        assertTrue(s.fetched.isEmpty())
-    }
-
-    // Review of #376, finding 8: an alert posted while its room was on screen is tracked with its messages.
-    @Test
-    fun `an alert posted while its room was on screen stays on a read and goes on a removal or an eviction`() = runTest {
-        val s = setup()
-        val mine = Ids.event(1)
-        val key = ChatAlertRules.roomKey(ws, Ids.GENERAL) + ":screen"
-        s.screen = Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.GENERAL)
-        s.room(room(head = 1, read = 1), msg(1, actor = Ids.ME, text = "Anyone?"))
-        s.room(room(head = 2, read = 1, unread = 1), msg(2, text = "Me", root = mine))
-        s.run()
-        assertEquals(key, s.sink.shown.single().key)
+        assertEquals("Olga replied: Me too", alert.body)
+        assertEquals(ChatAlertRules.roomKey(ws, Ids.GENERAL), alert.key)
+        assertEquals(listOf(Ids.event(4)), s.notices().map { it.message })
         s.readAll(Ids.GENERAL)
         s.engine.onRead(ws, Ids.GENERAL, s.store)
-        s.run()
-        assertTrue("a read leaves it", key in s.sink.activeKeys())
-        s.engine.onRemoved(ws, Ids.GENERAL, listOf(Ids.event(9)), s.store)
-        assertTrue("another message's removal leaves it", key in s.sink.activeKeys())
-        s.engine.onRemoved(ws, Ids.GENERAL, listOf(Ids.event(2)), s.store)
-        assertFalse("the removal of its reply takes it back", key in s.sink.activeKeys())
+        assertFalse(ChatAlertRules.roomKey(ws, Ids.GENERAL) in s.sink.activeKeys())
+    }
 
-        s.room(room(head = 3, read = 2, unread = 1), msg(3, text = "Again", root = mine))
-        s.run()
-        assertTrue(key in s.sink.activeKeys())
-        s.engine.onEvicted(ws, Ids.GENERAL)
-        assertFalse("the eviction takes it back", key in s.sink.activeKeys())
+    // The block list is read again after every page, also one that failed, before the rooms after it.
+    @Test
+    fun `a block made while a page was on its way counts for the rooms after it, also when the page failed`() = runTest {
+        val s = setup()
+        s.room(room(head = 1, unread = 1, mentions = 1).copy(lastAt = 1_000L), msg(1, actor = Ids.SAM, mentions = listOf(Mention(Ids.ME, 0, 3))))
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2).copy(lastAt = 2_000L))
+        s.engine.afterRun(ws, s.store) { room ->
+            s.fetched += room.id
+            s.store.tx { replaceBlocks(ws, listOf(Block(Ids.SAM, 1))) }
+            throw WorkspaceError("network")
+        }
+        assertEquals("the DM's page went first", listOf(Ids.DM), s.fetched.toList())
+        assertTrue(s.sink.shown.isEmpty())
+        assertEquals("nothing to show in general: notified", 1L, s.row().notified)
     }
 
     // Review of #376, finding 10: what changed while an alert's page was on its way counts.

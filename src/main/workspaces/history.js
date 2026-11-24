@@ -103,7 +103,6 @@ class History {
     chatClose: (svc) => svc.history.closeRoom(),
     chatOlder: (svc, ws, c, before) => svc.history.older(ws, c, before),
     chatThread: (svc, ws, c, root) => svc.history.thread(ws, c, root),
-    chatThreadShown: (svc, ws, c, root) => svc.history.threadShown(ws, c, root),
     chatRoomMembers: (svc, ws, c) => svc.history.roomMembers(ws, c),
     chatRead: (svc, ws, c, seq) => svc.history.read(ws, c, seq),
     chatMarkRead: (svc, ws, c) => svc.history.markRead(ws, c),
@@ -115,9 +114,8 @@ class History {
 
   constructor(svc) {
     this.svc = svc;
-    // The room on screen as this module knows it: { ws, room, epoch, quiet, lo, thread }. quiet holds back events
-    // pushes while chatOpen builds its answer, which then holds everything; lo is the cache's lo when the renderer last
-    // heard; thread the root of the thread the renderer shows beside it (chatThreadShown), or null.
+    // The room on screen as this module knows it: { ws, room, epoch, quiet, lo }. quiet holds back events pushes while
+    // chatOpen builds its answer, which then holds everything; lo is the cache's lo when the renderer last heard.
     this.open = null;
     // Catch-ups in flight, per room: { promise, again }.
     this.loads = new Map();
@@ -174,26 +172,6 @@ class History {
     const o = this.open;
     const a = this.svc.active;
     return Boolean(o && o.epoch === this.svc.epoch && o.ws === ws && o.room === room && a && a.ws === ws && a.room === room);
-  }
-
-  // chatThreadShown: the renderer opened the thread of root beside the open room, or closed it (null). Alerts hold back
-  // the replies of the thread on screen (notify.js); the conversation itself doesn't show replies (issue #376). The
-  // thread belongs to the room's opening: a call for a room that isn't the open one is ignored (false), and closing
-  // or opening a room, or the renderer going (rendererGone), starts without one.
-  threadShown(ws, c, root) {
-    if (!this.isOpen(ws, c)) return false;
-    this.open.thread = root || null;
-    return true;
-  }
-
-  // The root of the thread on screen beside room, or null: only while that room is the one open in this session.
-  openThread(ws, room) {
-    return this.isOpen(ws, room) ? this.open.thread || null : null;
-  }
-
-  // The window that showed the open room closed, crashed or loaded another page: no thread shows beside it any more.
-  rendererGone() {
-    if (this.open) this.open.thread = null;
   }
 
   forget(fn) {
@@ -343,13 +321,6 @@ class History {
     return entry.promise;
   }
 
-  // A catch-up page of the room went in: the alerts the room on screen left until its cache reached the head are
-  // settled from it (notify.js onCaughtUp).
-  caughtUp(ws, c) {
-    const notifier = this.svc.notifier;
-    if (notifier && typeof notifier.onCaughtUp === 'function') this.svc.hook(() => notifier.onCaughtUp(ws, c));
-  }
-
   // The same, for the background: failures wait for the next run, which tries again.
   catchUpLater(ws, c) {
     this.catchUp(ws, c).catch((err) => {
@@ -378,7 +349,6 @@ class History {
         const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'before', bound, newest: true });
         if (!out) continue;
         this.push(ws, c, out.events, { replace: true });
-        this.caughtUp(ws, c);
         if (!page.events.length) return;
       } else {
         const page = await this.fetchEvents(ws, c, `after=${r.hi}&limit=${t.eventsPage}`);
@@ -386,7 +356,6 @@ class History {
         const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'after', bound: r.hi });
         if (!out) continue;
         this.push(ws, c, out.events);
-        this.caughtUp(ws, c);
         if (!page.events.length) return;
       }
     }
@@ -512,7 +481,7 @@ class History {
       r = this.room(ws, c);
     }
     const readAtOpen = r.readLocal;
-    const open = { ws, room: c, epoch, quiet: false, lo: r.lo, thread: null };
+    const open = { ws, room: c, epoch, quiet: false, lo: r.lo };
     this.open = open;
     svc.setActive({ ws, room: c });
     if (opts.at === undefined || opts.at === null) {

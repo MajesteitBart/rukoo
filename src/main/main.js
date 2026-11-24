@@ -2207,29 +2207,19 @@ function createWindow({ hidden = false } = {}) {
   win.on('minimize', () => {
     if (engine.settings.minimizeToTray) win.hide();
   });
-  // Team chat's thread beside the open room went with the page that showed it: alerts for its replies come back.
-  const chatPageGone = () => {
-    if (workspaces && workspaces.history) workspaces.history.rendererGone();
-  };
   win.on('closed', () => {
     win = null;
     if (agentGate) agentGate.close();
     // Refused emails this window never took open elsewhere (holdRefused).
     refused.letGo();
-    chatPageGone();
   });
-  win.webContents.on('render-process-gone', () => {
-    refused.letGo();
-    chatPageGone();
-  });
+  win.webContents.on('render-process-gone', () => refused.letGo());
   // A new page asks again for the refused emails the old one had claimed but not opened.
   win.webContents.on('did-navigate', () => refused.unclaim());
   // A reload starts a new panel, which says again when it listens. Only the page itself counts: an email's frame
   // loads too, and the panel that opened it keeps listening.
   win.webContents.on('did-start-navigation', (details) => {
-    if (!details || !details.isMainFrame || details.isSameDocument) return;
-    if (agentGate) agentGate.close();
-    chatPageGone();
+    if (agentGate && details && details.isMainFrame && !details.isSameDocument) agentGate.close();
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
   reveal(win, b.maximized, hidden);

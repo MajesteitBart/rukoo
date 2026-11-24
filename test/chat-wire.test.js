@@ -417,7 +417,7 @@ test('the directory, workspace and other answers are checked whole', () => {
 // Every method of contract 4.4, and chatDraft (desktop-ui), which Undo of Discard reads a room's kept draft with.
 const METHODS = [
   'chatState', 'chatSelect', 'chatView', 'chatSync', 'chatReload', 'chatRetryInfo', 'chatOpen', 'chatClose', 'chatOlder', 'chatThread',
-  'chatThreadShown', 'chatRoomMembers', 'chatRead', 'chatMarkRead', 'chatMute', 'chatSaveDraft', 'chatDraft', 'chatSend', 'chatResend', 'chatDiscard',
+  'chatRoomMembers', 'chatRead', 'chatMarkRead', 'chatMute', 'chatSaveDraft', 'chatDraft', 'chatSend', 'chatResend', 'chatDiscard',
   'chatRedact', 'chatCreateWorkspace', 'chatPreviewInvite', 'chatJoin', 'chatTakePendingJoin', 'chatDropPendingJoin', 'chatCheckLink', 'chatLeaveWorkspace',
   'chatDeleteWorkspace', 'chatSetMyName', 'chatSetRole', 'chatRemoveMember', 'chatInvites', 'chatCreateInvite',
   'chatWithdrawInvite', 'chatCreateChannel', 'chatRenameChannel', 'chatArchiveChannel', 'chatJoinChannel',
@@ -445,7 +445,6 @@ const CALLS = {
   chatClose: { ok: [[[], []]], bad: [] },
   chatOlder: { ok: [[[W, C, 1], [W, C, 1]]], bad: [[[W, C, 0], 'before'], [[W, C, '5'], 'before']] },
   chatThread: { ok: [[[W, C, E], [W, C, E]]], bad: [[[W, C, null], 'root'], [[W, C, C], 'root']] },
-  chatThreadShown: { ok: [[[W, C, E], [W, C, E]], [[W, C, null], [W, C, null]]], bad: [[[W, C, C], 'root'], [[W, 'c_', E], 'conversation']] },
   chatRoomMembers: { ok: [[[W, C], [W, C]]], bad: [[[W, 'c_'], 'conversation']] },
   chatRead: { ok: [[[W, C, 0], [W, C, 0]], [[W, C, 99], [W, C, 99]]], bad: [[[W, C, -1], 'seq'], [[W, C, 1.5], 'seq']] },
   chatMarkRead: { ok: [[[W, C], [W, C]]], bad: [[[U, C], 'ws']] },

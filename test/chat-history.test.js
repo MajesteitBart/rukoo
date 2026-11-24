@@ -974,30 +974,3 @@ test('a removal in a history page for a message the cache trimmed tells the rend
     'the renderer heard of the removal'
   );
 });
-
-// Review of #376, finding 9: the thread a window shows belongs to the opening of the room that reported it.
-test("the thread shown beside a room belongs to its opening: other rooms' calls are ignored, and closing, reopening and the window going clear it", async (t) => {
-  if (skipWithoutServer(t)) return;
-  const { olga, ws, bartMe, svc, api } = await setup(t);
-  const root = await server.post(olga, ws.id, ws.general, 'Thread root');
-  const other = (await server.seedChannel(olga, ws.id, { name: 'other', members: [bartMe.id] })).id;
-  await svc.sync(ws.id);
-  assert.equal(await api.chatThreadShown(ws.id, ws.general, root.messageId), false, 'no room open: ignored');
-  await api.chatOpen(ws.id, ws.general, {});
-  assert.equal(await api.chatThreadShown(ws.id, ws.general, root.messageId), true);
-  assert.equal(svc.history.openThread(ws.id, ws.general), root.messageId);
-  assert.equal(await api.chatThreadShown(ws.id, other, null), false, 'a call for another room is ignored');
-  assert.equal(svc.history.openThread(ws.id, ws.general), root.messageId);
-  await api.chatClose();
-  assert.equal(svc.history.openThread(ws.id, ws.general), null, 'closing the room clears it');
-  await api.chatOpen(ws.id, ws.general, {});
-  assert.equal(svc.history.openThread(ws.id, ws.general), null, 'reopening starts without a thread');
-  await api.chatThreadShown(ws.id, ws.general, root.messageId);
-  await api.chatOpen(ws.id, other, {});
-  assert.equal(svc.history.openThread(ws.id, ws.general), null, 'another room opening clears it');
-  await api.chatOpen(ws.id, ws.general, {});
-  assert.equal(svc.history.openThread(ws.id, ws.general), null);
-  await api.chatThreadShown(ws.id, ws.general, root.messageId);
-  svc.history.rendererGone();
-  assert.equal(svc.history.openThread(ws.id, ws.general), null, 'the window going clears it');
-});
