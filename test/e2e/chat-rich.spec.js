@@ -521,6 +521,19 @@ test('an emoji picked from a composer’s picker goes in at its caret, in the co
   await expect(flags).toHaveAttribute('aria-selected', 'true');
   await expect(picker.locator('.ch-emoji-tab[aria-selected="true"]')).toHaveCount(1);
   expect(await value(main)).toBe('Hello world');
+  // A press in the list during a jump stops the list where it is, so the emoji under the pointer is still there at its
+  // release. The jump back to the first group is the longest one.
+  await tabs.first().click();
+  const stopped = await grid.evaluate(async (el) => {
+    const frame = () => new Promise((done) => requestAnimationFrame(done));
+    await frame();
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await frame();
+    const at = el.scrollTop;
+    for (let i = 0; i < 12; i++) await frame();
+    return el.scrollTop === at;
+  });
+  expect(stopped).toBe(true);
   // Scrolling by hand moves the selection with the list.
   await grid.evaluate((el) => el.scrollTo({ top: el.querySelector('.ch-emoji-sec[data-group="people-body"]').offsetTop }));
   await expect(people).toHaveAttribute('aria-selected', 'true');

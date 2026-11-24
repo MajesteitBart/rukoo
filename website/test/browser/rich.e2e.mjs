@@ -866,11 +866,11 @@ test('l: an emoji picked from a composer goes in at its caret, in the channel an
   await shot(p, 'rich-l2-emoji-thread');
 
   // Leave both composers empty: the thread closes with Escape, the channel's text goes.
-  await p.keyboard.press('Control+A');
+  await p.keyboard.press('ControlOrMeta+A');
   await p.keyboard.press('Backspace');
   await p.keyboard.press('Escape');
   await main.click();
-  await p.keyboard.press('Control+A');
+  await p.keyboard.press('ControlOrMeta+A');
   await p.keyboard.press('Backspace');
   assert.equal(await value(main), '');
   clean(view);

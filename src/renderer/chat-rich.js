@@ -713,7 +713,7 @@ export function openEmojiPicker({ anchor, onPick, onClose, label = t('chat.emoji
   // A tab's jump to its group, followed frame by frame. The groups it passes are drawn only once they come near
   // (content-visibility in styles.css) and turn out taller than the room kept for them, so the group moves further down
   // while the list scrolls: where the scroll stops short, it goes on to where the group is now. Its tab stays selected
-  // on the way. A wheel, a touch or a key in the list hands the scrolling back to the person.
+  // on the way. A wheel, a touch, a press or a key in the list hands the scrolling back to the person.
   let jump = null;
   function jumpTo(sec, id) {
     const mine = { id, until: Date.now() + 3000 };
@@ -736,9 +736,12 @@ export function openEmojiPicker({ anchor, onPick, onClose, label = t('chat.emoji
     };
     requestAnimationFrame(step);
   }
+  // The list also stops where it is: a smooth scroll that ran on would move the emoji away from under a press before
+  // its release, and the click would miss it.
   const handBack = () => {
     if (jump) {
       jump = null;
+      grid.scrollTo({ top: grid.scrollTop, behavior: 'instant' });
       markTab();
     }
   };
