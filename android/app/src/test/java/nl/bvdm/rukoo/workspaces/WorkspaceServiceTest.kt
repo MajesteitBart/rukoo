@@ -1476,6 +1476,81 @@ class WorkspaceServiceTest {
         assertEquals(feeds + 1, h.feeds())
     }
 
+    /**
+     * Two workspaces whose tickets answer [ticket], with real sockets whose backoff takes the low end of each step: 0.5,
+     * 1, 2, 4, 8, 16 and then 30 s.
+     */
+    private suspend fun TestScope.twoWithRealSockets(h: Harness, foreground: Boolean, ticket: suspend (ScriptedHttp.Call) -> WorkspaceAnswer): WorkspaceService {
+        h.chatSockets = OkHttpChatSockets(OkHttpClient(), now = h.clock::now, random = { 0.0 })
+        h.seed { syncedWs(); syncedWs(Ids.WS2, "Other") }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.http.on("POST", h.route(ws, "/socket-ticket"), ticket)
+        h.http.on("POST", h.route(Ids.WS2, "/socket-ticket"), ticket)
+        h.account.signIn("mine")
+        val s = h.start(foreground)
+        assertTrue(s.awaitReady())
+        return s
+    }
+
+    @Test
+    fun `the socket of the workspace on screen tries at once when the person returns to it, whatever backoff it met`() = runTest {
+        val h = Harness(this, db)
+        val s = twoWithRealSockets(h, foreground = true) { throw WorkspaceError("server", 503) }
+        s.onScreen(ws, null, null)
+        // Tickets at 0, 0.5, 1.5, 3.5, 7.5, 15.5 and 31.5 s; the next waits until 61.5 s.
+        advanceTimeBy(40_000)
+        val before = h.tickets()
+        assertEquals(7, before)
+
+        s.onScreen(Ids.WS2, null, null)
+        advanceTimeBy(100)
+        s.onScreen(ws, null, null)
+        advanceTimeBy(100)
+        assertEquals("a ticket at once for the workspace the person came back to", before + 1, h.tickets())
+    }
+
+    @Test
+    fun `a foreground nudge leaves the backoff of Phone tools' other sockets alone`() = runTest {
+        val h = Harness(this, db)
+        val s = twoWithRealSockets(h, foreground = false) { throw WorkspaceError("server", 503) }
+        s.stayConnected(true)
+        advanceTimeBy(40_000)
+        val mine = h.tickets()
+        val other = h.tickets(Ids.WS2)
+        assertEquals(7, other)
+
+        s.onScreen(ws, null, null)
+        s.resumed()
+        advanceTimeBy(100)
+        assertTrue("the workspace on screen tries at once", h.tickets() > mine)
+        assertEquals("the other keeps its wait", other, h.tickets(Ids.WS2))
+
+        // A network that comes back in the foreground nudges too.
+        s.nudge()
+        advanceTimeBy(100)
+        assertEquals(other, h.tickets(Ids.WS2))
+        s.stayConnected(false)
+    }
+
+    @Test
+    fun `Retry-After holds for the workspace on screen when the person returns to it`() = runTest {
+        val h = Harness(this, db)
+        val s = twoWithRealSockets(h, foreground = true) { throw refusal(429, "rate_limited", retryAfter = "120") }
+        s.onScreen(ws, null, null)
+        advanceTimeBy(1_000)
+        assertEquals(1, h.tickets())
+        s.onScreen(Ids.WS2, null, null)
+        advanceTimeBy(100)
+        s.onScreen(ws, null, null)
+        s.nudge()
+        advanceTimeBy(100)
+        assertEquals("no ticket before Retry-After", 1, h.tickets())
+        advanceTimeBy(120_000)
+        assertEquals(2, h.tickets())
+    }
+
     // The review's interleaving: reconciliation has listed the workspace, and the removal path runs before it makes
     // the socket, either before it looks at the workspace again ([rechecked] false) or after ([rechecked] true).
     // Returns the service once the dust settled.

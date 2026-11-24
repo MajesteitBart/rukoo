@@ -120,9 +120,10 @@ class OkHttpChatSockets(
     private val client: OkHttpClient,
     private val timing: WorkspaceSocket.Timing = WorkspaceSocket.Timing(),
     private val now: () -> Long = System::currentTimeMillis,
+    private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
 ) : ChatSockets {
     override fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope, pacing: SocketPacing): ChatSocket {
-        val socket = WorkspaceSocket(client, url, ticket, listener, scope, timing, now = now, pacing = pacing)
+        val socket = WorkspaceSocket(client, url, ticket, listener, scope, timing, now = now, random = random, pacing = pacing)
         return object : ChatSocket {
             override val state: StateFlow<SocketState> get() = socket.state
             override fun start() = socket.start()
@@ -699,6 +700,9 @@ class WorkspaceService internal constructor(
         // Each workspace's socket waits (backoff, Retry-After), kept across its sockets for the session.
         val pacing = ConcurrentHashMap<String, SocketPacing>()
         val socketLock = Mutex()
+
+        // The workspace on screen in the foreground at the last reconciliation, under socketLock.
+        var focus: String? = null
         val listLock = Any()
         @Volatile var listing: Deferred<List<WorkspaceRef>?>? = null
         @Volatile var listedAt: Long? = null
@@ -948,6 +952,12 @@ class WorkspaceService internal constructor(
 
     private suspend fun reconcileSockets(l: Live) {
         val wanted = wantedSockets(l)
+        // When the person comes to a workspace in the foreground, its socket tries at once, whether it is new or was
+        // waiting out a backoff it met in the background; Retry-After still holds (WorkspaceSocket.nudge). The resume's
+        // own nudge may run before this makes the socket, so this does it.
+        val focus = onScreenNow.ws.takeIf { foreground && it in wanted }
+        val arrived = focus?.takeIf { it != l.focus }
+        l.focus = focus
         var changed = false
         for ((ws, current) in l.liveSockets.entries.toList()) {
             if (ws in wanted) continue
@@ -957,6 +967,7 @@ class WorkspaceService internal constructor(
         }
         if (changed) stateChanged()
         val sockets = sockets ?: return
+        if (arrived != null) l.liveSockets[arrived]?.socket?.nudge()
         for (ws in wanted) {
             if (l.liveSockets.containsKey(ws) || l.closed) continue
             beforeSocketInstall?.invoke(ws, false)
@@ -974,6 +985,7 @@ class WorkspaceService internal constructor(
             val watch = l.scope.launch { socket.state.collect { stateChanged() } }
             l.liveSockets[ws] = LiveSocket(ws, socket, watch, listener)
             socket.start()
+            if (ws == arrived) socket.nudge()
         }
     }
 
@@ -1086,7 +1098,8 @@ class WorkspaceService internal constructor(
 
     /**
      * Focus, resume or a network that came back (§3.11): list again at most once a minute, run the selected workspace
-     * now (at most once per 5 s) and the others spread over 10 s, reconnect a socket that is down, kick the outbox.
+     * now (at most once per 5 s) and the others spread over 10 s, reconnect the socket on screen when it is down (the
+     * others ping and keep their backoff), kick the outbox.
      */
     fun nudge() {
         // Signed out, a start without network left Chat and onboarding's way to it hidden.
@@ -1114,8 +1127,17 @@ class WorkspaceService internal constructor(
                     }
                 }
             }
-            // A socket reconciliation closes meanwhile ignores these: closing is final.
-            for (open in l.liveSockets.values) open.socket.let { if (it.state.value == SocketState.OFF) it.start() else it.nudge() }
+            // The socket on screen tries at once; Phone tools' others keep their backoff and only ping. A socket
+            // reconciliation closes meanwhile ignores these: closing is final.
+            val focus = onScreenNow.ws.takeIf { foreground }
+            for (open in l.liveSockets.values) {
+                val socket = open.socket
+                when {
+                    socket.state.value == SocketState.OFF -> socket.start()
+                    open.ws == focus -> socket.nudge()
+                    else -> socket.check()
+                }
+            }
             updateSockets(l)
             l.outbox.kick(retryNow = true)
         }
