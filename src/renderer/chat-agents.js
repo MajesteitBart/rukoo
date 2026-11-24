@@ -144,6 +144,61 @@ export const RUNNER_COMMAND = 'node runner.js --config agent.json';
 // Where to get the runner: its README on GitHub, whose "Get the runner" says how to download it.
 export const RUNNER_URL = 'https://github.com/MajesteitBart/rukoo/blob/main/integrations/agent-runner/README.md#get-the-runner';
 
+// The name of the Settings agent a runner answers with, by its id (a run's use, an "Answers with" choice): the name
+// "Answers with" shows. config: agentConfig's answer, or null when unknown.
+export function useName(config, id) {
+  const found = (config ? runnerAgents(config) : []).concat(PLAIN_AGENTS).find((a) => a.id === id);
+  return found ? found.name : String(id || '');
+}
+
+// What the Agents dialog and the key step say of an agent this computer runs (src/main/agent-runs.js, its view of a
+// setup): { text, tone }, tone ok, busy, warn, error or off for the dot before it. use: the name of the agent it
+// answers with. A detail from the runner, in English, follows only where no sentence of the catalogs covers it.
+export function runStateText(run, { t, use = '', locale = 'en', now = Date.now() }) {
+  if (!run) return null;
+  const detail = (v) => String((v && v.message) || '').slice(0, 200);
+  switch (run.phase) {
+    case 'starting':
+      return { text: t('chat.agents.run.starting'), tone: 'busy' };
+    case 'running': {
+      const p = run.problem;
+      if (p && p.code === 'missing') return { text: t('chat.agents.run.missing', { use }), tone: 'error' };
+      if (p && p.code === 'unreachable') return { text: t('chat.agents.run.unreachable', { use }), tone: 'error' };
+      if (p && p.code === 'backend_key') return { text: t('chat.agents.run.backendKey', { use }), tone: 'error' };
+      if (p) return { text: t('chat.agents.run.problem', { use, detail: detail(p) }), tone: 'error' };
+      if (run.unreachable) return { text: t('chat.agents.run.offline'), tone: 'warn' };
+      if (run.failure && !(run.answeredAt > run.failure.at)) return { text: t('chat.agents.run.failed', { detail: detail(run.failure) }), tone: 'warn' };
+      if (run.channels === 0) return { text: t('chat.agents.run.noChannel'), tone: 'warn' };
+      return { text: t('chat.agents.run.running'), tone: 'ok' };
+    }
+    case 'waiting': {
+      const seconds = Math.max(1, Math.round(((run.retryAt || now) - now) / 1000));
+      const time = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(seconds < 90 ? seconds : Math.round(seconds / 60), seconds < 90 ? 'second' : 'minute');
+      return { text: t('chat.agents.run.waiting', { time }), tone: 'warn' };
+    }
+    case 'refused':
+      return { text: t('chat.agents.run.refused'), tone: 'error' };
+    case 'error': {
+      const code = run.error && run.error.code;
+      if (code === 'unknown_backend') return { text: t('chat.agents.run.unknownUse'), tone: 'error' };
+      if (code === 'key_unreadable') return { text: t('chat.agents.run.keyUnreadable'), tone: 'error' };
+      return { text: t('chat.agents.run.cantStart'), tone: 'error' };
+    }
+    default:
+      return { text: t('chat.agents.run.stopped'), tone: 'off' };
+  }
+}
+
+// Whether a runner somewhere else used the agent's key lately, so starting it here too would make two runners answer
+// its mentions: the server saw the key (lastSeen, AgentOut) within the last ten minutes, more than a minute after this
+// computer's runner last did. The server writes lastSeen once a minute at most, hence the minute.
+export const ELSEWHERE_WITHIN = 10 * 60 * 1000;
+export function ranElsewhere(lastSeen, run, now = Date.now()) {
+  if (!Number.isFinite(lastSeen) || now - lastSeen > ELSEWHERE_WITHIN) return false;
+  const here = Math.max(0, ...[run && run.stoppedAt, run && run.passAt, run && run.connectedAt].filter(Number.isFinite));
+  return lastSeen > here + 60 * 1000;
+}
+
 // When an agent's runner last reached the server, as its rows say it: "Not connected yet" for an agent whose runner
 // never did (lastSeen null), "Last active 5 minutes ago", "Last active yesterday", or after a week the date. '' while
 // it is unknown (undefined): a guest can't read it, or it hasn't loaded yet.
@@ -153,7 +208,8 @@ export function agentSeenText(lastSeen, { t, locale, now = Date.now() }) {
   return t('chat.agents.lastActive', { date: sinceText(lastSeen, now, locale) });
 }
 
-function sinceText(at, now, locale) {
+// How long ago at was: "5 minutes ago", "yesterday", or after a week a day and month.
+export function sinceText(at, now, locale) {
   const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
   const minutes = Math.max(1, Math.floor((now - at) / 60000));
   if (minutes < 60) return rtf.format(-minutes, 'minute');

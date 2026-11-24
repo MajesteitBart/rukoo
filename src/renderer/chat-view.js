@@ -8,6 +8,7 @@ import { plainText } from './chat-markdown.js';
 import { mountChatInput } from './chat-input.js';
 import { agentSeenText } from './chat-agents.js';
 import { seenOf, loadSeen } from './chat-agent-seen.js';
+import { runOf } from './chat-agent-runs.js';
 import { draftSlotKey, draftWritten } from './chat-drafts.js';
 import { textEl as richText, filesEl, cardsEl, reactionsEl, openViewer, closeViewer, openEmojiPicker, closeEmojiPicker, busyCard, dragHasFiles } from './chat-rich.js';
 
@@ -731,15 +732,19 @@ export function mountView(section, H) {
   }
 
   // A mention of an agent whose runner never connected gets no answer: once the message went, a toast says so, rather
-  // than leave the person waiting for a reply.
+  // than leave the person waiting for a reply. So does one of an agent set up on this computer that is stopped here.
   function noteSilentAgents(ws, mentions) {
     if (H.myRole() === 'guest') return;
     const dir = members();
     const agents = [...new Set((mentions || []).map((m) => m && m.actor))].filter((id) => isAgent(dir.get(id)));
     if (!agents.length) return;
     loadSeen(ws, { maxAge: 15000 }).then(() => {
+      if (V.ws !== ws) return;
       const silent = agents.find((id) => seenOf(ws, id) === null);
-      if (silent && V.ws === ws) toast(t('chat.agents.notConnectedSent', { name: displayName(dir.get(silent), t) }), 6000);
+      if (silent) return toast(t('chat.agents.notConnectedSent', { name: displayName(dir.get(silent), t) }), 6000);
+      // One set up on this computer that doesn't run here now (chat-agent-runs.js): stopped, or its key stopped working.
+      const run = agents.map((id) => runOf(ws, id)).find((r) => r && ['stopped', 'refused', 'error'].includes(r.phase));
+      if (run) toast(t(run.phase === 'refused' ? 'chat.agents.refusedHereSent' : 'chat.agents.stoppedHereSent', { name: displayName(dir.get(run.agent), t) }), 6000);
     });
   }
 

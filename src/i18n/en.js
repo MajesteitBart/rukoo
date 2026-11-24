@@ -12247,6 +12247,166 @@
     "message": "{name} isn't connected yet, so it won't answer until its runner starts.",
     "description": "Toast after sending a message that mentions an agent whose runner never reached the server. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
   },
+  "chat.agents.introHere": {
+    "message": "An agent answers when someone mentions it in a channel it was added to. Rukoo can run it on this computer, or you run it on a computer or server you choose, where it connects with a key.",
+    "description": "Agents dialog: line above the list on the computer, where Rukoo can run an agent itself (src/main/agent-runs.js). src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.runsNoteHere": {
+    "message": "Next you choose who answers for it, and Rukoo runs it on this computer.",
+    "description": "Add an agent, on the computer where Rukoo can run agents: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.runHere": {
+    "message": "Run on this computer",
+    "description": "Key step: the filled button that starts the agent on this computer, with the agent picked under Answers with; also the menu item of an agent that isn't set up here, which makes a new key first. src/renderer/chat-dialogs.js (showAgentKey, runItems)"
+  },
+  "chat.agents.runHereHelp": {
+    "message": "Rukoo runs {name} while it's open, also from the tray, and keeps its key encrypted on this computer. While this computer sleeps or Rukoo is closed, {name} doesn't answer.",
+    "description": "Key step: line under Run on this computer. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.runOwnHelp": {
+    "message": "Rukoo can run only the agents of Settings > Agents. For a program of your own, start the runner yourself with the config below.",
+    "description": "Key step: line under Answers with while A program of my own is picked, where Run on this computer is off. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.elsewhere": {
+    "message": "Run it on another computer instead",
+    "description": "Key step: the closed section with the runner's config, to run the agent somewhere else than this computer. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.noKeyring": {
+    "message": "To run agents on this computer, Rukoo needs a keyring to keep their keys, such as GNOME Keyring or KWallet.",
+    "description": "Key step on a computer that can't keep a key encrypted (Linux without a keyring): line under the steps, where Run on this computer isn't offered; also the error of a refused start. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyGone": {
+    "message": "Rukoo no longer holds this key. Make a new key for {name} to connect it.",
+    "description": "Key step: line in place of the config when the key step stayed open longer than Rukoo holds a key (30 minutes); also the error of a start without a key. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeRunTitle": {
+    "message": "Close without connecting {name}?",
+    "description": "Question when the key step closes before the agent runs on this computer or its config was copied: title. {name}: the agent. The body is chat.agents.closeBody. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.newKeyBodyHere": {
+    "message": "The current key stops working at once, so a runner elsewhere that uses it disconnects. {name} keeps running on this computer with the new key.",
+    "description": "Confirmation before New key for an agent set up on this computer: body. {name}: the agent. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.runHereTitle": {
+    "message": "Run {name} on this computer?",
+    "description": "Confirmation before Run on this computer for an agent that isn't set up here, which needs a new key: title. {name}: the agent. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.runHereBody": {
+    "message": "Rukoo makes a new key for {name} and keeps it on this computer. The current key stops working at once, so a runner elsewhere that uses it disconnects.",
+    "description": "Confirmation before Run on this computer for an agent that isn't set up here: body. {name}: the agent. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.runHereConfirm": {
+    "message": "Make a new key",
+    "description": "Confirmation before Run on this computer for an agent that isn't set up here: the button, which makes the key and opens the key step. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.startHere": {
+    "message": "Start on this computer",
+    "description": "Agents dialog and Workspace members: menu item of an agent set up on this computer and stopped there. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.stopHere": {
+    "message": "Stop on this computer",
+    "description": "Agents dialog and Workspace members: menu item of an agent that runs on this computer. Its key stays, so Start runs it again. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.forgetHere": {
+    "message": "Remove from this computer",
+    "description": "Agents dialog and Workspace members: menu item that stops an agent on this computer and deletes its key there; the agent stays in the workspace. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.forgetHereTitle": {
+    "message": "Remove {name} from this computer?",
+    "description": "Confirmation before Remove from this computer: title. {name}: the agent. src/renderer/chat-dialogs.js (forgetHere)"
+  },
+  "chat.agents.forgetHereBody": {
+    "message": "Rukoo stops {name} here and deletes its key from this computer. {name} stays in the workspace. To run it here again, make a new key.",
+    "description": "Confirmation before Remove from this computer: body. {name}: the agent. src/renderer/chat-dialogs.js (forgetHere)"
+  },
+  "chat.agents.forgetHereConfirm": {
+    "message": "Remove",
+    "description": "Confirmation before Remove from this computer: the button. src/renderer/chat-dialogs.js (forgetHere)"
+  },
+  "chat.agents.elsewhereTitle": {
+    "message": "Is {name} running somewhere else?",
+    "description": "Question before Start on this computer when the agent's key was used elsewhere after it stopped here: title. {name}: the agent. src/renderer/chat-dialogs.js (startHere)"
+  },
+  "chat.agents.elsewhereBody": {
+    "message": "Its key was used {date}, after {name} stopped on this computer. If it runs in two places, both answer its mentions. Stop the other one first, or make a new key so only this computer has it.",
+    "description": "Question before Start on this computer when the agent's key was used elsewhere: body. {name}: the agent; {date}: how long ago, from the relative time format (\"2 minutes ago\"). src/renderer/chat-dialogs.js (startHere)"
+  },
+  "chat.agents.startAnyway": {
+    "message": "Start anyway",
+    "description": "Question before Start on this computer when the key ran elsewhere: the button that starts it here too. src/renderer/chat-dialogs.js (startHere)"
+  },
+  "chat.agents.runFailed": {
+    "message": "Couldn't start {name} on this computer.",
+    "description": "Error when Run on this computer or Start fails for a reason without its own line. {name}: the agent. src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.stoppedHereSent": {
+    "message": "{name} is stopped on this computer, so it won't answer unless it runs somewhere else.",
+    "description": "Toast after sending a message that mentions an agent set up on this computer and stopped there. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
+  },
+  "chat.agents.refusedHereSent": {
+    "message": "{name}'s key no longer works on this computer, so it won't answer until you make a new key.",
+    "description": "Toast after sending a message that mentions an agent set up on this computer whose key stopped working. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
+  },
+  "chat.agents.run.starting": {
+    "message": "Starting on this computer…",
+    "description": "What an agent does on this computer, in the Agents dialog and the key step: its runner is starting. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.running": {
+    "message": "Running on this computer",
+    "description": "What an agent does on this computer: its runner is connected and answers mentions. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.noChannel": {
+    "message": "Running on this computer, in no channel yet",
+    "description": "What an agent does on this computer: connected, but in no channel, so no mention reaches it. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.offline": {
+    "message": "Running on this computer, but it can't reach the server",
+    "description": "What an agent does on this computer: its runner can't reach the account server now and tries again. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failed": {
+    "message": "Running on this computer. The last mention got no answer: {detail}",
+    "description": "What an agent does on this computer: the agent it answers with failed on the last mention. {detail}: the error, in English, from the runner. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.missing": {
+    "message": "Can't answer: {use} isn't installed on this computer",
+    "description": "What an agent does on this computer: the program it answers with (Claude Code, Codex) is not installed. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.unreachable": {
+    "message": "Can't answer: nothing answers at {use}'s address. Check it in Settings > Agents.",
+    "description": "What an agent does on this computer: the server of the agent it answers with (Hermes, OpenClaw, a custom agent) does not answer. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.backendKey": {
+    "message": "Can't answer: {use} refused its key or token. Check it in Settings > Agents.",
+    "description": "What an agent does on this computer: the server of the agent it answers with refused the key from Settings, Agents. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.problem": {
+    "message": "Can't answer: {detail}",
+    "description": "What an agent does on this computer: the agent it answers with has another problem. {detail}: the runner's line about it, in English. {use}: that agent (not used in English). src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.waiting": {
+    "message": "Stopped unexpectedly. Starting again {time}",
+    "description": "What an agent does on this computer: its runner ended by itself and starts again after a pause. {time}: when, from the relative time format (\"in 30 seconds\"). src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.stopped": {
+    "message": "Stopped on this computer",
+    "description": "What an agent does on this computer: stopped with Stop on this computer. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.refused": {
+    "message": "Stopped: its key was replaced or the agent was removed. Make a new key to run it here.",
+    "description": "What an agent does on this computer: the server refused its key. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.unknownUse": {
+    "message": "Can't start: the agent it answers with isn't in Settings > Agents any more.",
+    "description": "What an agent does on this computer: the agent of Settings, Agents it answers with was removed or lost its address. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.keyUnreadable": {
+    "message": "Can't start: its key can't be read on this computer. Make a new key to run it here.",
+    "description": "What an agent does on this computer: the stored key can't be decrypted, as after a profile was copied from another computer or user. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.cantStart": {
+    "message": "Couldn't start on this computer",
+    "description": "What an agent does on this computer: its runner couldn't start. src/renderer/chat-agents.js (runStateText)"
+  },
   "chat.new.title": {
     "message": "New message",
     "description": "New message dialog: title. src/renderer/chat-dialogs.js"

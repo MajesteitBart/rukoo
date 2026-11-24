@@ -59,6 +59,7 @@
     "files": [
       "src/**/*",
       "skills/**/*",
+      "integrations/agent-runner/**/*",
       "build/icon.png",
       "package.json"
     ],

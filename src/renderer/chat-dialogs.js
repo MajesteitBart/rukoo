@@ -25,8 +25,9 @@ import {
   canManageAgent,
   canRenewAgentKey
 } from './chat-model.js';
-import { runnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL } from './chat-agents.js';
+import { runnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, sinceText, runStateText, ranElsewhere, useName, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL } from './chat-agents.js';
 import { seenOf, loadSeen, rememberAgents } from './chat-agent-seen.js';
+import { loadRuns, runsNow, runOf, onRuns } from './chat-agent-runs.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -2068,8 +2069,93 @@ function agentMenu(agent, then) {
   if (!canManageAgent(agent, K.me(), K.myRole())) return [];
   const items = [{ icon: 'edit', label: t('chat.agents.edit'), action: () => editAgent(agent).then(then) }];
   if (canRenewAgentKey(agent, K.me())) items.push({ icon: 'sync', label: t('chat.agents.newKey'), action: () => newAgentKey(agent).then(then) });
+  items.push(...runItems(agent, then));
   items.push({ separator: true }, { icon: 'leave', label: t('chat.agents.remove'), danger: true, action: () => removeAgent(agent).then(then) });
   return items;
+}
+
+// ---------- Run on this computer (src/main/agent-runs.js) ----------
+//
+// On the computer, Rukoo can run an agent's runner itself, with one of Settings, Agents answering: the key step's main
+// action. Main keeps the key, encrypted; the window never gets a stored one. Start, Stop and Remove from this computer
+// are in the agent's menu. An agent made elsewhere, or before, runs here after a new key, which only its sponsor makes.
+
+// The agent's menu items for this computer: Stop, or Start, and Remove from this computer for one set up here; Run
+// on this computer for the sponsor's agent that isn't, when this computer can keep its key.
+function runItems(agent, then) {
+  if (WEB) return [];
+  const run = runOf(K.CH.ws, agent.id);
+  if (!run) {
+    if (!runsNow().available || !canRenewAgentKey(agent, K.me())) return [];
+    return [{ icon: 'play', label: t('chat.agents.runHere'), action: () => newAgentKey(agent, { runHere: true }).then(then) }];
+  }
+  const items = [];
+  if (run.on && run.phase !== 'refused') items.push({ icon: 'stop', label: t('chat.agents.stopHere'), action: () => stopHere(agent).then(then) });
+  else if (run.phase !== 'refused') items.push({ icon: 'play', label: t('chat.agents.startHere'), action: () => startHere(agent).then(then) });
+  items.push({ icon: 'close', label: t('chat.agents.forgetHere'), action: () => forgetHere(agent).then(then) });
+  return items;
+}
+
+// What a refused call of Run on this computer says, in the agent's name.
+function runErrorText(err, name) {
+  const code = err && err.message;
+  if (code === 'no_keyring') return t('chat.agents.noKeyring');
+  if (code === 'no_key') return t('chat.agents.keyGone', { name });
+  if (code === 'unknown_backend') return t('chat.agents.run.unknownUse');
+  if (code === 'signed_out') return K.errorText(err);
+  return t('chat.agents.runFailed', { name });
+}
+
+// Start on this computer, with the stored key. When the key was used somewhere else after it stopped here, the person
+// hears first that two runners would both answer: the server's lastSeen, asked now.
+async function startHere(agent) {
+  const ws = K.CH.ws;
+  const run = runOf(ws, agent.id);
+  if (!ws || !run) return null;
+  await loadSeen(ws, { maxAge: 0 });
+  const seen = seenOf(ws, agent.id);
+  if (ranElsewhere(seen, run)) {
+    const ok = await confirmDialog(
+      t('chat.agents.elsewhereTitle', { name: agent.name }),
+      t('chat.agents.elsewhereBody', { name: agent.name, date: sinceText(seen, Date.now(), getLocale()) }),
+      t('chat.agents.startAnyway')
+    );
+    if (!ok || ws !== K.CH.ws) return null;
+  }
+  try {
+    return await api('agentRunStart', ws, agent.id, { name: agent.name });
+  } catch (err) {
+    toast(runErrorText(err, agent.name), 5000);
+    return null;
+  }
+}
+
+async function stopHere(agent) {
+  try {
+    return await api('agentRunStop', K.CH.ws, agent.id);
+  } catch (err) {
+    toast(runErrorText(err, agent.name), 5000);
+    return null;
+  }
+}
+
+// The agent stops here and its key leaves this computer; it stays in the workspace.
+async function forgetHere(agent) {
+  const ws = K.CH.ws;
+  const ok = await confirmDialog(t('chat.agents.forgetHereTitle', { name: agent.name }), t('chat.agents.forgetHereBody', { name: agent.name }), t('chat.agents.forgetHereConfirm'), true);
+  if (!ok || ws !== K.CH.ws) return false;
+  try {
+    return await api('agentRunForget', ws, agent.id);
+  } catch (err) {
+    toast(runErrorText(err, agent.name), 5000);
+    return false;
+  }
+}
+
+// The line under an agent this computer runs: a dot in the state's color and what it is doing here.
+function runLine(run, names = null) {
+  const state = runStateText(run, { t, use: useName(names, run.use), locale: getLocale() });
+  return state ? `<span class="ch-agent-run" data-tone="${state.tone}"><span class="ch-run-dot" aria-hidden="true"></span><span class="ch-run-text">${esc(state.text)}</span></span>` : '';
 }
 
 // The Agents dialog (workspace menu): the workspace's agents with who made them, whom they answer, whether they answer
@@ -2090,10 +2176,13 @@ export async function agentsDialog() {
         .map((m) => [m.id, m.name, m.agent || null])
         .sort((a, b) => (a[0] < b[0] ? -1 : 1))
     );
+  // On the computer: the agents it runs, and the names of Settings, Agents for what they answer with.
+  let names = null;
+  if (!WEB) api('agentConfig').then((c) => ((names = c), draw()), () => {});
   const load = async () => {
     loadedFor = directoryIds();
     try {
-      const res = await api('chatAgents', ws);
+      const [res] = await Promise.all([api('chatAgents', ws), loadRuns()]);
       list = (res && res.agents) || [];
       rememberAgents(ws, list);
       failed = null;
@@ -2104,8 +2193,15 @@ export async function agentsDialog() {
   };
   // Who made it, whom it answers and whether it answers agents, as in Workspace members, and when it was last active.
   const meta = (a) => [agentLine(a), seenLine(a.id, a.lastSeen ?? null)].filter(Boolean).join(' · ');
+  // What it does on this computer, when it is set up here.
+  const here = (a) => {
+    const run = WEB ? null : runOf(ws, a.id);
+    return run ? runLine(run, names) : '';
+  };
   const draw = () => {
     if (!body || !body.isConnected) return;
+    // Whether this computer can run agents is known once main answered.
+    body.querySelector('.ch-agents-intro').textContent = t(!WEB && runsNow().available ? 'chat.agents.introHere' : 'chat.agents.intro');
     const ul = body.querySelector('[data-agents]');
     if (!list) {
       ul.setAttribute('aria-busy', String(!failed));
@@ -2122,7 +2218,7 @@ export async function agentsDialog() {
               : '';
             return `<li class="ch-person ch-agent-row" data-agent-row="${esc(a.id)}">${K.memberAvatar(a.id, 'ch-av-24')}<span class="ch-agent-text"><span class="ch-person-name">${esc(
               a.name
-            )}</span><span class="ch-agent-meta">${esc(meta(a))}</span></span>${menu}</li>`;
+            )}</span><span class="ch-agent-meta">${esc(meta(a))}</span>${here(a)}</span>${menu}</li>`;
           })
           .join('')
       : `<li class="ch-browse-none ch-agents-none">${esc(t('chat.agents.none'))}</li>`;
@@ -2134,7 +2230,10 @@ export async function agentsDialog() {
     if (!a) return;
     menuInDialog(btn, agentMenu(a, load));
   };
-  return wsDialog({
+  // What this computer runs changes without the list: each change draws the rows again.
+  const off = WEB ? () => {} : onRuns(() => draw());
+  try {
+    return await wsDialog({
     title: t('chat.agents.title', { workspace: wsName() }),
     wide: true,
     quietClose: true,
@@ -2146,7 +2245,7 @@ export async function agentsDialog() {
     },
     render(b) {
       body = b;
-      body.innerHTML = `<p class="ch-agents-intro">${esc(t('chat.agents.intro'))}</p>
+      body.innerHTML = `<p class="ch-agents-intro">${esc(t(!WEB && runsNow().available ? 'chat.agents.introHere' : 'chat.agents.intro'))}</p>
         <div class="ch-dlg-tools ch-dlg-tools-end"><button type="button" class="btn primary sm" data-add-agent>${icons.plus}<span>${esc(t('chat.agents.add'))}</span></button></div>
         <ul class="ch-people ch-agents" data-agents aria-busy="true"><li class="ch-invites-wait"><span class="spinner"></span></li></ul>
         <p class="error" data-error="" hidden></p>`;
@@ -2160,7 +2259,10 @@ export async function agentsDialog() {
       });
       load();
     }
-  });
+    });
+  } finally {
+    off();
+  }
 }
 
 // The choices of "Answers with" in the key step (chat-agents.js runnerChoices): on desktop the person's agents of
@@ -2184,12 +2286,14 @@ function channelToJoin(agent) {
   return room && canAddAgent(candidate, room, K.me(), new Set([K.me()])) ? room : null;
 }
 
-// Add an agent: the form, then its key once, in a config for the runner, with the offer to add it to the channel on
-// screen.
+// Add an agent: the form, then the key step, with Run on this computer on the computer and the config for the runner,
+// and the offer to add it to the channel on screen. On the computer main keeps the key (made.held); in the browser it
+// comes in the answer (made.key).
 export async function addAgent() {
   const choices = askRunnerChoices();
-  const made = await agentForm(null);
-  if (made && made.key) await showAgentKey(made, { choices: await choices, room: channelToJoin(made.agent) });
+  const runs = WEB ? null : await loadRuns();
+  const made = await agentForm(null, { runsHere: Boolean(runs && runs.available) });
+  if (made && (made.key || made.held)) await showAgentKey(made, { choices: await choices, room: channelToJoin(made.agent) });
   return made ? made.agent : null;
 }
 
@@ -2199,17 +2303,22 @@ export async function editAgent(agent) {
   return changed ? changed.agent : null;
 }
 
-// A new key: the old one stops at once, so the person confirms first; then the new key shows once.
-export async function newAgentKey(agent) {
+// A new key: the old one stops at once, so the person confirms first; then the key step. An agent this computer runs
+// keeps running with the new key, which main put in place itself. runHere: Run on this computer for an agent that
+// isn't set up here, which takes a new key, since a key shows only once.
+export async function newAgentKey(agent, { runHere = false } = {}) {
   const ws = K.CH.ws;
   if (!ws || !agent) return null;
   // Asked while the question is open, so the key step needn't wait for a slow status check after the key is made.
   const choices = askRunnerChoices();
-  const ok = await confirmDialog(t('chat.agents.newKeyTitle', { name: agent.name }), t('chat.agents.newKeyBody', { name: agent.name }), t('chat.agents.newKeyConfirm'));
+  const here = WEB ? null : runOf(ws, agent.id);
+  const ok = runHere
+    ? await confirmDialog(t('chat.agents.runHereTitle', { name: agent.name }), t('chat.agents.runHereBody', { name: agent.name }), t('chat.agents.runHereConfirm'))
+    : await confirmDialog(t('chat.agents.newKeyTitle', { name: agent.name }), t(here ? 'chat.agents.newKeyBodyHere' : 'chat.agents.newKeyBody', { name: agent.name }), t('chat.agents.newKeyConfirm'));
   if (!ok || ws !== K.CH.ws) return null;
   try {
     const made = await api('chatNewAgentKey', ws, agent.id);
-    if (made && made.key && ws === K.CH.ws) await showAgentKey(made, { choices: await choices });
+    if (made && (made.key || made.held) && ws === K.CH.ws) await showAgentKey(made, { choices: await choices });
     return made ? made.agent : null;
   } catch (err) {
     toast(K.errorText(err), 5000);
@@ -2235,8 +2344,9 @@ export async function removeAgent(agent) {
 
 // The form of Add an agent and Edit: the name, whom it answers (everyone, only its sponsor, or its sponsor and people
 // picked here) and whether it answers other agents. agent: the AgentOut to edit, or null for a new one. Answers what
-// the server answered ({ agent, key } for a new one, { agent } for a change), or null.
-async function agentForm(agent = null) {
+// the server answered ({ agent, key } for a new one, or { agent, held } where main keeps the key; { agent } for a
+// change), or null. runsHere: this computer can run the new agent, which the note under the form says.
+async function agentForm(agent = null, { runsHere = false } = {}) {
   const ws = K.CH.ws;
   if (!ws || K.isGuest()) return null;
   const editing = Boolean(agent);
@@ -2353,7 +2463,7 @@ async function agentForm(agent = null) {
         <label class="ch-check-row ch-agent-toggle"><input type="checkbox" name="agents"${editing && agent.agents ? ' checked' : ''}/><span class="ch-radio-text"><span class="ch-radio-label">${esc(
           t('chat.agents.answersAgentsOption')
         )}</span><span class="field-help">${esc(depth ? t('chat.agents.answersAgentsHelp', { count: depth }) : t('chat.agents.answersAgentsHelpPlain'))}</span></span></label>
-        ${editing ? '' : `<p class="field-help ch-agent-runs">${esc(t('chat.agents.runsNote'))}</p>`}
+        ${editing ? '' : `<p class="field-help ch-agent-runs">${esc(t(runsHere ? 'chat.agents.runsNoteHere' : 'chat.agents.runsNote'))}</p>`}
         <p class="error" data-error="" hidden></p>
       </div>`;
       body.addEventListener('change', (e) => {
@@ -2380,43 +2490,88 @@ async function agentForm(agent = null) {
   });
 }
 
-// The key step after Add an agent and New key: what to do, in three steps. 1, Answers with: the agent the runner hands
-// mentions to, preselected (askRunnerChoices), with A program of my own last. 2, the runner's config, with the key in
-// it, which shows only once: Copy config is the filled button until something was copied. 3, how to start the runner
-// with Node.js 22 or newer. A new agent of the person's can join the channel on screen when the step closes (room).
-// Closing before anything was copied asks first, as the invitation link does.
+// The key step after Add an agent and New key, "Connect <name>". 1, Answers with: the agent that answers for it,
+// preselected (askRunnerChoices), with A program of my own last.
 //
-// Starting the runner from Rukoo itself ("Run on this computer", #373) would go at the head of step 3, as Copy config
-// heads step 2.
-async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) {
+// On the computer, where main can keep the key encrypted (src/main/agent-runs.js), 2 is Run on this computer: the
+// filled button, which starts the agent here with the agent picked, and then the line of what it does here. The
+// runner's config, to run it somewhere else, is under "Run it on another computer instead", closed; it asks main for
+// the key it holds only when it opens. Elsewhere (the browser, or Linux without a keyring), 2 is the config with Copy
+// config as the filled button and 3 how to start the runner with Node.js 22 or newer.
+//
+// A new agent of the person's can join the channel on screen when the step closes (room). Closing before the agent
+// runs here or its config was copied asks first, as the invitation link does: the key doesn't show again. Closing lets
+// go of the key main holds.
+async function showAgentKey({ agent, key = null, held = false, runsHere = false }, { choices = [], room = null } = {}) {
   const ws = K.CH.ws;
-  if (!ws || !agent || !key) return null;
+  if (!ws || !agent || !(key || held)) return null;
   const server = K.CH.state?.server || '';
+  const desktop = held && !WEB;
+  const runs = desktop ? await loadRuns() : null;
+  const canRun = Boolean(runs && runs.available);
+  const before = desktop ? runOf(ws, agent.id) : null;
   let pick = choices.length ? choices[0].id : OWN_PROGRAM;
-  let kept = false;
+  // New key for an agent that runs here: it goes on with the agent it had, and with the new key already.
+  if (before && choices.some((c) => c.id === before.use)) pick = before.use;
+  let running = Boolean(runsHere && before && before.on);
+  let kept = running;
   let join = Boolean(room);
+  let theKey = key;
+  let asked = null;
+  let off = () => {};
   const backend = () => choices.find((c) => c.id === pick)?.backend || PLACEHOLDER_BACKEND;
-  const config = () => runnerConfig({ server, workspace: ws, key, backend: backend() });
+  const config = () => runnerConfig({ server, workspace: ws, key: theKey || '', backend: backend() });
+  // On the computer the key comes from main, once, when the config first shows.
+  const needKey = () => {
+    if (theKey || !desktop) return Promise.resolve(theKey);
+    if (!asked) asked = api('agentRunHeldKey', ws, agent.id).then((k) => (theKey = k || null), () => null);
+    return asked;
+  };
 
-  // The config for the agent picked, and the line under the choice: the variable its key goes in, or what to put in
-  // place of my-agent.
+  // The config for the agent picked, and the line about it: the variable its key goes in, or what to put in place of
+  // my-agent. Without the key, which main no longer holds after 30 minutes, the config stays empty and says so.
   const drawConfig = (body) => {
-    const cfg = config();
     const field = body.querySelector('[name="config"]');
-    field.value = runnerText(cfg);
+    const copy = body.querySelector('[data-copy-config]');
+    const gone = body.querySelector('[data-key-gone]');
+    if (!field) return;
+    const cfg = config();
+    field.value = theKey ? runnerText(cfg) : '';
     field.scrollTop = 0;
+    copy.disabled = !theKey;
+    gone.hidden = Boolean(theKey) || !asked;
     const env = runnerEnv(cfg);
-    const help = body.querySelector('[data-use-help]');
+    const help = body.querySelector(canRun ? '[data-key-help]' : '[data-use-help]');
     const text = pick === OWN_PROGRAM ? t('chat.agents.ownHelp', { command: PLACEHOLDER_BACKEND.command }) : env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
     help.hidden = !text;
     help.textContent = text;
     help.classList.toggle('ch-warn', env.length > 0 && pick !== OWN_PROGRAM);
   };
-  // Copy config is the filled button until something was copied; Done is filled after.
+  // Run on this computer until it runs, then the line of what it does here. A program of one's own can't run here.
+  const drawRun = (body) => {
+    const button = body.querySelector('[data-run]');
+    if (!button) return;
+    const own = pick === OWN_PROGRAM;
+    const run = runOf(ws, agent.id);
+    const state = running && run ? runStateText(run, { t, use: choices.find((c) => c.id === run.use)?.name || '', locale: getLocale() }) : null;
+    button.hidden = Boolean(state);
+    if (!button.hasAttribute('aria-busy')) button.disabled = own;
+    const line = body.querySelector('[data-run-state]');
+    line.hidden = !state;
+    if (state) {
+      line.dataset.tone = state.tone;
+      line.querySelector('.ch-run-text').textContent = state.text;
+    }
+    const help = body.querySelector('[data-use-help]');
+    help.hidden = !own;
+    help.textContent = own ? t('chat.agents.runOwnHelp') : '';
+  };
+  // The filled button: Run on this computer, or Copy config without it, until the agent runs or something was copied;
+  // Done after.
   const showKept = (scrim) => {
-    const copyConfig = scrim.querySelector('[data-copy-config]');
-    copyConfig.classList.toggle('primary', !kept);
-    copyConfig.classList.toggle('secondary', kept);
+    const first = scrim.querySelector(canRun ? '[data-run]' : '[data-copy-config]');
+    first.classList.toggle('primary', !kept);
+    first.classList.toggle('secondary', kept);
     scrim.querySelector('.dialog').classList.toggle('ch-quiet-close', !kept);
   };
   const keep = (scrim) => {
@@ -2427,7 +2582,7 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
   const leaveOk = () => {
     if (kept) return true;
     return dialog({
-      title: t('chat.agents.closeTitle'),
+      title: canRun ? t('chat.agents.closeRunTitle', { name: agent.name }) : t('chat.agents.closeTitle'),
       body: `<p>${esc(t('chat.agents.closeBody'))}</p>`,
       buttons: [
         { label: t('chat.invite.goBack'), value: false },
@@ -2435,35 +2590,80 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
       ]
     });
   };
+  const start = async (body) => {
+    const scrim = body.closest('.scrim');
+    const button = body.querySelector('[data-run]');
+    clearErrors(body);
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    try {
+      await api('agentRunStart', ws, agent.id, { use: pick, name: agent.name });
+      running = true;
+      keep(scrim);
+    } catch (err) {
+      showError(body, '', runErrorText(err, agent.name));
+    } finally {
+      button.removeAttribute('aria-busy');
+      drawRun(body);
+      if (running) scrim.querySelector('.buttons button:last-child')?.focus();
+    }
+  };
 
   const option = (value, label) => `<option value="${esc(value)}"${value === pick ? ' selected' : ''}>${esc(label)}</option>`;
-  await wsDialog({
-    title: t('chat.agents.keyTitle', { name: agent.name }),
-    wide: true,
-    buttons: [{ get label() { return t('chat.invite.done'); }, value: true }],
-    beforeClose: () => leaveOk(),
-    render(body) {
-      const scrim = body.closest('.scrim');
-      body.innerHTML = `<div class="form ch-form ch-agent-key">
-        <ol class="ch-agent-steps">
-          <li class="ch-agent-step">
+  const useStep = `<li class="ch-agent-step">
             <label>${esc(t('chat.agents.useMine'))}<select name="use">${choices.map((c) => option(c.id, c.name)).join('')}${option(OWN_PROGRAM, t('chat.agents.useOwn'))}</select></label>
             <p class="field-help" data-use-help hidden></p>
-          </li>
-          <li class="ch-agent-step">
-            <div class="ch-agent-step-head"><span class="ch-label" id="ch-agent-config-label">${esc(t('chat.agents.config'))}</span><button type="button" class="btn primary sm" data-copy-config>${icons.copy}<span>${esc(
-              t('chat.agents.copyConfig')
-            )}</span></button></div>
+          </li>`;
+  const configHead = (cls) => `<div class="ch-agent-step-head"><span class="ch-label" id="ch-agent-config-label">${esc(t('chat.agents.config'))}</span><button type="button" class="btn ${cls} sm" data-copy-config>${icons.copy}<span>${esc(
+    t('chat.agents.copyConfig')
+  )}</span></button></div>
             <textarea name="config" class="sel ch-agent-config" aria-labelledby="ch-agent-config-label" readonly spellcheck="false" rows="9"></textarea>
             <p class="ch-agent-once">${esc(t('chat.agents.keyOnce', { name: agent.name }))}</p>
-          </li>
-          <li class="ch-agent-step">
-            <span class="ch-label">${esc(t('chat.agents.runTitle'))}</span>
+            <p class="field-help ch-warn" data-key-gone hidden>${esc(t('chat.agents.keyGone', { name: agent.name }))}</p>`;
+  const startRunner = `<span class="ch-label">${esc(t('chat.agents.runTitle'))}</span>
             <p class="field-help">${esc(t('chat.agents.configRun'))}</p>
             <code class="ch-agent-cmd sel">${esc(RUNNER_COMMAND)}</code>
-            <button type="button" class="link-btn ch-agent-get" data-get-runner>${icons.popOut}<span>${esc(t('chat.agents.getRunner'))}</span></button>
+            <button type="button" class="link-btn ch-agent-get" data-get-runner>${icons.popOut}<span>${esc(t('chat.agents.getRunner'))}</span></button>`;
+  const steps = canRun
+    ? `<ol class="ch-agent-steps">
+          ${useStep}
+          <li class="ch-agent-step">
+            <div class="ch-agent-run-row">
+              <button type="button" class="btn primary sm" data-run>${icons.play}<span>${esc(t('chat.agents.runHere'))}</span></button>
+              <p class="ch-agent-run" data-run-state role="status" hidden><span class="ch-run-dot" aria-hidden="true"></span><span class="ch-run-text"></span></p>
+            </div>
+            <p class="field-help">${esc(t('chat.agents.runHereHelp', { name: agent.name }))}</p>
           </li>
         </ol>
+        <p class="error" data-error="" hidden></p>
+        <details class="ch-agent-elsewhere" data-elsewhere>
+          <summary>${esc(t('chat.agents.elsewhere'))}</summary>
+          <div class="ch-agent-elsewhere-body">
+            <p class="field-help" data-key-help hidden></p>
+            ${configHead('secondary')}
+            ${startRunner}
+          </div>
+        </details>`
+    : `<ol class="ch-agent-steps">
+          ${useStep}
+          <li class="ch-agent-step">
+            ${configHead('primary')}
+          </li>
+          <li class="ch-agent-step">
+            ${startRunner}
+          </li>
+        </ol>
+        ${desktop ? `<p class="field-help" data-no-keyring>${esc(t('chat.agents.noKeyring'))}</p>` : ''}`;
+  try {
+    await wsDialog({
+      title: t('chat.agents.keyTitle', { name: agent.name }),
+      wide: true,
+      buttons: [{ get label() { return t('chat.invite.done'); }, value: true }],
+      beforeClose: () => leaveOk(),
+      render(body) {
+        const scrim = body.closest('.scrim');
+        body.innerHTML = `<div class="form ch-form ch-agent-key">
+        ${steps}
         ${
           room
             ? `<label class="ch-check-row ch-agent-join"><input type="checkbox" name="join" checked/><span class="ch-radio-text"><span class="ch-check-label">${esc(
@@ -2472,35 +2672,51 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
             : ''
         }
       </div>`;
-      drawConfig(body);
-      showKept(scrim);
-      body.querySelector('[data-copy-config]').addEventListener('click', () =>
-        navigator.clipboard.writeText(body.querySelector('[name="config"]').value).then(
-          () => {
-            toast(t('chat.agents.configCopied'));
-            keep(scrim);
-          },
-          () => {}
-        )
-      );
-      // Ctrl+C in the config copies too.
-      body.querySelector('[name="config"]').addEventListener('copy', () => keep(scrim));
-      body.querySelector('[name="use"]').addEventListener('change', (e) => {
-        pick = e.target.value;
         drawConfig(body);
-      });
-      body.querySelector('[data-get-runner]').addEventListener('click', () => api('openExternal', RUNNER_URL).catch(() => {}));
-      body.querySelector('[name="join"]')?.addEventListener('change', (e) => {
-        join = e.target.checked;
-      });
-      // The config shows from its top, where the server, the workspace and the key are, and Copy config takes the
-      // focus once dialog() gave it to the first field.
-      const field = body.querySelector('[name="config"]');
-      field.setSelectionRange(0, 0);
-      field.scrollTop = 0;
-      setTimeout(() => body.querySelector('[data-copy-config]')?.focus(), 0);
-    }
-  });
+        drawRun(body);
+        showKept(scrim);
+        const field = body.querySelector('[name="config"]');
+        const fill = () => needKey().then(() => body.isConnected && drawConfig(body));
+        if (!canRun) fill();
+        body.querySelector('[data-elsewhere]')?.addEventListener('toggle', (e) => {
+          if (e.target.open) fill();
+        });
+        body.querySelector('[data-run]')?.addEventListener('click', () => start(body));
+        if (canRun) off = onRuns(() => body.isConnected && drawRun(body));
+        body.querySelector('[data-copy-config]').addEventListener('click', () =>
+          navigator.clipboard.writeText(field.value).then(
+            () => {
+              toast(t('chat.agents.configCopied'));
+              keep(scrim);
+            },
+            () => {}
+          )
+        );
+        // Ctrl+C in the config copies too.
+        field.addEventListener('copy', () => theKey && keep(scrim));
+        body.querySelector('[name="use"]').addEventListener('change', (e) => {
+          pick = e.target.value;
+          drawConfig(body);
+          drawRun(body);
+          // An agent that runs here goes on with the one picked now.
+          if (running && pick !== OWN_PROGRAM) api('agentRunStart', ws, agent.id, { use: pick, name: agent.name }).catch((err) => showError(body, '', runErrorText(err, agent.name)));
+        });
+        body.querySelector('[data-get-runner]').addEventListener('click', () => api('openExternal', RUNNER_URL).catch(() => {}));
+        body.querySelector('[name="join"]')?.addEventListener('change', (e) => {
+          join = e.target.checked;
+        });
+        // The config shows from its top, where the server, the workspace and the key are. The filled button takes the
+        // focus once dialog() gave it to the first field: Run on this computer, or Copy config, or Done once it runs.
+        field.setSelectionRange(0, 0);
+        field.scrollTop = 0;
+        setTimeout(() => (canRun ? (running ? scrim.querySelector('.buttons button:last-child') : body.querySelector('[data-run]')) : body.querySelector('[data-copy-config]'))?.focus(), 0);
+      }
+    });
+  } finally {
+    off();
+    // Main lets go of the key: from now on only a stored, encrypted one is on this computer.
+    if (desktop) api('agentRunRelease', ws, agent.id).catch(() => {});
+  }
   // However the step closed, the agent joins the channel when the box stayed checked: the channel shows "Bart added
   // Clark", and a refusal says why.
   if (room && join && ws === K.CH.ws) {

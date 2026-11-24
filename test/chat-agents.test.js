@@ -182,3 +182,54 @@ test("an agent's line says whether its runner ever connected, and how long ago i
   assert.equal(agentSeenText(Date.UTC(2025, 10, 1, 12), { t, locale: 'en', now }), 'Last active Nov 1, 2025');
   assert.equal(agentSeenText(now - 5 * 60000, { t, locale: 'nl', now }), 'Last active 5 minuten geleden');
 });
+
+test('an agent this computer runs says what it does here in one line, with a tone for its dot, and in plain words for the problems the runner names', async () => {
+  const { runStateText } = await loading;
+  const t = (key, v = {}) => `${key}${Object.keys(v).length ? ` ${JSON.stringify(v)}` : ''}`;
+  const now = Date.UTC(2026, 10, 24, 15, 0, 0);
+  const line = (run) => runStateText({ phase: 'running', problem: null, unreachable: null, failure: null, channels: 2, answeredAt: null, ...run }, { t, use: 'Claude Code', locale: 'en', now });
+  assert.equal(runStateText(null, { t }), null);
+  assert.deepEqual(line({ phase: 'starting' }), { text: 'chat.agents.run.starting', tone: 'busy' });
+  assert.deepEqual(line({}), { text: 'chat.agents.run.running', tone: 'ok' });
+  assert.deepEqual(line({ channels: 0 }), { text: 'chat.agents.run.noChannel', tone: 'warn' });
+  assert.deepEqual(line({ unreachable: { message: 'fetch failed', at: now } }), { text: 'chat.agents.run.offline', tone: 'warn' });
+  assert.deepEqual(line({ failure: { message: 'HTTP 500', at: now } }), { text: 'chat.agents.run.failed {"detail":"HTTP 500"}', tone: 'warn' });
+  // An answer after the failure clears it.
+  assert.deepEqual(line({ failure: { message: 'HTTP 500', at: now - 10 }, answeredAt: now }), { text: 'chat.agents.run.running', tone: 'ok' });
+  // The runner's check codes (backends.js) in the catalogs' words; another problem keeps the runner's line.
+  assert.deepEqual(line({ problem: { code: 'missing', message: 'Claude Code is not installed' } }), { text: 'chat.agents.run.missing {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ problem: { code: 'unreachable', message: 'x' } }), { text: 'chat.agents.run.unreachable {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ problem: { code: 'backend_key', message: 'x' } }), { text: 'chat.agents.run.backendKey {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ problem: { code: null, message: 'Something new' } }), { text: 'chat.agents.run.problem {"use":"Claude Code","detail":"Something new"}', tone: 'error' });
+  assert.deepEqual(line({ phase: 'waiting', retryAt: now + 30000 }), { text: 'chat.agents.run.waiting {"time":"in 30 seconds"}', tone: 'warn' });
+  assert.deepEqual(line({ phase: 'waiting', retryAt: now + 5 * 60000 }), { text: 'chat.agents.run.waiting {"time":"in 5 minutes"}', tone: 'warn' });
+  assert.deepEqual(line({ phase: 'stopped' }), { text: 'chat.agents.run.stopped', tone: 'off' });
+  assert.deepEqual(line({ phase: 'refused' }), { text: 'chat.agents.run.refused', tone: 'error' });
+  assert.deepEqual(line({ phase: 'error', error: { code: 'unknown_backend' } }), { text: 'chat.agents.run.unknownUse', tone: 'error' });
+  assert.deepEqual(line({ phase: 'error', error: { code: 'key_unreadable' } }), { text: 'chat.agents.run.keyUnreadable', tone: 'error' });
+  assert.deepEqual(line({ phase: 'error', error: { code: 'spawn' } }), { text: 'chat.agents.run.cantStart', tone: 'error' });
+  // Every key it uses is in the catalogs.
+  const en = fs.readFileSync(path.join(__dirname, '../src/i18n/en.js'), 'utf8');
+  for (const key of ['starting', 'running', 'noChannel', 'offline', 'failed', 'missing', 'unreachable', 'backendKey', 'problem', 'waiting', 'stopped', 'refused', 'unknownUse', 'keyUnreadable', 'cantStart']) {
+    assert.ok(en.includes(`"chat.agents.run.${key}"`), key);
+  }
+});
+
+test('starting here warns of a runner elsewhere only when the server saw the key lately, more than a minute after this computer last did', async () => {
+  const { ranElsewhere, useName } = await loading;
+  const now = Date.UTC(2026, 10, 24, 15, 0, 0);
+  const min = 60000;
+  const stopped = { stoppedAt: now - 5 * min, passAt: null, connectedAt: null };
+  assert.equal(ranElsewhere(null, stopped, now), false, 'never seen');
+  assert.equal(ranElsewhere(now - 5 * min, stopped, now), false, 'this computer was the last');
+  assert.equal(ranElsewhere(now - 4.5 * min, stopped, now), false, 'within the minute the server takes to write lastSeen');
+  assert.equal(ranElsewhere(now - 2 * min, stopped, now), true, 'used three minutes after it stopped here');
+  assert.equal(ranElsewhere(now - 20 * min, { stoppedAt: now - 60 * min }, now), false, 'too long ago to be running now');
+  assert.equal(ranElsewhere(now - 2 * min, { stoppedAt: null, passAt: now - 2.5 * min, connectedAt: now - 30 * min }, now), false, 'its last pass here');
+  assert.equal(ranElsewhere(now - 2 * min, null, now), true);
+  // The name of what it answers with, as Answers with shows it.
+  assert.equal(useName(config, 'clark'), 'Hermes');
+  assert.equal(useName(config, 'cx_abcdefghij'), 'Booper');
+  assert.equal(useName(null, 'codex'), 'Codex');
+  assert.equal(useName(null, 'cx_gonegonego'), 'cx_gonegonego');
+});
