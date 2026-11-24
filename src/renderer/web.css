@@ -197,6 +197,16 @@ body.web-phone .toast {
   bottom: var(--web-toast-bottom, calc(24px + env(safe-area-inset-bottom, 0px)));
   max-width: calc(100vw - 32px);
 }
+/* A notice's button (Undo, a chat alert's Open) keeps its size; an invisible area around it, half of what it lacks of
+   44px on each side, makes the touch target 44px. */
+body.web-phone .toast button {
+  position: relative;
+}
+body.web-phone .toast button::after {
+  content: '';
+  position: absolute;
+  inset: min(0px, calc((100% - 44px) / 2));
+}
 body.web-phone .dialog {
   width: min(420px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
