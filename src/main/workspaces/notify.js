@@ -30,9 +30,10 @@
 // loads its page only when it wasn't looked at since the person last read it (notified at or below the read position):
 // one page per stretch of unread messages, never one per message, within the run's three pages. Such channels come
 // after the DMs and mention channels of the run, so they never take a page or an alert from those. After that look,
-// a channel's newer messages alert only when the cache covers them (the room was opened since), or when a
-// mention makes the channel due and its page loads anyway. Such a channel never goes into the summary on what it
-// couldn't tell; one that found nothing gets notified = head.
+// a channel's newer messages alert only when the cache covers them (the room was opened since), when a mention makes
+// the channel due and its page loads anyway, or when it is the channel open in a window without the focus, whose page
+// loads on every run that brings it something new. Such a channel never goes into the summary on what it couldn't
+// tell; one that found nothing gets notified = head.
 //
 // After an alert, notified = head and a notice row for each message shown, so a read or a removal can take it back.
 // main.js turns the alert into a toast while the main window has focus. This module records every alert the same
@@ -203,10 +204,11 @@ class Notifier {
         this.mark(ws, id, room.head);
         continue;
       }
-      // A channel looked at since it was last read loads no second page. The one open in the window, which lost the
-      // focus, is loading its own history: it stays due, and a run after that reads what came from the cache.
-      if (messages === null && only && looked(room)) {
-        if (!this.open(ws, id)) this.mark(ws, id, room.head);
+      // A channel looked at since it was last read loads no second page. The one open in the window is the exception:
+      // it counted as looked at while the window had the focus, and what comes in once the focus is gone showed to
+      // nobody, so its page loads like a first one, at once and not when its history happens to have caught up.
+      if (messages === null && only && looked(room) && !this.open(ws, id)) {
+        this.mark(ws, id, room.head);
         continue;
       }
       if (slots <= 0) {
@@ -266,7 +268,7 @@ class Notifier {
     if (rest.length) this.summarize(ws, rest, ctx);
   }
 
-  // Whether the room is the one open in the window, focused or not: its history is being loaded for it.
+  // Whether the room is the one open in the window, focused or not.
   open(ws, room) {
     const active = this.svc.active;
     return Boolean(active && active.ws === ws && active.room === room);

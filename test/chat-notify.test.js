@@ -681,9 +681,9 @@ test('a reply for you alerts as a message for you would: not while its conversat
 });
 
 // The channel open in the window counted as looked at while the window had the focus. A reply that comes once the
-// focus is gone, before the channel's history has it, must not be counted as looked at too: it alerts once the cache
-// has caught up.
-test('a reply that comes after the window lost the focus alerts once the open channel has caught up', async (t) => {
+// focus is gone, before the channel's history has it, must not be counted as looked at too: the channel's page loads
+// and it alerts in that run, not when the history happens to have caught up.
+test('a reply that comes after the window lost the focus alerts from the open channel\'s page, once', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, bart, ws, svc } = await scene(t);
   const api = chatApi(() => svc);
@@ -698,22 +698,27 @@ test('a reply that comes after the window lost the focus alerts once the open ch
   assert.equal(general().notified, general().head);
   assert.deepEqual(svc.notices, []);
 
-  // The window loses the focus and a reply for Bart comes, which the cache doesn't hold yet: the channel stays due.
+  // The window loses the focus and a reply for Bart comes, which the cache doesn't hold yet: the run that brings it
+  // loads the channel's page and alerts.
   svc.setFocused(false);
   const answer = await server.post(olga, ws.id, ws.general, 'After the focus went', { root: question.messageId });
   await svc.sync(ws.id);
-  assert.deepEqual(svc.notices, []);
-  assert.ok(general().notified < general().head, 'still due');
+  const bodies = () => svc.notices.map((n) => n.body);
+  assert.deepEqual(bodies(), ['Olga replied: After the focus went']);
+  assert.equal(general().notified, general().head);
 
-  // Its history arrives: the next run alerts, once.
+  // A message that isn't for Bart loads the page too and leaves nothing due: no alert, and no page on every run.
+  await server.post(olga, ws.id, ws.general, 'Not for Bart');
+  await svc.sync(ws.id);
+  assert.deepEqual(bodies(), ['Olga replied: After the focus went']);
+  assert.equal(general().notified, general().head);
+
+  // The channel's history arrives after that: the reply doesn't alert a second time.
   await api.chatOpen(ws.id, ws.general, {});
   await until(() => svc.store.eventById(ws.id, answer.messageId), 10000, 'the reply in the cache');
   await svc.sync(ws.id);
   await svc.sync(ws.id);
-  assert.deepEqual(
-    svc.notices.map((n) => n.body),
-    ['Olga replied: After the focus went']
-  );
+  assert.deepEqual(bodies(), ['Olga replied: After the focus went']);
 });
 
 test('an agent\'s answer in the thread of your message alerts you; asked in someone else\'s thread, it does not', async (t) => {
