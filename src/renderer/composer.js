@@ -464,7 +464,11 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // Saved to Drafts after this editor had closed (outbox.js savedToDrafts): its attachments still point at the draft
   // that save replaced, until settleAttachments() points them at st.draftId.
   const savedElsewhere = restored && Boolean(opts.restore.state && opts.restore.state.pendingRemap === true);
-  if (restored) opts = { ...opts, restore: null, sendError: null };
+  // The email main keeps in held.json for this editor (main.js, heldmail.js): the one it opened with after the server
+  // refused it, a quit left it or Rukoo crashed, or the one a send straight away left here when the server refused it.
+  // Every save, send and close names it, so main answers for that email and no other.
+  let keptId = typeof opts.keptId === 'string' ? opts.keptId : null;
+  if (restored || keptId) opts = { ...opts, restore: null, sendError: null, keptId: null };
   // Stable for the life of this composer: the chat panel ties an agent's draft card to it.
   const key = crypto.randomUUID();
   // Set once the draft is deleted or sent, so nothing points at a stored draft that is gone.
@@ -1335,13 +1339,13 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         if (sending || closed) return false;
         const editsBefore = editCount;
         const sent = st.attachments.slice();
-        const id = await api('saveDraft', payload(sent));
+        // A kept email goes into held.json as it is now first, and main lets it go once the server has the draft.
+        const id = await api('saveDraft', payload(sent), keptId, keptId ? undoState() : null);
         st.draftId = id;
         st.savedAt = Date.now();
         if (editCount === editsBefore) st.dirty = false;
-        // A compose window claims the draft; either editor lets main know that an email it kept is safe (main.js
-        // keptSettled).
-        if (id) await api('composeDraft', id);
+        // A compose window claims the draft.
+        if (id && !inline) await api('composeDraft', id);
         // Without an id the next save cannot replace this one; stop autosaving rather than pile up drafts.
         if (!id) autosave = false;
         if (sent.length) {
@@ -1369,18 +1373,17 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     closed = true;
     clearTimeout(autosaveTimer);
     cleanups.forEach((fn) => fn());
-    // true: the editor answered (sent, saved, deleted, or nothing to keep), which main needs to know for an email it
-    // kept for this editor, refused or reopened after a crash (main.js keptSettled). Main closes a compose window then,
-    // and leaves the main window as it is.
+    // true: the editor answered (sent, saved, deleted, or nothing to keep), which main needs to know for the email it
+    // keeps for this editor (keptId). Main closes a compose window then, and leaves the main window as it is.
     if (inline) {
-      api('composeClose', true).catch(() => {});
+      api('composeClose', true, keptId).catch(() => {});
       if (message) toast(message);
       page.remove();
       onDone && onDone();
       return;
     }
     if (message) api('toastMain', message).catch(() => {});
-    api('composeClose', true);
+    api('composeClose', true, keptId);
   }
 
   // This editor as it is now, for Undo send: main keeps it while the email waits, and restoredState() opens the
@@ -1451,13 +1454,15 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       await dropping;
       await saving;
       await settleAttachments();
-      const res = await api('send', payload(undefined, { sending: true }), undoState());
+      const res = await api('send', payload(undefined, { sending: true }), undoState(), keptId);
       done = true;
       // A held email's draft stays on the server until it goes; main tells the chat's draft cards then.
       gone = !(res && res.queued);
       // Held for Undo send: the main window says so, with Undo, and says "Email sent" once it went.
       finish(res && res.queued ? null : inline ? t('composer.status.sent') : null);
     } catch (err) {
+      // Refused straight away: main keeps the email for this editor from now on, under this id.
+      if (err && typeof err.keptId === 'string') keptId = err.keptId;
       await dialog({ title: t('composer.errors.send'), body: `<p>${esc(err.message)}</p>` });
     } finally {
       if (!done) {

@@ -92,6 +92,7 @@ The renderer runs sandboxed with context isolation. It can only call the methods
 | `src/main/main.js` | Main and compose windows, IPC table, notifications, taskbar badge, unsubscribe |
 | `src/main/engine.js` | Accounts, local cache, sync, flags, moves, sending, drafts, VIPs and spam |
 | `src/main/outbox.js` | Undo send: holds an email after Send until its notice runs out, a quit or Undo, and a refused one until the main window has opened it |
+| `src/main/heldmail.js` | `held.json` in the profile: the outbox's emails and every refused or recovered email, by id, until the server or its editor has answered for it, so a crash loses none, brings none back twice and sends none twice |
 | `src/main/imap.js` | IMAP via [imapflow](https://github.com/postalsys/imapflow), SMTP via nodemailer |
 | `src/main/demo.js` | The demo account: same interface as `imap.js`, backed by a local JSON file |
 | `src/main/google.js` | Google sign-in: loopback redirect, PKCE, token refresh |

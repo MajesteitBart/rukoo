@@ -2771,9 +2771,17 @@
     "message": "Select all",
     "description": "Menu item: selects all of the message text. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
   },
+  "composer.errors.alreadySending": {
+    "message": "This email is already on its way, or open in another window. Check Sent before you send it again.",
+    "description": "Shown under 'Sending failed' (composer.errors.send) when Send is pressed for an email Rukoo already sends, or that another editor has open: an email the server refused, opened again in an editor. Rukoo doesn't send it twice. src/main/main.js (keptError)"
+  },
   "composer.errors.autosave": {
     "message": "Autosave failed",
     "description": "composer > errors. src/renderer/composer.js (saveDraft)"
+  },
+  "composer.errors.journal": {
+    "message": "Rukoo couldn't keep a copy of this email in its profile, so it didn't send it: {error}",
+    "description": "Shown under 'Sending failed' (composer.errors.send) when the file in Rukoo's profile that keeps an email until it has gone can't be written, as on a full disk. Rukoo then doesn't send it, so a crash can't lose it. error is the system's message. src/main/main.js (keptError, waitedMailFailed)"
   },
   "composer.errors.missingAttachments": {
     "message": "The draft is in Drafts, but its attachments could not be found. Close this window and reopen the draft.",

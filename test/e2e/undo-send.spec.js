@@ -52,7 +52,8 @@ const sendWaiting = () => app.evaluate(() => global.__semOutbox.flush());
 const held = () => app.evaluate(() => global.__semRefused.size);
 // What held.json in the profile lists (main.js heldMail): the emails in the outbox and the kept ones, by subject.
 const heldFile = () => path.join(dataDir, 'data', 'held.json');
-const onDisk = () => (fs.existsSync(heldFile()) ? JSON.parse(fs.readFileSync(heldFile(), 'utf8')) : []);
+// The emails in it, without the ids it took from an older Rukoo's unsent.json.
+const onDisk = () => (fs.existsSync(heldFile()) ? JSON.parse(fs.readFileSync(heldFile(), 'utf8')).filter((e) => e.restore) : []);
 const kept = () => onDisk().map((e) => e.restore.state.subject);
 // Ends Rukoo at once, without a quit, as a crash or Task Manager would.
 async function crash() {
@@ -1367,6 +1368,201 @@ test('an email in both unsent.json and held.json from an older Rukoo opens once,
   await expect(back['In both files'].locator('.dialog')).toContainText('Mailbox full');
   expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(false);
   expect(kept()).toEqual(['In both files']);
+});
+
+// A refused email open in the reading pane, after its error is closed. Saves fail until the test lets them
+// (global.__allowSaves), so no autosave answers for it before the test does.
+async function refusedInPane(subject, text) {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const save = engine.saveDraft.bind(engine);
+    engine.saveDraft = (payload, hooks) => (global.__allowSaves ? save(payload, hooks) : Promise.reject(new Error('No connection')));
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  await newMessage(win, { to: 'someone@example.com', subject, text });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await sendWaiting();
+  await expect(win.locator('.dialog')).toContainText('Mailbox full');
+  await win.locator('.dialog .buttons button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue(subject);
+  await expect.poll(held).toBe(0);
+  expect(kept()).toEqual([subject]);
+}
+// Undo send off, and every send waits until the test answers it (global.__sends).
+const holdSendsWithoutUndo = () =>
+  app.evaluate(() => {
+    global.__semEngine.updateSettings({ undoSend: 0 });
+    global.__sends = [];
+    global.__semEngine.send = (payload) => new Promise((resolve, reject) => global.__sends.push({ subject: payload.subject, resolve, reject }));
+  });
+// What a script finds in the main window's page, or null when the page doesn't answer within 2 seconds.
+const mainPage = (script) =>
+  app.evaluate(({ BrowserWindow }, script) => {
+    const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('index.html'));
+    return Promise.race([main.webContents.executeJavaScript(script), new Promise((resolve) => setTimeout(() => resolve(null), 2000))]);
+  }, script);
+
+// Review of #309: a send straight away from the reading pane settled, when it ended, whatever the pane held by then,
+// and a page crash opened the email whose send still ran in a compose window, from which it could go a second time.
+// Each send now names its email from start to end, and an email on its way opens nowhere else.
+test('a retry sent straight away from the reading pane answers only for its own email, though the page crashed and took another', async () => {
+  test.setTimeout(120000);
+  await refusedInPane('Retried from the pane', 'First email.');
+  await holdSendsWithoutUndo();
+  await composer().locator('[data-c="send"]').click();
+  await expect.poll(() => app.evaluate(() => global.__sends.length)).toBe(1);
+  expect(onDisk().map((e) => [e.restore.state.subject, e.state])).toEqual([['Retried from the pane', 'sending']]);
+  const opened = [];
+  app.on('window', (page) => opened.push(page));
+
+  // The page crashes while the send runs, and loads again.
+  await app.evaluate(
+    ({ BrowserWindow }) =>
+      new Promise((resolve) => {
+        const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('index.html'));
+        main.webContents.once('render-process-gone', () => {
+          main.webContents.once('did-finish-load', resolve);
+          main.webContents.reload();
+        });
+        main.webContents.forcefullyCrashRenderer();
+      })
+  );
+  expect(opened).toHaveLength(0);
+  await expect.poll(() => mainPage('Boolean(document.querySelector(".item"))'), { timeout: 20000 }).toBe(true);
+  // Another email is refused, and the new page's reading pane opens it.
+  await app.evaluate(() => {
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+    const restore = {
+      opts: { mode: 'new' },
+      html: '<p>Second email.</p>',
+      state: { subject: 'Taken by the new page', to: [{ name: '', address: 'other@example.com' }], cc: [], bcc: [], attachments: [] }
+    };
+    global.__semOutbox.queue({ payload: { subject: 'Taken by the new page' }, restore, origin: 'main', ms: 60000 });
+    return global.__semOutbox.flush();
+  });
+  await expect
+    .poll(() => mainPage('document.querySelector(".composer [data-field=subject]")?.value || ""'), { timeout: 20000 })
+    .toBe('Taken by the new page');
+  await expect.poll(held).toBe(0);
+  expect(kept().sort()).toEqual(['Retried from the pane', 'Taken by the new page']);
+  expect(opened).toHaveLength(0);
+
+  // The first send goes through: its own email goes from the file, and the one in the pane stays.
+  await app.evaluate(() => global.__sends[0].resolve(true));
+  await expect.poll(kept).toEqual(['Taken by the new page']);
+  expect(opened).toHaveLength(0);
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+});
+
+// Review of #309: a send straight away wrote only that the email was on its way, so a kill brought back the version
+// from before the edits. The file now has what was sent, from before it goes.
+test('an email sent again straight away after edits comes back after a kill as it was sent, with the note to check Sent', async () => {
+  test.setTimeout(120000);
+  await refusedInPane('Before the edit', 'Written first.');
+  await composer().locator('[data-field="subject"]').fill('After the edit');
+  await composer().locator('.editor').click();
+  await win.keyboard.press('End');
+  await win.keyboard.type(' Added after the refusal.');
+  await holdSendsWithoutUndo();
+  await composer().locator('[data-c="send"]').click();
+  await expect.poll(() => app.evaluate(() => global.__sends.length)).toBe(1);
+  const [onItsWay] = onDisk();
+  expect([onItsWay.restore.state.subject, onItsWay.state]).toEqual(['After the edit', 'sending']);
+  expect(onItsWay.restore.html).toContain('Added after the refusal.');
+  await crash();
+
+  await launch();
+  const back = await editorsAfterStart(1);
+  const again = back['After the edit'];
+  await expect(again.locator('.dialog')).toContainText('Check Sent before you send it again');
+  await again.locator('.dialog .buttons button').click();
+  await expect(again.locator('.editor')).toContainText('Added after the refusal.');
+});
+
+// Review of #309: an editor's Drafts save let its kept email go only once the renderer heard back, after the save had
+// removed the draft it replaced. Main now lets it go the moment the server has the draft, and a start after a kill
+// right before that finds the draft by its Message-ID instead of opening the email a second time.
+test('an email whose draft the server stored just before a kill does not open again, and Drafts has it once', async () => {
+  test.setTimeout(120000);
+  await refusedInPane('Saved before the kill', 'Kept as a draft.');
+  // The server stores the draft, and Rukoo is killed before it hears back.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const session = engine.session(engine.accounts[0]);
+    const append = session.append.bind(session);
+    session.append = async (folder, raw, flags = []) => {
+      const uid = await append(folder, raw, flags);
+      if (!flags.includes('\\Draft')) return uid;
+      global.__stored = uid;
+      return new Promise(() => {});
+    };
+    global.__allowSaves = true;
+  });
+  await composer().locator('.editor').click();
+  await win.keyboard.press('Control+s');
+  await expect.poll(() => app.evaluate(() => global.__stored || null)).not.toBeNull();
+  expect(kept()).toEqual(['Saved before the kill']);
+  await crash();
+
+  await launch();
+  await nothingReopens();
+  await expect.poll(kept).toEqual([]);
+  expect((await subjects('drafts')).filter((s) => s === 'Saved before the kill')).toHaveLength(1);
+});
+
+// #309: an email the server refuses when it goes straight away stays in the profile for its editor, which names it
+// from then on: a crash before that editor answers brings it back once, and Delete lets it go.
+test('a compose window whose email is refused straight away keeps it until it answers, also across a kill', async () => {
+  test.setTimeout(120000);
+  await app.evaluate(() => {
+    global.__semEngine.updateSettings({ undoSend: 0 });
+    global.__semEngine.saveDraft = () => Promise.reject(new Error('No connection'));
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  const [page] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  await page.waitForSelector('.composer .editor');
+  page.on('dialog', () => {});
+  await page.locator('[data-rinput="to"]').fill('someone@example.com');
+  await page.locator('[data-rinput="to"]').press('Enter');
+  await page.locator('[data-field="subject"]').fill('Refused at once');
+  await page.locator('.editor').click();
+  await page.keyboard.type('Every word stays.');
+  await page.locator('[data-c="send"]').click();
+  await expect(page.locator('.dialog')).toContainText('Mailbox full');
+  expect(kept()).toEqual(['Refused at once']);
+  expect(onDisk()[0].error).toBe('Mailbox full');
+  await crash();
+
+  await launch();
+  const back = await editorsAfterStart(1);
+  const again = back['Refused at once'];
+  await expect(again.locator('.dialog')).toContainText('Mailbox full');
+  await again.locator('.dialog .buttons button').click();
+  await expect(again.locator('.editor')).toContainText('Every word stays.');
+  // Refused again from this window: still kept once, under the same id.
+  await app.evaluate(() => {
+    global.__semEngine.updateSettings({ undoSend: 0 });
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox still full');
+    };
+  });
+  const id = onDisk()[0].id;
+  await again.locator('[data-c="send"]').click();
+  await expect(again.locator('.dialog')).toContainText('Mailbox still full');
+  expect(onDisk().map((e) => [e.id, e.error])).toEqual([[id, 'Mailbox still full']]);
+  await again.locator('.dialog .buttons button').click();
+  // Delete, and it goes, with its window.
+  await again.click('[data-c="discard"]');
+  await clickClosing(again, '.scrim .buttons button:text-is("Delete")');
+  await expect.poll(kept, { timeout: 10000 }).toEqual([]);
+  expect(app.windows()).toHaveLength(1);
 });
 
 test('Undo once the email is on its way says it is too late', async () => {

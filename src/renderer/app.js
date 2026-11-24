@@ -2716,7 +2716,11 @@ async function compose(opts) {
   const { still, claim, ...rest } = opts;
   // An editor that opens again after Undo send brings its own mode, account and the email it answers.
   const restore = rest.restore || null;
-  const full = restore ? { accountId, ...restoreOpts(restore), restore, sendError: rest.sendError || null } : { accountId, ...rest };
+  // keptId: the refused email main keeps in held.json for this editor (reopenRefused), which it names in every save,
+  // send and close.
+  const full = restore
+    ? { accountId, ...restoreOpts(restore), restore, sendError: rest.sendError || null, keptId: typeof rest.keptId === 'string' ? rest.keptId : null }
+    : { accountId, ...rest };
   const holds = () => !still || still();
   let message = restore ? restore.original || null : null;
   if (full.id && !restore) {
@@ -2822,12 +2826,12 @@ async function takeSendFailuresNow() {
 
 // A refused email back in the reading pane. It is claimed only once the pane is free, after the editor there saved
 // its text, so main still has it if this page dies during that save, and the pane leaves it alone when main opened
-// it elsewhere meanwhile. Main lets it go once the editor is open; when the pane can't take it, main opens it in a
-// compose window.
+// it elsewhere meanwhile. Main's hand-off lets it go once the editor is open, and held.json keeps it under id until that
+// editor answers for it; when the pane can't take it, main opens it in a compose window.
 async function reopenRefused(id, restore, sendError) {
   setMode('mail');
   const claim = () => api('claimRefused', id).catch(() => false);
-  const editor = await compose({ restore, sendError, claim }).catch(() => null);
+  const editor = await compose({ restore, sendError, claim, keptId: id }).catch(() => null);
   if (editor) await api('refusedOpened', id).catch(() => {});
   else await api('openRefused', id).catch((err) => toast(err.message, 5000));
 }
