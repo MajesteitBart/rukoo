@@ -273,6 +273,31 @@ test('emptying a folder says how many emails the server deleted and why the rest
   await engine.close();
 });
 
+// #308 review: a move or delete whose result nobody knows reaches the window with code 'uncertain', which the message
+// list counts apart from an email that stayed; a refusal has no code.
+test('an unknown result reaches the window as uncertain, a refusal without a code', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const [a, b] = inbox(engine, acc);
+  demo.box('Archive').readOnly = true;
+  await assert.rejects(engine.archive(a.id), (err) => err.message === t('errors.move.refused') && err.code === undefined);
+  demo.box('Archive').readOnly = false;
+  demo.move = async () => {
+    throw Object.assign(new Error(t('errors.move.unknown')), { unknown: true });
+  };
+  await assert.rejects(engine.archive(b.id), { message: t('errors.move.unknown'), code: 'uncertain' });
+  demo.move = async () => {
+    throw Object.assign(new Error(t('errors.move.copied')), { copied: true });
+  };
+  await assert.rejects(engine.remove(b.id), { message: t('errors.move.copied'), code: 'uncertain' });
+  const trashed = view(engine, acc, 'trash')[0];
+  demo.deleteForever = async () => {
+    throw Object.assign(new Error(t('errors.delete.unknown')), { unknown: true });
+  };
+  await assert.rejects(engine.remove(trashed.id), { message: t('errors.delete.unknown'), code: 'uncertain' });
+  await engine.close();
+});
+
 test('a move that left a copy behind keeps the original, offers no Undo, and syncs the copy into view', async () => {
   const { engine, acc } = await freshEngine();
   const demo = engine.session(engine.account(acc.id));
@@ -300,7 +325,7 @@ test('a move whose connection went before the answer puts the email back, then a
   // The server moved it; the answer never came.
   demo.move = async (...args) => {
     await move(...args);
-    throw Object.assign(new Error(t('errors.connection.closed')), { unknown: true });
+    throw Object.assign(new Error(t('errors.move.unknown')), { unknown: true });
   };
   // The syncs that follow wait until the test has looked.
   const syncFolder = demo.syncFolder.bind(demo);
@@ -312,7 +337,7 @@ test('a move whose connection went before the answer puts the email back, then a
     await gate;
     return syncFolder(p, ...rest);
   };
-  await assert.rejects(engine.archive(target.id), { message: t('errors.connection.closed') });
+  await assert.rejects(engine.archive(target.id), { message: t('errors.move.unknown'), code: 'uncertain' });
   assert.ok(inbox(engine, acc).some((m) => m.id === target.id), 'back at once, as nothing is known');
   assert.deepEqual(asked.sort(), ['Archive', 'INBOX']);
   go();
@@ -339,9 +364,66 @@ test('an Undo whose result is unknown is not offered again before the folders ar
   const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
   await engine.archive(target.id);
   demo.move = async () => {
-    throw Object.assign(new Error(t('errors.connection.closed')), { unknown: true });
+    throw Object.assign(new Error(t('errors.move.unknown')), { unknown: true });
   };
-  await assert.rejects(engine.undoMove(target.id), { message: t('errors.connection.closed') });
+  await assert.rejects(engine.undoMove(target.id), { message: t('errors.move.unknown'), code: 'uncertain' });
   assert.ok(!engine.canUndo(target.id));
+  await engine.close();
+});
+
+// #308 review: Undo while the sync that follows the move is still running. The sync comes back while Undo holds the
+// email's row out of Archive, so the row isn't in the cache when the server refuses the Undo. It has to come back
+// anyway: the email is in Archive.
+async function undoDuringSync({ rebuilt = false } = {}) {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  const syncFolder = demo.syncFolder.bind(demo);
+  let syncGo;
+  const syncGate = new Promise((r) => (syncGo = r));
+  let synced;
+  const archiveSynced = new Promise((r) => (synced = r));
+  const asked = [];
+  demo.syncFolder = async (p, ...rest) => {
+    asked.push(p);
+    if (p !== 'Archive' || asked.filter((x) => x === 'Archive').length > 1) return syncFolder(p, ...rest);
+    await syncGate;
+    const res = await syncFolder(p, ...rest);
+    setImmediate(synced);
+    return res;
+  };
+  await engine.archive(target.id);
+  assert.deepEqual(asked, ['Archive'], 'the sync after the move is waiting');
+
+  let moveGo;
+  const moveGate = new Promise((r) => (moveGo = r));
+  demo.move = async () => {
+    await moveGate;
+    throw Object.assign(new Error(t('errors.move.refused')), { refused: true });
+  };
+  const undo = engine.undoMove(target.id);
+  // The sync comes back while Undo waits for the server.
+  syncGo();
+  await archiveSynced;
+  assert.ok(!view(engine, acc, 'archive').some((m) => m.subject === target.subject), 'held out while Undo runs');
+  if (rebuilt) engine.caches.get(acc.id).boxes.Archive.uidValidity = 'rebuilt';
+  moveGo();
+  await assert.rejects(undo, { message: t('errors.move.refused') });
+  return { engine, acc, target, asked };
+}
+
+test('a refused Undo during the sync that followed the move brings the row back in the destination', async () => {
+  const { engine, acc, target, asked } = await undoDuringSync();
+  assert.ok(view(engine, acc, 'archive').some((m) => m.subject === target.subject), 'the archive row is back');
+  assert.deepEqual(asked, ['Archive'], 'from the move, without another sync');
+  assert.ok(!inbox(engine, acc).some((m) => m.subject === target.subject));
+  assert.ok(engine.canUndo(target.id), 'Undo is kept for another try');
+  await engine.close();
+});
+
+test('a refused Undo resyncs the destination when its UIDVALIDITY changed since the move', async () => {
+  const { engine, acc, target, asked } = await undoDuringSync({ rebuilt: true });
+  assert.deepEqual(asked, ['Archive', 'Archive'], 'a second sync of Archive');
+  await until(() => view(engine, acc, 'archive').some((m) => m.subject === target.subject));
   await engine.close();
 });

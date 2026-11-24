@@ -2071,9 +2071,10 @@ const windowApi = {
 
 // Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
 // setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
-// page. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
+// page. 'uncertain': nobody knows what the server did with a move or delete until the folders sync (engine.js
+// notMoved), which the message list counts apart from an email that stayed. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
 // reads a code as one of the agent's own.
-const WINDOW_CODES = new Set(['auth']);
+const WINDOW_CODES = new Set(['auth', 'uncertain']);
 
 // What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
 // Booking errors (booking/rules.js bookingError) pass their code, and for a refused field its name (contracts f).

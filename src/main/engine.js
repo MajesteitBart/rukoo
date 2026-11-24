@@ -258,6 +258,18 @@ function decodeId(id) {
   return { accountId, folder, uid: Number(uid) };
 }
 
+// Whether the server may have carried out part or all of a move or delete that threw: a lost connection or an answer
+// that proves nothing (err.unknown), or a copy left in the destination (err.copied). See ImapAccount.move().
+const unsure = (err) => Boolean(err && (err.unknown || err.copied));
+
+// The error a window gets for a move or delete that didn't go: the server's reason, with code 'uncertain' when
+// nobody knows where the email is until the folders have synced. Anything else left the email where it was.
+function notMoved(err) {
+  const out = new Error(friendlyError(err));
+  if (unsure(err)) out.code = 'uncertain';
+  return out;
+}
+
 function sha(text) {
   return crypto.createHash('sha1').update(text).digest('hex');
 }
@@ -2051,7 +2063,7 @@ class Engine extends EventEmitter {
       putBack();
       this.changed(acc.id);
       this.recheck(acc, err, [folder, destination]);
-      throw new Error(friendlyError(err));
+      throw notMoved(err);
     }
     // Servers without UIDPLUS do not report the new uid; such a move cannot be undone.
     if (moved && moved.uid && moved.uidValidity) {
@@ -2068,7 +2080,7 @@ class Engine extends EventEmitter {
   // the cache holds, so the list shows where the email is. A plain refusal changed nothing to sync.
   recheck(acc, err, folders) {
     const cache = this.caches.get(acc.id);
-    if (!cache || !err || !(err.unknown || err.copied)) return;
+    if (!cache || !unsure(err)) return;
     for (const p of new Set(folders)) if (cache.boxes[p]) this.syncFolderAndNotify(acc, p).catch(() => {});
   }
 
@@ -2146,10 +2158,15 @@ class Engine extends EventEmitter {
         throw new Error(t('errors.undo.rebuilt'));
       }
       putBack();
-      if (!(err && (err.copied || err.unknown)) && !this.undoable.has(id)) this.undoable.set(id, rec);
+      // Refused: the email is still where it was moved, and Undo can be tried again. Unsure: the syncs from recheck()
+      // show where it is first, and the Undo is gone.
+      if (!unsure(err)) {
+        this.keepMovedRow(acc, rec);
+        if (!this.undoable.has(id)) this.undoable.set(id, rec);
+      }
       this.changed(acc.id);
       this.recheck(acc, err, [rec.destination, rec.folder]);
-      throw new Error(friendlyError(err));
+      throw notMoved(err);
     }
     // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
     const box = this.caches.get(acc.id).boxes[rec.folder];
@@ -2158,6 +2175,17 @@ class Engine extends EventEmitter {
     this.changed(acc.id);
     if (box) this.syncFolderAndNotify(acc, rec.folder).catch(() => {});
     return uid ? encodeId(acc.id, rec.folder, uid) : null;
+  }
+
+  // After a refused Undo: the row of the email in the folder it was moved to (rec.destination, as rec.uid). The cache
+  // may not have it, when Undo came before the sync that follows a move and that sync left it out while Undo ran. The
+  // row comes from the move's record while that folder's UIDVALIDITY is the one the move reported; once its uids were
+  // given out again, rec.uid may be another email, and a sync puts the rows right.
+  keepMovedRow(acc, rec) {
+    const box = this.caches.get(acc.id).boxes[rec.destination];
+    if (!box || box.messages.some((m) => m.uid === rec.uid)) return;
+    if (rec.msg && String(box.uidValidity) === String(rec.uidValidity)) box.messages.push({ ...rec.msg, uid: rec.uid });
+    else this.syncFolderAndNotify(acc, rec.destination).catch(() => {});
   }
 
   // The account a message (or a saved copy) belongs to.
@@ -2204,7 +2232,7 @@ class Engine extends EventEmitter {
       putBack();
       this.changed(acc.id);
       this.recheck(acc, err, [folder]);
-      throw new Error(friendlyError(err));
+      throw notMoved(err);
     }
     return 'deleted';
   }
@@ -2484,7 +2512,7 @@ class Engine extends EventEmitter {
       putBack();
       this.changed(acc.id);
       this.recheck(acc, err, [folder]);
-      throw err;
+      throw notMoved(err);
     }
   }
 
