@@ -1335,6 +1335,9 @@ class WorkspaceService extends EventEmitter {
       available: this.available,
       storage: this.storage,
       signedIn: this.signedIn,
+      // Which session: a number that moves on whenever one ends or begins (endSession), also when another browser tab
+      // signs in to another account. What only one session may see, such as an agent's key, goes when it changes.
+      session: this.epoch,
       server: this.server,
       host: hostOf(this.server),
       operator,

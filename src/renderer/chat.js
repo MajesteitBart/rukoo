@@ -133,6 +133,10 @@ const fileLimit = () => {
   const n = Number(CH.state?.files?.maxBytes ?? CH.state?.limits?.fileBytes);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 };
+// The directory view (CH.view.me) and the state's summary of the workspace both say the person's role. Main writes
+// them from the same row, and they come apart: the state at once, the view after the directory reload's wait. Whichever
+// came last says it: applyState writes a role the state changed into the view (stateRole), and the next view brings
+// main's row again.
 const myRole = () => CH.view?.me?.role || summary()?.role || 'member';
 const isGuest = () => myRole() === 'guest';
 const me = () => CH.view?.me?.id || null;
@@ -771,6 +775,7 @@ function applyState(state, { openFirst = true } = {}) {
   const wasAvailable = available();
   const wasSignedIn = signedIn();
   const first = !CH.known;
+  const roleBefore = { ws: CH.ws, role: summary()?.role || null };
   CH.state = state;
   CH.known = true;
   trackConnection();
@@ -790,6 +795,7 @@ function applyState(state, { openFirst = true } = {}) {
       if (want && want !== state.selected) api('chatSelect', want).catch(() => {});
     }
   }
+  stateRole(roleBefore);
   // Signing in or out decides too whether a window without a mail account shows Chat (app.js noMailAccount).
   if (first || available() !== wasAvailable || signedIn() !== wasSignedIn) ctx.chatAvailability?.();
   else ctx.renderModeSwitch?.();
@@ -797,6 +803,25 @@ function applyState(state, { openFirst = true } = {}) {
   renderPane();
   maybeTakeJoin();
   noticeLostUnsent(state);
+}
+
+// A role the state changed for the workspace on screen (before: what the state said until now) is newer than the
+// directory view the window has: it goes into the view, so everything that asks myRole() follows it at once.
+function stateRole(before) {
+  const role = summary()?.role || null;
+  const me = CH.view?.me;
+  if (!me || !role || CH.ws !== before.ws || role === before.role || role === me.role) return;
+  CH.view = { ...CH.view, me: { ...me, role } };
+  roleChanged();
+}
+
+// The person's role changed: a guest sees no connection state from now on, cached or still on its way
+// (chat-agent-seen.js), and the open mention list and dialogs draw again with the role.
+function roleChanged() {
+  if (isGuest()) forgetSeen(CH.ws);
+  dialogsDrewFrom = directoryDrawn();
+  D.directoryChanged();
+  if (CH.openId) view?.roomChanged(CH.rooms.get(CH.openId), { directory: true });
 }
 
 // A broken cache was made again and took unsent messages with it (contract 3.4, ChatState.lostUnsent): one toast says
@@ -905,6 +930,8 @@ async function loadView() {
   }
   if (gen !== CH.generation || CH.ws !== ws || !v) return;
   CH.view = { ws: v.ws, me: v.me, membersMore: Boolean(v.membersMore), channels: v.channels || [] };
+  // A guest sees no connection state (roleChanged); the lists below draw again with the role.
+  if (isGuest()) forgetSeen(ws);
   CH.rooms = new Map((v.rooms || []).map((r) => [r.id, r]));
   CH.members = new Map((v.members || []).map((m) => [m.id, m]));
   CH.blocks = new Set((v.blocks || []).map((b) => b.member));

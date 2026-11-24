@@ -192,8 +192,9 @@ function focusKey(el) {
 
 // A dialog about the workspace on screen: it closes when that workspace changes or goes (desktop-ui 7.11).
 // opts.redraw(body): draws the dialog's lists again when the directory changes, keeping what was typed, picked or
-// checked; the focus stays on the same control. opts.stay: the dialog holds what it is about itself, such as a key
-// that shows only once, and stays when the workspace on screen changes.
+// checked; the focus stays on the same control. opts.stay(): for a dialog that holds what it is about itself, such as
+// a key that shows only once: it stays when the workspace on screen changes, and closes once stay() says that what it
+// holds is gone.
 function wsDialog(opts) {
   const gen = K.CH.generation;
   let timer = null;
@@ -201,11 +202,9 @@ function wsDialog(opts) {
   return dialog({
     ...opts,
     render(body, done) {
-      if (!opts.stay) {
-        timer = setInterval(() => {
-          if (K.CH.generation !== gen || !body.isConnected) done(null);
-        }, 250);
-      }
+      timer = setInterval(() => {
+        if (!body.isConnected || (opts.stay ? !opts.stay() : K.CH.generation !== gen)) done(null);
+      }, 250);
       chatDialog(body);
       if (opts.quietClose) body.closest('.dialog').classList.add('ch-quiet-close');
       if (opts.cls) body.closest('.dialog').classList.add(...opts.cls.split(' '));
@@ -2099,11 +2098,15 @@ export async function agentsDialog() {
         .sort((a, b) => (a[0] < b[0] ? -1 : 1))
     );
   const load = async () => {
+    // After Add an agent or an agent's menu the dialog may be gone with its workspace or session, as a sign-out takes
+    // it: no request, and no error that would cover what the key step said.
+    if (!body || !body.isConnected || K.CH.ws !== ws) return;
     loadedFor = directoryIds();
     try {
       const res = await api('chatAgents', ws);
       list = (res && res.agents) || [];
-      rememberAgents(ws, list);
+      // A person who became a guest meanwhile keeps none of it (chat-agent-seen.js).
+      if (!K.isGuest()) rememberAgents(ws, list);
       failed = null;
     } catch (err) {
       failed = err;
@@ -2192,14 +2195,25 @@ function channelToJoin(agent, ws) {
   return room && canAddAgent(candidate, room, K.me(), new Set([K.me()])) ? room : null;
 }
 
+// Whether a key made for ws in session (ChatState.session) may still show: the same session is signed in, and ws is
+// still among its workspaces. Signing out, here or in another window or tab, leaving the workspace, being removed from
+// it and its deletion end that; another workspace coming on screen doesn't.
+const keyHolds = (ws, session) => Boolean(K.CH.state?.signedIn) && K.CH.state.session === session && (K.CH.state.workspaces || []).some((w) => w.id === ws);
+// A key that went before it was copied: it can't be shown again, and New key makes another.
+const keyLost = (agent) => toast(t('chat.agents.keyLost', { name: agent.name }), 8000);
+
 // Add an agent: the form, then its key once, in a config for the runner, with the offer to add it to the channel on
-// screen. The key step gets the workspace and server the agent was made in, whatever is on screen by then.
+// screen. The key step gets the workspace, server and session the agent was made in, whatever is on screen by then.
 export async function addAgent() {
   const ws = K.CH.ws;
   const server = K.CH.state?.server || '';
+  const session = K.CH.state?.session;
   const choices = askRunnerChoices();
   const made = await agentForm(null);
-  if (made && made.key) await showAgentKey(made, { ws, server, choices: await choices, room: channelToJoin(made.agent, ws) });
+  if (made && made.key) {
+    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices, room: channelToJoin(made.agent, ws) });
+    else keyLost(made.agent);
+  }
   return made ? made.agent : null;
 }
 
@@ -2214,14 +2228,19 @@ export async function newAgentKey(agent) {
   const ws = K.CH.ws;
   if (!ws || !agent) return null;
   const server = K.CH.state?.server || '';
+  const session = K.CH.state?.session;
   // Asked while the question is open, so the key step needn't wait for a slow status check after the key is made.
   const choices = askRunnerChoices();
   const ok = await confirmDialog(t('chat.agents.newKeyTitle', { name: agent.name }), t('chat.agents.newKeyBody', { name: agent.name }), t('chat.agents.newKeyConfirm'));
   if (!ok || ws !== K.CH.ws) return null;
   try {
     const made = await api('chatNewAgentKey', ws, agent.id);
-    // The old key stopped: the new one shows, for this workspace, whatever is on screen by now.
-    if (made && made.key) await showAgentKey(made, { ws, server, choices: await choices });
+    // The old key stopped: the new one shows, for this workspace, whatever is on screen by now, while the session that
+    // asked for it holds.
+    if (made && made.key) {
+      if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices });
+      else keyLost(made.agent || agent);
+    }
     return made ? made.agent : null;
   } catch (err) {
     toast(K.errorText(err), 5000);
@@ -2405,13 +2424,14 @@ async function agentForm(agent = null) {
 // it, which shows only once: Copy config is the filled button until something was copied. 3, how to start the runner
 // with Node.js 22 or newer. A new agent of the person's can join the channel on screen (room): Done with the box
 // checked adds it there, and a refusal keeps the step open, says why and offers Done again. Closing before anything was
-// copied asks first, as the invitation link does. ws and server: the workspace the key is for, which the step keeps
-// when the workspace on screen changes. An empty choices (desktop, where no agent of Settings can answer) leaves A
-// program of my own, and the line under it says why.
+// copied asks first, as the invitation link does. ws, server and session: the workspace the key is for, which the step
+// keeps when the workspace on screen changes, and the session that made it: the step goes once that session ends or
+// loses ws (keyHolds), and says so when the key wasn't copied. An empty choices (desktop, where no agent of Settings can
+// answer) leaves A program of my own, and the line under it says why.
 //
 // Starting the runner from Rukoo itself ("Run on this computer", #373) would go at the head of step 3, as Copy config
 // heads step 2.
-async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?.server || '', choices = [], room = null } = {}) {
+async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?.server || '', session = K.CH.state?.session, choices = [], room = null } = {}) {
   if (!ws || !agent || !key) return null;
   let pick = choices.length ? choices[0].id : OWN_PROGRAM;
   const noneUsable = !choices.length;
@@ -2420,6 +2440,15 @@ async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?
   // Done was pressed and the close question answered; a join that the server refused waits for Done again.
   let leaving = false;
   let busy = false;
+  // The session ended or lost ws while the step was open (holds()), and the close question it may have open.
+  let lost = false;
+  let closeAsk = null;
+  const holds = () => {
+    if (keyHolds(ws, session)) return true;
+    lost = true;
+    closeAsk?.(true);
+    return false;
+  };
   const backend = () => choices.find((c) => c.id === pick)?.backend || PLACEHOLDER_BACKEND;
   const config = () => runnerConfig({ server, workspace: ws, key, backend: backend() });
 
@@ -2458,8 +2487,9 @@ async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?
       buttons: [
         { label: t('chat.invite.goBack'), value: false },
         { label: t('common.actions.close'), value: true }
-      ]
-    });
+      ],
+      render: (_, done) => (closeAsk = done)
+    }).finally(() => (closeAsk = null));
   };
 
   // Done: the close question when nothing was copied, then, with the box checked, the agent joins the channel the box
@@ -2470,6 +2500,8 @@ async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?
     busy = true;
     try {
       if (!leaving && !(await leaveOk())) return;
+      // The step went while the question was open: nothing joins for a session that ended.
+      if (lost) return;
       leaving = true;
       if (room && join) {
         const body = scrim.querySelector('.dialog-body');
@@ -2493,8 +2525,8 @@ async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?
   await wsDialog({
     title: t('chat.agents.keyTitle', { name: agent.name }),
     wide: true,
-    // The key is for ws, whatever is on screen: the step stays until it is closed.
-    stay: true,
+    // The key is for ws, whatever is on screen: the step stays until it is closed, or the session that made it goes.
+    stay: holds,
     buttons: [{ get label() { return t('chat.invite.done'); }, value: (scrim) => (finish(scrim), KEEP_OPEN) }],
     // Escape and a click outside: the close question, and the agent joins nothing.
     beforeClose: () => !busy && leaveOk(),
@@ -2560,6 +2592,7 @@ async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?
       setTimeout(() => body.querySelector('[data-copy-config]')?.focus(), 0);
     }
   });
+  if (lost && !kept) keyLost(agent);
   return null;
 }
 

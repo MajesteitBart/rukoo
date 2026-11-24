@@ -679,6 +679,138 @@ test('a person who became a guest sees no connection state, though the app had i
   await expect(dialogBox(win).locator('[data-people] .ch-agent-meta')).toHaveText('Made by Olga Owner · Answers only Olga Owner', { timeout: 15000 });
 });
 
+const keyLostText = (name) => `The key for ${name} wasn't saved. New key in the Agents dialog makes another.`;
+const stepTitles = () => win.locator('.scrim .dialog h2', { hasText: /^Connect / });
+
+test('the key step goes when its session signs out elsewhere, and says the key wasn\'t saved', async () => {
+  const { bart } = await twoPeople(server);
+  await ready(bart, { fake: true });
+  const { step } = await makeAgent('Ghost');
+  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bprimary\b/);
+  // Signed out as Settings or another window does it, while the config wasn't copied.
+  await win.evaluate(() => window.mail.call('accountSignOut'));
+  await expect(stepTitles()).toHaveCount(0, { timeout: 15000 });
+  await expect(toast()).toHaveText(keyLostText('Ghost'), { timeout: 15000 });
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  // Nothing the sign-out set off covers it: the Agents dialog behind the step went without asking for its list again.
+  await settle();
+  await expect(toast()).toHaveText(keyLostText('Ghost'));
+});
+
+test('the key step goes when its person is removed from the workspace, quietly once the config was copied, and a key that comes back after that never shows', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const beta = await server.seedWorkspace(olga, { name: 'Beta', displayName: 'Olga Owner' });
+  const bartInBeta = await server.seedMember(beta, bart, 'Bart');
+  await ready(bart, { fake: true });
+  const switcherName = () => win.locator('.sidebar .ch-ws-switch .name');
+  const inState = (id) => win.evaluate(async (w) => ((await import('./chat.js')).CH.state?.workspaces || []).some((x) => x.id === w), id);
+
+  // Beta on screen. Main holds the answer of the agent's create, once the server made it, until the test lets it go.
+  await app.evaluate(({ BrowserWindow }, payload) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('mail:event', { type: 'chat', payload });
+  }, { kind: 'open', ws: beta.id, conversation: beta.general });
+  await expect(switcherName()).toHaveText('Beta', { timeout: 15000 });
+  await directoryIn(app, win);
+  await app.evaluate(() => {
+    const manage = global.__semChat.manage;
+    const real = manage.createAgent.bind(manage);
+    const hold = { made: false };
+    hold.released = new Promise((resolve) => (hold.release = resolve));
+    global.__semHold = hold;
+    manage.createAgent = async (...args) => {
+      const out = await real(...args);
+      hold.made = true;
+      await hold.released;
+      return out;
+    };
+  });
+  await workspaceMenu(win, 'Agents');
+  await dialogBox(win).locator('[data-add-agent]').click();
+  const form = dialogBox(win);
+  await form.locator('[name="name"]').fill('Courier');
+  await form.locator('.buttons button').last().click();
+  await expect.poll(() => app.evaluate(() => global.__semHold.made), { timeout: 15000 }).toBe(true);
+  // Olga removes Bart from Beta while the key is on its way to his window.
+  const removed = await server.call('DELETE', `/v1/workspaces/${beta.id}/members/${bartInBeta.id}`, { token: olga.token });
+  expect([200, 204]).toContain(removed.status);
+  await expect.poll(() => inState(beta.id), { timeout: 15000 }).toBe(false);
+  await app.evaluate(() => global.__semHold.release());
+  await expect(toast()).toHaveText(keyLostText('Courier'), { timeout: 15000 });
+  await settle();
+  await expect(stepTitles()).toHaveCount(0);
+
+  // Acme: the step is open and its config copied when Olga removes Bart. It goes without a word: the key was kept.
+  await pane().locator('[data-ch-empty="gone-ok"]').click({ timeout: 15000 });
+  await expect(switcherName()).toHaveText('Acme', { timeout: 15000 });
+  await directoryIn(app, win);
+  const { step } = await makeAgent('Keeper');
+  await step.locator('[data-copy-config]').click();
+  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
+  const out = await server.call('DELETE', `/v1/workspaces/${ws.id}/members/${bartMe.id}`, { token: olga.token });
+  expect([200, 204]).toContain(out.status);
+  await expect(stepTitles()).toHaveCount(0, { timeout: 15000 });
+  await settle();
+  await expect(toast()).not.toContainText("wasn't saved");
+});
+
+test('a role the app learns from the state wins over an older directory view: the open mention list and Members draw again with it', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await olgasAgent(olga, ws);
+  await ready(bart);
+  // The directory reload, which would bring the role a moment later, doesn't come: only the state says it.
+  await app.evaluate(() => {
+    const svc = global.__semChat;
+    const emit = svc.emitChat.bind(svc);
+    svc.emitChat = (payload) => (payload && payload.kind === 'directory' ? undefined : emit(payload));
+  });
+  const roleIs = (role) => server.call('PATCH', `/v1/workspaces/${ws.id}/members/${bartMe.id}`, { token: olga.token, body: { role } }).then((res) => expect(res.status).toBe(200));
+  const note = () => picker().locator('[role="option"]', { has: win.locator('.mention-name', { hasText: 'Revy' }) }).locator('.mention-note');
+
+  // The mention list is open while Olga makes Bart a guest: it draws again without the connection state.
+  await composer(win).click();
+  await win.keyboard.type('@Rev');
+  await expect(note()).toHaveText('Answers only Olga Owner · Not connected yet', { timeout: 15000 });
+  await roleIs('guest');
+  await expect(note()).toHaveText('Answers only Olga Owner', { timeout: 15000 });
+  // A member again: the state says so, and the open list shows it again.
+  await roleIs('member');
+  await expect(note()).toHaveText('Answers only Olga Owner · Not connected yet', { timeout: 15000 });
+  await win.keyboard.press('Escape');
+  await win.keyboard.press('Control+A');
+  await win.keyboard.press('Backspace');
+
+  // The channel's Members is open while he becomes a guest again: it draws again without it.
+  await roomMenu(win, 'Members');
+  const meta = dialogBox(win).locator('[data-people] .ch-agent-meta');
+  await expect(meta).toHaveText('Made by Olga Owner · Answers only Olga Owner · Not connected yet', { timeout: 15000 });
+  await roleIs('guest');
+  await expect(meta).toHaveText('Made by Olga Owner · Answers only Olga Owner', { timeout: 15000 });
+});
+
+test('Send without mentions, after the server refused a mention of an agent, says nothing about that agent', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  const revy = await olgasAgent(olga, ws);
+  await ready(bart);
+  await composer(win).click();
+  await win.keyboard.type('@Rev');
+  await expect(picker().locator('[role="option"] .mention-name')).toHaveText(['Revy'], { timeout: 15000 });
+  await win.keyboard.press('Enter');
+  await win.keyboard.type('are you there?');
+  // Olga takes Revy out of general before the message goes: the server refuses the mention.
+  const out = await server.call('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/${revy.agent.id}`, { token: olga.token });
+  expect([200, 204]).toContain(out.status);
+  await win.keyboard.press('Enter');
+  const row = messageRow(win, '@Revy are you there?');
+  await expect(row.locator('[data-ch-act="without-mentions"]')).toBeVisible({ timeout: 15000 });
+  await row.locator('[data-ch-act="without-mentions"]').click();
+  await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, '@Revy are you there?')).length, { timeout: 15000 }).toBe(1);
+  expect((await serverMessages(server, olga, ws.id, ws.general, '@Revy are you there?'))[0].mentions).toEqual([]);
+  // Revy never connected, but the message no longer asks it: no toast about it.
+  await settle();
+  await settle();
+  await expect(toast()).not.toContainText("isn't connected yet");
+});
+
 // An agent's captions (who made it, whom it answers, when it last connected) are 12px, so they take chat's caption
 // grey: at least 4.5:1 on the dialogs and the mention list, which open outside the chat view, in dark and light.
 test("an agent's captions pass 4.5:1 in the Agents and Members dialogs, Add agents and the mention list, in dark and light", async () => {

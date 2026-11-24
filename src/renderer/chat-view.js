@@ -741,8 +741,9 @@ export function mountView(section, H) {
   }
 
   // A mention of an agent whose runner never connected gets no answer: once the server has the message (its sent
-  // event), and a request that succeeded says the agent never connected, a toast says so, rather than leave the person
-  // waiting for a reply. A message still queued, or a request that failed, says nothing. local → { ws, agents }.
+  // event), and a request that started after that and succeeded says the agent never connected, a toast says so,
+  // rather than leave the person waiting for a reply. A message still queued, a request that failed, and a message
+  // sent without its mentions or discarded say nothing. local → { ws, agents }.
   const silentWatch = new Map();
   function watchSilentAgents(ws, local, mentions) {
     if (H.myRole() === 'guest') return;
@@ -755,7 +756,8 @@ export function mountView(section, H) {
   }
 
   function noteSilentAgents(ws, agents) {
-    refreshSeen(ws).then((seen) => {
+    // A request of its own: one the mention list started before the send can say the agent hadn't connected yet.
+    refreshSeen(ws, { fresh: true }).then((seen) => {
       if (!seen || V.ws !== ws || H.myRole() === 'guest') return;
       const silent = agents.find((id) => seen.has(id) && seen.get(id) === null);
       if (silent) toast(t('chat.agents.notConnectedSent', { name: displayName(members().get(silent), t) }), 6000);
@@ -1624,6 +1626,8 @@ export function mountView(section, H) {
     if (!p) return;
     const ws = V.ws;
     const c = V.c;
+    // Without its mentions, or not at all, the message asks no agent: nothing to say about one that won't answer.
+    if (id === 'discard' || id === 'without-mentions') silentWatch.delete(local);
     try {
       if (id === 'discard') {
         await api('chatDiscard', local);

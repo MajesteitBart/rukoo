@@ -212,3 +212,60 @@ test("an agent's line says whether its runner ever connected, and how long ago i
   assert.equal(agentSeenText(Date.UTC(2025, 10, 1, 12), { t, locale: 'en', now }), 'Last active Nov 1, 2025');
   assert.equal(agentSeenText(now - 5 * 60000, { t, locale: 'nl', now }), 'Last active 5 minuten geleden');
 });
+
+// chat-agent-seen.js with ui.js's api() replaced: every chatAgents call waits until the test answers it. Each load is a
+// module of its own, so its cache starts empty.
+let seenLoads = 0;
+async function seenModule() {
+  const calls = [];
+  const id = ++seenLoads;
+  globalThis[`__seenApi${id}`] = (method, ws) =>
+    new Promise((resolve, reject) => {
+      calls.push({ method, ws, resolve: (agents) => resolve({ agents }), reject });
+    });
+  const stub = `export const api = (...args) => globalThis.__seenApi${id}(...args);`;
+  const source = fs
+    .readFileSync(path.join(__dirname, '../src/renderer/chat-agent-seen.js'), 'utf8')
+    .replace("from './ui.js'", `from 'data:text/javascript;base64,${Buffer.from(stub).toString('base64')}'`);
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${id}`).toString('base64')}`);
+  return { ...mod, calls };
+}
+const AGENT = 'u_AbCdEfGhIjKlMnOpQrStUv';
+
+test('a fresh status request starts after what happened, never joins one already on its way, and an older answer never replaces a newer one', async () => {
+  const { refreshSeen, seenOf, calls } = await seenModule();
+  // The mention list asks while the person types; the agent hasn't connected yet.
+  const before = refreshSeen(W);
+  // The server took the message: the toast asks again, on a request of its own.
+  const after = refreshSeen(W, { fresh: true });
+  assert.equal(calls.length, 2, 'the fresh request is a new one');
+  // Asking without fresh joins the newest request on its way.
+  assert.equal(refreshSeen(W), after);
+  assert.equal(calls.length, 2);
+  calls[1].resolve([{ id: AGENT, lastSeen: null }]);
+  assert.equal((await after).get(AGENT), null);
+  assert.equal(seenOf(W, AGENT), null);
+  // The earlier request answers last, with what was true before: it doesn't replace the newer answer.
+  calls[0].resolve([{ id: AGENT, lastSeen: 1000 }]);
+  assert.equal((await before).get(AGENT), 1000);
+  assert.equal(seenOf(W, AGENT), null);
+});
+
+test('an answer that arrives for what forgetSeen dropped is thrown away, as after sign-out or becoming a guest', async () => {
+  const { refreshSeen, forgetSeen, seenOf, loadSeen, calls } = await seenModule();
+  const asked = refreshSeen(W);
+  forgetSeen(W);
+  calls[0].resolve([{ id: AGENT, lastSeen: 1000 }]);
+  assert.equal(await asked, null, 'the caller gets nothing to show');
+  assert.equal(seenOf(W, AGENT), undefined, 'and the cache stays empty');
+  // A failed request for a dropped workspace leaves nothing behind either, so the next look asks at once.
+  const failing = refreshSeen(W);
+  forgetSeen();
+  calls[1].reject(new Error('forbidden'));
+  assert.equal(await failing, null);
+  const next = loadSeen(W);
+  assert.equal(calls.length, 3);
+  calls[2].resolve([{ id: AGENT, lastSeen: 2000 }]);
+  assert.equal((await next).get(AGENT), 2000);
+  assert.equal(seenOf(W, AGENT), 2000);
+});
