@@ -549,12 +549,18 @@ class AgentRuns extends EventEmitter {
       case 'problems':
         s.problems = (Array.isArray(e.problems) ? e.problems : []).slice(0, 5).map((p) => ({ code: p && typeof p.code === 'string' ? p.code : null, message: line(p && p.message) }));
         break;
-      case 'pass':
+      case 'pass': {
+        // A pass comes at every wake and every 30 seconds: the window hears of one when what it shows changed, and
+        // of the time of the last one at most once a minute.
+        const channels = Number.isSafeInteger(e.channels) ? e.channels : null;
+        const same = s.phase === 'running' && !s.unreachable && s.channels === channels && s.passAt && now - s.passAt < 60000;
         if (s.phase === 'starting') s.phase = 'running';
-        s.passAt = now;
         s.unreachable = null;
-        s.channels = Number.isSafeInteger(e.channels) ? e.channels : null;
+        s.channels = channels;
+        if (same) return;
+        s.passAt = now;
         break;
+      }
       case 'unreachable':
         s.unreachable = { message: line(e.message), at: now };
         break;
