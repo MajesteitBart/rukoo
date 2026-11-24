@@ -211,6 +211,69 @@ test('a refusal that comes after the person opened another chat names the agent 
   expect(await userMessages()).toEqual([['codex', ['Hello Codex']]]);
 });
 
+// Pasted into the chat input the way the system clipboard does: the file becomes an attachment of the message.
+const pasteFile = (name, text) =>
+  input().evaluate(
+    (ta, { name, text }) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([text], name, { type: 'text/plain' }));
+      ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    },
+    { name, text }
+  );
+const attachedNames = () => win.locator('.agentpane .bui-pb__files .bui-entity--attached:not(.is-pending) .bui-entity__name');
+
+// Send for a custom agent removed before the panel heard of it, and a second message started before main refused the
+// first. The refused text used to stay out, because the input held the second message by then.
+test('a refused message comes back above the one started since, with both files, and nothing is sent', async () => {
+  await launch();
+  const id = await win.evaluate(() => window.mail.call('agentAddCustom', 'booper').then((r) => r.id));
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  await win.keyboard.press('Control+j');
+  await pickAgentRow('Booper');
+  await input().fill('Hello Booper');
+  await pasteFile('first.txt', 'For Booper');
+  await expect(attachedNames()).toHaveText(['first.txt']);
+  // Main holds the new chat until the test lets it answer, and Booper is removed meanwhile without telling the window.
+  await app.evaluate((_e, x) => {
+    const hub = global.__semAgents;
+    const create = hub.create.bind(hub);
+    global.__asked = [];
+    global.__create = new Promise((resolve) => (global.__answerCreate = resolve));
+    hub.create = (req) => {
+      global.__asked.push(req.agent);
+      return global.__create.then(() => create(req));
+    };
+    hub.cfg.removeCustom(x);
+  }, id);
+  await input().press('Enter');
+  await expect.poll(() => input().evaluate((el) => el.value)).toBe('');
+  await expect(attachedNames()).toHaveCount(0);
+  // The next message, started before main answers.
+  await input().fill('A second message');
+  await pasteFile('second.txt', 'Also for Booper');
+  await expect(attachedNames()).toHaveText(['second.txt']);
+  await app.evaluate(() => global.__answerCreate());
+  await expect(win.locator('#toast')).toContainText("Booper is no longer in Settings, so your message wasn't sent. Pick another agent.");
+  await expect.poll(() => input().evaluate((el) => el.value)).toBe('Hello Booper\n\nA second message');
+  await expect(attachedNames()).toHaveText(['first.txt', 'second.txt']);
+  expect(await app.evaluate(() => global.__asked)).toEqual([id]);
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
+  // Another agent: all of it is in its input to edit, and goes there with the next Send.
+  await pickAgentRow('Claude');
+  await expect(input()).toBeEditable();
+  expect(await input().evaluate((el) => el.value)).toBe('Hello Booper\n\nA second message');
+  await expect(attachedNames()).toHaveText(['first.txt', 'second.txt']);
+  await input().press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['claude']);
+  const received = () =>
+    app.evaluate(() => {
+      const r = global.__semAgents.adapters.get('claude').received.at(-1);
+      return r ? { both: String(r.text).includes('Hello Booper\n\nA second message'), files: r.files.map((f) => f.name) } : null;
+    });
+  await expect.poll(received).toEqual({ both: true, files: ['first.txt', 'second.txt'] });
+});
+
 // Text written in a chat whose custom agent is then removed is never out of reach: the input of that chat is off, and
 // picking another agent brings the text into a new chat with that agent, where it can be sent.
 test('a follow-up written in a chat whose agent is then removed comes along when the person picks another agent', async () => {

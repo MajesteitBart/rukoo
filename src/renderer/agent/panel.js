@@ -1290,6 +1290,13 @@ export function mountAgentPanel(ctx) {
       P.attach = { files: [...attached.files, ...P.attach.files], emails: [...attached.emails, ...P.attach.emails] };
       showAttachments();
     };
+    // And the text, above anything written in the input since, after an empty line: all of it is on screen to edit
+    // before the next Send. A quick action's or skill's text is Rukoo's, not the person's.
+    const giveBack = () => {
+      if (action || skill || !chat || !body) return;
+      const since = chat.getValue();
+      chat.setValue(since.trim() ? `${body}\n\n${since}` : body);
+    };
     try {
       const id = await ensureConversation(sent);
       const message = action ? { text: action.prompt, action: action.action, display: action.label } : skill ? { skill } : { text: body };
@@ -1308,7 +1315,7 @@ export function mountAgentPanel(ctx) {
       }
       restore();
       if (gone) {
-        if (!action && !skill && chat && !chat.getValue()) chat.setValue(body);
+        giveBack();
         return;
       }
       if (skill && /skill-missing/.test(why)) {
@@ -1316,7 +1323,7 @@ export function mountAgentPanel(ctx) {
         loadSkills();
         return;
       }
-      if (!action && !skill && chat && !chat.getValue()) chat.setValue(body);
+      giveBack();
       showError(err, sent.agent);
       // The text is back in the input: the draft keeps the agent it was written for.
       noteWritten();
