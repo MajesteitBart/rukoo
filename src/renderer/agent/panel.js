@@ -332,7 +332,8 @@ export function mountAgentPanel(ctx) {
   // Whether the draft on screen holds anything, read from the input as it is now: text after trim, an attached email
   // or file, or a file on its way. While a chat is open the input belongs to that chat, so the draft holds nothing
   // then; its text becomes the draft's on New chat (freshDraft()).
-  const draftWritten = () => Boolean(!P.conv && chat && (chat.getValue().trim() || hasAttachments() || holding()));
+  const inputHolds = () => Boolean(chat && (chat.getValue().trim() || hasAttachments() || holding()));
+  const draftWritten = () => !P.conv && inputHolds();
 
   // Something in the input: the draft keeps the agent on screen from now on, also once the input is empty again.
   // Called on every edit of the input (its onChange: typing, paste, cut, undo, a picked skill or command, text set by
@@ -1076,6 +1077,9 @@ export function mountAgentPanel(ctx) {
     }
     P.related = related && related.id ? { ...related, for: m.id } : null;
     if (P.conv && !otherEmail && P.conv.message && P.conv.message.id === m.id) return refreshComposer();
+    // Something was written while main looked: the new chat keeps the agent it was written under, held like any draft
+    // with text in it.
+    if (inputHolds()) setDraft({ agent: currentAgent(), hold: 'kept' });
     // A chat about another email keeps running in the background; this email starts fresh.
     showEmpty();
   }

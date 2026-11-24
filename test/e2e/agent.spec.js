@@ -1164,6 +1164,37 @@ test('picking another agent in an open chat starts a new chat on it, also when t
   await expect.poll(agentsOfChats).toEqual(['clark', 'codex']);
 });
 
+// A Codex chat is on screen when the person opens an email without a chat and types before main has looked. The
+// lookup finds nothing: the text stays under Codex, where it was typed, and no longer moves to the default.
+test('text typed while an email is looked up keeps the agent it was typed under when the email has no chat', async () => {
+  await openChat('Call on Thursday');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await say('Hello Codex');
+  await expect.poll(agentsOfChats).toEqual(['codex']);
+  await expect.poll(chatStatus, { timeout: 15000 }).toBe('idle');
+  // Main's lookup of an email's saved chat waits until the test lets it answer.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    const find = hub.findFor.bind(hub);
+    global.__lookup = new Promise((resolve) => (global.__answerLookup = resolve));
+    hub.findFor = (ref) => global.__lookup.then(() => find(ref));
+  });
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Codex']);
+  await input().fill('For Codex');
+  await app.evaluate(() => global.__answerLookup());
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await expect(headAgent()).toHaveText('Codex');
+  expect(await inputValue()).toBe('For Codex');
+  // Held like any draft with text: a status update keeps it on Codex.
+  await win.evaluate(() => window.mail.call('agentTest', 'clark'));
+  await expect(headAgent()).toHaveText('Codex');
+  await input().press('Enter');
+  await expect.poll(agentsOfChats).toEqual(['codex', 'codex']);
+});
+
 test('a wide chat panel gives way, so the reader keeps its 420 px', async () => {
   await openChat('Call on Thursday');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1300, 900));
