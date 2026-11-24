@@ -91,22 +91,35 @@ async function folderState(client, path) {
 // What the server says now of these uids in the open folder, read by UID in sets that fit a command line: a Map
 // uid → { flags, modseq }, modseq with CONDSTORE only. Only answers that carry one of these UIDs count: a server may
 // send a FETCH of another email with them (RFC 9051 section 7.5.2), and imapflow lists that one too. A uid the map
-// lacks isn't in the folder. null when the read failed.
+// lacks isn't in the folder. null when the read failed. An EXPUNGE or VANISHED during the read may be of one of these
+// emails, after its FETCH line came (RFC 9051 section 7.5.1 lets a server send it during a UID FETCH), so that read
+// proves nothing: Rukoo reads once more, and gives null when it happens again.
 async function readMany(client, uids) {
   if (client.usable === false) return null;
   const want = new Set(uids.map(Number));
-  const out = new Map();
-  try {
-    for (const set of uidSets([...want])) {
-      for (const m of (await client.fetchAll(set, { uid: true, flags: true }, { uid: true })) || []) {
-        const uid = Number(m && m.uid);
-        if (want.has(uid) && m.flags) out.set(uid, { flags: m.flags, modseq: m.modseq != null ? String(m.modseq) : null });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let expunged = false;
+    const onExpunge = () => {
+      expunged = true;
+    };
+    if (typeof client.on === 'function') client.on('expunge', onExpunge);
+    const out = new Map();
+    try {
+      for (const set of uidSets([...want])) {
+        for (const m of (await client.fetchAll(set, { uid: true, flags: true }, { uid: true })) || []) {
+          const uid = Number(m && m.uid);
+          if (want.has(uid) && m.flags) out.set(uid, { flags: m.flags, modseq: m.modseq != null ? String(m.modseq) : null });
+        }
       }
+    } catch (_) {
+      return null;
+    } finally {
+      if (typeof client.off === 'function') client.off('expunge', onExpunge);
     }
-  } catch (_) {
-    return null;
+    if (client.usable === false) return null;
+    if (!expunged) return out;
   }
-  return client.usable === false ? null : out;
+  return null;
 }
 
 // What a FETCH line in the answer to a command says of an email: { uid, modseq }.

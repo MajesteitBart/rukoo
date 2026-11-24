@@ -1124,6 +1124,49 @@ test('over a real connection with CONDSTORE, two FETCHes of the email during the
     assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
   }));
 
+// #308 round 4, finding 4: an EXPUNGE that comes during the read back may be of this very email, so that read proves
+// nothing. Rukoo reads once more: an email gone by then is unknown, one still there is refused.
+test('over a real connection, an EXPUNGE during the read back after a failure voids it, and Rukoo reads once more', () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
+    // Expunges target during the first UID FETCH from now, after its FETCH line and before the tagged OK. The EXISTS
+    // first tells the client of the emails put in since, as a server does before it names them by sequence number.
+    const expungeDuringRead = (target) => {
+      let reads = 0;
+      box.before((command, folder, write, later) => {
+        if (!/^UID FETCH /i.test(command) || reads++) return;
+        write(`* ${inbox.messages.length} EXISTS\r\n`);
+        later((send) => {
+          const seq = inbox.messages.indexOf(target) + 1;
+          inbox.messages.splice(seq - 1, 1);
+          send(`* ${seq} EXPUNGE\r\n`);
+        });
+      });
+      return () => reads;
+    };
+    // A delete whose EXPUNGE is refused: the read shows the email still marked, then another session expunges it.
+    const a = box.put('INBOX', { subject: 'Expunged during the read' });
+    box.refuse((command) => /^UID EXPUNGE /i.test(command));
+    let reads = expungeDuringRead(a);
+    await assert.rejects(s.deleteForever('INBOX', a.uid), (err) => err.unknown === true && !err.refused && !err.marked);
+    assert.equal(reads(), 2, 'read once more');
+    assert.equal(inbox.messages.length, 0);
+
+    // A refused MOVE, read back the same way.
+    const b = box.put('INBOX', { subject: 'Moved by another app' });
+    box.refuse((command) => /^UID MOVE /i.test(command));
+    reads = expungeDuringRead(b);
+    await assert.rejects(s.move('INBOX', b.uid, 'Archive'), (err) => err.unknown === true && !err.refused);
+    assert.equal(reads(), 2, 'read once more');
+
+    // The EXPUNGE was of another email: the second read shows this one stayed.
+    const c = box.put('INBOX', { subject: 'Stays' });
+    const d = box.put('INBOX', { subject: 'Expunged by another app' });
+    reads = expungeDuringRead(d);
+    await assert.rejects(s.move('INBOX', c.uid, 'Archive'), { message: t('errors.move.refused'), refused: true });
+    assert.equal(reads(), 2);
+    assert.deepEqual(inbox.messages.map((m) => m.subject), ['Stays']);
+  }));
+
 // #308 follow-up, finding 6: the checks must not cost a round trip per email. Counted over TCP for 500 emails; the
 // commands of the move or delete itself are one MOVE, or one STORE and one EXPUNGE, per email, as before #308.
 test('a batch of 500 moves asks one STATUS, and 500 deletes read flags once per 100 emails', () =>
