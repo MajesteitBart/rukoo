@@ -1418,6 +1418,7 @@
   "settings.modes.turnOn": "Aanzetten",
   "settings.modes.offMail": "E-mail staat uit, dus Rukoo is geen nieuwe e-mail begonnen.",
   "settings.modes.offMailOpen": "E-mail staat uit, dus Rukoo kan deze e-mail niet openen.",
+  "settings.modes.goneMail": "Die e-mail staat niet meer in Rukoo, dus er is niets om te openen.",
   "settings.modes.chatNeeded": "Zonder e-mailaccount is Chat het tabblad dat je kunt gebruiken, dus het blijft aan.",
   "settings.modes.offCalendar": "Agenda staat uit, dus Rukoo kan dit niet tonen.",
   "settings.modes.offMeeting": "Meet staat uit, dus Rukoo kan deze meeting niet tonen.",

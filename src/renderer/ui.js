@@ -190,6 +190,20 @@ let toastWaits = false;
 let toastWaiting = null;
 // The tag of the toast on screen (opts.tag), such as a chat alert's id, which dropTaggedToast takes down.
 let toastTag = null;
+// What to do once the toast on screen goes without its action (opts.onGone).
+let toastGone = null;
+
+function toastWent() {
+  const gone = toastGone;
+  toastGone = null;
+  if (gone) {
+    try {
+      gone();
+    } catch (_) {
+      // The toast is gone either way.
+    }
+  }
+}
 
 function showWaiting() {
   const next = toastWaiting;
@@ -198,6 +212,7 @@ function showWaiting() {
 }
 
 function hideToast({ next = true } = {}) {
+  toastWent();
   document.getElementById('toast')?.classList.remove('show');
   toastAction = null;
   toastTag = null;
@@ -207,7 +222,8 @@ function hideToast({ next = true } = {}) {
 // opts: a duration in ms, or { ms, action: { label, run, shortcut }, wait }. A toast with an action stays longer
 // and its action also runs on Ctrl+Z (see runToastAction), unless shortcut is false. wait: while a toast with an
 // action is up, such as Undo, this one waits until the toasts before it have gone, instead of taking their place. It
-// does replace a toast that waited itself. tag: a name dropTaggedToast takes the toast down by.
+// does replace a toast that waited itself. tag: a name dropTaggedToast takes the toast down by. onGone: called once
+// when the toast goes without its action having run, by its time, by a newer toast or by dropTaggedToast.
 // It stays while the pointer is on it, and goes 2.5 s after the pointer leaves, or at ms after it showed when that is
 // later.
 export function toast(message, opts = {}) {
@@ -218,6 +234,9 @@ export function toast(message, opts = {}) {
     toastWaiting = toastAction && !toastWaits ? { message, opts } : null;
     if (toastWaiting) return;
   }
+  // A toast on screen that this one replaces goes now.
+  if (el.classList.contains('show')) toastWent();
+  toastGone = opts.onGone || null;
   toastWaits = Boolean(opts.wait);
   toastTag = opts.tag ?? null;
   const ms = opts.ms || (opts.action ? 8000 : 2600);
@@ -272,6 +291,8 @@ export function dropTaggedToast(tag) {
 export function runToastAction({ click = false } = {}) {
   const action = toastAction;
   if (!action || (!click && action.shortcut === false)) return false;
+  // The action uses what the toast was for: it didn't go unused.
+  toastGone = null;
   hideToast({ next: false });
   const done = () => {
     if (!document.getElementById('toast')?.classList.contains('show')) showWaiting();

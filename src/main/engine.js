@@ -2444,6 +2444,42 @@ class Engine extends EventEmitter {
     return hit ? hit.uid : null;
   }
 
+  // What a reference to an email that is used later rests on, such as an email asked for while Mail is turned off
+  // (Settings > General > Tabs): its id now, the folder's UIDVALIDITY and its Message-ID. A uid stays that email's
+  // only while the folder keeps its UIDVALIDITY (see bodyFile and undoMove), so resolveMessage checks both. null for
+  // an email that isn't there.
+  messageIdentity(id) {
+    const key = String(id || '');
+    if (key.startsWith('saved:')) return this.saved.some((s) => s.id === key) ? { id: key } : null;
+    let found = null;
+    try {
+      found = this.locate(key);
+    } catch (_) {
+      return null;
+    }
+    return { id: key, accountId: found.acc.id, folder: found.folder, uidValidity: found.box ? found.box.uidValidity : null, messageId: found.msg.messageId || null };
+  }
+
+  // The id the email of an identity (messageIdentity) has now, or null when it is gone. The same id while its folder
+  // kept its UIDVALIDITY and the email under that uid has the same Message-ID; else the email with that Message-ID in
+  // the same folder.
+  resolveMessage(ident) {
+    if (!ident || typeof ident.id !== 'string' || !ident.id) return null;
+    if (ident.id.startsWith('saved:')) return this.saved.some((s) => s.id === ident.id) ? ident.id : null;
+    let found = null;
+    try {
+      found = this.locate(ident.id);
+    } catch (_) {
+      found = null;
+    }
+    const want = messageKey(ident.messageId);
+    const sameBox = found && found.box && String(found.box.uidValidity) === String(ident.uidValidity);
+    if (sameBox && (!want || !found.msg.messageId || messageKey(found.msg.messageId) === want)) return ident.id;
+    if (!want || !this.caches.get(ident.accountId)) return null;
+    const uid = this.uidByMessageId(ident.accountId, ident.folder, ident.messageId);
+    return uid ? encodeId(ident.accountId, ident.folder, uid) : null;
+  }
+
   async discardDraft(id) {
     const { acc, folder, uid } = this.locate(id);
     this.removeFromCache(acc, folder, uid);

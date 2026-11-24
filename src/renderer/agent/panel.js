@@ -1901,7 +1901,11 @@ export function mountAgentPanel(ctx) {
   // Mail turned off in Settings > General > Tabs: an email would open in a reading pane nobody sees and could be marked
   // read there. The notice says so, and its Turn on opens it after all (app.js whenModeShown).
   const mailOff = () => Boolean(ctx.modeShown) && !ctx.modeShown('mail');
+  // After an await: whether Mail still shows, as main has it now too (app.js stillShown).
+  const mailStillOn = async () => !mailOff() && (!ctx.stillShown || (await ctx.stillShown('mail')));
 
+  // With Mail off the notice's Turn on runs this again, so the email is looked up as it is then: by its Message-ID, as
+  // any click on a source is, and a source that is gone says so.
   async function openSource(source) {
     if (source && source.messageId) {
       if (mailOff()) return ctx.whenModeShown('mail', () => openSource(source), 'mail-open');
@@ -1917,6 +1921,8 @@ export function mountAgentPanel(ctx) {
         locating = false;
       }
       if (!id) return toast(t('agent.panel.sourceGone'));
+      // Mail turned off while the email was looked up: the notice, and nothing opens or is marked read.
+      if (!(await mailStillOn())) return ctx.modeOffNotice('mail', { what: 'mail-open', run: () => openSource(source) });
       P.keepFor = id;
       return ctx.openMessage(id);
     }
@@ -1959,10 +1965,48 @@ export function mountAgentPanel(ctx) {
     refreshDrafts();
   }
 
+  // A card as it is now, found by its conversation and item: a save in another window gives it a newer draft meanwhile.
+  async function currentItem(cid, itemId) {
+    if (P.conv && P.conv.id === cid) {
+      const view = views.get(itemId);
+      if (view && view.item) return view.item;
+    }
+    const conv = await api('agentGet', cid).catch(() => null);
+    return ((conv && conv.items) || []).find((x) => x.id === itemId && x.type === 'draft') || null;
+  }
+
+  // Show on a draft card while Mail is off: the notice's Turn on shows the card's draft as it is then. A draft or email
+  // id the card still has from the click is checked against what it pointed at then (app.js offerMail).
+  async function showDraftLater(item) {
+    const cid = P.conv && P.conv.id;
+    const [draftIdent, refIdent] = await Promise.all([item.draftId, item.messageRef].map((id) => (id && ctx.mailIdentity ? ctx.mailIdentity(id) : null)));
+    ctx.modeOffNotice('mail', {
+      what: 'mail-open',
+      run: async () => {
+        const fresh = cid ? await currentItem(cid, item.id) : null;
+        if (!fresh) return toast(t('agent.draft.gone'));
+        const c = openComposerFor(fresh);
+        if (c) return c.focus();
+        if (fresh.draftId) {
+          const id = fresh.draftId === item.draftId && draftIdent ? await ctx.resolveMail(draftIdent) : fresh.draftId;
+          if (!id) return toast(t('settings.modes.goneMail'));
+          return ctx.compose({ mode: 'draft', id });
+        }
+        if (fresh.messageRef) {
+          const id = refIdent ? await ctx.resolveMail(refIdent) : null;
+          if (!id) return toast(t('settings.modes.goneMail'));
+          P.keepFor = id;
+          return ctx.openMessage(id);
+        }
+        return toast(t('agent.draft.gone'));
+      }
+    });
+  }
+
   function draftAction(item, action) {
     const c = openComposerFor(item);
     if (action === 'show') {
-      if (mailOff()) return ctx.whenModeShown('mail', () => draftAction(item, 'show'), 'mail-open');
+      if (mailOff()) return showDraftLater(item);
       if (c) return c.focus();
       if (item.draftId) return ctx.compose({ mode: 'draft', id: item.draftId });
       if (item.messageRef) {
@@ -2138,7 +2182,9 @@ export function mountAgentPanel(ctx) {
       }
       if (target) break;
     }
-    if (!P.conv || P.conv.id !== id || S.selectedId !== before) return;
+    // Mail turned off while the email was looked up: the chat stays without it, as when Mail was off at the click.
+    const mailOn = await mailStillOn();
+    if (!mailOn || !P.conv || P.conv.id !== id || S.selectedId !== before) return;
     if (!target) return toast(t('agent.panel.sourceGone'));
     if (target === S.selectedId) return;
     P.keepFor = target;

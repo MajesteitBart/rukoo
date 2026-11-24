@@ -162,21 +162,35 @@ test('hidden Mail leaves the tabs, the shortcut, notifications, badges and the t
   await expect(notice()).toContainText('Mail is turned off');
   expect(await windowCount()).toBe(1);
 
+  // An email link whose notice goes without Turn on: main lets the link go, recipients and text included.
+  const heldLinks = () => app.evaluate(() => global.__semHeldMailto.size);
+  await app.evaluate(({ app }) => app.emit('second-instance', {}, ['Rukoo Mail.exe', '--', 'mailto:joris@example.com?subject=Private&body=Not%20for%20later'], process.cwd()));
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo didn't start a new email.");
+  expect(await heldLinks()).toBe(1);
+  await win.evaluate(() => window.mail.call('toastMain', 'Something else'));
+  await expect(notice()).toContainText('Something else');
+  await expect.poll(heldLinks).toBe(0);
+
   // An email link opened with Rukoo: no compose window, and a notice that offers to turn Mail on.
   await app.evaluate(({ app }) => app.emit('second-instance', {}, ['Rukoo Mail.exe', '--', 'mailto:sanne@example.com?subject=Hoi'], process.cwd()));
   await expect(notice()).toContainText("Mail is turned off, so Rukoo didn't start a new email.");
   expect(await windowCount()).toBe(1);
+  expect(await heldLinks()).toBe(1);
 
   // The notice's Turn on brings Mail back, with what came in meanwhile, and starts the email the link asked for.
   const [compose] = await Promise.all([app.waitForEvent('window'), notice().locator('button').click()]);
   await compose.waitForSelector('.composer .editor');
   await expect(compose.locator('[data-field="subject"]')).toHaveValue('Hoi');
+  expect(await heldLinks()).toBe(0);
   await expect(tab('mail')).toBeVisible();
   await expect(shell()).not.toHaveClass(/calendar-mode/);
   await expect(win.locator('.item', { hasText: 'While Mail is hidden' })).toBeVisible();
   expect((await tray()).compose).toBe(true);
   await arrive('Mail is back');
   await expect.poll(() => app.evaluate(() => global.__shown.length)).toBe(2);
+  // Settings' test notification belongs to no tab and still shows.
+  const sent = await win.evaluate(() => window.mail.call('testNotification'));
+  expect(['sent', 'unavailable']).toContain(sent.result);
 });
 
 test('the last tab that shows stays on; a restart keeps the choice and starts in a mode that shows', async () => {
@@ -572,7 +586,8 @@ test('with Mail off an open compose window still saves and sends, and Undo send,
 
 // ---------- the chat panel and Mail off ----------
 
-test('with Mail off an email source and a draft card in the chat panel say so, and Turn on opens them', async ({}, testInfo) => {
+test('with Mail off an email source and a draft card in the chat panel say so, and Turn on opens what they are then', async ({}, testInfo) => {
+  test.setTimeout(120000);
   await start({}, { SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5' });
   const pane = win.locator('.agentpane');
   const transcript = pane.locator('.ap-transcript');
@@ -589,19 +604,48 @@ test('with Mail off an email source and a draft card in the chat panel say so, a
   await expect(transcript).toContainText('Decide that before the call.', { timeout: 10000 });
   const sourceTitle = (await source.locator('.bui-ctx__name').textContent()).trim();
   await expect.poll(() => app.evaluate(() => global.__semAgents.list().every((c) => c.status !== 'running')), { timeout: 10000 }).toBe(true);
-  await win.locator('.agentpane .bui-pb__ta').fill('Draft a reply');
-  await win.locator('.agentpane .bui-pb__ta').press('Enter');
-  await expect(transcript.locator('.bui-draft')).toContainText('Wrote a reply', { timeout: 10000 });
-  await expect(transcript).toContainText('Done. The draft is in the composer.', { timeout: 10000 });
-
   const selected = () => win.evaluate(async () => (await import('./app.js')).S.selectedId);
-  const before = await selected();
   const unreadOf = (subject) =>
     app.evaluate((_e, subject) => {
       const engine = global.__semEngine;
       const m = engine.listMessages({ scope: engine.accounts[0].id, view: 'everything' }).find((x) => x.subject === subject);
       return m ? m.unread : null;
     }, subject);
+
+  // Mail goes while the source is being looked up: the notice, and the email stays unread.
+  const sourceId = await app.evaluate((_e, subject) => {
+    const engine = global.__semEngine;
+    return engine.listMessages({ scope: engine.accounts[0].id, view: 'everything' }).find((x) => x.subject === subject).id;
+  }, sourceTitle);
+  await app.evaluate((_e, id) => global.__semEngine.setFlags(id, { unread: true }), sourceId);
+  await expect.poll(() => unreadOf(sourceTitle)).toBe(true);
+  const locating = await gate('__semAgents', 'locate');
+  await source.locator('.bui-ctx__bar').click();
+  await expect.poll(() => locating.waiting()).toBeGreaterThan(0);
+  await setHidden(['mail']);
+  await locating.release();
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo can't open this email.");
+  await win.waitForTimeout(500);
+  expect(await unreadOf(sourceTitle)).toBe(true);
+  await setHidden([]);
+  await expect(tab('mail')).toBeVisible();
+
+  await win.locator('.agentpane .bui-pb__ta').fill('Draft a reply');
+  await win.locator('.agentpane .bui-pb__ta').press('Enter');
+  await expect(transcript.locator('.bui-draft')).toContainText('Wrote a reply', { timeout: 10000 });
+  await expect(transcript).toContainText('Done. The draft is in the composer.', { timeout: 10000 });
+  // Saved and closed: the card keeps the stored draft.
+  const cid = await app.evaluate(() => [...global.__semAgents.conversations.values()].find((c) => c.items.some((i) => i.type === 'draft')).id);
+  const draftOf = () => app.evaluate((_e, cid) => global.__semAgents.conversations.get(cid).items.find((i) => i.type === 'draft').draftId || null, cid);
+  await win.locator('.composer .editor').click();
+  await win.keyboard.press('Control+s');
+  await expect(win.locator('.composer .save-state')).toHaveText('Draft saved');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.composer')).toHaveCount(0);
+  await expect.poll(draftOf).not.toBeNull();
+  const first = await draftOf();
+
+  const before = await selected();
   const unread = await unreadOf(sourceTitle);
 
   await setHidden(['mail']);
@@ -617,11 +661,130 @@ test('with Mail off an email source and a draft card in the chat panel say so, a
   expect(await selected()).toBe(before);
   expect(await unreadOf(sourceTitle)).toBe(unread);
 
-  // The draft card's Show: the same notice; Turn on brings Mail with the draft in the composer.
+  // The draft card's Show: the same notice. While it is up the draft is saved again in a compose window, which gives
+  // the card a newer draft; Turn on shows that one.
   await transcript.locator('.bui-draft').getByRole('button', { name: 'Show' }).click();
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo can't open this email.");
+  await notice().hover();
+  await win.evaluate((id) => window.mail.call('openCompose', { mode: 'draft', id }), first);
+  await expect.poll(() => app.windows().length).toBe(2);
+  const popped = app.windows().find((w) => w !== win);
+  await popped.waitForSelector('.composer .editor');
+  await popped.click('.composer .editor');
+  await popped.keyboard.press('Control+End');
+  await popped.keyboard.type(' See you then.');
+  await popped.keyboard.press('Control+s');
+  await expect.poll(draftOf).not.toBe(first);
+  await popped.close();
   await expect(notice()).toContainText("Mail is turned off, so Rukoo can't open this email.");
   await notice().locator('button').click();
   await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
+  await expect(win.locator('.composer .editor')).toContainText('See you then.');
   await expect(win.locator('.composer .editor')).toContainText('Thursday at 10:00 works for me.');
   expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual([]);
+});
+
+// ---------- the sorting panel, new mail and Mail off ----------
+
+test('with Mail off an email from the sorting panel opens after Turn on as the email it was, and says so when it is gone', async () => {
+  test.setTimeout(120000);
+  await start();
+  const engineInbox = () =>
+    app.evaluate(() => {
+      const engine = global.__semEngine;
+      return engine.listMessages({ scope: engine.accounts[0].id, view: 'inbox' }).map((m) => ({ id: m.id, uid: m.uid, subject: m.subject, unread: m.unread }));
+    });
+  const [target, other] = (await engineInbox()).filter((m) => m.unread);
+  const selected = () => win.evaluate(async () => (await import('./app.js')).S.selectedId);
+  // Jev's last decision as the sorting panel shows it (sort-activity.js), and a click on it.
+  const sortedClick = async (m) => {
+    await win.evaluate(async (m) => {
+      const sa = await import('./sort-activity.js');
+      sa.setCategories({ enabled: true, categories: [] });
+      sa.setActivity({ recent: [{ id: m.id, subject: m.subject, from: 'Jev', category: 'none', chose: 'none', confidence: 0.9, sure: true, at: Date.now() }] });
+      if (!sa.sortPanelOpen()) sa.toggleSortPanel();
+    }, m);
+    await win.locator('.sort-panel .sa-item').first().evaluate((b) => b.click());
+  };
+  const unreadOf = async (subject) => (await engineInbox()).find((m) => m.subject === subject)?.unread;
+  const before = await selected();
+
+  // Mail goes while the inbox loads for the email: nothing opens, it stays unread, and the notice offers it.
+  const state = await gate('__semApi', 'state');
+  await sortedClick(target);
+  await expect.poll(() => state.waiting()).toBeGreaterThan(0);
+  await win.evaluate(() => window.mail.call('updateSettings', { hiddenModes: ['mail'] }));
+  await state.release();
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo can't open this email.");
+  await expect(tab('mail')).toHaveCount(0);
+  expect(await selected()).toBe(before);
+  expect(await unreadOf(target.subject)).toBe(true);
+
+  // While the notice is up the server gives the inbox's uids out again: the email's old id now names another one.
+  await notice().hover();
+  await app.evaluate(async (_e, [a, b]) => {
+    const engine = global.__semEngine;
+    const demo = engine.session(engine.accounts[0]);
+    const box = demo.box('INBOX');
+    const x = box.messages.find((m) => m.uid === a);
+    const y = box.messages.find((m) => m.uid === b);
+    [x.uid, y.uid] = [y.uid, x.uid];
+    box.uidValidity = '2';
+    demo.persist();
+    await engine.syncAll();
+  }, [target.uid, other.uid]);
+  expect(await app.evaluate((_e, id) => global.__semEngine.locate(id).msg.subject, target.id)).toBe(other.subject);
+  // Turn on opens the email that was clicked, under its new id.
+  await notice().locator('button').click();
+  await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
+  await expect(win.locator('.reader-subject')).toHaveText(target.subject);
+
+  // Clicked while Mail is off, then deleted before Turn on: the notice says it is gone, and nothing opens.
+  const now = (await engineInbox()).find((m) => m.subject === other.subject);
+  await setHidden(['mail']);
+  const shown = await selected();
+  await sortedClick(now);
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo can't open this email.");
+  await notice().hover();
+  await app.evaluate(async (_e, uid) => {
+    const engine = global.__semEngine;
+    const demo = engine.session(engine.accounts[0]);
+    const box = demo.box('INBOX');
+    box.messages = box.messages.filter((m) => m.uid !== uid);
+    demo.persist();
+    await engine.syncAll();
+  }, now.uid);
+  await notice().locator('button').click();
+  await expect(notice()).toContainText('That email is no longer in Rukoo, so there is nothing to open.');
+  expect(await selected()).toBe(shown);
+});
+
+test('new mail that is being shown when Mail is turned off leaves no notice', async () => {
+  await start();
+  // In Calendar the list isn't on screen, so new mail would get a toast.
+  await win.keyboard.press('Control+2');
+  await expect(shell()).toHaveClass(/calendar-mode/);
+  const [m] = await app.evaluate(() => {
+    const engine = global.__semEngine;
+    return engine.listMessages({ scope: engine.accounts[0].id, view: 'inbox' }).map((x) => ({ id: x.id }));
+  });
+  const deliver = () =>
+    app.evaluate(({ BrowserWindow }, id) => {
+      BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'new-mail', payload: { mails: [{ id, from: 'Sanne de Vries', subject: 'Late news', category: null }], toast: true, sound: false } });
+    }, m.id);
+  // With Mail on, the window says so.
+  await deliver();
+  await expect(notice()).toContainText('New email from Sanne de Vries: Late news');
+  await win.evaluate(() => window.mail.call('toastMain', 'Cleared'));
+  await expect(notice()).toContainText('Cleared');
+
+  // Mail goes while the window loads the new mail: no notice.
+  const state = await gate('__semApi', 'state');
+  await deliver();
+  await expect.poll(() => state.waiting()).toBeGreaterThan(0);
+  await win.evaluate(() => window.mail.call('updateSettings', { hiddenModes: ['mail'] }));
+  await state.release();
+  await expect(tab('mail')).toHaveCount(0);
+  await win.waitForTimeout(600);
+  await expect(notice()).not.toContainText('Sanne de Vries');
 });

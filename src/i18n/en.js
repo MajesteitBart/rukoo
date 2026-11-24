@@ -5408,6 +5408,10 @@
     "message": "Mail is turned off, so Rukoo can't open this email.",
     "description": "Notice in the main window when the user opens an email or a draft from the chat panel or from the inbox sorting panel while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Mail on and then opens it. src/renderer/app.js (modeOffNotice)"
   },
+  "settings.modes.goneMail": {
+    "message": "That email is no longer in Rukoo, so there is nothing to open.",
+    "description": "Notice in the main window after Turn on (settings.modes.turnOn) in the notice settings.modes.offMailOpen: Mail is on again, but the email or draft the user asked for while Mail was off was deleted or moved meanwhile, so nothing opens. src/renderer/app.js (offerMail), src/renderer/agent/panel.js (showDraftLater)"
+  },
   "settings.modes.chatNeeded": {
     "message": "Without a mail account, Chat is the tab you can use, so it stays on.",
     "description": "Settings > General > Tabs: help under the Chat switch, which can't be turned off, for someone who uses Rukoo with a Rukoo account and no mail account. Mail, Calendar and Meet need a mail account. src/renderer/settings.js (render)"

@@ -33,6 +33,7 @@ const { oneClickUnsubscribe } = require('./net');
 const { mailImage } = require('./mailimage');
 const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
+const { NoticeKeeper } = require('./notices');
 const { MODES, modeHidden, visibleModes } = require('./modes');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
@@ -303,17 +304,13 @@ function modesMaybeChanged() {
 // A way in to a hidden mode from outside the window (a mailto: link): the main window comes forward and says the mode
 // is off, with a button that turns it on (app.js modeOffNotice). The window takes the notice when told and after its
 // first state, so a link Rukoo starts with isn't lost when the message comes before the window listens. An email
-// link is kept under an id, the last few only, so Turn on can start that email after all (openHeldMailto).
+// link is kept under an id so Turn on can start that email after all (openHeldMailto), until its notice goes
+// (dropHeldMailto) or for two minutes at most (mailto.js HeldLinks).
 let modeOffWaiting = null;
-const heldMailto = new Map();
-let heldMailtoSeq = 0;
+const heldMailto = new mailto.HeldLinks();
+if (process.env.SEM_HIDDEN) global.__semHeldMailto = heldMailto;
 function offerHiddenMode(mode, { mailto: url = null } = {}) {
-  let id = null;
-  if (url) {
-    id = String(++heldMailtoSeq);
-    heldMailto.set(id, url);
-    while (heldMailto.size > 5) heldMailto.delete(heldMailto.keys().next().value);
-  }
+  const id = url ? heldMailto.hold(url) : null;
   modeOffWaiting = { mode, mailto: id };
   showWindow();
   send('mode-off');
@@ -440,7 +437,7 @@ function showMailNotices(list, messages = []) {
   for (const { id, title, body } of list) {
     // nativeImage can read from inside app.asar; a plain path cannot.
     const n = id ? new Notification({ title, body, icon: nativeImage.createFromPath(ICON), silent }) : new Notification({ title, body, silent });
-    keepNotice('mail', n);
+    notices.keep('mail', n);
     // A click after Mail went off brings nothing forward.
     if (id)
       n.on('click', () => {
@@ -452,36 +449,20 @@ function showMailNotices(list, messages = []) {
   }
 }
 
-// Shown notifications stay referenced until they close, or Windows can drop their click handler with the object. By
-// mode, so turning a mode off closes its notifications (closeModeNotices). Chat keeps its own by alert id
-// (chatNotices).
-const liveNotices = { mail: new Set(), calendar: new Set() };
-function keepNotice(mode, n) {
-  const set = liveNotices[mode];
-  set.add(n);
-  const drop = () => set.delete(n);
-  n.on('click', drop);
-  n.on('close', drop);
-  n.on('failed', drop);
-}
+// Shown notifications by mode (notices.js): held so Windows doesn't drop their click handler with the object, and so
+// turning a mode off closes them (closeModeNotices), on Windows also those left in Action Center after their banner
+// timed out. Chat alerts are held by their alert id. The test notification in Settings belongs to no mode.
+const notices = new NoticeKeeper();
+const testNotices = new Set();
 
 // A mode turned off: its desktop notifications that are still out go. Test mode records which modes were closed.
 function closeModeNotices(mode) {
   if (process.env.SEM_HIDDEN) (global.__semClosedModes ||= []).push(mode);
   if (mode === 'chat') {
-    for (const key of [...chatNotices.keys()]) closeChatNotification(key);
+    for (const key of notices.keys('chat')) closeChatNotification(key);
     return;
   }
-  const set = liveNotices[mode];
-  if (!set) return;
-  for (const n of [...set]) {
-    set.delete(n);
-    try {
-      n.close();
-    } catch (_) {
-      // Gone already.
-    }
-  }
+  notices.close(mode);
 }
 
 // A desktop notification whose click brings the main window forward on the calendar, at the event or request.
@@ -493,7 +474,7 @@ function calendarNotice({ title, body, open }) {
   }
   if (!Notification.isSupported()) return;
   const n = new Notification({ title: String(title).slice(0, 200), body: String(body).slice(0, 400), icon: nativeImage.createFromPath(ICON), silent: false });
-  keepNotice('calendar', n);
+  notices.keep('calendar', n);
   n.on('click', () => {
     // A click after Calendar went off brings nothing forward.
     if (modeOff('calendar')) return;
@@ -610,8 +591,7 @@ async function serveChatFile(request) {
 
 // Team chat alerts (workspaces/notify.js), each with a stable id so a read or a removal can take it back. A toast
 // while the main window is focused; nothing while the screen records; recorded in __semNotices in test mode; else a
-// desktop notification whose click opens the conversation at the message.
-const chatNotices = new Map();
+// desktop notification whose click opens the conversation at the message, held in notices under its id.
 
 // What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
 // Nothing after Chat went off.
@@ -650,16 +630,8 @@ function showChatNotification({ id, title, body, open } = {}) {
   if (!Notification.isSupported()) return;
   closeChatNotification(key);
   const n = new Notification({ title: String(title || '').slice(0, 200), body: String(body || '').slice(0, 400), icon: nativeImage.createFromPath(ICON), silent: false });
-  chatNotices.set(key, n);
-  const drop = () => {
-    if (chatNotices.get(key) === n) chatNotices.delete(key);
-  };
-  n.on('click', () => {
-    drop();
-    openChatNotice(open);
-  });
-  n.on('close', drop);
-  n.on('failed', drop);
+  notices.keep('chat', n, key);
+  n.on('click', () => openChatNotice(open));
   n.show();
 }
 
@@ -667,14 +639,7 @@ function closeChatNotification(id) {
   const key = String(id || '').slice(0, 200);
   if (process.env.SEM_HIDDEN) (global.__semClosedNotices ||= []).push(key);
   send('chat-toast-hide', key);
-  const n = chatNotices.get(key);
-  if (!n) return;
-  chatNotices.delete(key);
-  try {
-    n.close();
-  } catch (_) {
-    // Gone already.
-  }
+  notices.closeKey('chat', key);
 }
 // ---- /chat ----
 
@@ -1337,6 +1302,14 @@ const api = {
   // Whether a mode shows now (Settings > General > Tabs): a window asks after an await, before it writes or opens
   // something of that mode, since the setting may have changed meanwhile in any window.
   modeShown: (mode) => MODES.includes(mode) && !modeOff(mode),
+  // An email asked for while Mail is off, kept by what can't point at another email (engine.js messageIdentity), and
+  // found again when the notice's Turn on is pressed: its id then, or null when it is gone.
+  mailIdentity: (id) => engine.messageIdentity(typeof id === 'string' ? id.slice(0, 2000) : ''),
+  mailResolve: (ident) => {
+    const i = plainObject(ident);
+    const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
+    return engine.resolveMessage({ id: text(i.id, 2000), accountId: text(i.accountId, 200), folder: text(i.folder, 1000), uidValidity: i.uidValidity == null ? null : String(i.uidValidity).slice(0, 100), messageId: text(i.messageId, 1000) });
+  },
   // The hidden mode a way in from outside asked for (offerHiddenMode), once: { mode, mailto }, mailto the id of the
   // email link that came with it.
   takeModeOff: () => {
@@ -1346,10 +1319,14 @@ const api = {
   },
   // The notice's Turn on: the email link Mail was off for starts its email now. Once; nothing while Mail is still off.
   openHeldMailto: (id) => {
-    const url = heldMailto.get(String(id));
-    heldMailto.delete(String(id));
+    const url = heldMailto.take(String(id));
     if (!url || modeOff('mail')) return false;
     openMailto(url);
+    return true;
+  },
+  // The notice for a held email link went without Turn on: the link goes too.
+  dropHeldMailto: (id) => {
+    heldMailto.drop(String(id));
     return true;
   },
   // Settings > General: whether this system offers Rukoo notifications, and a test notification that shows also while
@@ -1359,7 +1336,7 @@ const api = {
     testNotice(
       Notification,
       { title: t('native.notifications.testTitle'), body: t('native.notifications.testBody'), icon: nativeImage.createFromPath(ICON), silent: false },
-      { keep: liveNotices, onClick: showWindow }
+      { keep: testNotices, onClick: showWindow }
     ),
   // A save replaces the stored draft; an agent's draft cards follow it, also from a compose window.
   saveDraft: async (payload) => {
@@ -2229,6 +2206,9 @@ function windowError(err) {
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
 }
+
+// Test mode: specs hold a call to see what a window does when the answer comes late (modes.spec.js).
+if (process.env.SEM_HIDDEN) global.__semApi = api;
 
 ipcMain.handle('mail:call', async (event, method, args) => {
   const own = Object.prototype.hasOwnProperty;

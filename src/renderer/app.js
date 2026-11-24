@@ -3,6 +3,7 @@ import { visibleModes, modeFor, withMode } from './modes.js';
 import { icons } from './icons.js';
 import {
   api,
+  modeShownNow,
   esc,
   $,
   $$,
@@ -277,9 +278,10 @@ const MODE_OFF = {
 // calendar file, a meeting, a team chat invitation): a notice says the mode is off, with a button that turns it on and
 // then does what they asked for (run). Nothing asks for an account on its behalf. what: the notice's wording, when it
 // isn't the mode's own ('mail-open' for an email to show).
-function modeOffNotice(mode, { run = null, what = mode } = {}) {
-  if (!MODE_OFF[what]) return;
-  toast(t(MODE_OFF[what]), { tag: `mode-off:${mode}`, action: { label: t('settings.modes.turnOn'), shortcut: false, run: () => turnModeOn(mode, run) } });
+// onGone: when the notice goes without Turn on.
+function modeOffNotice(mode, { run = null, what = mode, onGone = null } = {}) {
+  if (!MODE_OFF[what]) return onGone && onGone();
+  toast(t(MODE_OFF[what]), { tag: `mode-off:${mode}`, onGone, action: { label: t('settings.modes.turnOn'), shortcut: false, run: () => turnModeOn(mode, run) } });
 }
 
 // run() now while mode shows, else after the notice's Turn on.
@@ -287,6 +289,26 @@ function whenModeShown(mode, run, what = mode) {
   if (modeShown(mode)) return run();
   modeOffNotice(mode, { run, what });
 }
+
+// Whether mode still shows, in this window and as main has it now: asked after an await, before something of that
+// mode opens, is marked read or shows a notice. The window's own copy of the setting follows main a moment later.
+async function stillShown(mode) {
+  return modeShown(mode) && (await modeShownNow(mode)) && modeShown(mode);
+}
+
+// An email asked for while Mail is off, such as from the sorting panel: the notice's Turn on opens it as it is then,
+// found by an identity a uid given out again can't point elsewhere with (engine.js messageIdentity). Gone by then, a
+// notice says so and nothing opens.
+async function offerMail(id, open) {
+  const ident = await api('mailIdentity', id).catch(() => null);
+  modeOffNotice('mail', { what: 'mail-open', run: async () => {
+    const now = ident ? await resolveMail(ident) : null;
+    if (!now) return toast(t('settings.modes.goneMail'));
+    return open(now);
+  } });
+}
+
+const resolveMail = (ident) => api('mailResolve', ident).catch(() => null);
 
 async function turnModeOn(mode, run = null) {
   try {
@@ -308,7 +330,9 @@ async function takeModeOff() {
   const off = await api('takeModeOff').catch(() => null);
   if (!off || !off.mode) return;
   const run = off.mailto ? () => api('openHeldMailto', off.mailto).catch((err) => toast(err.message, 5000)) : null;
-  modeOffNotice(off.mode, { run });
+  // A notice that goes without Turn on lets main forget the link, recipients and text included.
+  const onGone = off.mailto ? () => api('dropHeldMailto', off.mailto).catch(() => {}) : null;
+  modeOffNotice(off.mode, { run, onGone });
 }
 
 // A mode that no longer shows, turned off in Settings or Chat gone from the server: the window leaves it for the
@@ -2994,6 +3018,8 @@ async function reopenComposer(restore, sendError = null) {
 // auto: shown without being asked for (the newest message on load); it stays unread. known: the message as a related
 // email under another one, for one the list doesn't have, such as a reply in Sent; it opens and is read like a row.
 export async function openMessage(id, { auto = false, known = null } = {}) {
+  // With Mail turned off nothing opens an email in the hidden reader (Settings > General > Tabs).
+  if (!auto && !modeShown('mail')) return;
   // Opening a message cancels a reply or forward that is still loading.
   const turn = ++composeTurn;
   if (S.composer && !(await S.composer.leave())) return;
@@ -3040,7 +3066,8 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
   renderReader();
   // Again with the full message: the panel needs its Message-ID and whether it can unsubscribe.
   agentViewChanged();
-  if (m && m.unread && m.role !== 'drafts' && !auto) setUnread([m], false);
+  // Mail turned off while the email loaded: it stays unread.
+  if (m && m.unread && m.role !== 'drafts' && !auto && (await stillShown('mail')) && S.selectedId === id) setUnread([m], false);
   if (S.message && S.message.id === id && S.message.partial) completeMessage(id);
 }
 
@@ -3910,7 +3937,8 @@ async function openNotified(id) {
   S.query = '';
   S.filter = 'all';
   await refresh();
-  openMessage(id);
+  // Mail turned off meanwhile: nothing opens.
+  if (await stillShown('mail')) openMessage(id);
 }
 
 // The new-mail toast's Show: Inbox as from the sidebar, or the category tab that holds the emails when Inbox leaves
@@ -3962,6 +3990,8 @@ async function onNewMail(p) {
   if (!S.data || !S.data.accounts.length) return;
   // A refresh that failed is tried again by itself (refreshFailed); the toast still says what came in meanwhile.
   await refresh().catch(() => {});
+  // Mail turned off meanwhile: the window says nothing of it (modesChanged took Mail's notices down already).
+  if (!(await stillShown('mail'))) return;
   const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
   if (here.length) {
     for (const m of here) newRows.add(m.id);
@@ -4089,7 +4119,7 @@ function showWhatsNew() {
 // An email from Jev's last decisions: the inbox, in the category it went to, with the email open. With Mail off the
 // email stays as it is, unread too, until the notice's Turn on.
 async function openSorted(id, category) {
-  if (!modeShown('mail')) return modeOffNotice('mail', { what: 'mail-open', run: () => openSorted(id, category) });
+  if (!modeShown('mail')) return offerMail(id, (now) => openSorted(now, category));
   const accountId = decodeURIComponent(String(id).split(':')[0]);
   if (S.scope !== 'all' && S.scope !== accountId) S.scope = S.data.accounts.length > 1 ? 'all' : accountId;
   if (prefs.mode !== 'mail') setMode('mail');
@@ -4101,6 +4131,8 @@ async function openSorted(id, category) {
   S.checked.clear();
   S.picking = false;
   await refresh();
+  // Mail turned off while the list loaded: the email stays as it is, and the notice offers it again.
+  if (!(await stillShown('mail'))) return offerMail(id, (now) => openSorted(now, category));
   if (S.list.some((m) => m.id === id)) openMessage(id);
 }
 
@@ -4169,6 +4201,12 @@ export const ctx = {
   // one, such as an email source: now, or after the notice's Turn on. what: the notice's wording.
   modeShown: (mode) => modeShown(mode),
   whenModeShown: (mode, run, what) => whenModeShown(mode, run, what),
+  // After an await: whether the mode still shows (stillShown), and the notice when it doesn't, whose Turn on runs run.
+  stillShown: (mode) => stillShown(mode),
+  modeOffNotice: (mode, opts) => modeOffNotice(mode, opts),
+  // An email kept while Mail is off by what can't point at another email, and its id at Turn on (offerMail).
+  mailIdentity: (id) => api('mailIdentity', id).catch(() => null),
+  resolveMail: (ident) => resolveMail(ident),
   // The setup page's way to Settings when it is the first-run one for a profile that has settings worth reaching: a
   // Rukoo account, or tabs turned off.
   settingsFromSetup: () => Boolean(S.data && (hiddenModes().length || (chat.known() && chat.signedIn()))),
