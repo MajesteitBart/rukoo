@@ -35,17 +35,22 @@ object BatteryTexts {
 
     /**
      * The line under the row. Under Phone tools it says agents can't reach a stopped app, naming Samsung on a Samsung
-     * phone. Under Team chat notifications it says how often Android lets Rukoo check, or, while Phone tools'
-     * foreground service runs ([phoneTools]), that team chat stays connected.
+     * phone. Under Team chat notifications it says how often Rukoo checks in the background, or, while Phone tools'
+     * foreground service runs ([phoneTools]), that team chat can notify sooner though Android can hold it back; with
+     * the switch off ([notifyChat] false), what turning it on gives.
      */
     @StringRes
-    fun help(place: BatteryPlace, samsung: Boolean, phoneTools: Boolean): Int = when (place) {
+    fun help(place: BatteryPlace, samsung: Boolean, phoneTools: Boolean, notifyChat: Boolean = true): Int = when (place) {
         BatteryPlace.PhoneTools -> if (samsung) R.string.settings_phone_tools_battery_help else R.string.settings_phone_tools_battery_help_other
-        BatteryPlace.TeamChat -> if (phoneTools) R.string.settings_notifications_chat_battery_help_phone_tools else R.string.settings_notifications_chat_battery_help
+        BatteryPlace.TeamChat -> when {
+            !notifyChat -> R.string.settings_notifications_chat_battery_help_off
+            phoneTools -> R.string.settings_notifications_chat_battery_help_phone_tools
+            else -> R.string.settings_notifications_chat_battery_help
+        }
     }
 
-    /** Settings > Notifications shows the row under Team chat notifications while that switch shows and is on. */
-    fun showUnderChat(chatAvailable: Boolean, notifyChat: Boolean): Boolean = chatAvailable && notifyChat
+    /** Settings > Notifications shows the row whenever it shows the Team chat notifications switch, on or off. */
+    fun showUnderChat(chatAvailable: Boolean): Boolean = chatAvailable
 }
 
 /**
@@ -53,7 +58,7 @@ object BatteryTexts {
  * again each time the page comes back, so the value follows what the person chose there.
  */
 @Composable
-fun BatteryRow(place: BatteryPlace, phoneTools: Boolean = false) {
+fun BatteryRow(place: BatteryPlace, phoneTools: Boolean = false, notifyChat: Boolean = true) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var unrestricted by remember { mutableStateOf(isUnrestricted(context)) }
@@ -62,7 +67,7 @@ fun BatteryRow(place: BatteryPlace, phoneTools: Boolean = false) {
     }
     SettingsRow(
         title = stringResource(R.string.settings_phone_tools_battery_row),
-        description = stringResource(BatteryTexts.help(place, isSamsung(), phoneTools)),
+        description = stringResource(BatteryTexts.help(place, isSamsung(), phoneTools, notifyChat)),
         value = stringResource(BatteryTexts.value(unrestricted)),
         leading = { RowIcon(PanelIcons.Bolt) },
         onClick = { openBatterySettings(context) },

@@ -18,10 +18,15 @@ class BatteryTextsTest {
     fun `under Phone tools it speaks of agents, naming Samsung on a Samsung phone`() {
         assertEquals(R.string.settings_phone_tools_battery_help, BatteryTexts.help(BatteryPlace.PhoneTools, samsung = true, phoneTools = false))
         assertEquals(R.string.settings_phone_tools_battery_help_other, BatteryTexts.help(BatteryPlace.PhoneTools, samsung = false, phoneTools = true))
+        assertEquals(
+            "the chat switch doesn't change the Phone tools line",
+            R.string.settings_phone_tools_battery_help_other,
+            BatteryTexts.help(BatteryPlace.PhoneTools, samsung = false, phoneTools = false, notifyChat = false),
+        )
     }
 
     @Test
-    fun `under team chat it gives the 15 minutes, or says Phone tools keeps chat connected`() {
+    fun `under team chat it gives the 15 minutes, or says Phone tools can notify sooner`() {
         for (samsung in listOf(true, false)) {
             assertEquals(R.string.settings_notifications_chat_battery_help, BatteryTexts.help(BatteryPlace.TeamChat, samsung, phoneTools = false))
             assertEquals(R.string.settings_notifications_chat_battery_help_phone_tools, BatteryTexts.help(BatteryPlace.TeamChat, samsung, phoneTools = true))
@@ -29,9 +34,18 @@ class BatteryTextsTest {
     }
 
     @Test
-    fun `Notifications shows the row while team chat notifications show and are on`() {
-        assertTrue(BatteryTexts.showUnderChat(chatAvailable = true, notifyChat = true))
-        assertFalse(BatteryTexts.showUnderChat(chatAvailable = true, notifyChat = false))
-        assertFalse(BatteryTexts.showUnderChat(chatAvailable = false, notifyChat = true))
+    fun `with team chat notifications off, its line says what turning them on gives`() {
+        for (phoneTools in listOf(true, false)) {
+            assertEquals(
+                R.string.settings_notifications_chat_battery_help_off,
+                BatteryTexts.help(BatteryPlace.TeamChat, samsung = true, phoneTools = phoneTools, notifyChat = false),
+            )
+        }
+    }
+
+    @Test
+    fun `Notifications shows the row whenever the team chat notifications switch shows, on or off`() {
+        assertTrue(BatteryTexts.showUnderChat(chatAvailable = true))
+        assertFalse(BatteryTexts.showUnderChat(chatAvailable = false))
     }
 }

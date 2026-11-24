@@ -118,9 +118,10 @@ fun NotificationsPage(app: AppViewModel) {
                 )
             }
             // How soon a message notifies with Rukoo in the background: Android's battery setting, and Phone tools.
-            if (BatteryTexts.showUnderChat(chatAvailable, settings.notifyChat)) {
+            // It shows with the switch on or off; its line says what the switch's state means.
+            if (BatteryTexts.showUnderChat(chatAvailable)) {
                 val phoneTools = s.mcp.status.collectAsStateWithLifecycle().value.running
-                BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools)
+                BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools, notifyChat = settings.notifyChat)
             }
         }
         Spacer(Modifier.height(10.dp))
