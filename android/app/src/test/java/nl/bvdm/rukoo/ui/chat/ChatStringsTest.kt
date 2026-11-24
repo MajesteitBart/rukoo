@@ -183,7 +183,10 @@ class ChatStringsTest {
     fun chatStringsInSharedFilesAreInBothLanguages() {
         val wanted = mapOf(
             "strings_common.xml" to listOf("notification_channel_chat", "notification_channel_chat_description"),
-            "strings_settings.xml" to listOf("settings_general_chat_notifications", "settings_general_chat_notifications_help"),
+            "strings_settings.xml" to listOf(
+                "settings_general_chat_notifications", "settings_general_chat_notifications_help",
+                "settings_notifications_chat_battery_help", "settings_notifications_chat_battery_help_phone_tools",
+            ),
             "strings_account.xml" to listOf("settings_rukoo_invite_chat_help", "settings_rukoo_delete_chat_note", "settings_rukoo_unsent_chat"),
         )
         val problems = mutableListOf<String>()

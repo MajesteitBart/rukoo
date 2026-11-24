@@ -46,7 +46,10 @@ import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.theme.Rk
 
-/** Notifications for new mail and agent replies, and Android 13's permission they need. */
+/**
+ * Notifications for new mail, agent replies and team chat, Android 13's permission they need, and the battery setting
+ * that decides how soon team chat notifies with Rukoo in the background.
+ */
 @Composable
 fun NotificationsPage(app: AppViewModel) {
     val s = app.services
@@ -113,6 +116,11 @@ fun NotificationsPage(app: AppViewModel) {
                         if (on) turnedOn()
                     },
                 )
+            }
+            // How soon a message notifies with Rukoo in the background: Android's battery setting, and Phone tools.
+            if (BatteryTexts.showUnderChat(chatAvailable, settings.notifyChat)) {
+                val phoneTools = s.mcp.status.collectAsStateWithLifecycle().value.running
+                BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools)
             }
         }
         Spacer(Modifier.height(10.dp))

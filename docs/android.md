@@ -60,7 +60,9 @@ Settings > Phone tools turns the phone's MCP server on. The phone then listens o
 
 Clark's bridge needs version `bridge-4` or newer to look for Android devices. Copy `integrations/hermes/rukoo_bridge.py` to the Hermes machine again (see [the bridge's README](../integrations/hermes/README.md)) and send `/reload-mcp` to Clark (or run `hermes gateway restart`); Hermes keeps running the old bridge until then. An older bridge reaches the phone only with `RUKOO_URL=http://<phone's Tailscale IP>:47800/mcp` in its environment. Settings > Phone tools shows when the bridge last reached the phone. If a chat on the phone used Rukoo's tools and that line still says the bridge hasn't reached it, the bridge is out of date: Clark then answers that Rukoo isn't open on any device and lists only computers under "Checked".
 
-Samsung phones stop apps in the background to save battery, and then agents can't reach the phone. Settings > Phone tools > Battery opens the page where you choose Unrestricted.
+Samsung phones stop apps in the background to save battery, and then agents can't reach the phone. Settings > Phone tools > Battery opens the page where you choose Unrestricted. The same row is under Settings > Notifications, below Team chat notifications.
+
+While Phone tools runs, team chat stays connected in the background too, so a direct message or a mention notifies within seconds instead of at the next 15-minute check. See [Team chat in the background](#team-chat-in-the-background).
 
 ## On the Galaxy Fold
 
@@ -106,11 +108,25 @@ The phone has the team chat of [Rukoo on your computer](chat.md): workspaces on 
 
 **Agents.** The phone shows the [agents in channels](chat.md#agents-in-channels) and manages them as the computer does, by the same rules. An Agent tag marks them next to their messages, in the mention list and in a channel's Members, and their avatars are rounded squares. The mention list says when one won't answer you, such as "Answers only Olga". Add people lists the agents you may add under Agents, with the line on what agents pass on; someone who may add only their own agents to a channel gets Add agents instead. A channel's Members and the workspace's Members show who made each agent and whom it answers under its name, such as "Made by Olga · Answers only Olga". The workspace's Members has a group of its own for agents, with Edit agent, New key for its sponsor and Remove agent. An agent has no Make manager in a channel's Members, and never shows in New message, as the one who takes over a channel or with Block. The Agents sheet lists the workspace's agents for owners, admins and members. It adds agents, which start on Only me, edits and removes them, and makes a new key for the agents you sponsor. After adding an agent or making a key, it shows the key once with Copy key, and the runner's config with Copy config. The phone has no "Use one of my agents": fill in the config's backend yourself, or make the agent on the computer.
 
-**Notifications.** A direct message and a mention notify you while that conversation isn't on screen, also while you're in Mail; tapping one opens the conversation at that message, and reading it here or on another device takes the notification back. A muted conversation never notifies. Settings > Notifications > Team chat notifications turns them off. While Rukoo is open, it checks every workspace about every minute and the workspace on screen hears of new messages at once. In the background, Android runs Rukoo's check every 15 minutes at most, so a message can take that long to notify you, longer when Android's battery saving holds the app back (Settings > Phone tools > Battery points to Unrestricted).
+**Notifications.** A direct message and a mention notify you while that conversation isn't on screen, also while you're in Mail; tapping one opens the conversation at that message, and reading it here or on another device takes the notification back. A muted conversation never notifies. Settings > Notifications > Team chat notifications turns them off. While Rukoo is open, it checks every workspace about every minute and the workspace on screen hears of new messages at once. In the background, Android runs Rukoo's check every 15 minutes at most, so a message can take that long to notify you, longer when Android's battery saving holds the app back. The Battery row under Team chat notifications shows whether Rukoo is Unrestricted or Optimized and opens the page to change it. While [Phone tools](#let-agents-use-rukoo-on-this-phone) runs, team chat stays connected in the background as well, and that row says so.
 
 **What the host can read.** Team chat isn't end-to-end encrypted, unlike the records your Rukoo account syncs. Whoever runs the server can read and change the messages in its workspaces, direct messages included. The Join sheet, the start of each direct message and its header name the host. [What the host can read](chat.md#what-the-host-can-read) has the details.
 
 **On the phone.** Rukoo keeps your workspaces in one file in its private storage, `files/chat/chat.db`, up to 2,000 messages per conversation, so Chat opens at once and works offline; older messages load from the server as you scroll up. A message written without a connection waits and goes out once the phone is back online. Signing out, deleting your account, choosing another server or the server ending your session deletes that file, unsent messages included; the sign-out dialog counts them first.
+
+### Team chat in the background
+
+Team chat has no push yet. With Rukoo in the background, `ChatSyncWorker` checks every workspace every 15 minutes at most, when Android lets it run: Doze, App Standby and Samsung's sleeping apps hold it back further, and Unrestricted battery use holds it back least.
+
+While Phone tools' foreground service runs, Rukoo keeps team chat connected in the background. Android keeps a process with a foreground service running and lets it use the network, also in Doze:
+
+- The five most recently active workspaces each keep a wake socket open, the connection that tells the app a workspace has something new. A new message wakes the feed at once, and its notification follows within seconds. The server wakes each workspace's sockets on their own, so every workspace needs its own socket; each one is an open connection with a short ping every 30 seconds while the phone is awake.
+- Every workspace runs every 5 minutes, give or take 30 seconds. That catches a wake that got lost, brings the workspaces beyond the five, and keeps the sockets' 15-minute lease from running out. Unsent messages go out as they do with the app open.
+- It needs a network. Without one the sockets close and nothing retries until a network comes up. A metered network counts like any other.
+- It needs Team chat notifications on. Turning them off, turning Phone tools off, Phone tools stopping or signing out closes the sockets and stops the runs. `ChatSyncWorker` keeps its 15-minute schedule throughout.
+- What notifies doesn't change: a muted conversation and a blocked person stay silent, the switch in Settings still turns it all off, and with Rukoo in the background no conversation counts as on screen.
+
+In Doze the phone also sleeps between events, and Rukoo holds no wake lock. A wake frame that arrives wakes the phone and starts the run. The pings and the 5-minute runs wait until the phone wakes for something else, so a connection that dropped without a close while the phone slept is only noticed then, and in deep Doze a message can wait that long. Samsung can still stop Rukoo while its battery use is Optimized, which is why the Battery row points to Unrestricted.
 
 ### Chat on the Fold
 
@@ -146,7 +162,7 @@ The phone sorts like the desktop. During each inbox sync it fetches a few header
 - The phone has no PDF reader, so `read_attachment` and `read_chat_file` give agents a PDF as a file without its text. Clark can read it on its own machine.
 - Photos keep the format the camera saved them in. A HEIC photo goes to the agent as a file, not as an image.
 - OpenClaw's Rukoo tools point at one device at a time.
-- Team chat has no push: in the background Android lets Rukoo check for new messages every 15 minutes at most, so a notification can come that late. Open, Rukoo checks about every minute and hears of the workspace on screen at once.
+- Team chat has no push: in the background Android lets Rukoo check for new messages every 15 minutes at most, so a notification can come that late. Open, Rukoo checks about every minute and hears of the workspace on screen at once. While Phone tools runs, the five most recently active workspaces stay connected in the background and notify within seconds, though in deep Doze a dropped connection is only noticed when the phone wakes ([Team chat in the background](#team-chat-in-the-background)).
 - Team chat uses one host, the server of your Rukoo account. A workspace on another server can't be joined from the phone.
 - Team chat on the phone shows no reactions, files, link previews or formatting yet, and neither the phone nor the computer searches messages. [Not in this version](chat.md#not-in-this-version) lists the rest.
 
