@@ -337,6 +337,17 @@ export function closeMenu({ refocus = false } = {}) {
 export const menuOpen = () => Boolean(openMenu);
 export const menuCount = () => menusOpened;
 
+// Closes the menu that opened as number n (menuCount() right after its showMenu) while it is still the one open, such as
+// a calendar menu when Calendar is turned off; a newer menu stays.
+export function closeMenuNumber(n) {
+  if (n && openMenu && menusOpened === n) closeMenu();
+}
+
+// Settings > General > Tabs as main has it now: whether mode shows. A control asks it after its last await and before it
+// writes or inserts for that mode, which may have gone meanwhile. Where main has no tabs (the browser app), every mode
+// shows.
+export const modeShownNow = (mode) => api('modeShown', mode).then((on) => on !== false, () => true);
+
 // items: [{ label, sub, action, icon, shortcut, danger, checked, disabled }] or { separator: true } or { heading }.
 // sub is an optional quieter second line under the label, such as an account's address under its name.
 // Opens below the anchor element, or at { x, y } for context menus.

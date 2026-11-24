@@ -33,7 +33,7 @@ const { oneClickUnsubscribe } = require('./net');
 const { mailImage } = require('./mailimage');
 const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
-const { modeHidden, visibleModes } = require('./modes');
+const { MODES, modeHidden, visibleModes } = require('./modes');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
@@ -295,6 +295,9 @@ function modesMaybeChanged() {
   refreshBadge();
   if (tray) tray.relabel();
   if (workspaces) workspaces.settingsChanged();
+  // Compose windows hear only what is sent to them: their calendar button and calendar dialogs follow at once (compose.js).
+  // The main window follows through 'updated' and its own chat state.
+  for (const c of composeWindows.values()) if (!c.win.isDestroyed()) c.win.webContents.send('mail:event', { type: 'modes', payload: now });
 }
 
 // A way in to a hidden mode from outside the window (a mailto: link): the main window comes forward and says the mode
@@ -1331,6 +1334,9 @@ const api = {
     return true;
   },
   toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
+  // Whether a mode shows now (Settings > General > Tabs): a window asks after an await, before it writes or opens
+  // something of that mode, since the setting may have changed meanwhile in any window.
+  modeShown: (mode) => MODES.includes(mode) && !modeOff(mode),
   // The hidden mode a way in from outside asked for (offerHiddenMode), once: { mode, mailto }, mailto the id of the
   // email link that came with it.
   takeModeOff: () => {

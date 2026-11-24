@@ -4,7 +4,7 @@ import { t, localize, translate, getLanguage } from './i18n.js';
 import { formatButtons, mountRichEditor } from './rich-editor.js';
 import { soleImage } from './editor-images.js';
 import { icons } from './icons.js';
-import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN, afterDrag } from './ui.js';
+import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, menuCount, closeMenuNumber, modeShownNow, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN, afterDrag } from './ui.js';
 import { fillFrame } from './mailframe.js';
 import { editMenu } from './editmenu.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
@@ -804,26 +804,49 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     changed();
   }
 
-  // The calendar button shows while Calendar does (calendarOff).
+  // What the calendar button opened and is still open: its menu (menuCount) and the free-times dialog (its close).
+  let calendarMenuNumber = 0;
+  let closeFreeTimes = null;
+
+  // The calendar button shows while Calendar does (calendarOff). Calendar turned off closes its menu and the
+  // free-times dialog, which then insert nothing.
   function showModes() {
     const b = page.querySelector('[data-c="calendar"]');
-    if (b) b.hidden = calendarOff(data);
+    const off = calendarOff(data);
+    if (b) b.hidden = off;
+    if (!off) return;
+    closeMenuNumber(calendarMenuNumber);
+    calendarMenuNumber = 0;
+    if (closeFreeTimes) closeFreeTimes();
   }
+
+  // Calendar still shows, here and as main has it now: asked after an await, before the text changes.
+  const calendarStillOn = async () => !calendarOff(data) && (await modeShownNow('calendar')) && !calendarOff(data);
 
   // The calendar button: the booking link while the booking page is on, and free times. The compose window's copy
   // of main's state is from when it opened, so the link is asked for again.
   async function calendarMenu(b) {
     const range = editorRange();
     const fresh = await api('state').catch(() => data);
+    if (calendarOff(fresh) || !(await calendarStillOn())) return;
     const url = safeBookingUrl(fresh && fresh.bookingUrl);
     showMenu(
       b,
       [
-        url ? { icon: 'link', get label() { return t('composer.booking.insertLink'); }, action: () => insertHtml(range, `<a href="${esc(url)}">${esc(url)}</a>`) } : null,
+        url
+          ? {
+              icon: 'link',
+              get label() {
+                return t('composer.booking.insertLink');
+              },
+              action: () => !calendarOff(data) && insertHtml(range, `<a href="${esc(url)}">${esc(url)}</a>`)
+            }
+          : null,
         { icon: 'clock', get label() { return t('composer.booking.insertTimes'); }, action: () => freeTimes(range, fresh || data) }
       ],
       { above: true }
     );
+    calendarMenuNumber = menuCount();
   }
 
   // The free-times dialog: length, period, hours and zone, with the lines main formats (calendarFree) as a preview,
@@ -832,6 +855,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // so the page can offer fewer times than the list.
   async function freeTimes(range, state) {
     const booking = await api('bookingState').catch(() => null);
+    if (!(await calendarStillOn())) return restoreRange(range);
     const url = booking && booking.status === 'on' ? safeBookingUrl(booking.url) : null;
     const types = url && booking.settings && Array.isArray(booking.settings.types) ? booking.settings.types.filter((x) => !x.hidden) : [];
     const calendar = state && state.settings && state.settings.calendar;
@@ -859,7 +883,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         { get label() { return t('common.actions.cancel'); }, value: null },
         { get label() { return t('composer.booking.insert'); }, primary: true, value: () => html() || KEEP_OPEN }
       ],
-      render(body) {
+      render(body, done) {
+        closeFreeTimes = () => done(null);
         const rangeLabel = { week: t('calendar.free.rangeThisWeek'), next: t('calendar.free.rangeNextWeek'), days14: t('calendar.free.range14') };
         const draw = () => {
           const lengthField =
@@ -943,7 +968,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         setTimeout(() => body.querySelector('select')?.focus(), 0);
       }
     });
-    if (picked) insertHtml(range, picked);
+    closeFreeTimes = null;
+    if (picked && (await calendarStillOn())) insertHtml(range, picked);
     else restoreRange(range);
   }
 

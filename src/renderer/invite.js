@@ -2,7 +2,7 @@
 // opened with Rukoo. Main finds the event in the user's calendars and sends the answer (calendar/invitations.js).
 import { t } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, toast, showMenu, dialog } from './ui.js';
+import { api, esc, toast, showMenu, dialog, menuCount, closeMenuNumber, modeShownNow } from './ui.js';
 import { whenText, titleOf } from './calendar-shared.js';
 
 const RESPONSES = ['accepted', 'tentative', 'declined'];
@@ -99,19 +99,32 @@ export function inviteHtml(inv, state = null, { plain = false } = {}) {
 // opts.openEvent(id, start): shows an event in the calendar view. opts.onDone: after Open in calendar.
 // opts.calendarOn(): whether Calendar shows (Settings > General > Tabs). While it doesn't, the card is plain and main
 // isn't asked about the calendars; turned on again (rukoo:modes-changed), the card asks and gets its actions back.
-export async function mountInvite(el, source, inv, { openEvent, onDone, calendarOn = () => true } = {}) {
+// Turned off, the card's calendar picker closes, and an answer or Add that waited on main asks main again before it
+// writes. opts.signal: aborted when the card goes, such as when the reader moves on or the dialog closes; the card
+// stops listening then.
+export async function mountInvite(el, source, inv, { openEvent, onDone, calendarOn = () => true, signal = null } = {}) {
   let state = null;
   let busy = false;
+  // The calendar picker this card opened (menuCount), while it may still be open.
+  let picker = 0;
   // The reader may have moved on to another email meanwhile.
   const draw = () => {
     if (el.isConnected) el.innerHTML = inviteHtml(state ? state.invite : inv, state, { plain: !calendarOn() });
   };
+  const stop = new AbortController();
+  if (signal) signal.addEventListener('abort', () => stop.abort(), { once: true });
   const onModes = () => {
-    if (!el.isConnected) return document.removeEventListener('rukoo:modes-changed', onModes);
+    if (!el.isConnected) return stop.abort();
+    if (!calendarOn()) {
+      closeMenuNumber(picker);
+      picker = 0;
+    }
     if (calendarOn() && !state) load().catch(() => draw());
     else draw();
   };
-  document.addEventListener('rukoo:modes-changed', onModes);
+  if (!signal || !signal.aborted) document.addEventListener('rukoo:modes-changed', onModes, { signal: stop.signal });
+  // Calendar still shows, here and as main has it now: for a write that comes after an await.
+  const stillOn = async () => calendarOn() && (await modeShownNow('calendar')) && calendarOn();
   const load = async () => {
     try {
       state = await api('inviteState', source);
@@ -131,6 +144,7 @@ export async function mountInvite(el, source, inv, { openEvent, onDone, calendar
       busy = true;
       el.querySelectorAll('[data-invite-answer]').forEach((x) => (x.disabled = true));
       try {
+        if (!(await stillOn())) return draw();
         const res = await api('inviteAnswer', source, b.dataset.inviteAnswer);
         toast(res.via === 'email' ? t('invite.card.sent', { address: res.to }) : t(`calendar.rsvp.sent.${b.dataset.inviteAnswer}`));
       } catch (err) {
@@ -147,7 +161,7 @@ export async function mountInvite(el, source, inv, { openEvent, onDone, calendar
       onDone && onDone();
       return openEvent && openEvent(target.id, target.start);
     }
-    if (b.dataset.invite === 'add') return addMenu(b, source, async () => load());
+    if (b.dataset.invite === 'add') picker = await addMenu(b, source, async () => load(), stillOn);
   });
   if (inv) draw();
   // An email's own invitation is enough while Calendar is off; a file's card needs main (and opens only while
@@ -156,9 +170,11 @@ export async function mountInvite(el, source, inv, { openEvent, onDone, calendar
   await load();
 }
 
-// The writable calendars to add the event to, by account.
-async function addMenu(anchor, source, after) {
+// The writable calendars to add the event to, by account. stillOn(): whether Calendar still shows, asked after each
+// await. Returns the menu's number (menuCount), or 0 when none opened.
+async function addMenu(anchor, source, after, stillOn = async () => true) {
   const list = await api('calendarList').catch(() => []);
+  if (!(await stillOn())) return 0;
   const items = [];
   for (const acc of list) {
     const cals = (acc.calendars || []).filter((c) => c.writable);
@@ -168,6 +184,7 @@ async function addMenu(anchor, source, after) {
       items.push({
         label: c.name,
         action: async () => {
+          if (!(await stillOn())) return;
           try {
             await api('inviteAdd', source, { accountId: acc.id, calendarId: c.id });
             toast(t('invite.card.added', { calendar: c.name }));
@@ -179,13 +196,26 @@ async function addMenu(anchor, source, after) {
       });
     }
   }
-  if (!items.length) return toast(t('invite.card.noCalendar'));
+  if (!items.length) {
+    toast(t('invite.card.noCalendar'));
+    return 0;
+  }
   showMenu(anchor, items, { align: 'left' });
+  return menuCount();
 }
 
-// An .ics file opened with Rukoo: its card in a dialog.
-export function openInviteFile(token, { openEvent }) {
+// An .ics file opened with Rukoo: its card in a dialog. calendarOn(): whether Calendar shows; the dialog closes when
+// Calendar is turned off, and the card stops listening once the dialog is gone.
+export function openInviteFile(token, { openEvent, calendarOn = () => true }) {
   let close = null;
+  const gone = new AbortController();
+  document.addEventListener(
+    'rukoo:modes-changed',
+    () => {
+      if (!calendarOn() && close) close(null);
+    },
+    { signal: gone.signal }
+  );
   dialog({
     title: t('invite.dialog.title'),
     wide: true,
@@ -193,10 +223,10 @@ export function openInviteFile(token, { openEvent }) {
     render(body, done) {
       close = done;
       body.innerHTML = `<div class="invite-slot"></div>`;
-      mountInvite(body.querySelector('.invite-slot'), { file: token }, null, { openEvent, onDone: () => close && close(null) }).catch((err) => {
+      mountInvite(body.querySelector('.invite-slot'), { file: token }, null, { openEvent, calendarOn, signal: gone.signal, onDone: () => close && close(null) }).catch((err) => {
         done(null);
         toast(err.message, 5000);
       });
     }
-  });
+  }).then(() => gone.abort());
 }

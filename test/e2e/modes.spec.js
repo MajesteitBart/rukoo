@@ -317,6 +317,153 @@ test('with Calendar off an invitation shows as text, the composer has no calenda
   expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual([]);
 });
 
+// A main-process call held until release(): calls that start meanwhile wait at the gate, so a test can change the
+// setting while a window awaits one.
+async function gate(target, method) {
+  await app.evaluate(
+    (_e, [target, method]) => {
+      const obj = global[target];
+      global.__gates ||= {};
+      const real = obj[method];
+      const g = { real, waiting: 0 };
+      g.open = new Promise((resolve) => (g.release = resolve));
+      obj[method] = async function (...args) {
+        g.waiting += 1;
+        await g.open;
+        return real.apply(this, args);
+      };
+      global.__gates[method] = { g, obj };
+    },
+    [target, method]
+  );
+  return {
+    waiting: () => app.evaluate((_e, method) => global.__gates[method].g.waiting, method),
+    release: () =>
+      app.evaluate((_e, method) => {
+        const { g, obj } = global.__gates[method];
+        obj[method] = g.real;
+        g.release();
+      }, method)
+  };
+}
+
+test('Calendar going off reaches an open compose window at once and closes calendar controls that are open, writing nothing', async () => {
+  test.setTimeout(120000);
+  await start();
+  const at = Date.now() + 3 * 86400000;
+  await invitation('Invitation: Board review', ics({ uid: 'board-review-modes@example.com', title: 'Board review', start: at, end: at + 3600000 }));
+  await win.locator('.item', { hasText: 'Invitation: Board review' }).first().click();
+  const card = win.locator('.reader .invite');
+  await expect(card.locator('[data-invite="add"]')).toBeVisible();
+  // Every write an invitation's card can make, counted.
+  await app.evaluate(() => {
+    const inv = global.__semInvitations;
+    global.__inviteWrites = 0;
+    for (const name of ['add', 'answer']) {
+      const real = inv[name].bind(inv);
+      inv[name] = (...args) => {
+        global.__inviteWrites += 1;
+        return real(...args);
+      };
+    }
+  });
+
+  // A compose window with its free-times dialog open, and the invitation's calendar picker open in the main window.
+  await win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }));
+  await expect.poll(() => app.windows().length).toBe(2);
+  const popped = app.windows().find((w) => w !== win);
+  await popped.waitForSelector('.composer .editor');
+  await popped.locator('.editor').click({ position: { x: 4, y: 4 } });
+  await popped.keyboard.type('Hello');
+  await popped.click('.composer [data-c="calendar"]');
+  await popped.locator('.menu button', { hasText: 'Insert my free times…' }).click();
+  const timesDialog = popped.locator('.scrim .dialog');
+  await expect(timesDialog.locator('h2')).toHaveText('Insert free times');
+  await card.locator('[data-invite="add"]').click();
+  await expect(win.locator('.menu')).toBeVisible();
+
+  // Calendar off in the main window: the compose window follows without being focused, and what was open closes.
+  await setHidden(['calendar']);
+  await expect(win.locator('.menu')).toHaveCount(0);
+  await expect(popped.locator('.composer [data-c="calendar"]')).toBeHidden();
+  await expect(timesDialog).toHaveCount(0);
+  await expect(popped.locator('.editor')).not.toContainText("I'm free at these times");
+
+  // An .ics file's dialog that is open when Calendar goes closes too.
+  await setHidden([]);
+  await expect(popped.locator('.composer [data-c="calendar"]')).toBeVisible();
+  const file = path.join(dataDir, 'Offsite.ics');
+  fs.writeFileSync(file, ics({ method: 'PUBLISH', uid: 'offsite-modes@example.com', title: 'Offsite', start: at, end: at + 7200000 }));
+  await app.evaluate(({ app }, [args, cwd]) => app.emit('second-instance', {}, args, cwd), [['Rukoo Mail.exe', '--', 'Offsite.ics'], dataDir]);
+  const fileDialog = win.locator('.scrim .dialog');
+  await expect(fileDialog.locator('[data-invite="add"]')).toBeVisible();
+  await setHidden(['calendar']);
+  await expect(fileDialog).toHaveCount(0);
+
+  // A click that was waiting on main when Calendar went: the calendar picker doesn't open after all.
+  await setHidden([]);
+  await expect(card.locator('[data-invite="add"]')).toBeVisible();
+  const list = await gate('__semCalendars', 'loadCalendars');
+  await card.locator('[data-invite="add"]').click();
+  await expect.poll(() => list.waiting()).toBeGreaterThan(0);
+  await setHidden(['calendar']);
+  await list.release();
+  await win.waitForTimeout(400);
+  await expect(win.locator('.menu')).toHaveCount(0);
+
+  // The same for the free-times dialog, which waits for the booking page's state before it opens.
+  await setHidden([]);
+  const bookingGate = await gate('__semBooking', 'load');
+  await popped.click('.composer [data-c="calendar"]');
+  await popped.locator('.menu button', { hasText: 'Insert my free times…' }).click();
+  await expect.poll(() => bookingGate.waiting()).toBeGreaterThan(0);
+  await setHidden(['calendar']);
+  await bookingGate.release();
+  await popped.waitForTimeout(400);
+  await expect(popped.locator('.scrim')).toHaveCount(0);
+  await expect(popped.locator('.editor')).not.toContainText("I'm free at these times");
+  expect(await app.evaluate(() => global.__inviteWrites)).toBe(0);
+});
+
+test('an invitation card stops listening for tab changes when the reader moves on or its dialog closes', async () => {
+  await start();
+  const at = Date.now() + 4 * 86400000;
+  await invitation('Invitation: Retro', ics({ uid: 'retro-modes@example.com', title: 'Retro', start: at, end: at + 3600000 }));
+  // Each listener for tab changes the window adds, and whether its signal has let it go since.
+  await win.evaluate(() => {
+    const real = document.addEventListener;
+    window.__modeListeners = [];
+    document.addEventListener = function (type, fn, opts) {
+      if (type === 'rukoo:modes-changed') window.__modeListeners.push(opts && opts.signal ? opts.signal : { aborted: false, never: true });
+      return real.call(this, type, fn, opts);
+    };
+  });
+  const live = () => win.evaluate(() => window.__modeListeners.filter((s) => !s.aborted).length);
+  const invite = win.locator('.item', { hasText: 'Invitation: Retro' }).first();
+  const other = win.locator('.item', { hasText: 'Call on Thursday' }).first();
+
+  // The same invitation opened three times, with another email in between: one card listens, the one on screen.
+  for (let i = 0; i < 3; i++) {
+    await invite.click();
+    await expect(win.locator('.reader .invite [data-invite="add"]')).toBeVisible();
+    expect(await live()).toBe(1);
+    await other.click();
+    await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+    expect(await live()).toBe(0);
+  }
+
+  // An .ics file's dialog: its card and the dialog listen while it is open, and nothing once it is closed.
+  const file = path.join(dataDir, 'Retro.ics');
+  fs.writeFileSync(file, ics({ method: 'PUBLISH', uid: 'retro-file-modes@example.com', title: 'Retro file', start: at, end: at + 3600000 }));
+  await app.evaluate(({ app }, [args, cwd]) => app.emit('second-instance', {}, args, cwd), [['Rukoo Mail.exe', '--', 'Retro.ics'], dataDir]);
+  const dialog = win.locator('.scrim .dialog');
+  await expect(dialog.locator('.invite-title')).toHaveText('Retro file');
+  expect(await live()).toBe(2);
+  await dialog.locator('.buttons button', { hasText: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await live()).toBe(0);
+});
+
 // ---------- emails being written while Mail is off ----------
 
 // Clicks a control that closes its own window, such as Send in a compose window, and waits for the close.

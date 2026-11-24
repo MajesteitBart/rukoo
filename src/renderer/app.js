@@ -251,7 +251,7 @@ async function takeInviteFiles() {
   const tokens = await api('inviteFiles').catch(() => []);
   if (!tokens.length) return;
   const open = () => {
-    for (const token of tokens) openInviteFile(token, { openEvent: openCalendarEvent });
+    for (const token of tokens) openInviteFile(token, { openEvent: openCalendarEvent, calendarOn: () => modeShown('calendar') });
   };
   whenModeShown('calendar', open);
 }
@@ -3368,8 +3368,13 @@ function readerBar(m) {
     ${nav}</div>`;
 }
 
+// The invitation card in the reader: aborted when the reader draws again, so the card stops listening once it is gone.
+let readerInvite = null;
+
 function renderReader() {
   const el = $('.reader');
+  readerInvite?.abort();
+  readerInvite = null;
   if (!el || S.composer) return;
   el.classList.remove('scrolled');
   if (S.checked.size > 1) {
@@ -3448,7 +3453,10 @@ function renderReader() {
   if (!S.loading && !m.partial) loadPreviews(m);
   const slot = el.querySelector('.invite-slot');
   // With Calendar off the card shows the invitation as text, without its calendar actions, until Calendar is on again.
-  if (slot) mountInvite(slot, { id: m.id }, m.invite, { openEvent: openCalendarEvent, calendarOn: () => modeShown('calendar') }).catch(() => {});
+  if (slot) {
+    readerInvite = new AbortController();
+    mountInvite(slot, { id: m.id }, m.invite, { openEvent: openCalendarEvent, calendarOn: () => modeShown('calendar'), signal: readerInvite.signal }).catch(() => {});
+  }
   wantLogos([m]);
 }
 
