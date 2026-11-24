@@ -173,6 +173,24 @@ test('mute, the setting and the room on screen keep alerts away, also afterwards
   await svc.sync(ws.id);
   assert.deepEqual(svc.notices, [], 'turning Chat on again brings back no old alert');
 
+  // The desktop's main decides whether Chat shows (main.js modeOff): without a mail account Chat stays whatever the
+  // setting says, and alerts with it; when main says Chat is hidden, nothing alerts.
+  settings.hiddenModes = ['chat'];
+  svc.chatHidden = () => false;
+  await server.post(olga, ws.id, dm, 'blijft');
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1, 'Chat that stays for want of a mail account alerts');
+  assert.equal(svc.notices[0].body, 'Olga: blijft');
+  svc.notices.length = 0;
+  svc.chatHidden = () => true;
+  settings.hiddenModes = [];
+  await server.post(olga, ws.id, dm, 'weg');
+  await svc.sync(ws.id);
+  assert.deepEqual(svc.notices, [], 'main says Chat is hidden');
+  svc.chatHidden = null;
+  await svc.sync(ws.id);
+  assert.deepEqual(svc.notices, []);
+
   // On screen in the focused window.
   svc.setFocused(true);
   svc.setActive({ ws: ws.id, room: dm });

@@ -298,7 +298,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       if (stack[stack.length - 1] === 'agents' && agentState) refreshPhone();
     }
     const view = stack[stack.length - 1];
-    if (type === 'updated' && (view === 'main' || view === 'account')) setTimeout(render, 80);
+    if (type === 'updated' && (view === 'main' || view === 'account' || view === 'tabs')) setTimeout(render, 80);
+    // Team chat came or went on the server: the Tabs page and General's rows follow which tabs there are.
+    if (type === 'chat' && payload && payload.kind === 'state' && payload.state && (view === 'tabs' || view === 'main') && Boolean(payload.state.available) !== chatOn) {
+      setTimeout(render, 0);
+    }
     // Agent status changes only touch the status lines, never the fields you are typing in.
     if (type === 'agent' && payload && payload.kind === 'agents' && (view === 'agents' || view === 'main') && agentState) {
       agentState.status = payload.status || agentState.status;
@@ -1190,12 +1194,21 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const calendarGroup = `
         <div class="settings-group-title" data-i18n="settings.groups.calendar">${esc(t('settings.groups.calendar'))}</div>
         <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}${videoPage.rowHtml()}</div>`;
+      // Someone without a mail account who turned Mail off (team chat only) doesn't start on mail accounts: Settings
+      // opens on General, whose Tabs row brings Mail back, and Mail's tab then offers to add an account.
+      const mailGroup = state.accounts.length || !(s.hiddenModes || []).includes('mail');
+      // "Email settings" says too much then.
+      if (!mailGroup) title = t('settings.title.short');
       body = `
-        <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
+        ${
+          mailGroup
+            ? `<div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
           ${row({ title: t('settings.accounts.add'), action: 'add', cls: 'indent', lead: `<span class="add-ic">${icons.plus}</span>` })}
           ${row({ title: esc(t('settings.signatures.title')), desc: esc(t('settings.signatures.rowHelp')), action: 'signatures', cls: 'indent', lead: `<span class="sig-ic">${icons.edit}</span>` })}
-        </div>
+        </div>`
+            : ''
+        }
         <div class="settings-group-title" data-i18n="settings.groups.general">${esc(t('settings.groups.general'))}</div>
         <div class="card">
           ${row({ title: t('settings.general.language'), desc: t('settings.general.languageHelp'), value: languages.find((language) => language.code === s.language)?.name || 'English', action: 'language' })}
@@ -1396,12 +1409,16 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (view === 'tabs') {
       title = t('settings.general.tabs');
       const hidden = s.hiddenModes || [];
-      const shown = visibleModes(hidden, chatOn);
+      // Mail, Calendar and Meet need a mail account; without one, Chat is the tab that stays (modes.js).
+      const hasMail = state.accounts.length > 0;
+      const shown = visibleModes(hidden, chatOn, hasMail);
       const rows = MODES.filter((m) => m !== 'chat' || chatOn || hidden.includes('chat')).map((m) => {
         const on = m === 'chat' && !chatOn ? !hidden.includes('chat') : shown.includes(m);
-        // Mail can show although it is turned off, when nothing else can (visibleModes): its switch stays put too.
-        const locked = on && (hidden.includes(m) || !canHide(hidden, m, chatOn));
-        const desc = locked ? t('settings.modes.lastOn') : m === 'chat' && !chatOn ? t('settings.modes.chatAway') : '';
+        // A mode can show although it is turned off, when nothing else that can be used does (visibleModes): its
+        // switch stays put too.
+        const locked = on && (hidden.includes(m) || !canHide(hidden, m, chatOn, hasMail));
+        const lockedWhy = m === 'chat' && !hasMail ? 'settings.modes.chatNeeded' : 'settings.modes.lastOn';
+        const desc = locked ? t(lockedWhy) : m === 'chat' && !chatOn ? t('settings.modes.chatAway') : '';
         return row({ title: esc(t(MODE_LABELS[m])), desc: esc(desc), action: `mode:${m}`, toggle: on, disabled: locked });
       });
       body = `<div class="settings-group-title" data-i18n="settings.modes.show">${esc(t('settings.modes.show'))}</div>
@@ -1618,7 +1635,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     // leaveHiddenMode).
     if (a.startsWith('mode:')) {
       const on = Boolean(b.querySelector('.switch.on'));
-      const next = withMode(s.hiddenModes || [], a.slice(5), on, chatOn);
+      const next = withMode(s.hiddenModes || [], a.slice(5), on, chatOn, ctx.S.data.accounts.length > 0);
       return next ? set({ hiddenModes: next }) : undefined;
     }
     if (a.startsWith('hide:')) {

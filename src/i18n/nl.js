@@ -1417,6 +1417,8 @@
   "settings.modes.chatAway": "Verschijnt zodra teamchat beschikbaar is.",
   "settings.modes.turnOn": "Aanzetten",
   "settings.modes.offMail": "E-mail staat uit, dus Rukoo is geen nieuwe e-mail begonnen.",
+  "settings.modes.offMailOpen": "E-mail staat uit, dus Rukoo kan deze e-mail niet openen.",
+  "settings.modes.chatNeeded": "Zonder e-mailaccount is Chat het tabblad dat je kunt gebruiken, dus het blijft aan.",
   "settings.modes.offCalendar": "Agenda staat uit, dus Rukoo kan dit niet tonen.",
   "settings.modes.offMeeting": "Meet staat uit, dus Rukoo kan deze meeting niet tonen.",
   "settings.modes.offChat": "Chat staat uit, dus Rukoo kan je uitnodiging niet openen.",

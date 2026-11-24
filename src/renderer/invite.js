@@ -47,7 +47,10 @@ function note(inv, state) {
   return t('invite.card.notInCalendar');
 }
 
-export function inviteHtml(inv, state = null) {
+// plain: Calendar is turned off (Settings > General > Tabs), so the card shows what the invitation says and leaves
+// out everything that goes through the calendar: the answer, Add to calendar, Open in calendar and the note about
+// them. The meeting link stays.
+export function inviteHtml(inv, state = null, { plain = false } = {}) {
   const guests = inv.attendees || [];
   const rows = [];
   if (inv.meeting && !inv.cancelled) rows.push(`<div class="invite-row">${icons.video}<button class="link-btn" data-invite="join">${esc(t('calendar.event.join'))}</button></div>`);
@@ -61,18 +64,20 @@ export function inviteHtml(inv, state = null) {
     rows.push(`<div class="invite-row">${icons.people}<span><span class="invite-count">${esc(t('calendar.guests.count', { count: guests.length }))}</span> ${esc(names + more)}</span></div>`);
   }
   const current = chosen(inv, state);
-  const rsvp = answerable(inv, state)
+  const rsvp = !plain && answerable(inv, state)
     ? `<div class="invite-rsvp"><span>${esc(t('calendar.rsvp.question'))}</span><div class="filters" role="group" aria-label="${esc(t('calendar.rsvp.question'))}">${RESPONSES.map(
         (r) => `<button class="filter ${current === r ? 'active' : ''}" data-invite-answer="${r}" aria-pressed="${current === r}">${esc(t(`calendar.rsvp.${r}`))}</button>`
       ).join('')}</div></div>`
     : '';
   const event = state && state.event;
   const added = state && !event && state.added;
-  const action = event || added
-    ? `<button class="btn sm" data-invite="open">${icons.calendar}<span>${esc(t('invite.card.open'))}</span></button>`
-    : state && !inv.cancelled && inv.method !== 'REPLY' && !(inv.irregular && !Number.isFinite(inv.rid))
-      ? `<button class="btn sm" data-invite="add" aria-haspopup="menu">${icons.calendarPlus}<span>${esc(t('invite.card.add'))}</span></button>`
-      : '';
+  const action = plain
+    ? ''
+    : event || added
+      ? `<button class="btn sm" data-invite="open">${icons.calendar}<span>${esc(t('invite.card.open'))}</span></button>`
+      : state && !inv.cancelled && inv.method !== 'REPLY' && !(inv.irregular && !Number.isFinite(inv.rid))
+        ? `<button class="btn sm" data-invite="add" aria-haspopup="menu">${icons.calendarPlus}<span>${esc(t('invite.card.add'))}</span></button>`
+        : '';
   return `<section class="invite ${inv.cancelled ? 'cancelled' : ''}" aria-label="${esc(t('invite.card.label'))}">
     <div class="invite-head">
       <span class="invite-icon">${icons.calendar}</span>
@@ -85,20 +90,28 @@ export function inviteHtml(inv, state = null) {
     </div>
     ${rows.join('')}
     ${rsvp || action ? `<div class="invite-foot">${rsvp}<span class="spacer"></span>${action}</div>` : ''}
-    <div class="invite-note">${esc(note(inv, state))}</div>
+    ${plain ? '' : `<div class="invite-note">${esc(note(inv, state))}</div>`}
   </section>`;
 }
 
 // Draws the card into el and keeps it current. source: { id } of an email or { file } of an opened file.
 // inv: the invitation as the email carries it, to draw before main has looked in the calendars; null asks main first.
 // opts.openEvent(id, start): shows an event in the calendar view. opts.onDone: after Open in calendar.
-export async function mountInvite(el, source, inv, { openEvent, onDone } = {}) {
+// opts.calendarOn(): whether Calendar shows (Settings > General > Tabs). While it doesn't, the card is plain and main
+// isn't asked about the calendars; turned on again (rukoo:modes-changed), the card asks and gets its actions back.
+export async function mountInvite(el, source, inv, { openEvent, onDone, calendarOn = () => true } = {}) {
   let state = null;
   let busy = false;
   // The reader may have moved on to another email meanwhile.
   const draw = () => {
-    if (el.isConnected) el.innerHTML = inviteHtml(state ? state.invite : inv, state);
+    if (el.isConnected) el.innerHTML = inviteHtml(state ? state.invite : inv, state, { plain: !calendarOn() });
   };
+  const onModes = () => {
+    if (!el.isConnected) return document.removeEventListener('rukoo:modes-changed', onModes);
+    if (calendarOn() && !state) load().catch(() => draw());
+    else draw();
+  };
+  document.addEventListener('rukoo:modes-changed', onModes);
   const load = async () => {
     try {
       state = await api('inviteState', source);
@@ -112,6 +125,8 @@ export async function mountInvite(el, source, inv, { openEvent, onDone } = {}) {
     const b = e.target.closest('button');
     if (!b || busy) return;
     const current = state ? state.invite : inv;
+    // A card drawn just before Calendar went off: only the meeting link still works.
+    if (!calendarOn() && b.dataset.invite !== 'join') return;
     if (b.dataset.inviteAnswer) {
       busy = true;
       el.querySelectorAll('[data-invite-answer]').forEach((x) => (x.disabled = true));
@@ -135,6 +150,9 @@ export async function mountInvite(el, source, inv, { openEvent, onDone } = {}) {
     if (b.dataset.invite === 'add') return addMenu(b, source, async () => load());
   });
   if (inv) draw();
+  // An email's own invitation is enough while Calendar is off; a file's card needs main (and opens only while
+  // Calendar shows, app.js takeInviteFiles).
+  if (inv && !calendarOn()) return;
   await load();
 }
 

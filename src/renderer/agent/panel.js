@@ -1898,8 +1898,13 @@ export function mountAgentPanel(ctx) {
   // A source being looked up: finding a moved email can sync a folder first, so clicks meanwhile are ignored.
   let locating = false;
 
+  // Mail turned off in Settings > General > Tabs: an email would open in a reading pane nobody sees and could be marked
+  // read there. The notice says so, and its Turn on opens it after all (app.js whenModeShown).
+  const mailOff = () => Boolean(ctx.modeShown) && !ctx.modeShown('mail');
+
   async function openSource(source) {
     if (source && source.messageId) {
+      if (mailOff()) return ctx.whenModeShown('mail', () => openSource(source), 'mail-open');
       if (locating) return;
       // The email may have moved since the agent showed it; main finds it again by its Message-ID.
       let id = source.messageId;
@@ -1957,6 +1962,7 @@ export function mountAgentPanel(ctx) {
   function draftAction(item, action) {
     const c = openComposerFor(item);
     if (action === 'show') {
+      if (mailOff()) return ctx.whenModeShown('mail', () => draftAction(item, 'show'), 'mail-open');
       if (c) return c.focus();
       if (item.draftId) return ctx.compose({ mode: 'draft', id: item.draftId });
       if (item.messageRef) {
@@ -2121,7 +2127,8 @@ export function mountAgentPanel(ctx) {
       return;
     }
     const refs = [...(conv.continued || [])].reverse().concat(conv.message ? [conv.message] : []);
-    if (!refs.length) return;
+    // With Mail off the chat opens without its email, which stays as it is, unread too.
+    if (!refs.length || mailOff()) return;
     let target = null;
     for (const ref of refs) {
       try {

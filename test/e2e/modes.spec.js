@@ -1,19 +1,21 @@
 // Settings > General > Tabs: turning Mail, Calendar, Meet and Chat on and off (src/renderer/modes.js,
 // src/main/modes.js). A hidden mode loses its tab, its shortcut, its notifications, sound and badges, and its ways in
 // from outside; its account, data and sync stay. The demo account stands in for a real one, and desktop notifications
-// are recorded instead of shown. Team chat isn't available in these tests (no account server), so Chat has no tab.
+// are recorded instead of shown. Team chat isn't available in these tests (no account server), so Chat has no tab;
+// modes-chat.spec.js covers Chat against the real account server.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
+const MailComposer = require('nodemailer/lib/mail-composer');
 const { tempDir, removeDir } = require('../tmp');
-const { closeApp } = require('./close');
+const { closeApp, kill } = require('./close');
 
 let app;
 let win;
 let dataDir;
 
-async function launch() {
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1' };
+async function launch(extra = {}) {
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', ...extra };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
@@ -23,29 +25,39 @@ async function launch() {
     // In the background, where new mail gets a desktop notification.
     BrowserWindow.getAllWindows()[0].isFocused = () => false;
     global.__shown = [];
+    global.__closed = 0;
     Notification.prototype.show = function () {
-      global.__shown.push({ title: this.title, body: this.body });
+      global.__shown.push(this);
+    };
+    Notification.prototype.close = function () {
+      global.__closed += 1;
     };
   });
   await win.evaluate(() => {
     window.__badges = [];
     window.__newMail = [];
+    window.__opened = [];
     window.mail.on(({ type, payload }) => {
       if (type === 'badge') window.__badges.push(payload);
       if (type === 'new-mail') window.__newMail.push(payload);
+      if (type === 'open-message') window.__opened.push(payload);
     });
   });
 }
 
-test.beforeEach(async () => {
-  dataDir = tempDir('rukoo-modes-e2e-');
+// A new profile with the demo account; settings: what settings.json starts with.
+async function start(settings = {}, extra = {}) {
   fs.mkdirSync(path.join(dataDir, 'data'), { recursive: true });
   // The tray, so its count and menu can be checked.
-  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ closeToTray: true }));
-  await launch();
+  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ closeToTray: true, ...settings }));
+  await launch(extra);
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+}
+
+test.beforeEach(() => {
+  dataDir = tempDir('rukoo-modes-e2e-');
 });
 
 test.afterEach(async () => {
@@ -57,6 +69,7 @@ const tab = (mode) => win.locator(`.titlebar-modes [data-mode="${mode}"]`);
 const shell = () => win.locator('#app .shell');
 const settingsPage = () => win.locator('.page.settings');
 const modeSwitch = (mode) => settingsPage().locator(`[data-a="mode:${mode}"]`);
+const notice = () => win.locator('#toast');
 
 // Escape goes back a page at a time: Tabs, then General, then the window.
 async function closeSettings() {
@@ -68,6 +81,12 @@ async function openTabsSettings() {
   await win.click('[data-action="settings"]');
   await settingsPage().locator('[data-a="tabs"]').click();
   await expect(modeSwitch('mail')).toBeVisible();
+}
+
+// The setting as Settings > General > Tabs leaves it, without the page: the window follows main's 'updated'.
+async function setHidden(list) {
+  await win.evaluate((hiddenModes) => window.mail.call('updateSettings', { hiddenModes }), list);
+  await expect.poll(() => win.evaluate(async () => JSON.stringify((await import('./app.js')).S.data.settings.hiddenModes))).toBe(JSON.stringify(list));
 }
 
 // An email lands in the demo inbox, and a sync finds it.
@@ -88,13 +107,27 @@ const arrive = (subject) =>
   }, subject);
 
 const tray = () => app.evaluate(() => ({ tooltip: global.__semTray.tray.tooltip, dot: global.__semTray.dot, compose: Boolean(global.__semTray.menu.getMenuItemById('compose')) }));
+const windowCount = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
 
 test('hidden Mail leaves the tabs, the shortcut, notifications, badges and the tray, and comes back as it was', async () => {
+  await start();
   await expect(tab('mail')).toBeVisible();
   await expect(shell()).not.toHaveClass(/calendar-mode/);
+  // A notification that is still out when Mail goes.
+  await arrive('Before Mail goes');
+  await expect.poll(() => app.evaluate(() => global.__shown.length)).toBe(1);
+  // The tray's menu as it was drawn while Mail showed, with New email.
+  const staleCompose = await app.evaluate(() => Boolean(global.__semTray.menu.getMenuItemById('compose')));
+  expect(staleCompose).toBe(true);
+
   await openTabsSettings();
   await expect(modeSwitch('chat')).toHaveCount(0);
+  // The row is the switch: the button that takes the focus carries the role and its state.
+  await expect(modeSwitch('mail')).toHaveAttribute('role', 'switch');
+  await expect(modeSwitch('mail')).toHaveAttribute('aria-checked', 'true');
+  await expect(modeSwitch('mail').locator('.switch')).toHaveAttribute('aria-hidden', 'true');
   await modeSwitch('mail').click();
+  await expect(modeSwitch('mail')).toHaveAttribute('aria-checked', 'false');
   await expect(modeSwitch('mail').locator('.switch')).not.toHaveClass(/\bon\b/);
   await closeSettings();
 
@@ -105,31 +138,49 @@ test('hidden Mail leaves the tabs, the shortcut, notifications, badges and the t
   await win.keyboard.press('Control+1');
   await expect(shell()).toHaveClass(/calendar-mode/);
 
+  // Mail's notification that was still out closed, and a click on it now brings nothing.
+  expect(await app.evaluate(() => global.__closed)).toBe(1);
+  expect(await app.evaluate(() => global.__semClosedModes)).toEqual(['mail']);
+  await app.evaluate(() => global.__shown[0].emit('click'));
+  await win.waitForTimeout(300);
+  expect(await win.evaluate(() => window.__opened)).toEqual([]);
+
   // New mail: no notification, no new-mail cue in the window, no badge count, no tray dot or count.
-  await win.evaluate(() => (window.__badges = []));
+  await win.evaluate(() => {
+    window.__badges = [];
+    window.__newMail = [];
+  });
   await arrive('While Mail is hidden');
   await expect.poll(() => app.evaluate(() => global.__semHiddenMail || 0)).toBeGreaterThan(0);
-  expect(await app.evaluate(() => global.__shown)).toEqual([]);
+  expect(await app.evaluate(() => global.__shown.length)).toBe(1);
   expect(await win.evaluate(() => window.__newMail)).toEqual([]);
   expect((await win.evaluate(() => window.__badges)).filter((n) => n > 0)).toEqual([]);
   expect(await tray()).toEqual({ tooltip: 'Rukoo Mail', dot: false, compose: false });
 
+  // A tray menu drawn before Mail went still had New email: its click asks again and opens nothing.
+  await app.evaluate(() => global.__semTray.actions.compose());
+  await expect(notice()).toContainText('Mail is turned off');
+  expect(await windowCount()).toBe(1);
+
   // An email link opened with Rukoo: no compose window, and a notice that offers to turn Mail on.
   await app.evaluate(({ app }) => app.emit('second-instance', {}, ['Rukoo Mail.exe', '--', 'mailto:sanne@example.com?subject=Hoi'], process.cwd()));
-  await expect(win.locator('#toast')).toContainText('Mail is turned off');
-  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo didn't start a new email.");
+  expect(await windowCount()).toBe(1);
 
-  // The notice's Turn on brings Mail back, with what came in meanwhile, and its notifications.
-  await win.locator('#toast button').click();
+  // The notice's Turn on brings Mail back, with what came in meanwhile, and starts the email the link asked for.
+  const [compose] = await Promise.all([app.waitForEvent('window'), notice().locator('button').click()]);
+  await compose.waitForSelector('.composer .editor');
+  await expect(compose.locator('[data-field="subject"]')).toHaveValue('Hoi');
   await expect(tab('mail')).toBeVisible();
   await expect(shell()).not.toHaveClass(/calendar-mode/);
   await expect(win.locator('.item', { hasText: 'While Mail is hidden' })).toBeVisible();
   expect((await tray()).compose).toBe(true);
   await arrive('Mail is back');
-  await expect.poll(() => app.evaluate(() => global.__shown.length)).toBeGreaterThan(0);
+  await expect.poll(() => app.evaluate(() => global.__shown.length)).toBe(2);
 });
 
 test('the last tab that shows stays on; a restart keeps the choice and starts in a mode that shows', async () => {
+  await start();
   await openTabsSettings();
   await modeSwitch('mail').click();
   await expect(modeSwitch('mail').locator('.switch')).not.toHaveClass(/\bon\b/);
@@ -166,4 +217,264 @@ test('the last tab that shows stays on; a restart keeps the choice and starts in
   await expect(win.locator('.titlebar-modes [role="tab"]')).toHaveText(['Calendar', 'Meet']);
   await win.keyboard.press('Control+2');
   await expect(shell()).toHaveClass(/calendar-mode/);
+});
+
+// ---------- Calendar off ----------
+
+const stamp = (ms) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+function ics({ method = 'REQUEST', uid, title, start, end }) {
+  return [
+    'BEGIN:VCALENDAR',
+    'PRODID:-//Google Inc//Google Calendar 70.9054//EN',
+    'VERSION:2.0',
+    `METHOD:${method}`,
+    'BEGIN:VEVENT',
+    `DTSTART:${stamp(start)}`,
+    `DTEND:${stamp(end)}`,
+    `DTSTAMP:${stamp(Date.now())}`,
+    'ORGANIZER;CN=Joris Bakker:mailto:joris@example.com',
+    `UID:${uid}`,
+    'ATTENDEE;CN=Joris Bakker;PARTSTAT=ACCEPTED:mailto:joris@example.com',
+    'ATTENDEE;CN=Demo User;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demo@example.com',
+    'SEQUENCE:0',
+    'STATUS:CONFIRMED',
+    `SUMMARY:${title}`,
+    'LOCATION:Room 4.12',
+    'URL:https://meet.google.com/abc-defg-hij',
+    'END:VEVENT',
+    'END:VCALENDAR',
+    ''
+  ].join('\r\n');
+}
+
+async function invitation(subject, calendar) {
+  const raw = await new MailComposer({
+    from: 'Joris Bakker <joris@example.com>',
+    to: 'demo@example.com',
+    subject,
+    date: new Date(),
+    text: `${subject}\n\nJoris Bakker invited you.`,
+    html: `<p>${subject}</p><p>Joris Bakker invited you.</p>`,
+    icalEvent: { method: 'REQUEST', content: calendar }
+  })
+    .compile()
+    .build();
+  await app.evaluate(async (_, mail) => {
+    const engine = global.__semEngine;
+    await engine.session(engine.accounts[0]).append('INBOX', mail);
+    await engine.syncAll();
+  }, raw.toString());
+}
+
+test('with Calendar off an invitation shows as text, the composer has no calendar button, and an .ics file opens after Turn on', async ({}, testInfo) => {
+  await start();
+  const at = Date.now() + 3 * 86400000;
+  await invitation('Invitation: Lunch talk', ics({ uid: 'lunch-talk-modes@example.com', title: 'Lunch talk', start: at, end: at + 3600000 }));
+  await win.locator('.item', { hasText: 'Invitation: Lunch talk' }).first().click();
+  const card = win.locator('.reader .invite');
+  await expect(card.locator('[data-invite-answer="accepted"]')).toBeVisible();
+  await expect(card.locator('[data-invite="add"]')).toBeVisible();
+  // The composer of a reply has the calendar button while Calendar shows.
+  await win.click('[data-reader="reply"]');
+  const bar = win.locator('.composer [data-c="calendar"]');
+  await expect(bar).toBeVisible();
+
+  // Calendar off: in the window that is open, the card keeps what the invitation says and loses its calendar actions.
+  await setHidden(['calendar']);
+  await expect(bar).toBeHidden();
+  await win.locator('.composer [data-c="discard"]').click();
+  await expect(win.locator('.composer')).toHaveCount(0);
+  await expect(card.locator('.invite-title')).toHaveText('Lunch talk');
+  await expect(card.locator('.invite-row')).toContainText(['Room 4.12', '2 guests']);
+  await expect(card.locator('[data-invite="join"]')).toBeVisible();
+  await expect(card.locator('[data-invite-answer]')).toHaveCount(0);
+  await expect(card.locator('[data-invite="add"], [data-invite="open"]')).toHaveCount(0);
+  await expect(card.locator('.invite-note')).toHaveCount(0);
+  await win.screenshot({ path: testInfo.outputPath('invite-calendar-off.png') });
+  // A new reply has no calendar button either.
+  await win.click('[data-reader="reply"]');
+  await expect(win.locator('.composer [data-c="calendar"]')).toBeHidden();
+
+  // Back on: the same open window gets the answers, Add to calendar and the button back.
+  await setHidden([]);
+  await expect(win.locator('.composer [data-c="calendar"]')).toBeVisible();
+  await win.locator('.composer [data-c="discard"]').click();
+  await expect(card.locator('[data-invite-answer="accepted"]')).toBeVisible();
+  await expect(card.locator('[data-invite="add"]')).toBeVisible();
+  await expect(card.locator('.invite-note')).toHaveText('Your answer goes to joris@example.com by email.');
+
+  // An .ics file while Calendar is off: no card, and the notice's Turn on opens it at once.
+  await setHidden(['calendar']);
+  const file = path.join(dataDir, 'Concert.ics');
+  fs.writeFileSync(file, ics({ method: 'PUBLISH', uid: 'concert-modes@example.com', title: 'Concert', start: at, end: at + 7200000 }));
+  await app.evaluate(({ app }, [args, cwd]) => app.emit('second-instance', {}, args, cwd), [['Rukoo Mail.exe', '--', 'Concert.ics'], dataDir]);
+  await expect(notice()).toContainText("Calendar is turned off, so Rukoo can't show this.");
+  const dialog = win.locator('.scrim .dialog');
+  await expect(dialog).toHaveCount(0);
+  await notice().locator('button').click();
+  await expect(dialog.locator('.invite-title')).toHaveText('Concert');
+  await expect(dialog.locator('[data-invite="add"]')).toBeVisible();
+  expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual([]);
+});
+
+// ---------- emails being written while Mail is off ----------
+
+// Clicks a control that closes its own window, such as Send in a compose window, and waits for the close.
+async function clickClosing(page, selector) {
+  const closed = page.waitForEvent('close');
+  closed.catch(() => {});
+  try {
+    await page.click(selector);
+  } catch (err) {
+    if (!page.isClosed() && !/has been closed/.test(err.message)) throw err;
+  }
+  await closed;
+}
+
+const subjects = (view) =>
+  app.evaluate(async (_e, view) => {
+    const engine = global.__semEngine;
+    const id = engine.accounts[0].id;
+    await engine.syncAccount(id);
+    return engine.listMessages({ scope: id, view }).map((m) => m.subject);
+  }, view);
+
+test('with Mail off an open compose window still saves and sends, and Undo send, a refusal and a restart open the email again', async () => {
+  test.setTimeout(150000);
+  await start({ undoSend: 30, language: 'en' }, { SEM_UNDO_SEND: '1' });
+  await win.click('[data-action="compose"]');
+  await expect(win.locator('.composer .editor')).toBeVisible();
+  const [popped] = await Promise.all([app.waitForEvent('window'), win.locator('.composer [data-c="popout"]').click()]);
+  await popped.waitForSelector('.composer .editor');
+
+  // Mail goes while the compose window is open: the window stays, and works.
+  await setHidden(['mail']);
+  await expect(shell()).toHaveClass(/calendar-mode/);
+  expect(popped.isClosed()).toBe(false);
+  await popped.fill('[data-rinput="to"]', 'demo@example.com');
+  await popped.press('[data-rinput="to"]', 'Enter');
+  await popped.fill('[data-field="subject"]', 'Written while Mail is off');
+  await popped.click('.editor');
+  await popped.keyboard.type('Still on its way.');
+  await popped.keyboard.press('Control+s');
+  await expect(popped.locator('.composer')).toHaveAttribute('data-dirty', 'false');
+  expect(await subjects('drafts')).toContain('Written while Mail is off');
+  await clickClosing(popped, '[data-c="send"]');
+
+  // The main window's notice offers Undo, which brings the email back in a compose window, Mail still off.
+  await expect(notice()).toContainText('Sending email…');
+  const [again] = await Promise.all([app.waitForEvent('window'), notice().locator('button').click()]);
+  await again.waitForSelector('.composer .editor');
+  await expect(again.locator('.editor')).toContainText('Still on its way.');
+  await expect(shell()).toHaveClass(/calendar-mode/);
+  await expect(win.locator('#app .reader .composer')).toHaveCount(0);
+  await clickClosing(again, '[data-c="send"]');
+  await app.evaluate(() => global.__semOutbox.flush());
+  await expect(notice()).toContainText('Email sent');
+  expect(await subjects('sent')).toContain('Written while Mail is off');
+
+  // A refusal: the email opens again with the server's answer, in a compose window.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    global.__send = engine.send;
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  const c = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+  expect(c).toBe(1);
+  await win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }));
+  await expect.poll(() => app.windows().length).toBe(2);
+  const third = app.windows().find((w) => w !== win);
+  await third.waitForSelector('.composer .editor');
+  await third.fill('[data-rinput="to"]', 'someone@example.com');
+  await third.press('[data-rinput="to"]', 'Enter');
+  await third.fill('[data-field="subject"]', 'Refused while Mail is off');
+  await clickClosing(third, '[data-c="send"]');
+  const [refused] = await Promise.all([app.waitForEvent('window'), app.evaluate(() => global.__semOutbox.flush())]);
+  await refused.waitForSelector('.composer .editor');
+  await expect(refused.locator('[data-field="subject"]')).toHaveValue('Refused while Mail is off');
+  await expect(refused.locator('body')).toContainText('Mailbox full');
+  await expect(shell()).toHaveClass(/calendar-mode/);
+  await refused.close();
+
+  // Rukoo dies while an email waits: the next start opens it in a compose window, Mail still off.
+  await app.evaluate(() => {
+    global.__semEngine.send = () => new Promise(() => {});
+  });
+  await win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }));
+  await expect.poll(() => app.windows().length).toBe(2);
+  const fourth = app.windows().find((w) => w !== win);
+  await fourth.waitForSelector('.composer .editor');
+  await fourth.fill('[data-rinput="to"]', 'someone@example.com');
+  await fourth.press('[data-rinput="to"]', 'Enter');
+  await fourth.fill('[data-field="subject"]', 'Kept through a crash, Mail off');
+  await clickClosing(fourth, '[data-c="send"]');
+  await expect(notice()).toContainText('Sending email…');
+  const exited = app.waitForEvent('close');
+  kill(app.process());
+  await exited;
+  await launch({ SEM_UNDO_SEND: '1' });
+  await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(2);
+  const reopened = app.windows().find((w) => w !== win);
+  await reopened.waitForSelector('.composer .editor');
+  await expect(reopened.locator('[data-field="subject"]')).toHaveValue('Kept through a crash, Mail off');
+  await expect(shell()).toHaveClass(/calendar-mode/, { timeout: 15000 });
+  expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual(['mail']);
+});
+
+// ---------- the chat panel and Mail off ----------
+
+test('with Mail off an email source and a draft card in the chat panel say so, and Turn on opens them', async ({}, testInfo) => {
+  await start({}, { SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5' });
+  const pane = win.locator('.agentpane');
+  const transcript = pane.locator('.ap-transcript');
+  const chip = (label) => pane.locator('.bui-sugg__chip', { hasText: label });
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await win.keyboard.press('Control+j');
+  await expect(pane).toBeVisible();
+  await chip('Brief me').click();
+  // The email among the sources, by its mail badge.
+  const source = transcript.locator('.bui-ctx__card').filter({ has: win.locator('.bui-ctx__badge--mail') }).first();
+  await expect(source).toBeVisible({ timeout: 10000 });
+  // The brief's last words: the turn is over, so the next message starts a turn of its own.
+  await expect(transcript).toContainText('Decide that before the call.', { timeout: 10000 });
+  const sourceTitle = (await source.locator('.bui-ctx__name').textContent()).trim();
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().every((c) => c.status !== 'running')), { timeout: 10000 }).toBe(true);
+  await win.locator('.agentpane .bui-pb__ta').fill('Draft a reply');
+  await win.locator('.agentpane .bui-pb__ta').press('Enter');
+  await expect(transcript.locator('.bui-draft')).toContainText('Wrote a reply', { timeout: 10000 });
+  await expect(transcript).toContainText('Done. The draft is in the composer.', { timeout: 10000 });
+
+  const selected = () => win.evaluate(async () => (await import('./app.js')).S.selectedId);
+  const before = await selected();
+  const unreadOf = (subject) =>
+    app.evaluate((_e, subject) => {
+      const engine = global.__semEngine;
+      const m = engine.listMessages({ scope: engine.accounts[0].id, view: 'everything' }).find((x) => x.subject === subject);
+      return m ? m.unread : null;
+    }, subject);
+  const unread = await unreadOf(sourceTitle);
+
+  await setHidden(['mail']);
+  await expect(shell()).toHaveClass(/calendar-mode/);
+  await expect(pane).toBeVisible();
+
+  // The source: a notice, and the reading pane behind the calendar stays where it was.
+  await source.locator('.bui-ctx__bar').click();
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo can't open this email.");
+  await expect(notice().locator('button')).toHaveText('Turn on');
+  await win.screenshot({ path: testInfo.outputPath('agent-source-mail-off.png') });
+  await win.waitForTimeout(300);
+  expect(await selected()).toBe(before);
+  expect(await unreadOf(sourceTitle)).toBe(unread);
+
+  // The draft card's Show: the same notice; Turn on brings Mail with the draft in the composer.
+  await transcript.locator('.bui-draft').getByRole('button', { name: 'Show' }).click();
+  await expect(notice()).toContainText("Mail is turned off, so Rukoo can't open this email.");
+  await notice().locator('button').click();
+  await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
+  await expect(win.locator('.composer .editor')).toContainText('Thursday at 10:00 works for me.');
+  expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual([]);
 });

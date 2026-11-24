@@ -5402,11 +5402,19 @@
   },
   "settings.modes.offMail": {
     "message": "Mail is turned off, so Rukoo didn't start a new email.",
-    "description": "Notice in the main window when an email link (mailto:) was opened with Rukoo while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button. src/renderer/app.js (modeOffNotice), src/main/main.js (openMailto)"
+    "description": "Notice in the main window when an email link (mailto:) was opened with Rukoo while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Mail on and then starts the email. src/renderer/app.js (modeOffNotice), src/main/main.js (openMailto)"
+  },
+  "settings.modes.offMailOpen": {
+    "message": "Mail is turned off, so Rukoo can't open this email.",
+    "description": "Notice in the main window when the user opens an email or a draft from the chat panel or from the inbox sorting panel while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Mail on and then opens it. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.chatNeeded": {
+    "message": "Without a mail account, Chat is the tab you can use, so it stays on.",
+    "description": "Settings > General > Tabs: help under the Chat switch, which can't be turned off, for someone who uses Rukoo with a Rukoo account and no mail account. Mail, Calendar and Meet need a mail account. src/renderer/settings.js (render)"
   },
   "settings.modes.offCalendar": {
     "message": "Calendar is turned off, so Rukoo can't show this.",
-    "description": "Notice in the main window when the user opens a calendar file or an event while Calendar is turned off in Settings > General > Tabs. Followed by a Turn on button. src/renderer/app.js (modeOffNotice)"
+    "description": "Notice in the main window when the user opens a calendar file or an event while Calendar is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Calendar on and then opens the file. src/renderer/app.js (modeOffNotice)"
   },
   "settings.modes.offMeeting": {
     "message": "Meet is turned off, so Rukoo can't show this meeting.",

@@ -33,7 +33,7 @@ const { oneClickUnsubscribe } = require('./net');
 const { mailImage } = require('./mailimage');
 const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
-const { modeHidden } = require('./modes');
+const { modeHidden, visibleModes } = require('./modes');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
@@ -271,18 +271,47 @@ function syncOnReturn() {
   engine.syncStale(RETURN_SYNC_AFTER);
 }
 
-// Settings > General > Tabs turned this mode off (modes.js). A hidden mode keeps its accounts, data and sync, and the
-// agents keep its tools; it only stops showing: no notifications, sounds or badges, and no way in from outside.
+// Settings > General > Tabs turned this mode off (modes.js), or it can't show now. A hidden mode keeps its accounts,
+// data and sync, and the agents keep its tools; it only stops showing: no notifications, sounds or badges, and no way
+// in from outside. Without a mail account Chat is the mode that stays, whatever the setting says.
+function shownModes() {
+  return visibleModes(engine.settings.hiddenModes, Boolean(workspaces && workspaces.available), engine.accounts.length > 0);
+}
 function modeOff(mode) {
-  return Boolean(engine) && modeHidden(engine.settings.hiddenModes, mode, Boolean(workspaces && workspaces.available));
+  return Boolean(engine) && modeHidden(engine.settings.hiddenModes, mode, Boolean(workspaces && workspaces.available), engine.accounts.length > 0);
+}
+
+// Which modes show changes with the setting, with team chat coming or going on the server, and with the first or last
+// mail account. Everything main draws from it follows at once: the badge, the tray's count and menu, and chat alerts.
+// A mode that went closes its desktop notifications and the window's notices of it (app.js modesChanged).
+let modesSeen = null;
+function modesMaybeChanged() {
+  if (!engine) return;
+  const now = shownModes();
+  const before = modesSeen;
+  modesSeen = now;
+  if (before && before.join(',') === now.join(',')) return;
+  for (const m of before || []) if (!now.includes(m)) closeModeNotices(m);
+  refreshBadge();
+  if (tray) tray.relabel();
+  if (workspaces) workspaces.settingsChanged();
 }
 
 // A way in to a hidden mode from outside the window (a mailto: link): the main window comes forward and says the mode
 // is off, with a button that turns it on (app.js modeOffNotice). The window takes the notice when told and after its
-// first state, so a link Rukoo starts with isn't lost when the message comes before the window listens.
+// first state, so a link Rukoo starts with isn't lost when the message comes before the window listens. An email
+// link is kept under an id, the last few only, so Turn on can start that email after all (openHeldMailto).
 let modeOffWaiting = null;
-function offerHiddenMode(mode) {
-  modeOffWaiting = mode;
+const heldMailto = new Map();
+let heldMailtoSeq = 0;
+function offerHiddenMode(mode, { mailto: url = null } = {}) {
+  let id = null;
+  if (url) {
+    id = String(++heldMailtoSeq);
+    heldMailto.set(id, url);
+    while (heldMailto.size > 5) heldMailto.delete(heldMailto.keys().next().value);
+  }
+  modeOffWaiting = { mode, mailto: id };
   showWindow();
   send('mode-off');
 }
@@ -312,7 +341,8 @@ function updateTray() {
       test: Boolean(process.env.SEM_HIDDEN),
       actions: {
         open: showWindow,
-        compose: () => openComposeWindow({ mode: 'new' }),
+        // A menu opened just before Mail went off can still hold New email: the click asks again.
+        compose: () => (modeOff('mail') ? offerHiddenMode('mail') : openComposeWindow({ mode: 'new' })),
         // New email leaves the menu while Mail is hidden.
         mail: () => !modeOff('mail'),
         sync: () => engine.syncAll().catch(() => {}),
@@ -405,22 +435,51 @@ function showMailNotices(list, messages = []) {
   // With the new-mail sound on, Rukoo's sound plays instead of the system's.
   const silent = engine.settings.newMailSound === true && Boolean(win && !win.isDestroyed());
   for (const { id, title, body } of list) {
-    if (!id) {
-      new Notification({ title, body, silent }).show();
-      continue;
-    }
     // nativeImage can read from inside app.asar; a plain path cannot.
-    const n = new Notification({ title, body, icon: nativeImage.createFromPath(ICON), silent });
-    n.on('click', () => {
-      showWindow();
-      send('open-message', id);
-    });
+    const n = id ? new Notification({ title, body, icon: nativeImage.createFromPath(ICON), silent }) : new Notification({ title, body, silent });
+    keepNotice('mail', n);
+    // A click after Mail went off brings nothing forward.
+    if (id)
+      n.on('click', () => {
+        if (modeOff('mail')) return;
+        showWindow();
+        send('open-message', id);
+      });
     n.show();
   }
 }
 
-// Shown notifications stay referenced until they close, or Windows can drop their click handler with the object.
-const liveNotices = new Set();
+// Shown notifications stay referenced until they close, or Windows can drop their click handler with the object. By
+// mode, so turning a mode off closes its notifications (closeModeNotices). Chat keeps its own by alert id
+// (chatNotices).
+const liveNotices = { mail: new Set(), calendar: new Set() };
+function keepNotice(mode, n) {
+  const set = liveNotices[mode];
+  set.add(n);
+  const drop = () => set.delete(n);
+  n.on('click', drop);
+  n.on('close', drop);
+  n.on('failed', drop);
+}
+
+// A mode turned off: its desktop notifications that are still out go. Test mode records which modes were closed.
+function closeModeNotices(mode) {
+  if (process.env.SEM_HIDDEN) (global.__semClosedModes ||= []).push(mode);
+  if (mode === 'chat') {
+    for (const key of [...chatNotices.keys()]) closeChatNotification(key);
+    return;
+  }
+  const set = liveNotices[mode];
+  if (!set) return;
+  for (const n of [...set]) {
+    set.delete(n);
+    try {
+      n.close();
+    } catch (_) {
+      // Gone already.
+    }
+  }
+}
 
 // A desktop notification whose click brings the main window forward on the calendar, at the event or request.
 // Test mode records them instead of showing them, so a test run never puts toasts on the screen.
@@ -431,15 +490,13 @@ function calendarNotice({ title, body, open }) {
   }
   if (!Notification.isSupported()) return;
   const n = new Notification({ title: String(title).slice(0, 200), body: String(body).slice(0, 400), icon: nativeImage.createFromPath(ICON), silent: false });
-  liveNotices.add(n);
-  const drop = () => liveNotices.delete(n);
+  keepNotice('calendar', n);
   n.on('click', () => {
-    drop();
+    // A click after Calendar went off brings nothing forward.
+    if (modeOff('calendar')) return;
     showWindow();
     if (open) send('calendar-open', open);
   });
-  n.on('close', drop);
-  n.on('failed', drop);
   n.show();
 }
 
@@ -456,7 +513,8 @@ function showReminders(list) {
 function showBookingNotification({ title, body, open }) {
   if (modeOff('calendar')) return;
   if (win && !win.isDestroyed() && win.isFocused() && !process.env.SEM_HIDDEN) {
-    send('toast', String(body).slice(0, 200));
+    // Calendar's, so turning Calendar off takes it down (app.js modesChanged).
+    send('mode-toast', { mode: 'calendar', body: String(body).slice(0, 200) });
     return;
   }
   if (screenRecording()) {
@@ -553,7 +611,9 @@ async function serveChatFile(request) {
 const chatNotices = new Map();
 
 // What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
+// Nothing after Chat went off.
 function openChatNotice(open) {
+  if (modeOff('chat')) return;
   const o = plainObject(open);
   const id = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
   const payload = {
@@ -637,9 +697,10 @@ function safeUrl(url) {
 
 // A mailto: link, from a message, an agent or another app, opens a filled-in compose window; the user sends it.
 // Without an account the compose window says so, and the main window comes forward to add one. With Mail hidden
-// nothing opens: the main window says Mail is off and offers to turn it on, and never asks for an account.
+// nothing opens: the main window says Mail is off and offers to turn it on, which then starts this email, and never
+// asks for an account.
 function openMailto(url) {
-  if (modeOff('mail')) return offerHiddenMode('mail');
+  if (modeOff('mail')) return offerHiddenMode('mail', { mailto: url });
   if (!engine.accounts.length) showWindow();
   openComposeWindow({ mode: 'new', ...mailto.parse(url) });
 }
@@ -1270,11 +1331,20 @@ const api = {
     return true;
   },
   toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
-  // The hidden mode a way in from outside asked for (offerHiddenMode), once.
+  // The hidden mode a way in from outside asked for (offerHiddenMode), once: { mode, mailto }, mailto the id of the
+  // email link that came with it.
   takeModeOff: () => {
-    const mode = modeOffWaiting;
+    const off = modeOffWaiting;
     modeOffWaiting = null;
-    return mode;
+    return off;
+  },
+  // The notice's Turn on: the email link Mail was off for starts its email now. Once; nothing while Mail is still off.
+  openHeldMailto: (id) => {
+    const url = heldMailto.get(String(id));
+    heldMailto.delete(String(id));
+    if (!url || modeOff('mail')) return false;
+    openMailto(url);
+    return true;
   },
   // Settings > General: whether this system offers Rukoo notifications, and a test notification that shows also while
   // Rukoo is in front, with what came of it (desktop.js testNotice).
@@ -1323,13 +1393,9 @@ const api = {
       send('meeting', { kind: 'state', state: voiceState() });
     }
     if ('chatNotifications' in patch && workspaces) workspaces.settingsChanged();
-    // A mode turned off or on: its badge, the tray's count and menu, and chat alerts follow at once. The windows
-    // hear it through 'updated'.
-    if ('hiddenModes' in patch) {
-      refreshBadge();
-      if (tray) tray.relabel();
-      if (workspaces) workspaces.settingsChanged();
-    }
+    // A mode turned off or on: its badge, the tray's count and menu, its notifications and chat alerts follow at once.
+    // The windows hear it through 'updated'.
+    if ('hiddenModes' in patch) modesMaybeChanged();
     return s;
   },
   // Settings → General resets it; the keys and the wheel go through watchZoom.
@@ -2342,6 +2408,8 @@ app.whenReady().then(() => {
     // The Mac menu follows the language; elsewhere the menu stays off and needs no update.
     if (process.platform === 'darwin') updateApplicationMenu();
     send('updated');
+    // The first or last mail account changes which modes can show (modes.js).
+    modesMaybeChanged();
     // The badge follows the mail in both counts: an email read, moved or put in a category Inbox doesn't show.
     const count = badgeCount();
     if (count !== badgeShown) refreshBadge(count);
@@ -2387,6 +2455,8 @@ app.whenReady().then(() => {
     settings: () => engine.settings,
     timing: chatTiming(process.env),
     host: chatHost,
+    // Chat turned off in Settings > General > Tabs, as main decides it (modes.js): no alerts then, and none afterwards.
+    chatHidden: () => modeOff('chat'),
     // Whether the server has team chat is asked at start, signed in or not. Tests ask only a server of their own.
     autoInfo: !process.env.SEM_HIDDEN || Boolean(process.env.RUKOO_ACCOUNT_SERVER)
   }).init();
@@ -2396,7 +2466,12 @@ app.whenReady().then(() => {
     // What a click on a chat notification does, for a spec that follows one recorded in __semNotices.
     global.__semChatOpen = (open) => openChatNotice(open);
   }
-  workspaces.on('event', (payload) => send('chat', payload));
+  workspaces.on('event', (payload) => {
+    send('chat', payload);
+    // Team chat came or went on the server: the modes that show may have changed with it.
+    if (payload && payload.kind === 'state') modesMaybeChanged();
+  });
+  modesMaybeChanged();
   workspaces.on('notify', showChatNotification);
   workspaces.on('unnotify', closeChatNotification);
   powerMonitor.on('resume', () => workspaces && workspaces.nudge('resume'));

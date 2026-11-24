@@ -141,6 +141,13 @@ function withLink(text, url) {
   return String(text).split('{url}').map(esc).join(link);
 }
 
+// Calendar turned off in Settings > General > Tabs: the composer's calendar button (the booking link and free times)
+// goes with it. A composer has a mail account, so Calendar shows exactly when it isn't turned off (modes.js).
+function calendarOff(data) {
+  const hidden = data && data.settings && data.settings.hiddenModes;
+  return Array.isArray(hidden) && hidden.includes('calendar');
+}
+
 // The booking link under the signature (contracts f): on in the account, or in the general settings when the account
 // follows them (null), and only while the booking page is on. Its text is the account's, else the general one, else
 // the default in the booking page's language. data: main's state, with bookingUrl and bookingLocale.
@@ -440,7 +447,7 @@ function template(data, st, inline) {
     <div class="composer-bar">
       <button class="icon-btn" data-c="attach" data-i18n-title="composer.attachments.pick" title="${esc(t('composer.attachments.pick'))}">${icons.clip}</button>
       <button class="icon-btn" data-c="image" data-i18n-title="composer.attachments.image" title="${esc(t('composer.attachments.image'))}">${icons.image}</button>
-      <button class="icon-btn" data-c="calendar" data-i18n-title="composer.booking.button" title="${esc(t('composer.booking.button'))}" aria-haspopup="menu">${icons.calendar}</button>
+      <button class="icon-btn" data-c="calendar" data-i18n-title="composer.booking.button" title="${esc(t('composer.booking.button'))}" aria-haspopup="menu" ${calendarOff(data) ? 'hidden' : ''}>${icons.calendar}</button>
       <button class="icon-btn" data-c="format" data-i18n-title="composer.format.label" title="${esc(t('composer.format.label'))}" aria-pressed="false">${icons.textFormat}</button>
       <button class="icon-btn" data-c="discard" data-i18n-title="composer.actions.discard" title="${esc(t('composer.actions.discard'))}">${icons.trash}</button>
       <button class="icon-btn" data-c="more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>
@@ -797,6 +804,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     changed();
   }
 
+  // The calendar button shows while Calendar does (calendarOff).
+  function showModes() {
+    const b = page.querySelector('[data-c="calendar"]');
+    if (b) b.hidden = calendarOff(data);
+  }
+
   // The calendar button: the booking link while the booking page is on, and free times. The compose window's copy
   // of main's state is from when it opened, so the link is asked for again.
   async function calendarMenu(b) {
@@ -1027,6 +1040,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return;
       }
       case 'calendar':
+        if (calendarOff(data)) return;
         return calendarMenu(b);
       case 'cc':
       case 'bcc': {
@@ -1816,6 +1830,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     accountsChanged(next) {
       data = next;
       syncDefault(next.accounts);
+      showModes();
+    },
+    // Settings > General > Tabs changed: the calendar button comes or goes with Calendar.
+    modesChanged(next) {
+      if (next) data = next;
+      showModes();
     },
     retheme(next) {
       if (next) {

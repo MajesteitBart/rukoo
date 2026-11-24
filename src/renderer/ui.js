@@ -256,11 +256,13 @@ export function dropToast(action) {
   hideToast();
 }
 
-// Takes the toast with that tag down while it still shows, and drops it from the wait when it waits there.
+// Takes the toast with that tag down while it still shows, and drops it from the wait when it waits there. tag may
+// also be a function that says which tags go, such as every toast of a mode turned off.
 export function dropTaggedToast(tag) {
   if (tag === null || tag === undefined) return;
-  if (toastWaiting && toastWaiting.opts.tag === tag) toastWaiting = null;
-  if (toastTag !== tag || !document.getElementById('toast')?.classList.contains('show')) return;
+  const matches = (x) => x !== null && x !== undefined && (typeof tag === 'function' ? Boolean(tag(String(x))) : x === tag);
+  if (toastWaiting && matches(toastWaiting.opts.tag)) toastWaiting = null;
+  if (!matches(toastTag) || !document.getElementById('toast')?.classList.contains('show')) return;
   clearTimeout(toastTimer);
   hideToast();
 }

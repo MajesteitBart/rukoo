@@ -251,8 +251,12 @@ export function openSetup(ctx, { first = false, chat = null, added = null, offer
   }
 
   function showGrid() {
+    // The first-run page has no way back. When the profile has settings worth reaching (a Rukoo account, or tabs
+    // turned off), Settings stays reachable from here, so nobody is left on this page without a way to Tabs.
+    const settings = first && ctx.settingsFromSetup && ctx.settingsFromSetup();
     page.innerHTML = `
       ${first ? '' : `<button class="icon-btn setup-back" data-s="close" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button>`}
+      ${settings ? `<button class="icon-btn setup-settings" data-s="settings" data-i18n-title="settings.title.short" title="${esc(t('settings.title.short'))}" aria-label="${esc(t('settings.title.short'))}">${icons.settings}</button>` : ''}
       <div class="setup-inner">
         ${first ? brandLogo('setup-logo') : ''}
         <h1 data-i18n="setup.title">${esc(t('setup.title'))}</h1>
@@ -454,6 +458,9 @@ export function openSetup(ctx, { first = false, chat = null, added = null, offer
     switch (b.dataset.s) {
       case 'close':
         return close();
+      // Settings opens over this page, which stays behind it.
+      case 'settings':
+        return ctx.openSettings();
       case 'chat-link':
         chatLink = null;
         return showChatLink();
