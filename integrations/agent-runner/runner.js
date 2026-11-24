@@ -185,8 +185,9 @@ class Runner {
     }
   }
 
+  // Its requests end when the runner stops (this.abort), so stop() doesn't wait for a server that is slow to answer.
   async connect() {
-    const info = await this.api.info();
+    const info = await this.api.info({ signal: this.abort.signal });
     const w = info && info.workspace;
     if (!w) throw new Error('This server has no team chat');
     if (!Array.isArray(w.capabilities) || !w.capabilities.includes('agents')) throw new Error('This server has agents turned off');
@@ -207,7 +208,7 @@ class Runner {
   }
 
   async loadWorkspace() {
-    const res = await this.api.workspaceInfo();
+    const res = await this.api.workspaceInfo({ signal: this.abort.signal });
     this.workspace = { id: res.workspace.id, name: res.workspace.name };
     this.generation = res.workspace.generation;
     if (Number.isFinite(res.workspace.time)) this.clockOffset = res.workspace.time - Date.now();
@@ -215,14 +216,14 @@ class Runner {
 
   // The agent's settings: its name, its sponsor, whom it answers and whether it answers other agents.
   async loadMe() {
-    const me = await this.api.me();
+    const me = await this.api.me({ signal: this.abort.signal });
     this.me = { ...me, members: Array.isArray(me.members) ? me.members : [] };
   }
 
   // The agent's settings and the people it can see.
   async loadSettings() {
     await this.loadMe();
-    const list = await this.api.members();
+    const list = await this.api.members({ signal: this.abort.signal });
     this.people = new Map(list.map((m) => [m.id, { name: m.name, kind: m.kind || 'human', state: m.state }]));
   }
 
@@ -702,11 +703,18 @@ class Runner {
   // Answers the exit code: 0 when the agent can answer (a warning when it is in no channel yet), 1 when the backend
   // can't answer as configured. A key that doesn't work throws KeyRefused, which main() makes 2.
   async check() {
+    const stopped = () => new Error('Stopped before the check finished');
     const problems = await this.backendProblems();
-    if (this.stopped) throw new Error('Stopped before the check finished');
+    if (this.stopped) throw stopped();
     for (const p of problems) this.log(p.level, p.message);
-    await this.connect();
-    const rooms = await this.channels();
+    let rooms;
+    try {
+      await this.connect();
+      rooms = await this.channels();
+    } catch (err) {
+      throw this.stopped ? stopped() : err;
+    }
+    if (this.stopped) throw stopped();
     if (rooms.length) this.log('info', `The agent is in ${rooms.length} ${rooms.length === 1 ? 'channel' : 'channels'}: ${rooms.join(', ')}`);
     else this.log('warn', 'The agent is in no channel yet, so no mention can reach it. In Rukoo, open a channel\'s menu and choose Add agents, or Add people when you manage the channel.');
     const errors = problems.filter((p) => p.level === 'error').length;
@@ -739,15 +747,18 @@ class Runner {
         await this.connect();
         break;
       } catch (err) {
+        // Stopped while a request to the server waited: stop() aborted it, and that is no failure.
+        if (this.stopped) return;
         const passing = err instanceof RukooError && !(err instanceof KeyRefused) && (err.network || err.status >= 500 || err.status === 429);
-        if (!passing || this.stopped) throw err;
+        if (!passing) throw err;
         this.log('warn', `Could not reach the server: ${err.message}; trying again in ${wait / 1000} s`);
         await sleep(wait, this.abort.signal);
         if (this.stopped) return;
       }
     }
-    // What would keep every answer from going out, said at the start rather than at the first mention.
-    for (const p of await this.backendProblems()) if (p.level === 'error') this.log('warn', p.message);
+    // What would keep every answer from going out, or what the check couldn't tell, said at the start rather than at
+    // the first mention.
+    for (const p of await this.backendProblems()) if (p.level === 'error' || p.level === 'warn') this.log('warn', p.message);
     // Stopped while the check waited: nothing may start after stop().
     if (this.stopped) return;
     this.timer = setInterval(() => this.pump(), this.config.pollSeconds * 1000);

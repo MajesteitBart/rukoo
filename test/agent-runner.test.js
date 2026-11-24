@@ -1101,7 +1101,13 @@ function fakeHttp(handler) {
       handler(req, body, res);
     });
   });
-  return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${srv.address().port}`, seen, close: () => new Promise((r) => srv.close(r)) })));
+  // close() also ends requests a handler left unanswered on purpose.
+  const close = () =>
+    new Promise((r) => {
+      srv.close(r);
+      srv.closeAllConnections();
+    });
+  return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${srv.address().port}`, seen, close })));
 }
 
 test('the runs backend starts one run without a session, denies approvals and returns the output', async () => {
@@ -1241,90 +1247,190 @@ async function deadPort() {
 }
 const levelsOf = (list, level) => list.filter((p) => p.level === level).map((p) => p.message);
 
-test("--check's HTTP checks fail an address where nothing answers and a refused key, and pass a server that answers, with the runner's own headers", async () => {
-  const port = await deadPort();
-  // Nothing at the address: the one error, whether or not the key's variable is set.
-  const nobody = await backends.makeBackend({ type: 'runs', url: `http://127.0.0.1:${port}`, keyEnv: 'TEST_CHECK_HERMES_KEY' }).check({ env: {}, timeout: 2000 });
-  assert.equal(nobody.length, 1, JSON.stringify(nobody));
-  assert.match(errorsOf(nobody)[0], new RegExp(`^Nothing answers at http://127\\.0\\.0\\.1:${port} \\(ECONNREFUSED\\)\\. Start the Hermes or Booper server there, or correct the backend's "url"\\.$`));
+// The verdict table of --check (the runner's README, "--check"): one test per row. Each row names a backend kind, the
+// route and the answer, and the verdict the check must give: it can answer, it can't, or it couldn't tell. A fake
+// server answers each route as the row says ('hang' never answers); 'dead' is an address where nothing listens.
+const JSON_TYPE = 'application/json';
+const HEALTH = [200, '{"status":"ok","version":"0.21.5"}'];
+const CAPS = [200, '{"features":{"run_submission":true,"run_events_sse":true}}'];
+const MODELS = [200, '{"object":"list","data":[{"id":"openclaw/default"}]}'];
+const HTML = [200, '<!doctype html><title>Welcome</title>', 'text/html; charset=utf-8'];
+const HANG = 'hang';
+const ORIGIN = /^http:\/\/127\.0\.0\.1:\d+$/;
 
-  // Hermes: /health, then /v1/capabilities, which needs the key. Both get the headers a run sends.
-  const hermes = await fakeHttp((req, body, res) => {
-    if (req.url === '/health') return res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"ok"}');
-    if (req.url === '/v1/capabilities') return res.writeHead(req.headers.authorization === 'Bearer right-key' ? 200 : 401).end('{}');
+const runs = (url) => ({ type: 'runs', url, keyEnv: 'TEST_TABLE_KEY' });
+const openclaw = (url) => ({ type: 'openai', url, keyEnv: 'TEST_TABLE_KEY', model: 'openclaw/default' });
+const openai = (url) => ({ type: 'openai', url, keyEnv: 'TEST_TABLE_KEY', model: 'local-model' });
+
+// What a check's lines say: 'can' (an info line that it answers, no error), 'cannot' (an error), 'cannot-tell' (a
+// warning that it couldn't tell, no error).
+function verdictOf(list) {
+  if (list.some((p) => p.level === 'error')) return 'cannot';
+  if (list.some((p) => p.level === 'warn' && /^The check couldn't tell whether /.test(p.message))) return 'cannot-tell';
+  if (list.some((p) => p.level === 'info' && /^The backend answers at /.test(p.message))) return 'can';
+  return 'none';
+}
+
+const VERDICTS = [
+  { row: 'runs or openai: no connection at the address', verdict: 'cannot', cases: [
+    { backend: runs, dead: true, message: /^Nothing answers at http:\/\/127\.0\.0\.1:\d+ \(ECONNREFUSED\)\. Start the Hermes or Booper server there, or correct the backend's "url"\.$/ },
+    { backend: openai, dead: true, message: /^Nothing answers at http:\/\/127\.0\.0\.1:\d+ \(ECONNREFUSED\)\. Start the server there/ }
+  ] },
+  { row: 'runs or openai: no answer within the time on the first route', verdict: 'cannot', cases: [
+    { backend: runs, routes: { '/health': HANG }, message: /^Nothing answers at http:\/\/127\.0\.0\.1:\d+ \(no answer within 1 s\)\./ },
+    { backend: openclaw, routes: { '/v1/models': HANG }, message: /^Nothing answers at .* \(no answer within 1 s\)\. Start the OpenClaw gateway there/ },
+    { backend: openai, routes: { '/v1/models': HANG }, message: /^Nothing answers at .* \(no answer within 1 s\)\./ }
+  ] },
+  { row: 'runs, GET /health: 2xx with a JSON object, then GET /v1/capabilities: 2xx with a JSON object', verdict: 'can', cases: [
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': CAPS } },
+    // features is optional in that object, as Rukoo's Hermes adapter reads it.
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': [200, '{}'] } }
+  ] },
+  { row: 'runs, GET /health: 2xx with anything but a JSON object, such as an HTML page', verdict: 'cannot', cases: [
+    { backend: runs, routes: { '/health': HTML }, message: /^http:\/\/127\.0\.0\.1:\d+ answered \/health with an HTML page, not a Runs API server's health\. Correct the backend's "url" so it points at the Hermes or Booper server\.$/ },
+    { backend: runs, routes: { '/health': [200, 'ok', 'text/plain'] }, message: /answered \/health with an answer that isn't JSON/ },
+    { backend: runs, routes: { '/health': [200, '["ok"]'] }, message: /answered \/health with JSON of another shape/ }
+  ] },
+  { row: 'runs, GET /health: any other status', verdict: 'cannot', cases: [
+    { backend: runs, routes: { '/health': [503, '{}'] }, message: /^http:\/\/127\.0\.0\.1:\d+ answered \/health with HTTP 503, where the Hermes or Booper server answers 200\.$/ },
+    { backend: runs, routes: { '/health': [302, '', 'text/plain'] }, message: /answered \/health with HTTP 302/ },
+    { backend: runs, routes: {}, message: /has no \/health \(HTTP 404\)/ }
+  ] },
+  { row: 'runs, GET /v1/capabilities: 401 or 403, the key refused', verdict: 'cannot', cases: [
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': [401, '{}'] }, message: /^http:\/\/127\.0\.0\.1:\d+ refused the backend's key \(HTTP 401 on \/v1\/capabilities\)\. Check the key or token in TEST_TABLE_KEY\.$/ },
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': [403, '{}'] }, message: /refused the backend's key \(HTTP 403 on \/v1\/capabilities\)/ }
+  ] },
+  { row: 'runs, GET /v1/capabilities: 404, the route missing', verdict: 'cannot', cases: [
+    { backend: runs, routes: { '/health': HEALTH }, message: /^http:\/\/127\.0\.0\.1:\d+ has no \/v1\/capabilities \(HTTP 404\), which the Hermes or Booper server answers\. Check that the address is the Runs API of Hermes Agent or Booper's app channel\.$/ }
+  ] },
+  { row: 'runs, GET /v1/capabilities: any other status, or no answer within the time', verdict: 'cannot', cases: [
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': [500, '{"error":"boom"}'] }, message: /answered \/v1\/capabilities with HTTP 500, where the Hermes or Booper server answers 200\.$/ },
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': HANG }, message: /^http:\/\/127\.0\.0\.1:\d+ doesn't answer \/v1\/capabilities \(no answer within 1 s\), which the Hermes or Booper server answers\.$/ }
+  ] },
+  { row: 'runs, GET /v1/capabilities: 2xx with anything but a JSON object, or with runs turned off', verdict: 'cannot', cases: [
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': HTML }, message: /answered \/v1\/capabilities with an HTML page, not a Runs API server's capabilities/ },
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': [200, '{"features":true}'] }, message: /with JSON of another shape/ },
+    { backend: runs, routes: { '/health': HEALTH, '/v1/capabilities': [200, '{"features":{"run_submission":false}}'] }, message: /can't answer: it takes no runs \(run_submission is off in \/v1\/capabilities\)\.$/ }
+  ] },
+  { row: 'openai for OpenClaw, GET /v1/models: 2xx with a list of models', verdict: 'can', cases: [{ backend: openclaw, routes: { '/v1/models': MODELS } }] },
+  { row: 'openai for OpenClaw, GET /v1/models: 401 or 403, the token refused', verdict: 'cannot', cases: [
+    { backend: openclaw, routes: { '/v1/models': [401, '{}'] }, message: /refused the backend's key \(HTTP 401 on \/v1\/models\)\. Check the key or token in TEST_TABLE_KEY\.$/ },
+    { backend: openclaw, routes: { '/v1/models': [403, '{}'] }, message: /refused the backend's key \(HTTP 403 on \/v1\/models\)/ },
+    // The gateway's header alone also makes it OpenClaw's.
+    { backend: (url) => ({ type: 'openai', url, keyEnv: 'TEST_TABLE_KEY', headers: { 'X-OpenClaw-Model': 'gpt-5' } }), routes: { '/v1/models': [403, '{}'] }, message: /HTTP 403 on \/v1\/models/ }
+  ] },
+  { row: 'openai for OpenClaw, GET /v1/models: 404, the Chat Completions endpoint off', verdict: 'cannot', cases: [
+    { backend: openclaw, routes: {}, message: /has no \/v1\/models \(HTTP 404\), which the OpenClaw gateway answers\. Turn on the gateway's Chat Completions endpoint \(gateway\.http\.endpoints\.chatCompletions\.enabled\), or correct the backend's "url"\.$/ }
+  ] },
+  { row: 'openai for OpenClaw, GET /v1/models: any other status', verdict: 'cannot', cases: [
+    { backend: openclaw, routes: { '/v1/models': [502, '{}'] }, message: /answered \/v1\/models with HTTP 502, where the OpenClaw gateway answers 200\.$/ }
+  ] },
+  { row: 'openai for OpenClaw, GET /v1/models: 2xx with anything but a list of models', verdict: 'cannot', cases: [
+    { backend: openclaw, routes: { '/v1/models': HTML }, message: /answered \/v1\/models with an HTML page, not a list of models\. Correct the backend's "url" so it points at the OpenClaw gateway\.$/ },
+    { backend: openclaw, routes: { '/v1/models': [200, '{}'] }, message: /with JSON of another shape/ }
+  ] },
+  { row: 'openai, another server, GET /v1/models: 2xx with a list of models', verdict: 'can', cases: [{ backend: openai, routes: { '/v1/models': MODELS } }] },
+  { row: 'openai, another server, GET /v1/models: 2xx with anything but a list of models, such as an HTML page', verdict: 'cannot', cases: [
+    { backend: openai, routes: { '/v1/models': HTML }, message: /answered \/v1\/models with an HTML page, not a list of models\. Correct the backend's "url" so it points at the server\.$/ },
+    { backend: openai, routes: { '/v1/models': [200, '{"models":[]}'] }, message: /with JSON of another shape/ }
+  ] },
+  { row: 'openai, another server, GET /v1/models: 401, 403, 404 or any other status', verdict: 'cannot-tell', cases: [
+    { backend: openai, routes: { '/v1/models': [401, '{}'] }, message: /^The check couldn't tell whether http:\/\/127\.0\.0\.1:\d+ can answer: it refused the key \(HTTP 401\) on \/v1\/models, a route a server can chat without\. The runner tries anyway, and its log says when a request fails\.$/ },
+    { backend: openai, routes: { '/v1/models': [403, '{}'] }, message: /couldn't tell .*: it refused the key \(HTTP 403\) on \/v1\/models/ },
+    { backend: openai, routes: {}, message: /couldn't tell .*: it answered HTTP 404 on \/v1\/models/ },
+    { backend: openai, routes: { '/v1/models': [500, '{}'] }, message: /couldn't tell .*: it answered HTTP 500 on \/v1\/models/ }
+  ] }
+];
+
+for (const { row, verdict, cases } of VERDICTS) {
+  test(`--check verdict table: ${row} → ${verdict}`, async () => {
+    let routes = {};
+    const fake = await fakeHttp((req, body, res) => {
+      const answer = routes[req.url.split('?')[0]];
+      if (answer === HANG) return;
+      if (!answer) return res.writeHead(404, { 'content-type': 'text/plain' }).end('Not here');
+      const [status, text = '', type = JSON_TYPE] = answer;
+      res.writeHead(status, { 'content-type': type }).end(text);
+    });
+    try {
+      for (const c of cases) {
+        routes = c.routes || {};
+        const url = c.dead ? `http://127.0.0.1:${await deadPort()}` : fake.url;
+        const list = await backends.makeBackend(c.backend(url)).check({ env: { TEST_TABLE_KEY: 'k' }, timeout: 500 });
+        const what = `${row}: ${JSON.stringify(c.routes || 'dead')} gave ${JSON.stringify(list)}`;
+        assert.equal(verdictOf(list), verdict, what);
+        if (verdict === 'can') assert.equal(list.find((p) => p.level === 'info').message.replace('The backend answers at ', '').match(ORIGIN)?.[0], fake.url, what);
+        if (c.message) {
+          const line = list.find((p) => p.level === (verdict === 'cannot' ? 'error' : 'warn'));
+          assert.match(line.message, c.message, what);
+        }
+      }
+    } finally {
+      await fake.close();
+    }
+  });
+}
+
+test('--check asks with the headers a run sends: the key, Accept, and the config\'s own headers such as x-openclaw-model', async () => {
+  const fake = await fakeHttp((req, body, res) => {
+    if (req.url === '/health') return res.writeHead(200, { 'content-type': JSON_TYPE }).end(HEALTH[1]);
+    if (req.url === '/v1/capabilities') return res.writeHead(req.headers.authorization === 'Bearer right-key' ? 200 : 401, { 'content-type': JSON_TYPE }).end(CAPS[1]);
+    if (req.url === '/v1/models') {
+      const ok = req.headers.authorization === 'Bearer token' && req.headers['x-openclaw-model'] === 'anthropic/claude';
+      return res.writeHead(ok ? 200 : 401, { 'content-type': JSON_TYPE }).end(MODELS[1]);
+    }
     res.writeHead(404).end();
   });
   try {
-    const backend = backends.makeBackend({ type: 'runs', url: hermes.url, keyEnv: 'TEST_CHECK_HERMES_KEY' });
-    assert.deepEqual(await backend.check({ env: { TEST_CHECK_HERMES_KEY: 'right-key' } }), [{ level: 'info', message: `The backend answers at ${hermes.url}` }]);
+    const hermes = backends.makeBackend({ type: 'runs', url: fake.url, keyEnv: 'TEST_CHECK_HERMES_KEY' });
+    assert.deepEqual(await hermes.check({ env: { TEST_CHECK_HERMES_KEY: 'right-key' } }), [{ level: 'info', message: `The backend answers at ${fake.url}` }]);
     assert.deepEqual(
-      hermes.seen.filter((s) => s.url === '/v1/capabilities').map((s) => [s.headers.authorization, s.headers.accept]),
+      fake.seen.filter((s) => s.url === '/v1/capabilities').map((s) => [s.headers.authorization, s.headers.accept]),
       [['Bearer right-key', 'application/json']]
     );
-    assert.match(errorsOf(await backend.check({ env: { TEST_CHECK_HERMES_KEY: 'wrong-key' } }))[0], /refused the backend's key \(HTTP 401\)\. Check the key or token in TEST_CHECK_HERMES_KEY/);
-    // The variable is unset and the server asks for a key: that is the error, and it names the variable.
-    const unset = await backend.check({ env: {} });
-    assert.deepEqual(errorsOf(unset), [`TEST_CHECK_HERMES_KEY is not set, and ${hermes.url} asks for a key (HTTP 401). Set it in the terminal or service that starts the runner, then start it again.`]);
-    assert.match(errorsOf(await backends.makeBackend({ type: 'runs', url: hermes.url }).check({ env: {} }))[0], /asks for a key \(HTTP 401\)\. Add "keyEnv" to the backend/);
+    const gateway = { type: 'openai', url: fake.url, keyEnv: 'TEST_CHECK_GATEWAY', model: 'openclaw/default', headers: { 'x-openclaw-model': 'anthropic/claude' } };
+    assert.deepEqual(await backends.makeBackend(gateway).check({ env: { TEST_CHECK_GATEWAY: 'token' } }), [{ level: 'info', message: `The backend answers at ${fake.url}` }]);
+    assert.equal(verdictOf(await backends.makeBackend({ ...gateway, headers: {} }).check({ env: { TEST_CHECK_GATEWAY: 'token' } })), 'cannot');
   } finally {
-    await hermes.close();
-  }
-
-  // OpenClaw: /v1/models needs the token and the x-openclaw-model header the config carries, as the runner sends them.
-  const gateway = await fakeHttp((req, body, res) => {
-    if (req.url !== '/v1/models') return res.writeHead(404).end();
-    if (req.headers.authorization !== 'Bearer token') return res.writeHead(401).end('{}');
-    res.writeHead(req.headers['x-openclaw-model'] === 'anthropic/claude' ? 200 : 403).end('{"data":[]}');
-  });
-  try {
-    const openclaw = { type: 'openai', url: gateway.url, keyEnv: 'TEST_CHECK_GATEWAY', model: 'openclaw/default', headers: { 'x-openclaw-model': 'anthropic/claude' } };
-    assert.deepEqual(await backends.makeBackend(openclaw).check({ env: { TEST_CHECK_GATEWAY: 'token' } }), [{ level: 'info', message: `The backend answers at ${gateway.url}` }]);
-    assert.match(errorsOf(await backends.makeBackend({ ...openclaw, keyEnv: undefined, key: 'other' }).check({ env: {} }))[0], /refused the backend's key \(HTTP 401\)\. Check the key or token in "key"/);
-    // A 403 with the right key: the route may be closed to it while chat works. The check can't tell, and passes.
-    const forbidden = await backends.makeBackend({ ...openclaw, headers: {} }).check({ env: { TEST_CHECK_GATEWAY: 'token' } });
-    assert.deepEqual(errorsOf(forbidden), []);
-    assert.deepEqual(levelsOf(forbidden, 'warn'), [`The check couldn't tell whether ${gateway.url} takes the runner's requests (HTTP 403 on /v1/models). The runner tries anyway, and its log says when a request fails.`]);
-    // A server without /v1/models can still chat: the same.
-    const elsewhere = await backends.makeBackend({ type: 'openai', url: `${gateway.url}/elsewhere` }).check({ env: {} });
-    assert.deepEqual(errorsOf(elsewhere), []);
-    assert.match(levelsOf(elsewhere, 'warn')[0], /couldn't tell .* \(HTTP 404 on \/v1\/models\)/);
-  } finally {
-    await gateway.close();
+    await fake.close();
   }
 });
 
-test("--check fails a named key variable that is unset only when the backend asks for a key, and can't tell when the keyed route doesn't answer in time", async () => {
-  const open = await fakeHttp((req, body, res) => {
-    if (req.url === '/health') return res.writeHead(200).end('{}');
-    // Capabilities never answer: the server is there, but whether it takes the key stays open.
-    if (req.url === '/slow/v1/capabilities') return;
-    if (req.url === '/slow/health') return res.writeHead(200).end('{}');
-    if (req.url === '/v1/capabilities') return res.writeHead(200).end('{}');
+test('--check says an unset key variable: an error with the variable when the server asks for a key, a warning when it answered without one', async () => {
+  let needsKey = true;
+  const fake = await fakeHttp((req, body, res) => {
+    if (req.url === '/health') return res.writeHead(200, { 'content-type': JSON_TYPE }).end(HEALTH[1]);
+    if (req.url === '/v1/capabilities') return res.writeHead(needsKey && !req.headers.authorization ? 401 : 200, { 'content-type': JSON_TYPE }).end(CAPS[1]);
+    if (req.url === '/v1/models') return res.writeHead(needsKey && !req.headers.authorization ? 401 : 200, { 'content-type': JSON_TYPE }).end(MODELS[1]);
     res.writeHead(404).end();
   });
   try {
-    // A server that answers without a key: the unset variable is no error, only said.
-    const fine = await backends.makeBackend({ type: 'runs', url: open.url, keyEnv: 'TEST_CHECK_OPEN_KEY' }).check({ env: {} });
-    assert.deepEqual(errorsOf(fine), []);
-    assert.deepEqual(levelsOf(fine, 'info'), [`The backend answers at ${open.url}`]);
-    assert.deepEqual(levelsOf(fine, 'warn'), [`TEST_CHECK_OPEN_KEY is not set, so the runner sends no key. ${open.url} answered without one.`]);
-    // The keyed route doesn't answer within the time: a warning, never "answers".
-    const started = Date.now();
-    const slow = await backends.makeBackend({ type: 'runs', url: `${open.url}/slow`, key: 'k' }).check({ env: {}, timeout: 500 });
-    assert.ok(Date.now() - started < 5000);
-    assert.deepEqual(errorsOf(slow), []);
-    assert.deepEqual(levelsOf(slow, 'info'), []);
-    assert.deepEqual(levelsOf(slow, 'warn'), [`The check couldn't tell whether ${open.url} takes the runner's requests (no answer within 1 s). The runner tries anyway, and its log says when a request fails.`]);
+    const hermes = { type: 'runs', url: fake.url, keyEnv: 'TEST_CHECK_HERMES_KEY' };
+    assert.deepEqual(errorsOf(await backends.makeBackend(hermes).check({ env: {} })), [
+      `TEST_CHECK_HERMES_KEY is not set, and ${fake.url} asks for a key (HTTP 401 on /v1/capabilities). Set it in the terminal or service that starts the runner, then start it again.`
+    ]);
+    // No variable named at all: the line says to add one.
+    assert.match(errorsOf(await backends.makeBackend({ type: 'runs', url: fake.url }).check({ env: {} }))[0], /asks for a key \(HTTP 401 on \/v1\/capabilities\)\. Add "keyEnv" to the backend/);
+    // Another OpenAI-compatible server: /v1/models isn't required, so it couldn't tell, and says the variable isn't set.
+    const other = await backends.makeBackend({ type: 'openai', url: fake.url, keyEnv: 'TEST_CHECK_OTHER_KEY' }).check({ env: {} });
+    assert.equal(verdictOf(other), 'cannot-tell');
+    assert.deepEqual(levelsOf(other, 'warn').slice(1), ['TEST_CHECK_OTHER_KEY is not set, so the runner sends no key.']);
+    // A server that answers without a key: it can answer, and the unset variable is said.
+    needsKey = false;
+    const fine = await backends.makeBackend(hermes).check({ env: {} });
+    assert.equal(verdictOf(fine), 'can');
+    assert.deepEqual(levelsOf(fine, 'warn'), [`TEST_CHECK_HERMES_KEY is not set, so the runner sends no key. ${fake.url} answered without one.`]);
   } finally {
-    await open.close();
+    await fake.close();
   }
 });
 
-test("--check's messages name a backend's address by its origin, and never quote a request's error", async () => {
+test("--check's messages name a backend's address by its origin, and never quote a request's error or an answer", async () => {
   const fake = await fakeHttp((req, body, res) => {
-    if (req.url.startsWith('/p/token-in-path/v1/models')) return res.writeHead(req.headers.authorization ? 200 : 401).end('{}');
-    if (req.url.startsWith('/p/token-in-path/health')) return res.writeHead(200).end('{}');
-    if (req.url.startsWith('/p/token-in-path/v1/capabilities')) return res.writeHead(500).end('{"error":"secret-in-the-answer"}');
+    if (req.url.startsWith('/p/token-in-path/v1/models')) return res.writeHead(req.headers.authorization ? 200 : 401, { 'content-type': JSON_TYPE }).end('{"data":[]}');
+    if (req.url.startsWith('/p/token-in-path/health')) return res.writeHead(200, { 'content-type': JSON_TYPE }).end('{}');
+    if (req.url.startsWith('/p/token-in-path/v1/capabilities')) return res.writeHead(500, { 'content-type': JSON_TYPE }).end('{"error":"secret-in-the-answer"}');
+    if (req.url.startsWith('/q/token-in-path/health')) return res.writeHead(200, { 'content-type': 'text/html' }).end('<p>secret-in-the-answer</p>');
     res.writeHead(404).end();
   });
   const port = await deadPort();
@@ -1334,21 +1440,24 @@ test("--check's messages name a backend's address by its origin, and never quote
       ...(await backends.makeBackend({ type: 'openai', url: `${fake.url}/p/token-in-path/?token=sekrit`, key: 'k' }).check({ env: {} })),
       ...(await backends.makeBackend({ type: 'openai', url: `${fake.url}/p/token-in-path/?token=sekrit` }).check({ env: {} })),
       ...(await backends.makeBackend({ type: 'runs', url: `${fake.url}/p/token-in-path/?token=sekrit`, key: 'k' }).check({ env: {} })),
+      ...(await backends.makeBackend({ type: 'runs', url: `${fake.url}/q/token-in-path/?token=sekrit`, key: 'k' }).check({ env: {} })),
       ...(await backends.makeBackend({ type: 'runs', url: `http://user:sekrit@127.0.0.1:${port}/p/token-in-path?token=sekrit` }).check({ env: {}, timeout: 2000 })),
       ...(await backends.makeBackend({ type: 'openai', url: 'not an address sekrit' }).check({ env: {} })),
       ...(await backends.makeBackend({ type: 'openai', url: 'https://no-such-host.invalid/p/token-in-path?token=sekrit' }).check({ env: {}, timeout: 3000 }))
     ];
-    assert.equal(all.length, 6, JSON.stringify(all, null, 1));
+    assert.equal(all.length, 7, JSON.stringify(all, null, 1));
     for (const p of all) assert.doesNotMatch(p.message, secret);
     assert.deepEqual(
       all.map((p) => p.level),
-      ['info', 'error', 'warn', 'error', 'error', 'error']
+      ['info', 'warn', 'error', 'error', 'error', 'error', 'error']
     );
     assert.equal(all[0].message, `The backend answers at ${fake.url}`);
-    assert.equal(all[3].message, `Nothing answers at http://127.0.0.1:${port} (ECONNREFUSED). Start the Hermes or Booper server there, or correct the backend's "url".`);
-    assert.equal(all[4].message, 'The backend\'s "url" is not an address');
+    assert.equal(all[2].message, `${fake.url} answered /v1/capabilities with HTTP 500, where the Hermes or Booper server answers 200.`);
+    assert.equal(all[3].message, `${fake.url} answered /health with an HTML page, not a Runs API server's health. Correct the backend's "url" so it points at the Hermes or Booper server.`);
+    assert.equal(all[4].message, `Nothing answers at http://127.0.0.1:${port} (ECONNREFUSED). Start the Hermes or Booper server there, or correct the backend's "url".`);
+    assert.equal(all[5].message, 'The backend\'s "url" is not an address');
     // A name that doesn't resolve: the system's code, not the request's text.
-    assert.match(all[5].message, /^Nothing answers at https:\/\/no-such-host\.invalid \((ENOTFOUND|EAI_AGAIN|no connection|no answer within 3 s)\)\./);
+    assert.match(all[6].message, /^Nothing answers at https:\/\/no-such-host\.invalid \((ENOTFOUND|EAI_AGAIN|no connection|no answer within 3 s)\)\./);
   } finally {
     await fake.close();
   }
@@ -1414,6 +1523,66 @@ test('a runner stopped while its startup check waits starts nothing, and --check
   b.runner.stop();
   await assert.rejects(checked, /Stopped before the check finished/);
   assert.deepEqual(b.lines, []);
+});
+
+test("a normal start logs the check's warnings with its errors, as warnings, and leaves out what it found", async () => {
+  const key = `rka_${'A'.repeat(22)}.${'b'.repeat(43)}`;
+  const lines = [];
+  const runner = new Runner(normalizeConfig({ server: 'http://127.0.0.1:1', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: ['x'] }, state: false }, { env: {} }), {
+    log: (level, message) => lines.push(`${level} ${message}`)
+  });
+  runner.backend.check = async () => [
+    { level: 'info', message: 'The backend answers at http://127.0.0.1:2' },
+    { level: 'warn', message: "The check couldn't tell whether http://127.0.0.1:2 can answer: it answered HTTP 404 on /v1/models" },
+    { level: 'error', message: 'Nothing answers at http://127.0.0.1:3 (ECONNREFUSED).' }
+  ];
+  runner.connect = async () => {};
+  runner.socketLoop = async () => {};
+  runner.pump = async () => {};
+  runner.rooms.set('c_x', { kind: 'channel', archived: false, conversation: 'c_x' });
+  const running = runner.run();
+  await until(() => lines.length >= 2, 2000, 'the check lines');
+  runner.stop();
+  await running;
+  assert.deepEqual(lines, [
+    "warn The check couldn't tell whether http://127.0.0.1:2 can answer: it answered HTTP 404 on /v1/models",
+    'warn Nothing answers at http://127.0.0.1:3 (ECONNREFUSED).'
+  ]);
+});
+
+test('stopping the runner ends a connection to the account server that still waits, for a run and for --check', async () => {
+  const key = `rka_${'A'.repeat(22)}.${'b'.repeat(43)}`;
+  // A server that takes the connection and never answers.
+  const silent = await fakeHttp(() => {});
+  try {
+    const make = () => {
+      const lines = [];
+      const runner = new Runner(normalizeConfig({ server: silent.url, workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: [process.execPath, fakePath] }, state: false }, { env: {} }), {
+        log: (level, message) => lines.push(`${level} ${message}`)
+      });
+      return { runner, lines };
+    };
+    const asked = () => silent.seen.filter((s) => s.url === '/v1/info').length;
+
+    const a = make();
+    let started = Date.now();
+    const running = a.runner.run();
+    await until(() => asked() >= 1, 5000, 'the runner to ask the server');
+    a.runner.stop();
+    await running;
+    assert.ok(Date.now() - started < 5000, `run() ended ${Date.now() - started} ms after it started, not when it was stopped`);
+    assert.deepEqual(a.lines, []);
+
+    const b = make();
+    started = Date.now();
+    const checked = b.runner.check();
+    await until(() => asked() >= 2, 5000, 'the check to ask the server');
+    b.runner.stop();
+    await assert.rejects(checked, /^Error: Stopped before the check finished$/);
+    assert.ok(Date.now() - started < 5000, `check() ended ${Date.now() - started} ms after it started`);
+  } finally {
+    await silent.close();
+  }
 });
 
 test('the command line --check exits with 1 for a backend that cannot answer, and warns with the next step for an agent in no channel', async (t) => {

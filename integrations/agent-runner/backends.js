@@ -648,10 +648,11 @@ class CommandBackend {
 
 // ---- Checks (--check) ----
 //
-// What a backend needs before the first mention comes, as a list of { level, message }: 'error' when it can't answer
-// as configured, 'warn' when the check couldn't tell, 'info' for what was found. Each error says what to do next. The
-// runner's --check prints them and exits with 1 for an error; a normal start prints the errors as warnings and runs
-// anyway, since a server can come up later. signal: the runner's stop, which ends a check that still waits.
+// Whether a backend can answer before the first mention comes, as a list of { level, message }: 'error' when it can't
+// as configured, 'warn' when the check couldn't tell or something else is worth knowing, 'info' for what was found.
+// Each error says what to do next. The runner's --check prints them and exits with 1 for an error; a normal start
+// logs the errors and warnings as warnings and runs anyway, since a server can come up later. signal: the runner's
+// stop, which ends a check that still waits.
 //
 // A message names a backend's address by its origin only: a path or query can hold a token. A failed request is said
 // in the check's own words (a timeout, or the system's error code), never with the request's error text.
@@ -705,8 +706,12 @@ function unsetKeyEnv(config, env) {
   return name && !String(envValue(env, name) || '').trim() ? name : null;
 }
 
-// One request to a backend's route with the headers the runner sends: { status } for any HTTP answer, else { reason }
-// and how it failed: bad (the setting isn't an address), timedOut, or stopped (signal).
+// The most of an answer's body the check reads: a contract's answer is small, and anything larger isn't one.
+const CHECK_BODY_MAX = 256 * 1024;
+
+// One request to a backend's route with the headers the runner sends: { status, type, data } for an HTTP answer, with
+// the parsed JSON body of a 2xx (data: undefined when it isn't JSON); else { reason } and how it failed: bad (the
+// setting isn't an address), timedOut, or stopped (signal).
 async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT, signal } = {}) {
   let target;
   try {
@@ -715,9 +720,21 @@ async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT, signal
     return { reason: err.message, bad: true };
   }
   try {
+    // Like the runner's own requests, never a redirect: one shows as its 3xx status.
     const res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]) });
-    res.body?.cancel().catch(() => {});
-    return { status: res.status };
+    const type = String(res.headers.get('content-type') || '').toLowerCase();
+    if (res.status < 200 || res.status > 299) {
+      res.body?.cancel().catch(() => {});
+      return { status: res.status, type };
+    }
+    const text = await bodyText(res);
+    let data;
+    try {
+      data = text === null ? undefined : JSON.parse(text);
+    } catch {
+      data = undefined;
+    }
+    return { status: res.status, type, data };
   } catch (err) {
     if (signal && signal.aborted) return { reason: 'stopped', stopped: true };
     if (err && err.name === 'TimeoutError') return { reason: `no answer within ${Math.round(timeout / 1000)} s`, timedOut: true };
@@ -726,49 +743,122 @@ async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT, signal
   }
 }
 
-// The checks of an HTTP backend, with the headers its requests carry. health: a route that says whether the server is
-// there; keyed: the route that says whether it takes the runner's requests (the same route, or one that needs the key).
-// Three outcomes: it answers (2xx); it doesn't (nothing at the address, or 401: no key or the wrong one); or the check
-// can't tell (any other answer, or none in time on the keyed route), which passes with a warning.
-async function checkHttp(backend, { env, timeout, signal, headers, health, keyed, what }) {
+// An answer's body as text, or null past CHECK_BODY_MAX.
+async function bodyText(res) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > CHECK_BODY_MAX) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+// What a 2xx answer was when it isn't the contract's, in the check's words: never the answer's own text.
+const answerKind = (p) => (/html/.test(p.type) ? 'an HTML page' : p.data === undefined ? 'an answer that isn\'t JSON' : 'JSON of another shape');
+
+// The routes each HTTP backend's contract has, as Rukoo's own adapters check them (src/main/agents/hermes.js,
+// openai.js, openclaw.js), in the order the check asks them. required: the backend can't answer without it; a route
+// that isn't required (an OpenAI-compatible server's /v1/models) can be missing or closed while chat works. refused:
+// the statuses that mean the key or token was refused. shape(data): whether a 2xx answer is the one the contract
+// defines; problem(data): a 2xx in that shape that still says the backend can't answer. The README's "--check" has the
+// table of what each answer means.
+const RUNS_CONTRACT = {
+  what: 'the Hermes or Booper server',
+  routes: [
+    { route: '/health', required: true, refused: [], shape: isObject, expect: 'a Runs API server\'s health' },
+    {
+      route: '/v1/capabilities',
+      required: true,
+      refused: [401, 403],
+      shape: (d) => isObject(d) && (d.features === undefined || isObject(d.features)),
+      expect: 'a Runs API server\'s capabilities',
+      problem: (d) => (d.features && d.features.run_submission === false ? 'it takes no runs (run_submission is off in /v1/capabilities)' : ''),
+      missing: 'Check that the address is the Runs API of Hermes Agent or Booper\'s app channel.'
+    }
+  ]
+};
+const MODELS = { route: '/v1/models', refused: [401, 403], shape: (d) => isObject(d) && Array.isArray(d.data), expect: 'a list of models' };
+const OPENCLAW_CONTRACT = {
+  what: 'the OpenClaw gateway',
+  routes: [{ ...MODELS, required: true, missing: 'Turn on the gateway\'s Chat Completions endpoint (gateway.http.endpoints.chatCompletions.enabled), or correct the backend\'s "url".' }]
+};
+const OPENAI_CONTRACT = { what: 'the server', routes: [{ ...MODELS, required: false }] };
+
+// An openai backend for an OpenClaw gateway: its model names an OpenClaw agent, as the config Rukoo gives for OpenClaw
+// has it (src/renderer/chat-agents.js), or it sends the gateway's x-openclaw-model header.
+function forOpenClaw(config) {
+  const headers = isObject(config.headers) ? Object.keys(config.headers) : [];
+  return /^openclaw\//i.test(String(config.model || '').trim()) || headers.some((h) => h.toLowerCase() === 'x-openclaw-model');
+}
+
+// Whether an HTTP backend can answer, asked of the routes of its contract with the headers its requests carry. One of
+// three verdicts: it can (every route answered in its contract's shape: an info line); it can't (nothing at the
+// address, a refused key or a missing route the contract requires, any other answer to a required route, or a 2xx
+// that isn't the contract's: an error); or the check couldn't tell, only on a route that isn't required (a warning that
+// names the route).
+async function checkHttp(backend, { env, timeout, signal, headers, contract }) {
   const config = backend.config;
   const url = String(config.url || '').trim();
   const origin = originOf(url);
   const unset = unsetKeyEnv(config, env);
-  const out = [];
-  const first = await probe(url, health, { headers, timeout, signal });
-  if (first.stopped) return out;
-  if (first.bad) return [{ level: 'error', message: first.reason }];
-  if (first.reason) return [{ level: 'error', message: `Nothing answers at ${origin} (${first.reason}). Start ${what} there, or correct the backend's "url".` }];
-  const second = keyed === health ? first : await probe(url, keyed, { headers, timeout, signal });
-  if (second.stopped) return out;
-  if (second.status >= 200 && second.status < 300) {
-    out.push({ level: 'info', message: `The backend answers at ${origin}` });
-    if (unset) out.push({ level: 'warn', message: `${unset} is not set, so the runner sends no key. ${origin} answered without one.` });
-  } else if (second.status === 401) {
-    const named = typeof config.keyEnv === 'string' && config.keyEnv.trim() ? config.keyEnv.trim() : '"key"';
-    out.push({
-      level: 'error',
-      message: unset
-        ? `${unset} is not set, and ${origin} asks for a key (HTTP 401). Set it in the terminal or service that starts the runner, then start it again.`
-        : secret(config, env)
-          ? `${origin} refused the backend's key (HTTP 401). Check the key or token in ${named}.`
-          : `${origin} asks for a key (HTTP 401). Add "keyEnv" to the backend and set that variable to its key or token.`
-    });
-  } else {
-    const why = second.reason || `HTTP ${second.status} on ${keyed}`;
-    out.push({ level: 'warn', message: `The check couldn't tell whether ${origin} takes the runner's requests (${why}). The runner tries anyway, and its log says when a request fails.` });
-    if (unset) out.push({ level: 'warn', message: `${unset} is not set, so the runner sends no key.` });
+  const unsetWarn = { level: 'warn', message: `${unset} is not set, so the runner sends no key.` };
+  const named = typeof config.keyEnv === 'string' && config.keyEnv.trim() ? config.keyEnv.trim() : '"key"';
+  const cannot = (message) => [{ level: 'error', message }];
+  const cantTell = (route, why) => [
+    { level: 'warn', message: `The check couldn't tell whether ${origin} can answer: ${why} on ${route}, a route a server can chat without. The runner tries anyway, and its log says when a request fails.` },
+    ...(unset ? [unsetWarn] : [])
+  ];
+  for (const [i, r] of contract.routes.entries()) {
+    const p = await probe(url, r.route, { headers, timeout, signal });
+    if (p.stopped) return [];
+    if (p.bad) return cannot(p.reason);
+    if (p.reason) {
+      if (i === 0) return cannot(`Nothing answers at ${origin} (${p.reason}). Start ${contract.what} there, or correct the backend's "url".`);
+      return r.required ? cannot(`${origin} doesn't answer ${r.route} (${p.reason}), which ${contract.what} answers.`) : cantTell(r.route, p.reason);
+    }
+    if (p.status >= 200 && p.status < 300) {
+      if (!r.shape(p.data)) return cannot(`${origin} answered ${r.route} with ${answerKind(p)}, not ${r.expect}. Correct the backend's "url" so it points at ${contract.what}.`);
+      const problem = r.problem ? r.problem(p.data) : '';
+      if (problem) return cannot(`${origin} can't answer: ${problem}.`);
+      continue;
+    }
+    const status = `HTTP ${p.status}`;
+    if (!r.required) return cantTell(r.route, r.refused.includes(p.status) ? `it refused the key (${status})` : `it answered ${status}`);
+    if (r.refused.includes(p.status)) {
+      return cannot(
+        unset
+          ? `${unset} is not set, and ${origin} asks for a key (${status} on ${r.route}). Set it in the terminal or service that starts the runner, then start it again.`
+          : secret(config, env)
+            ? `${origin} refused the backend's key (${status} on ${r.route}). Check the key or token in ${named}.`
+            : `${origin} asks for a key (${status} on ${r.route}). Add "keyEnv" to the backend and set that variable to its key or token.`
+      );
+    }
+    if (p.status === 404) return cannot(`${origin} has no ${r.route} (HTTP 404), which ${contract.what} answers. ${r.missing || 'Correct the backend\'s "url".'}`);
+    return cannot(`${origin} answered ${r.route} with ${status}, where ${contract.what} answers 200.`);
   }
+  const out = [{ level: 'info', message: `The backend answers at ${origin}` }];
+  if (unset) out.push({ level: 'warn', message: `${unset} is not set, so the runner sends no key. ${origin} answered without one.` });
   return out;
 }
 
 RunsBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT, signal } = {}) {
-  return checkHttp(this, { env, timeout, signal, headers: this.headers({}, env), health: '/health', keyed: '/v1/capabilities', what: 'the Hermes or Booper server' });
+  return checkHttp(this, { env, timeout, signal, headers: this.headers({}, env), contract: RUNS_CONTRACT });
 };
 
 OpenAiBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT, signal } = {}) {
-  return checkHttp(this, { env, timeout, signal, headers: { Accept: 'application/json', ...this.authHeaders(env) }, health: '/v1/models', keyed: '/v1/models', what: 'the server' });
+  const contract = forOpenClaw(this.config) ? OPENCLAW_CONTRACT : OPENAI_CONTRACT;
+  return checkHttp(this, { env, timeout, signal, headers: { Accept: 'application/json', ...this.authHeaders(env) }, contract });
 };
 
 // Claude Code and Codex: the program is found where the runner looks for it, and starts without a shell.
