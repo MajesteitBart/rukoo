@@ -336,7 +336,7 @@ class WorkspaceService internal constructor(
             combine(stayWanted, settings.map { it.notifyChat }) { wanted, notify -> wanted && notify }
                 .distinctUntilChanged()
                 .collectLatest { open ->
-                    if (window != open) AppLog.i(TAG, if (open) "Phone tools window open: team chat stays connected" else "Phone tools window closed")
+                    if (window != open) AppLog.i(TAG, if (open) "Phone tools window open: team chat sockets may stay open in the background" else "Phone tools window closed")
                     window = open
                     updateSockets()
                     if (!open) return@collectLatest
