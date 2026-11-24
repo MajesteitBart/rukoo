@@ -16,6 +16,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -819,15 +820,21 @@ class WorkspaceService internal constructor(
     // The removal path's end (§3.6): the workspace is hidden from cache reads, and the row with everything under it
     // went in the sync's transaction, or waits for retryHidden when SQLite refused. Called from inside that sync, which
     // this closes last.
-    private fun workspaceGone(l: Live, ws: String) {
+    private suspend fun workspaceGone(l: Live, ws: String) {
         if (l.store.hasHidden) retryHidden(l)
         val s = l.syncs.remove(ws)
         l.ran -= ws
         l.nudgedAt.remove(ws)
         l.outbox.forget(ws)
         alerts.onWorkspaceGone(ws)
-        l.liveSockets.remove(ws)?.close()
-        l.pacing.remove(ws)
+        // Under the lock reconciliation makes sockets with, so a socket or waits it made from an older list go too.
+        // Not cancellable: the wait is short, and a caller that gives up mustn't leave them behind.
+        withContext(NonCancellable) {
+            l.socketLock.withLock {
+                l.liveSockets.remove(ws)?.close()
+                l.pacing.remove(ws)
+            }
+        }
         syncVersion.update { it + 1 }
         l.scope.launch {
             if (l.selected == ws) quietly { pickSelected(l) }
@@ -952,6 +959,10 @@ class WorkspaceService internal constructor(
         val sockets = sockets ?: return
         for (ws in wanted) {
             if (l.liveSockets.containsKey(ws) || l.closed) continue
+            beforeSocketInstall?.invoke(ws, false)
+            // The list may be older than a removal, which waits for this lock: look again before making the socket.
+            if (l.closed || quietly { l.store.read { getWs(ws)?.state } } != FeedApplier.STATE_OK) continue
+            beforeSocketInstall?.invoke(ws, true)
             val url = try {
                 WorkspaceSocket.socketUrl(l.server, ws)
             } catch (e: IllegalArgumentException) {
@@ -1048,6 +1059,16 @@ class WorkspaceService internal constructor(
 
     /** Whether Phone tools' window is open, for tests. */
     internal val windowOpen: Boolean get() = window
+
+    /** The workspaces with a socket, and those with socket waits kept, in this session; for tests. */
+    internal fun socketWorkspaces(): Set<String> = live?.liveSockets?.keys?.toSet().orEmpty()
+    internal fun pacedWorkspaces(): Set<String> = live?.pacing?.keys?.toSet().orEmpty()
+
+    /**
+     * Runs under the socket lock when reconciliation is about to make a socket for a workspace it listed: before it
+     * looks at the workspace again (false) and once it did (true); for tests.
+     */
+    @Volatile internal var beforeSocketInstall: (suspend (String, Boolean) -> Unit)? = null
 
     /**
      * The phone's default network moved to another usable one ([ChatBackground]). In Phone tools' window with the app

@@ -1476,6 +1476,52 @@ class WorkspaceServiceTest {
         assertEquals(feeds + 1, h.feeds())
     }
 
+    // The review's interleaving: reconciliation has listed the workspace, and the removal path runs before it makes
+    // the socket, either before it looks at the workspace again ([rechecked] false) or after ([rechecked] true).
+    // Returns the service once the dust settled.
+    private suspend fun TestScope.removedWhileReconciling(h: Harness, rechecked: Boolean): WorkspaceService {
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws, room())
+        h.http.on("DELETE", h.route(ws, "/members/me")) { WorkspaceAnswer(204, null) }
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
+        h.list()
+        var ran = false
+        s.beforeSocketInstall = { w, after ->
+            if (w == ws && after == rechecked && !ran) {
+                ran = true
+                backgroundScope.launch { s.leaveWorkspace(ws) }
+                // Until the removal reached the sockets: it took back the workspace's alerts just before.
+                while (ChatAlertRules.workspacePrefix(ws) !in h.sink.cleared) delay(10)
+            }
+        }
+        s.onScreen(ws, null, null)
+        advanceTimeBy(5_000)
+        assertTrue("the removal ran in between", ran)
+        return s
+    }
+
+    @Test
+    fun `a workspace removed while reconciliation holds it in its list gets no socket`() = runTest {
+        val h = Harness(this, db)
+        val s = removedWhileReconciling(h, rechecked = false)
+        assertEquals("no socket made for the removed workspace", 0, h.sockets.opened.count { it.ws() == ws })
+        assertFalse("no socket left", ws in s.socketWorkspaces())
+        assertFalse("no waits left", ws in s.pacedWorkspaces())
+    }
+
+    @Test
+    fun `a workspace removed just as reconciliation makes its socket keeps no socket and no waits`() = runTest {
+        val h = Harness(this, db)
+        val s = removedWhileReconciling(h, rechecked = true)
+        assertEquals("its socket was made before the removal reached the sockets", 1, h.sockets.opened.count { it.ws() == ws })
+        assertTrue("the socket made before the removal is closed", h.sockets.opened.filter { it.ws() == ws }.all { it.closes == 1 })
+        assertFalse("no socket left", ws in s.socketWorkspaces())
+        assertFalse("no waits left", ws in s.pacedWorkspaces())
+    }
+
     @Test
     fun `in the window a message notifies from the background, also in the room that was on screen`() = runTest {
         val h = Harness(this, db)
