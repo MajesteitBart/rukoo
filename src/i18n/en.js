@@ -3065,11 +3065,11 @@
   },
   "composer.undoSend.quitUnsure": {
     "message": "Rukoo quit before it knew whether this email went. Check Sent before you send it again.",
-    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit (Undo send). src/main/main.js (keepUnsent)"
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit or closed (Undo send, or Send again in an editor that reopened a refused email). src/main/main.js (openKept)"
   },
   "composer.undoSend.crashWaiting": {
     "message": "Rukoo closed before this email was sent. Send it again when it's ready.",
-    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was waiting out its Undo send notice when Rukoo last closed without quitting, as after a crash. It was not sent. src/main/main.js (reopenHeld)"
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was waiting out its Undo send notice when Rukoo last closed without quitting, as after a crash. It was not sent. src/main/main.js (openKept)"
   },
   "composer.undoSend.quitFailed": {
     "message": "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: {error}",

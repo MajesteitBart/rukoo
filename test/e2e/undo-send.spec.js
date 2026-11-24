@@ -50,6 +50,41 @@ const waiting = () => app.evaluate(() => global.__semOutbox.size);
 const sendWaiting = () => app.evaluate(() => global.__semOutbox.flush());
 // Refused emails main holds for the main window until their editors are open (main.js refused).
 const held = () => app.evaluate(() => global.__semRefused.size);
+// What held.json in the profile lists (main.js heldMail): the emails in the outbox and the kept ones, by subject.
+const heldFile = () => path.join(dataDir, 'data', 'held.json');
+const onDisk = () => (fs.existsSync(heldFile()) ? JSON.parse(fs.readFileSync(heldFile(), 'utf8')) : []);
+const kept = () => onDisk().map((e) => e.restore.state.subject);
+// Ends Rukoo at once, without a quit, as a crash or Task Manager would.
+async function crash() {
+  const exited = app.waitForEvent('close');
+  kill(app.process());
+  await exited;
+}
+// The compose windows that open at a start, by subject, each once its editor is up. Saves fail until the test lets
+// them (global.__allowSaves), so no autosave (8 s) settles an email before the test looks.
+async function editorsAfterStart(count) {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const save = engine.saveDraft.bind(engine);
+    engine.saveDraft = (payload) => (global.__allowSaves ? save(payload) : Promise.reject(new Error('No connection')));
+  });
+  await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(count + 1);
+  const editors = app.windows().filter((w) => w !== win);
+  const bySubject = {};
+  for (const w of editors) {
+    w.on('dialog', () => {});
+    await w.waitForSelector('.composer .editor');
+    bySubject[await w.locator('[data-field="subject"]').inputValue()] = w;
+  }
+  expect(Object.keys(bySubject)).toHaveLength(count);
+  return bySubject;
+}
+// Nothing opens at a start: only the main window, a while after its list is up.
+async function nothingReopens() {
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await win.waitForTimeout(2000);
+  expect(app.windows()).toHaveLength(1);
+}
 // How often a quit asked about waiting email (main.js askQuitWithHeldMail), and how many emails' clocks stand still.
 const quitQuestions = () => app.evaluate(() => global.__semQuitAsked || 0);
 const paused = () => app.evaluate(() => [...global.__semOutbox.entries.values()].filter((e) => e.left !== undefined).length);
@@ -453,7 +488,7 @@ test('an email a quit can neither send nor keep in Drafts opens again at the nex
   await expect(notice()).toContainText('Sending email…');
 
   await closeApp(app);
-  expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(true);
+  expect(kept()).toEqual(['Not lost on quit']);
   await launch();
   await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(2);
   const again = app.windows().find((w) => w !== win);
@@ -464,7 +499,8 @@ test('an email a quit can neither send nor keep in Drafts opens again at the nex
   await expect(again.locator('[data-field="subject"]')).toHaveValue('Not lost on quit');
   await expect(again.locator('.editor')).toContainText('Still here after the restart.');
   await expect(again.locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
-  expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(false);
+  // Kept until its editor answers for it, so a crash now brings it back once more.
+  expect(kept()).toEqual(['Not lost on quit']);
 });
 
 test('an email that fails while a quit waits for an answer opens again when the quit is called off', async () => {
@@ -489,14 +525,13 @@ test('an email that fails while a quit waits for an answer opens again when the 
   });
   await expect(win.locator('.scrim')).toContainText('Save draft?');
   await sendWaiting();
-  // Written down at once, for a quit that goes through; the next start would open it.
-  const file = path.join(dataDir, 'data', 'unsent.json');
-  expect(fs.existsSync(file)).toBe(true);
+  // Kept at once, for a quit that goes through; the next start would open it.
+  await expect.poll(kept).toEqual(['Failed during a quit']);
 
   const [again] = await Promise.all([app.waitForEvent('window'), win.click('.scrim .buttons button:text-is("Cancel")')]);
-  // Open again now, so the next start doesn't open it a second time.
-  expect(fs.existsSync(file)).toBe(false);
   await again.waitForSelector('.composer .editor');
+  // Open again now, and still kept, once, until its editor answers for it.
+  expect(kept()).toEqual(['Failed during a quit']);
   await expect(again.locator('.dialog')).toContainText("couldn't send this email while it was quitting");
   await expect(again.locator('.dialog')).toContainText('Mailbox full');
   await again.locator('.dialog .buttons button').click();
@@ -714,11 +749,9 @@ test('an email refused while the session ends is written down at once, though an
   expect(await waiting()).toBe(2);
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('session-end'));
-  const unsentFile = path.join(dataDir, 'data', 'unsent.json');
-  const heldFile = path.join(dataDir, 'data', 'held.json');
-  const subjectsIn = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map((e) => e.restore.state.subject) : []);
-  await expect.poll(() => subjectsIn(unsentFile)).toEqual(['Refused at the end']);
-  await expect.poll(() => subjectsIn(heldFile)).toEqual(['Hanging at the end']);
+  // The refused one is kept with its error the moment it is refused, ahead of the one still on its way.
+  await expect.poll(kept).toEqual(['Refused at the end', 'Hanging at the end']);
+  expect(onDisk()[0].error).toContain('Mailbox full');
 
   const exited = app.waitForEvent('close');
   kill(app.process());
@@ -740,9 +773,8 @@ test('an email refused while the session ends is written down at once, though an
   await expect(refusedOne.locator('.dialog')).toContainText('Mailbox full');
   const hanging = await bySubject('Hanging at the end');
   await expect(hanging.locator('.dialog')).toContainText('Check Sent before you send it again.');
-  // unsent.json is read once; held.json keeps the hanging one while its editor only holds it in memory.
-  expect(fs.existsSync(unsentFile)).toBe(false);
-  expect(subjectsIn(heldFile)).toEqual(['Hanging at the end']);
+  // held.json keeps both while their editors only hold them in memory.
+  expect(kept()).toEqual(['Refused at the end', 'Hanging at the end']);
 });
 
 // The server refuses an email while a quit waits for another editor's answer, so it goes to Drafts, and the quit is
@@ -914,7 +946,8 @@ test('an email refused while a new main window still loads opens there once it i
   // No compose window opened for it instead.
   expect(app.windows()).toHaveLength(2);
   expect(await waiting()).toBe(0);
-  expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(false);
+  // Kept once, until the editor in the reading pane answers for it.
+  expect(kept()).toEqual([subject]);
 });
 
 test('Undo brings back every recipient and the whole subject, past the limits on what an agent hands in', async () => {
@@ -1013,6 +1046,11 @@ test('a refused email still comes back when the main window holds an editor that
   await expect(popped.locator('.editor')).toContainText('Still here.');
   await expect(composer().locator('[data-field="subject"]')).toHaveValue('Half written');
   expect(await held()).toBe(0);
+  // held.json keeps it while the compose window only has it open, and lets it go once that editor saves it.
+  expect(kept()).toEqual(['Refused while busy']);
+  await popped.locator('.editor').click();
+  await popped.keyboard.press('Control+s');
+  await expect.poll(kept).toEqual([]);
 });
 
 // The server refuses every email, and the Drafts saves of the editor with this subject hold until the test lets them
@@ -1137,10 +1175,8 @@ test('a refused email the main window had not opened when the Windows session en
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('session-end'));
   expect(await held()).toBe(0);
-  const file = path.join(dataDir, 'data', 'unsent.json');
-  const kept = () => JSON.parse(fs.readFileSync(file, 'utf8'));
-  expect(kept()).toHaveLength(1);
-  expect(JSON.stringify(kept())).toContain('Cut off, every word.');
+  expect(kept()).toEqual(['Cut off']);
+  expect(JSON.stringify(onDisk())).toContain('Cut off, every word.');
   // The pane's turn comes after the session ended, and it finds nothing to open.
   await app.evaluate(() => global.__saves.splice(0).forEach((go) => go()));
   await expect.poll(() => app.evaluate(() => global.__claims)).toEqual([false]);
@@ -1148,7 +1184,7 @@ test('a refused email the main window had not opened when the Windows session en
   expect(app.windows()).toHaveLength(1);
 
   await closeApp(app);
-  expect(kept()).toHaveLength(1);
+  expect(kept()).toEqual(['Cut off']);
   await launch();
   await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(2);
   const again = app.windows().find((w) => w !== win);
@@ -1157,7 +1193,180 @@ test('a refused email the main window had not opened when the Windows session en
   await again.locator('.dialog .buttons button').click();
   await expect(again.locator('[data-field="subject"]')).toHaveValue('Cut off');
   await expect(again.locator('.editor')).toContainText('Cut off, every word.');
-  expect(fs.existsSync(file)).toBe(false);
+  expect(kept()).toEqual(['Cut off']);
+});
+
+// #309: a refused email held for the reading pane lived only in main's memory until the pane opened it. held.json now
+// keeps it from the moment the server refuses it, so a kill before the pane opens it, and another kill while the
+// next start reopens it, bring each email back once.
+test('refused emails the reading pane has not opened yet come back once each after a kill, and after a second kill', async () => {
+  test.setTimeout(120000);
+  await refuseAndHoldSaves('Half written');
+  await sendRefused('First refused');
+  await sendRefused('Second refused');
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  await sendWaiting();
+  // The pane waits for the other editor's save, so neither refused email is open anywhere yet.
+  await expect.poll(() => app.evaluate(() => global.__saves.length)).toBeGreaterThan(0);
+  expect(await held()).toBe(2);
+  expect(app.windows()).toHaveLength(1);
+  expect(kept().sort()).toEqual(['First refused', 'Second refused']);
+  expect(onDisk().map((e) => e.error)).toEqual(['Mailbox full', 'Mailbox full']);
+  await crash();
+
+  await launch();
+  const first = await editorsAfterStart(2);
+  for (const subject of ['First refused', 'Second refused']) {
+    await expect(first[subject].locator('.dialog')).toContainText('Mailbox full');
+    await first[subject].locator('.dialog .buttons button').click();
+    await expect(first[subject].locator('.editor')).toContainText(`${subject}, every word.`);
+  }
+  // Open, and answered for by neither editor yet: both stay kept, once.
+  expect(kept().sort()).toEqual(['First refused', 'Second refused']);
+  await crash();
+
+  await launch();
+  const second = await editorsAfterStart(2);
+  expect(kept().sort()).toEqual(['First refused', 'Second refused']);
+  // Saved, one goes from the file; the other stays for the next start.
+  await app.evaluate(() => (global.__allowSaves = true));
+  const saved = second['First refused'];
+  await saved.locator('.dialog .buttons button').click();
+  await saved.locator('.editor').click();
+  await saved.keyboard.press('Control+s');
+  await expect.poll(kept).toEqual(['Second refused']);
+  await crash();
+
+  await launch();
+  const third = await editorsAfterStart(1);
+  expect(Object.keys(third)).toEqual(['Second refused']);
+});
+
+// #309: a refused email open in the reading pane is kept until that editor answers for it. A crash of the main window's
+// page opens it in a compose window; a kill of Rukoo brings it back once at the next start; once saved it stays away.
+test('a refused email open in the reading pane survives a page crash and a kill, once, until its editor saves it', async () => {
+  test.setTimeout(120000);
+  // Saves fail until the test lets them, so no autosave (8 s) settles the email before the test looks.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const save = engine.saveDraft.bind(engine);
+    engine.saveDraft = (payload) => (global.__allowSaves ? save(payload) : Promise.reject(new Error('No connection')));
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'Open in the pane', text: 'Typed in the main window.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await sendWaiting();
+  await expect(win.locator('.dialog')).toContainText('Mailbox full');
+  await win.locator('.dialog .buttons button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Open in the pane');
+  await expect.poll(held).toBe(0);
+  expect(kept()).toEqual(['Open in the pane']);
+
+  // The page dies with the editor: the email opens in a compose window, and the file still lists it once.
+  const [popped] = await Promise.all([
+    app.waitForEvent('window'),
+    app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('index.html')).webContents.forcefullyCrashRenderer())
+  ]);
+  popped.on('dialog', () => {});
+  await popped.waitForSelector('.composer .editor');
+  await expect(popped.locator('.dialog')).toContainText('Mailbox full');
+  await expect(popped.locator('[data-field="subject"]')).toHaveValue('Open in the pane');
+  expect(kept()).toEqual(['Open in the pane']);
+  await crash();
+
+  await launch();
+  const back = await editorsAfterStart(1);
+  const again = back['Open in the pane'];
+  await expect(again.locator('.dialog')).toContainText('Mailbox full');
+  await again.locator('.dialog .buttons button').click();
+  await expect(again.locator('.editor')).toContainText('Typed in the main window.');
+  await app.evaluate(() => (global.__allowSaves = true));
+  await again.locator('.editor').click();
+  await again.keyboard.press('Control+s');
+  await expect.poll(kept).toEqual([]);
+  expect(await subjects('drafts')).toContain('Open in the pane');
+  await crash();
+
+  await launch();
+  await nothingReopens();
+});
+
+// #309: what a quit left used to be read and deleted at the next start before the compose windows it opened had
+// loaded. Now the file keeps each email until its editor answers for it, so a kill at that start, while the windows
+// still load, brings them back once each at the one after.
+test('emails a quit left open again once each after a kill while their compose windows still load', async () => {
+  test.setTimeout(120000);
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+    engine.saveDraft = async () => {
+      throw new Error('No connection');
+    };
+  });
+  for (const subject of ['Left by the quit', 'Also left by the quit']) {
+    await newMessage(win, { to: 'someone@example.com', subject, text: `${subject}, every word.` });
+    await composer().locator('[data-c="send"]').click();
+    await composerGone();
+  }
+  await closeApp(app);
+  expect(kept().sort()).toEqual(['Also left by the quit', 'Left by the quit']);
+
+  // The next start: killed as soon as it makes its first compose window, before that window has its editor.
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_UNDO_SEND: '1' };
+  delete env.ELECTRON_RUN_AS_NODE;
+  app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
+  win = await app.firstWindow();
+  if (app.windows().length < 2) await app.waitForEvent('window');
+  const loading = await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()
+      .filter((w) => !w.webContents.getURL().endsWith('index.html'))
+      .map((w) => w.webContents.isLoading())
+  );
+  await crash();
+  test.info().annotations.push({ type: 'compose windows still loading at the kill', description: JSON.stringify(loading) });
+  expect(kept().sort()).toEqual(['Also left by the quit', 'Left by the quit']);
+
+  await launch();
+  const back = await editorsAfterStart(2);
+  for (const subject of ['Left by the quit', 'Also left by the quit']) {
+    await expect(back[subject].locator('.dialog')).toContainText("couldn't send this email while it was quitting");
+    await expect(back[subject].locator('.dialog')).toContainText('Mailbox full');
+    await back[subject].locator('.dialog .buttons button').click();
+    await expect(back[subject].locator('.editor')).toContainText(`${subject}, every word.`);
+  }
+  expect(kept().sort()).toEqual(['Also left by the quit', 'Left by the quit']);
+});
+
+// #309: a profile from before held.json kept refused emails: unsent.json, which could list an email that held.json
+// still had as on its way when Rukoo was killed during a quit. The next start opens it once, with its error.
+test('an email in both unsent.json and held.json from an older Rukoo opens once, with the error unsent.json had', async () => {
+  await app.evaluate(() => {
+    global.__semEngine.send = () => new Promise(() => {});
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'In both files', text: 'Listed twice, opened once.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await app.evaluate(() => {
+    global.__semOutbox.flush();
+  });
+  await expect.poll(() => onDisk().map((e) => e.state)).toEqual(['sending']);
+  await crash();
+  const [record] = onDisk();
+  fs.writeFileSync(
+    path.join(dataDir, 'data', 'unsent.json'),
+    JSON.stringify([{ id: record.id, restore: record.restore, error: "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: Mailbox full" }])
+  );
+
+  await launch();
+  const back = await editorsAfterStart(1);
+  await expect(back['In both files'].locator('.dialog')).toContainText('Mailbox full');
+  expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(false);
+  expect(kept()).toEqual(['In both files']);
 });
 
 test('Undo once the email is on its way says it is too late', async () => {

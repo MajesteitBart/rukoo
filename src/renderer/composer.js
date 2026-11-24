@@ -1339,7 +1339,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         st.draftId = id;
         st.savedAt = Date.now();
         if (editCount === editsBefore) st.dirty = false;
-        if (id && !inline) await api('composeDraft', id);
+        // A compose window claims the draft; either editor lets main know that an email it kept is safe (main.js
+        // keptSettled).
+        if (id) await api('composeDraft', id);
         // Without an id the next save cannot replace this one; stop autosaving rather than pile up drafts.
         if (!id) autosave = false;
         if (sent.length) {
@@ -1367,15 +1369,17 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     closed = true;
     clearTimeout(autosaveTimer);
     cleanups.forEach((fn) => fn());
+    // true: the editor answered (sent, saved, deleted, or nothing to keep), which main needs to know for an email it
+    // kept for this editor, refused or reopened after a crash (main.js keptSettled). Main closes a compose window then,
+    // and leaves the main window as it is.
     if (inline) {
+      api('composeClose', true).catch(() => {});
       if (message) toast(message);
       page.remove();
       onDone && onDone();
       return;
     }
     if (message) api('toastMain', message).catch(() => {});
-    // true: the editor answered (sent, saved, deleted, or nothing to keep), which main needs to know for an email it
-    // reopened after a crash (main.js heldSettled).
     api('composeClose', true);
   }
 

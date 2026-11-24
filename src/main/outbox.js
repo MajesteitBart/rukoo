@@ -4,11 +4,12 @@
 // main window shows a notice whose Undo takes it back. It sits above Engine.send, so IMAP and the demo account wait
 // the same way. Calendar answers and booking mail call engine.send themselves and go at once.
 //
-// A quit sends what still waits before Rukoo exits (flush(), from will-quit in main.js); what the quit can't send or
-// keep in Drafts, main writes down for the next start (unsent.json). changed() hears of every email that comes, goes
-// on its way or leaves, and main writes the list to the profile each time (held.json), so a crash or a killed process
-// during the wait loses none: the next start opens them in compose windows, unsent (#256). A draft the editor had
-// saved stays on the server until the email is sent too, because Engine.send deletes it only afterwards.
+// A quit sends what still waits before Rukoo exits (flush(), from will-quit in main.js). changed() hears of every
+// email that comes, goes on its way or leaves, and main writes the list to the profile each time (held.json,
+// heldmail.js), so a crash or a killed process during the wait loses none: the next start opens them in compose
+// windows, unsent (#256). An email the server refuses main keeps there too, before failed() returns, until its editor
+// answers for it (#309). A draft the editor had saved stays on the server until the email is sent too, because
+// Engine.send deletes it only afterwards.
 const crypto = require('crypto');
 
 class Outbox {
