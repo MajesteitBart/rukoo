@@ -389,3 +389,33 @@ test('signing out stops the agents this computer runs and deletes their keys', a
   expect(fs.existsSync(path.join(dataDir, 'data', 'agent-runs.json'))).toBe(false);
   await expect.poll(() => fs.existsSync(path.join(dataDir, 'data', 'agent-runs'))).toBe(false);
 });
+
+test("Rukoo's window can't read the clipboard, and paste by the person still works in chat and in the composer", async () => {
+  test.setTimeout(120000);
+  const { bart } = await twoPeople(server);
+  await ready(bart);
+  // What main put on the clipboard, such as an exported config, a page can't read back.
+  await app.evaluate(({ clipboard }) => clipboard.writeText('pasted by the person'));
+  await composer(win).click();
+  const read = await win.evaluate(() => navigator.clipboard.readText().then((text) => `read ${text}`, (err) => `refused ${err.name}: ${err.message}`));
+  // Refused for want of permission, in a window that has the focus.
+  expect(read).toMatch(/^refused NotAllowedError/);
+  expect(read).not.toMatch(/focus/i);
+  expect(await win.evaluate(() => navigator.permissions.query({ name: 'clipboard-read' }).then((p) => p.state, () => 'unknown'))).not.toBe('granted');
+  // Ctrl+V in the chat's message field pastes.
+  const input = composer(win);
+  await input.click();
+  await win.keyboard.press('Control+V');
+  await expect(input).toContainText('pasted by the person');
+  await win.keyboard.press('Control+A');
+  await win.keyboard.press('Backspace');
+  // And in the composer of a new email.
+  const mail = win.locator('.titlebar-modes [data-mode="mail"]');
+  await mail.click();
+  await expect(mail).toHaveAttribute('aria-selected', 'true');
+  await win.click('[data-action="compose"]');
+  const editor = win.locator('.composer .editor');
+  await editor.click();
+  await win.keyboard.press('Control+V');
+  await expect(editor).toContainText('pasted by the person');
+});

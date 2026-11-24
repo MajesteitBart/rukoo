@@ -215,6 +215,8 @@ export function runStateText(run, { t, use = '', locale = 'en', now = Date.now()
       if (code === 'unknown_backend') return { text: t('chat.agents.run.unknownUse'), tone: 'error' };
       if (code === 'missing') return { text: t('chat.agents.run.missing', { use }), tone: 'error' };
       if (code === 'key_unreadable') return { text: t('chat.agents.run.keyUnreadable'), tone: 'error' };
+      if (code === 'unresolved') return { text: t('chat.agents.run.unresolved', { use }), tone: 'error' };
+      if (code === 'plain_http') return { text: t('chat.agents.run.plainHttp', { use }), tone: 'error' };
       return { text: t('chat.agents.run.cantStart'), tone: 'error' };
     }
     default:

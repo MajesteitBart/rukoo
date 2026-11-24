@@ -2116,6 +2116,10 @@ function runErrorText(err, name, use = '') {
   if (code === 'unknown_backend') return t('chat.agents.run.unknownUse');
   if (code === 'missing' && use) return t('chat.agents.run.missing', { use });
   if (code === 'changed') return t('chat.agents.runChanged', { name });
+  if (code === 'unresolved') return t('chat.agents.run.unresolved', { use: use || name });
+  if (code === 'plain_http') return t('chat.agents.run.plainHttp', { use: use || name });
+  if (code === 'copy_failed') return t('chat.agents.copyFailed');
+  if (code === 'save_failed') return t('chat.agents.saveFailed');
   if (code === 'signed_out') return K.errorText(err);
   return t('chat.agents.runFailed', { name });
 }
@@ -2564,7 +2568,7 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
 // the key is for, which the step keeps when the workspace on screen changes, and the session that made it: the step
 // goes once that session ends or loses ws (keyHolds), and says so when the key wasn't kept. Closing lets go of the key
 // main holds.
-async function showAgentKey({ agent, key = null, held = false, runsHere = false }, { ws = K.CH.ws, server = K.CH.state?.server || '', session = K.CH.state?.session, choices = [], room = null } = {}) {
+async function showAgentKey({ agent, key = null, held = false, runsHere = false, unsaved = false }, { ws = K.CH.ws, server = K.CH.state?.server || '', session = K.CH.state?.session, choices = [], room = null } = {}) {
   if (!ws || !agent || !(key || held || runsHere)) return null;
   // On the computer: main has the key, for this window only.
   const desktop = !key && !WEB;
@@ -2837,6 +2841,9 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
         drawConfig(body);
         drawRun(body);
         showKept(scrim);
+        // New key for an agent set up here, which Rukoo couldn't keep on this computer: main holds it for this window,
+        // so Run on this computer tries again, and Copy config gives it.
+        if (unsaved && mainHolds) showError(body, '', t('chat.agents.newKeyUnsaved', { name: agent.name }));
         const field = body.querySelector('[name="config"]');
         body.querySelector('[data-run]')?.addEventListener('click', () => start(body));
         if (canRun) off = onRuns(() => body.isConnected && drawRun(body));
