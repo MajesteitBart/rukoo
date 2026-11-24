@@ -755,3 +755,54 @@ test('a draft with a mention survives switching rooms and a restart', async () =
   await expect(message(log(), 'Draft for later')).toBeVisible({ timeout: 15000 });
   await expect(composer(win)).toHaveJSProperty('value', '');
 });
+
+// Review of #376, finding 1: a refused reply holds the sends after it until it goes, and replies show only in their
+// thread, so the conversation keeps a way into that thread, also when its first message was removed meanwhile.
+test('a refused reply under a removed first message keeps its way into the thread, where Discard lets the next message go', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  const root = await server.post(olga, ws.id, ws.general, 'Who takes the minutes?');
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  const top = message(log(), 'Who takes the minutes?');
+  await expect(top).toBeVisible({ timeout: 15000 });
+  await (await tool(top, 'reply')).click();
+  await expect(threadPane()).toBeVisible();
+  // Olga removes her message before Bart's reply goes; Bart's app doesn't hear of it yet.
+  const runs = await holdRuns(app);
+  await server.redact(olga, ws.id, ws.general, root.messageId);
+  await write('I will', { thread: true });
+  const refused = message(threadLog(), 'I will');
+  await expect(refused).toHaveAttribute('data-state', 'failed', { timeout: 15000 });
+  await win.keyboard.press('Escape');
+  await expect(threadPane()).toBeHidden();
+  // A message after it waits its turn.
+  await write('And the agenda?');
+  const after = message(log(), 'And the agenda?');
+  await expect(after).toHaveClass(/is-pending/);
+  await runs.release();
+
+  // The removal came in, and Bart opens the conversation again: the removed message keeps a reply line that says a
+  // reply wasn't sent, and opens the thread.
+  const removed = log().locator(`li.ch-msg[data-id="${root.messageId}"]`);
+  await expect(removed).toHaveClass(/is-removed/, { timeout: 15000 });
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  await roomRow(win, 'general').click();
+  await expect(pane().locator('.ch-title')).toHaveText('general');
+  const line = removed.locator('.ch-replies');
+  await expect(line).toHaveText('1 reply not sent', { timeout: 15000 });
+  await expect(line).toHaveClass(/has-failed/);
+  await expect(message(log(), 'I will')).toHaveCount(0);
+  await expect(message(log(), 'And the agenda?')).toHaveClass(/is-pending/);
+  await line.click();
+  await expect(threadPane()).toBeVisible();
+  const again = message(threadLog(), 'I will');
+  await expect(again).toHaveAttribute('data-state', 'failed');
+  await again.locator('[data-ch-act="discard"]').click();
+  await expect(again).toHaveCount(0);
+  // The message after it goes out, and the reply line goes with the last unsent reply.
+  await expect(message(log(), 'And the agenda?')).toHaveAttribute('data-seq', /^\d+$/, { timeout: 15000 });
+  await expect(removed.locator('.ch-replies')).toHaveCount(0);
+  await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, 'And the agenda?')).length, { timeout: 15000 }).toBe(1);
+});

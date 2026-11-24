@@ -11449,6 +11449,40 @@ button.ch-replies .ch-replies-n {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Replies of yours that wait or were refused: they show in the thread, with Retry and Discard. */
+.ch-replies-unsent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ch-replies.has-failed .ch-replies-unsent {
+  color: var(--danger);
+  font-weight: 500;
+}
+.ch-replies-unsent svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+/* A thread whose first message has no row: retention took it, or it is further up. Its icon sits in the avatar column. */
+.ch-msg.is-thread-row {
+  padding-top: 8px;
+}
+.ch-thread-row-ic {
+  grid-column: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 24px;
+  color: var(--text-3);
+}
+.ch-thread-row-ic svg {
+  width: 16px;
+  height: 16px;
+}
 /* A notification's message, outlined for two seconds after it opened. */
 .ch-msg.is-target {
   outline: 2px solid var(--focus);

@@ -10919,6 +10919,18 @@
     "message": { "one": "{count} new reply in {threads} threads", "other": "{count} new replies in {threads} threads" },
     "description": "Message list: the same pill when two or more threads out of view have new replies; a click opens the thread with the oldest of them. {count}: the new replies, always 2 or more; {threads}: the threads. src/renderer/chat-view.js"
   },
+  "chat.log.repliesUnsent": {
+    "message": { "one": "{count} reply not sent", "other": "{count} replies not sent" },
+    "description": "Message list: part of the reply line under a thread's first message while replies of yours wait to go out or were refused; a click opens the thread, where they show with Retry and Discard. {count}: those replies. src/renderer/chat-view.js"
+  },
+  "chat.log.rootGone": {
+    "message": "This message is no longer kept",
+    "description": "Message list: row where the first message of a thread was, after the server stopped keeping it (retention) while it still keeps replies; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
+  "chat.log.rootEarlier": {
+    "message": "Reply to an earlier message",
+    "description": "Message list: row for replies of yours that weren't sent yet, to a message further up that isn't loaded; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
   "chat.log.threadNewOpen": {
     "message": "open the thread",
     "description": "Message list: end of the accessible name of the new replies pill, after its text and a comma, as in \"2 new replies in a thread, open the thread\". src/renderer/chat-view.js"
@@ -12454,6 +12466,10 @@
   "chat.notify.reply": {
     "message": "{name} replied: {text}",
     "description": "Team chat notification: body line for a reply in a thread, which shows only in its thread; a click opens the thread at it. {name}: the author; {text}: the first 120 characters of the reply, with mentions as @Name. src/main/workspaces/notify.js"
+  },
+  "chat.notify.open": {
+    "message": "Open",
+    "description": "Team chat toast: button on an alert shown while Rukoo's window has focus; it opens the conversation at the message, and a reply in its thread, as a click on the notification does. src/renderer/app.js, src/renderer/web-shell.js"
   },
   "chat.notify.summaryTitle": {
     "message": "Team chat",

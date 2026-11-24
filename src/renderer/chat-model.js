@@ -121,9 +121,15 @@ export function newReplies(events, { me = null, readAtOpen = null, seen = null }
 //   new    before the first message by someone else after the read position the room had when it opened
 //   sys    a system event
 //   msg    a message; in a thread, the root and its replies
+//   thread a thread whose first message has no row (not in a thread): { root, gone, replies }. gone: the first message
+//          is no longer kept (nothing older can load and the floor is above 1, so retention took it); such a row stands where the first message
+//          was, at the top. Without gone it stands for unsent replies to a first message further up, after the sent
+//          rows, where unsent messages show.
 // A reply shows only in its thread (issue #376): the main timeline leaves replies and unsent replies out, and their
-// root carries the summary (replies). Every row has a stable key (the event ID, local:{id} for a pending send, or a
-// fixed name) and a sig: a string of what its DOM depends on, so the view rebuilds only rows whose sig changed.
+// root carries the summary (replies), which counts the unsent ones too (unsent, and failed when one is held or
+// failed), so a reply that waits or was refused always has a way into its thread, where it shows with its actions.
+// Every row has a stable key (the event ID, local:{id} for a pending send, or a fixed name) and a sig: a string of
+// what its DOM depends on, so the view rebuilds only rows whose sig changed.
 //
 // opts: me (your member ID), members (Map or list of Member), readAtOpen (the read seq when the room opened),
 // pending (Pending[] of the room), root (a thread's root ID), floor and hasOlder (from RoomView), blocked (Set of
@@ -156,6 +162,44 @@ export function timeline(events, opts = {}) {
     .filter((p) => p && p.local && !committed.has(p.local) && (root ? p.root === root : !p.root))
     .slice()
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  // The main timeline's unsent replies by thread: rootId -> { count, failed }.
+  const unsent = new Map();
+  if (!root) {
+    for (const p of pending || []) {
+      if (!p || !p.local || !p.root || committed.has(p.local)) continue;
+      const u = unsent.get(p.root) || { count: 0, failed: false };
+      u.count++;
+      if (p.state === 'held' || p.state === 'failed') u.failed = true;
+      unsent.set(p.root, u);
+    }
+  }
+  // A root's summary: its sent replies (replyCounts), what is new of them on this visit, and its unsent ones.
+  const summaryOf = (rootId) => {
+    const s = counts.get(rootId);
+    const u = unsent.get(rootId);
+    if (!s && !u) return null;
+    const base = s || { count: 0, lastAt: null, newest: 0, newestOther: 0, others: [], actors: [] };
+    // Like the New divider, your own replies are never new to you, and neither are the ones its thread showed.
+    return { ...base, hasNew: newIn(s, rootId, readAtOpen, seen).length > 0, unsent: u ? u.count : 0, failed: Boolean(u && u.failed) };
+  };
+  const repliesSig = (r, members) =>
+    r ? [r.count, r.hasNew ? 1 : 0, r.lastAt ?? '', r.unsent, r.failed ? 1 : 0, r.actors.map((a) => `${a}=${members.get(a)?.name ?? ''}`).join(' ')].join(',') : '';
+  // Threads whose first message has no row: retention took it (only when nothing older can load and the floor is
+  // above 1, so it can't be further up), or unsent replies wait under one further up.
+  const orphans = [];
+  if (!root) {
+    const roots = new Set([...counts.keys(), ...unsent.keys()]);
+    for (const id of roots) {
+      if (messages.has(id)) continue;
+      const gone = !hasOlder && floor > 1;
+      if (!gone && !unsent.has(id)) continue;
+      const replies = summaryOf(id);
+      const first = counts.get(id) ? Math.min(...list.filter((e) => isMessage(e) && e.root === id).map((e) => e.seq)) : Infinity;
+      orphans.push({ type: 'thread', key: `thread:${id}`, root: id, gone, replies, first, sig: ['thread', gone ? 1 : 0, repliesSig(replies, members)].join('\u0001') });
+    }
+    orphans.sort((a, b) => a.first - b.first || (a.root < b.root ? -1 : 1));
+    for (const o of orphans) delete o.first;
+  }
 
   const rows = [];
   if (!root && !hasOlder) {
@@ -168,6 +212,8 @@ export function timeline(events, opts = {}) {
     }
     else rows.push({ type: 'floor', key: 'floor', floor, sig: 'floor' });
   }
+  // Where the first messages retention took were: before every row that is kept.
+  for (const o of orphans) if (o.gone) rows.push(o);
 
   let lastDay = null;
   let lastAt = -Infinity; // the time of the last row shown, for the day of a pending row
@@ -269,11 +315,7 @@ export function timeline(events, opts = {}) {
       nextAt: isPending ? (item.nextAt ?? null) : null,
       replies: null
     };
-    if (!threadOf && !isPending) {
-      const s = counts.get(item.id);
-      // Like the New divider, your own replies are never new to you, and neither are the ones its thread showed.
-      if (s) row.replies = { ...s, hasNew: newIn(s, item.id, readAtOpen, seen).length > 0 };
-    }
+    if (!threadOf && !isPending) row.replies = summaryOf(item.id);
     const r = row.replies;
     row.sig = [
       row.type,
@@ -287,7 +329,7 @@ export function timeline(events, opts = {}) {
       row.nextAt ?? '',
       memberSig(author),
       removed ? '' : mentionNames(text, mentions),
-      r ? [r.count, r.hasNew ? 1 : 0, r.lastAt ?? '', r.actors.map((a) => `${a}=${members.get(a)?.name ?? ''}`).join(' ')].join(',') : '',
+      repliesSig(r, members),
       richSig(attachments, previews, reactions, members)
     ].join('\u0001');
     rows.push(row);
@@ -295,6 +337,12 @@ export function timeline(events, opts = {}) {
   };
 
   for (const e of shown) add(e, false);
+  // Unsent replies to a first message further up: their way into the thread, with the unsent messages.
+  for (const o of orphans) {
+    if (o.gone) continue;
+    rows.push(o);
+    prev = null;
+  }
   for (const p of waiting) add(p, true);
   return rows;
 }

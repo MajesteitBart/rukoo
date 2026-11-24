@@ -146,7 +146,7 @@ test('a root carries the summary of its cached replies, with newest against the 
   assert.deepEqual(counts.get(root.id), { count: 5, lastAt: T0 + 5 * MIN, newest: 6, newestOther: 6, others: [2, 3, 4, 5], actors: [SANNE, MILA, ROB] }, 'the latest three distinct authors, the latest first, without removed replies');
   assert.equal(replyCounts(replies, { me: ME }).get(root.id).newestOther, 5, 'newestOther skips your own replies');
   const head = timeline([root, ...replies], { ...base, readAtOpen: 4 }).find((r) => r.seq === 1);
-  assert.deepEqual(head.replies, { count: 5, lastAt: T0 + 5 * MIN, newest: 6, newestOther: 5, others: [2, 3, 4, 5], actors: [SANNE, MILA, ROB], hasNew: true });
+  assert.deepEqual(head.replies, { count: 5, lastAt: T0 + 5 * MIN, newest: 6, newestOther: 5, others: [2, 3, 4, 5], actors: [SANNE, MILA, ROB], hasNew: true, unsent: 0, failed: false });
   assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 5 }).find((r) => r.seq === 1).replies.hasNew, false, 'your own reply after the read position is not new to you');
   assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 6 }).find((r) => r.seq === 1).replies.hasNew, false);
   assert.equal(timeline([root, ...replies], { ...base, readAtOpen: null }).find((r) => r.seq === 1).replies.hasNew, false, 'no read position, nothing new');
@@ -160,6 +160,83 @@ test('a root carries the summary of its cached replies, with newest against the 
   const removed = timeline([{ ...root, redacted: true, text: null }, ...replies], base).find((r) => r.seq === 1);
   assert.equal(removed.removed, true);
   assert.equal(removed.replies.count, 5, 'a removed root keeps its summary');
+});
+
+// Review of #376, finding 1: an unsent reply blocks the sends after it until it goes, so it always keeps a way into its
+// thread, where it shows with Discard and Retry, also when its first message was removed or has no sent reply.
+test('an unsent reply keeps a way into its thread: on its first message, removed or not, or in a row of its own', async () => {
+  const { timeline } = await loading;
+  seqs = 0;
+  const root = msg(SANNE, T0, { text: 'Lunch?' });
+  const removedRoot = { ...root, redacted: true, text: null };
+  const later = msg(SANNE, T0 + MIN);
+  const failed = { local: 'l_failed', root: root.id, state: 'failed', reason: 'invalid', text: 'Yes', mentions: [], createdAt: T0 + 2 * MIN };
+  const next = { local: 'l_next', root: null, state: 'waiting', text: 'And another thing', mentions: [], createdAt: T0 + 3 * MIN };
+
+  // The reviewer's case: the first message was removed elsewhere while the reply waited offline, and the server
+  // refused it. The removed message keeps the reply line, which opens the thread.
+  const rows = timeline([removedRoot, later], { ...base, pending: [failed, next] });
+  assert.deepEqual(shape(rows), ['day', 'msg+1', 'msg+2', 'msg+local:l_next']);
+  const top = rows.find((r) => r.seq === 1);
+  assert.equal(top.removed, true);
+  assert.deepEqual([top.replies.count, top.replies.unsent, top.replies.failed], [0, 1, true]);
+  // ... where the refused reply shows with its state, so its actions are there.
+  const thread = timeline([removedRoot, later], { ...base, pending: [failed, next], root: root.id });
+  const unsentRow = thread.find((r) => r.key === 'local:l_failed');
+  assert.deepEqual([unsentRow.pending, unsentRow.reason, unsentRow.root], ['failed', 'invalid', root.id]);
+  assert.ok(!thread.some((r) => r.key === 'local:l_next'), 'the main message waits in the conversation');
+
+  // Sending: the count says it hasn't gone yet, without the failed look.
+  const queued = timeline([root], { ...base, pending: [{ ...failed, state: 'queued' }] }).find((r) => r.seq === 1);
+  assert.deepEqual([queued.replies.count, queued.replies.unsent, queued.replies.failed], [0, 1, false]);
+  // Once sent, it counts as a reply and no longer as unsent.
+  const sent = msg(ME, T0 + 2 * MIN, { root: root.id, seq: 3 });
+  const done = timeline([root, sent], { ...base, pending: [failed], sentLocal: new Map([[sent.id, 'l_failed']]) }).find((r) => r.seq === 1);
+  assert.deepEqual([done.replies.count, done.replies.unsent], [1, 0]);
+
+  // The first message isn't loaded, further up: a row of its own after the sent rows, with the unsent messages.
+  const away = timeline([later], { ...base, pending: [failed, next] });
+  assert.deepEqual(shape(away), ['day', 'msg+2', 'thread', 'msg+local:l_next']);
+  const row = away.find((r) => r.type === 'thread');
+  assert.deepEqual([row.key, row.root, row.gone, row.replies.unsent, row.replies.failed], [`thread:${root.id}`, root.id, false, 1, true]);
+  // The row breaks a group: my unsent message after it starts one of its own.
+  const mine = msg(ME, T0 + 2 * MIN, { seq: 5 });
+  assert.equal(timeline([mine], { ...base, pending: [failed, { ...next, createdAt: T0 + 2 * MIN + 1000 }] }).at(-1).head, true);
+  // Nothing older can load: the first message is gone, and the row stands where it was.
+  assert.deepEqual(shape(timeline([later], { ...base, hasOlder: false, floor: 2, pending: [failed] })), ['floor', 'thread', 'day', 'msg+2']);
+  // No row once nothing waits.
+  assert.deepEqual(shape(timeline([later], base)), ['day', 'msg+2']);
+  // Its sig follows the state, so the line draws again.
+  const before = timeline([removedRoot], { ...base, pending: [{ ...failed, state: 'queued' }] })[1].sig;
+  assert.notEqual(timeline([removedRoot], { ...base, pending: [failed] })[1].sig, before);
+});
+
+// Review of #376, finding 3: replies whose first message retention took, while the server keeps them, get a row where
+// the first message was, saying so, with their reply line.
+test('replies whose first message aged out keep a row where it was, with their reply line and its dot', async () => {
+  const { timeline } = await loading;
+  seqs = 10;
+  const expired = id('e', 'expired');
+  const kept = msg(MILA, T0 + 2 * MIN);
+  const r1 = msg(ROB, T0 + 3 * MIN, { root: expired });
+  const r2 = msg(SANNE, T0 + 4 * MIN, { root: expired });
+  const opts = { ...base, hasOlder: false, floor: 11 };
+  const rows = timeline([kept, r1, r2], { ...opts, readAtOpen: 12 });
+  assert.deepEqual(shape(rows), ['floor', 'thread', 'day', 'msg+11']);
+  const row = rows[1];
+  assert.deepEqual([row.key, row.root, row.gone], [`thread:${expired}`, expired, true]);
+  assert.deepEqual([row.replies.count, row.replies.hasNew, row.replies.unsent, row.replies.actors], [2, true, 0, [SANNE, ROB]]);
+  assert.equal(timeline([kept, r1, r2], { ...opts, readAtOpen: 13 })[1].replies.hasNew, false, 'read when the room opened');
+  assert.equal(timeline([kept, r1, r2], { ...opts, readAtOpen: 12, seen: new Map([[expired, 13]]) })[1].replies.hasNew, false, 'its thread showed them');
+  // Two such threads stand in the order of their first replies.
+  const other = id('e', 'expired2');
+  const early = msg(PIM, T0 + MIN, { root: other, seq: 10 });
+  const two = timeline([early, kept, r1, r2], { ...opts, floor: 10 });
+  assert.deepEqual(two.filter((r) => r.type === 'thread').map((r) => r.root), [other, expired]);
+  // While older messages can still load, the first message may be further up: no row, the pill says it.
+  assert.ok(!timeline([kept, r1, r2], { ...base, hasOlder: true }).some((r) => r.type === 'thread'));
+  // A thread never shows the row.
+  assert.ok(!timeline([kept, r1, r2], { ...opts, root: expired }).some((r) => r.type === 'thread'));
 });
 
 test('newReplies lists the threads with replies new on this visit, the oldest new reply first', async () => {

@@ -3823,6 +3823,20 @@ async function onNewMail(p) {
 
 // ---------- events from main ----------
 
+// A click on a chat notification, or Open on its toast: Chat opens at that conversation and message (contract 5.7),
+// and a reply's thread at the reply.
+function openChatNotice(target) {
+  if (!windowRuns() || !chat.available()) return;
+  setMode('chat');
+  chat.openConversation(target.ws, target.conversation, Number.isSafeInteger(target.seq) ? target.seq : null);
+}
+
+// The Open button of a chat alert's toast, for an alert that says where it opens.
+function chatToastAction(target) {
+  if (!target || typeof target.ws !== 'string' || typeof target.conversation !== 'string') return undefined;
+  return { label: t('chat.notify.open'), run: () => openChatNotice(target), shortcut: false };
+}
+
 window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
@@ -3831,12 +3845,8 @@ window.mail.on(async ({ type, payload }) => {
   // Team chat (workspaces/index.js, contract 4.5). A click on a chat notification comes as kind 'open': Chat opens at
   // that conversation and message (contract 5.7).
   if (type === 'chat' && payload && typeof payload === 'object') {
-    if (payload.kind === 'open') {
-      if (windowRuns() && chat.available()) {
-        setMode('chat');
-        chat.openConversation(payload.ws, payload.conversation, Number.isSafeInteger(payload.seq) ? payload.seq : null);
-      }
-    } else chat.onEvent(payload);
+    if (payload.kind === 'open') openChatNotice(payload);
+    else chat.onEvent(payload);
   }
   // A reminder or a booking notification was clicked: the calendar opens on that event or request, or on the day
   // when the notification names only its start.
@@ -3866,8 +3876,9 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
-  // A chat alert while the window has focus, and the alert taken back (main.js showChatNotification).
-  if (type === 'chat-toast' && payload) toast(payload.body, { tag: payload.id });
+  // A chat alert while the window has focus, and the alert taken back (main.js showChatNotification). Its Open goes
+  // where a click on the notification would, such as a reply's thread.
+  if (type === 'chat-toast' && payload) toast(payload.body, { tag: payload.id, action: chatToastAction(payload.open) });
   if (type === 'chat-toast-hide') dropTaggedToast(payload);
   // Undo send (main.js): an email waits after Send, Don't quit kept emails waiting, or the server refused one that
   // waited and its editor opens again.
