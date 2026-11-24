@@ -125,6 +125,15 @@ jobs:
       - name: Test the meeting view's macOS marks
         if: runner.os == 'macOS' && matrix.arch == 'arm64'
         run: npx playwright test test/e2e/meeting.spec.js -g "a silent call mark"
+      # The cases that press a Mac's own editing keys since #327, and the meeting that checks what Rukoo asked of its
+      # window after Stop.
+      - name: Test the cases that press the Mac's editing keys
+        if: runner.os == 'macOS' && matrix.arch == 'arm64'
+        run: >-
+          npx playwright test test/e2e/meeting.spec.js test/e2e/app.spec.js test/e2e/categories.spec.js
+          test/e2e/mentions.spec.js test/e2e/chat-agents.spec.js test/e2e/chat-workspaces.spec.js
+          test/e2e/compose-links.spec.js
+          -g "notes share composer formatting|blank list continuations|escaped notes over the storage limit|soft breaks preserve note formatting|records the Stand-up from its card|the shared editor formats text|turning categories on puts them|an email moves to another category|moving a selection to another category|an email open in the reading pane leaves it|a bare @ in a reply|someone not on the email yet|captions pass 4.5:1|joining Olga's workspace with a link|Ctrl\+K asks for the text|a link at the caret gets a bubble"
       - name: Build Windows or Linux packages
         if: runner.os != 'macOS' && matrix.shard == 3
         run: npm run dist -- --${{ matrix.arch }} --publish never
