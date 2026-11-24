@@ -116,7 +116,7 @@ The phone has the team chat of [Rukoo on your computer](chat.md): workspaces on 
 
 ### Team chat in the background
 
-Team chat has no push yet. With Rukoo in the background, `ChatSyncWorker` checks every workspace every 15 minutes at most, when Android lets it run: Doze, App Standby and Samsung's sleeping apps hold it back further, and Unrestricted battery use holds it back least.
+Team chat has no push yet. With Rukoo in the background, `ChatSyncWorker` checks the ten most recently active workspaces every 15 minutes at most, when Android lets it run: Doze, App Standby and Samsung's sleeping apps hold it back further, and Unrestricted battery use holds it back least.
 
 While Phone tools' foreground service runs, Rukoo keeps team chat connected in the background. Android keeps a process with a foreground service running and lets it use the network, also in Doze:
 
