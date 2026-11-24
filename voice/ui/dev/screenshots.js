@@ -186,6 +186,10 @@ async function main() {
           await page.waitForTimeout(300);
           await shot(path.join(out, 'settings', `${theme}-${lang}`, 'dictation-key-macos.png'));
           await page.keyboard.press('Escape');
+          await page.click('[data-a="choose:meetings.stopKey"]');
+          await page.waitForTimeout(300);
+          await shot(path.join(out, 'settings', `${theme}-${lang}`, 'stop-key-macos.png'));
+          await page.keyboard.press('Escape');
         }
       // A narrow window, at Settings' minimum width.
       for (const [theme, lang] of [
