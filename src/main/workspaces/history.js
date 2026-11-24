@@ -115,8 +115,9 @@ class History {
 
   constructor(svc) {
     this.svc = svc;
-    // The room on screen as this module knows it: { ws, room, epoch, quiet, lo }. quiet holds back events pushes while
-    // chatOpen builds its answer, which then holds everything; lo is the cache's lo when the renderer last heard.
+    // The room on screen as this module knows it: { ws, room, epoch, quiet, lo, thread }. quiet holds back events
+    // pushes while chatOpen builds its answer, which then holds everything; lo is the cache's lo when the renderer last
+    // heard; thread the root of the thread the renderer shows beside it (chatThreadShown), or null.
     this.open = null;
     // Catch-ups in flight, per room: { promise, again }.
     this.loads = new Map();
@@ -124,8 +125,6 @@ class History {
     this.flushes = new Map();
     // The thread last asked for: { key, low, extra: Map seq -> Event } for pages the cache couldn't keep.
     this.threadMemory = null;
-    // The thread on screen beside the open room: { ws, room, root, epoch }, or null (chatThreadShown).
-    this.shownThread = null;
     this.closed = false;
   }
 
@@ -178,16 +177,23 @@ class History {
   }
 
   // chatThreadShown: the renderer opened the thread of root beside the open room, or closed it (null). Alerts hold back
-  // the replies of the thread on screen (notify.js); the conversation itself doesn't show replies (issue #376).
+  // the replies of the thread on screen (notify.js); the conversation itself doesn't show replies (issue #376). The
+  // thread belongs to the room's opening: a call for a room that isn't the open one is ignored (false), and closing
+  // or opening a room, or the renderer going (rendererGone), starts without one.
   threadShown(ws, c, root) {
-    this.shownThread = root ? { ws, room: c, root, epoch: this.svc.epoch } : null;
+    if (!this.isOpen(ws, c)) return false;
+    this.open.thread = root || null;
     return true;
   }
 
   // The root of the thread on screen beside room, or null: only while that room is the one open in this session.
   openThread(ws, room) {
-    const s = this.shownThread;
-    return s && s.epoch === this.svc.epoch && s.ws === ws && s.room === room && this.isOpen(ws, room) ? s.root : null;
+    return this.isOpen(ws, room) ? this.open.thread || null : null;
+  }
+
+  // The window that showed the open room closed, crashed or loaded another page: no thread shows beside it any more.
+  rendererGone() {
+    if (this.open) this.open.thread = null;
   }
 
   forget(fn) {
@@ -203,7 +209,6 @@ class History {
     this.closed = true;
     this.forget(() => true);
     this.open = null;
-    this.shownThread = null;
     this.threadMemory = null;
   }
 
@@ -338,6 +343,13 @@ class History {
     return entry.promise;
   }
 
+  // A catch-up page of the room went in: the alerts the room on screen left until its cache reached the head are
+  // settled from it (notify.js onCaughtUp).
+  caughtUp(ws, c) {
+    const notifier = this.svc.notifier;
+    if (notifier && typeof notifier.onCaughtUp === 'function') this.svc.hook(() => notifier.onCaughtUp(ws, c));
+  }
+
   // The same, for the background: failures wait for the next run, which tries again.
   catchUpLater(ws, c) {
     this.catchUp(ws, c).catch((err) => {
@@ -366,6 +378,7 @@ class History {
         const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'before', bound, newest: true });
         if (!out) continue;
         this.push(ws, c, out.events, { replace: true });
+        this.caughtUp(ws, c);
         if (!page.events.length) return;
       } else {
         const page = await this.fetchEvents(ws, c, `after=${r.hi}&limit=${t.eventsPage}`);
@@ -373,6 +386,7 @@ class History {
         const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'after', bound: r.hi });
         if (!out) continue;
         this.push(ws, c, out.events);
+        this.caughtUp(ws, c);
         if (!page.events.length) return;
       }
     }
@@ -498,7 +512,7 @@ class History {
       r = this.room(ws, c);
     }
     const readAtOpen = r.readLocal;
-    const open = { ws, room: c, epoch, quiet: false, lo: r.lo };
+    const open = { ws, room: c, epoch, quiet: false, lo: r.lo, thread: null };
     this.open = open;
     svc.setActive({ ws, room: c });
     if (opts.at === undefined || opts.at === null) {

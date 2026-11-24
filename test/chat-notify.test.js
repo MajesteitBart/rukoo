@@ -164,16 +164,16 @@ test('mute, the setting and the room on screen keep alerts away, also afterwards
   assert.deepEqual(svc.notices, []);
   assert.equal(svc.state().notifications, true);
 
-  // On screen in the focused window.
+  // On screen in the focused window: opened, so the feed brings its new messages inline and it shows them.
   svc.setFocused(true);
-  svc.setActive({ ws: ws.id, room: dm });
+  await chatApi(() => svc).chatOpen(ws.id, dm, {});
   await server.post(olga, ws.id, dm, 'gezien');
   await svc.sync(ws.id);
   assert.deepEqual(svc.notices, []);
 
   // Focused on another room: main.js shows a toast when its window has focus too. The alert is recorded all the same,
   // because main.js may find the window unfocused and show a desktop notification, which a read must take back.
-  svc.setActive({ ws: ws.id, room: ws.general });
+  await chatApi(() => svc).chatOpen(ws.id, ws.general, {});
   const toast = await server.post(olga, ws.id, dm, 'toast');
   await svc.sync(ws.id);
   assert.equal(svc.notices.length, 1);
@@ -589,7 +589,7 @@ test('a reply to your message in a channel alerts as "Name replied", once per st
   assert.equal(pages(calls, ws.general), 2);
 });
 
-test('a reply in someone else\'s thread alerts only when it mentions you; a channel without your messages loads nothing', async (t) => {
+test('a reply in someone else\'s thread alerts only when it mentions you; an unread channel loads one page until it is read', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, bart, ws, bartMe, svc, account } = await scene(t);
   const mila = await server.seedAccount();
@@ -598,10 +598,11 @@ test('a reply in someone else\'s thread alerts only when it mentions you; a chan
   const calls = watchCalls(account);
   const hers = await server.post(olga, ws.id, ws.general, 'Lunch at noon?');
   await svc.sync(ws.id);
+  assert.equal(pages(calls, ws.general), 1, 'an unread channel that wasn\'t looked at gets its one page');
   await server.post(mila, ws.id, ws.general, 'Yes please', { root: hers.messageId });
   await svc.sync(ws.id);
   assert.deepEqual(svc.notices, []);
-  assert.equal(pages(calls, ws.general), 0, 'no first message of Bart here: no page');
+  assert.equal(pages(calls, ws.general), 1, 'looked at since Bart last read it: no second page');
   const general = svc.store.getRoom(ws.id, ws.general);
   assert.equal(general.notified, general.head);
 
@@ -701,4 +702,168 @@ test('an agent\'s answer in the thread of your message alerts you; asked in some
   await server.agentReply(key, ws.id, ws.general, { trigger: inThread.messageId, text: 'Sunny' });
   await svc.sync(ws.id);
   assert.equal(svc.notices.length, 1);
+});
+
+// Review of #376, finding 2: while the conversation on screen catches up with a feed that ran past its inline page,
+// what its cache couldn't tell yet stays eligible, and the catch-up's own pages settle it. No page goes out for it.
+test("on screen, a reply beyond the feed's inline page alerts once, when the catch-up brings it in", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, svc, account } = await scene(t);
+  const api = chatApi(() => svc);
+  const mila = await server.seedAccount();
+  await server.seedMember(ws, mila, 'Mila');
+  const question = await server.post(bart, ws.id, ws.general, 'Anyone?');
+  await svc.sync(ws.id);
+  // The window has focus, without the feed run a focus starts, so runs happen only when the test asks.
+  svc.focused = true;
+  await api.chatOpen(ws.id, ws.general, {});
+  await until(() => {
+    const r = svc.store.getRoom(ws.id, ws.general);
+    return svc.store.eventById(ws.id, question.messageId) && r.hi >= r.head && svc.history.loads.size === 0;
+  }, 10000, 'the question in the cache, up to the head, and the catch-up done');
+  // More than the feed's inline page of 20, then the reply for Bart, in a thread he doesn't have open.
+  for (let i = 0; i < 24; i++) await server.post(i % 2 ? olga : mila, ws.id, ws.general, `chatter ${i}`);
+  const answer = await server.post(olga, ws.id, ws.general, 'Me', { root: question.messageId });
+  const held = holdFirst(account, (url) => url.includes(`/conversations/${ws.general}/events?after=`));
+  const calls = watchCalls(account);
+  await svc.sync(ws.id);
+  await until(() => held.waiting, 10000, 'the catch-up page, held');
+  let general = svc.store.getRoom(ws.id, ws.general);
+  assert.ok(general.hi < answer.seq, 'the inline page stopped short of the reply');
+  assert.deepEqual(svc.notices, []);
+  assert.ok(general.notified < answer.seq, "the range the cache couldn't tell stays eligible");
+  held.release();
+  await until(() => svc.notices.length > 0, 10000, 'the alert once the catch-up went in');
+  assert.deepEqual(svc.notices, [
+    {
+      id: `${roomKey(ws.id, ws.general)}:screen`,
+      title: '#general',
+      body: 'Olga replied: Me',
+      open: { ws: ws.id, conversation: ws.general, seq: answer.seq }
+    }
+  ]);
+  general = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(general.notified, general.head);
+  await svc.sync(ws.id);
+  await sleep(50);
+  assert.equal(svc.notices.length, 1, 'exactly one alert');
+  assert.equal(calls.filter((c) => c.route.includes(`/conversations/${ws.general}/events?before=`)).length, 0, 'no alert page');
+});
+
+// Review of #376, finding 8: an alert shown while its conversation is on screen has no notice rows, so a read leaves
+// it, but the notifier keeps it in memory with its messages, so losing access to them takes it back.
+test('an alert shown while its conversation is on screen stays on a read, and goes on a removal, an eviction, Start over and sign-out', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, bartMe, svc, account, hidden } = await scene(t);
+  const api = chatApi(() => svc);
+  const side = (await server.seedChannel(olga, ws.id, { name: 'side', members: [bartMe.id] })).id;
+  const asked = await server.post(bart, ws.id, ws.general, 'Anyone?');
+  const askedSide = await server.post(bart, ws.id, side, 'Anyone here?');
+  await svc.sync(ws.id);
+  // The window has focus, without the feed run a focus starts.
+  svc.focused = true;
+  const show = async (room, question) => {
+    await api.chatOpen(ws.id, room, {});
+    await until(() => {
+      const r = svc.store.getRoom(ws.id, room);
+      return svc.store.eventById(ws.id, question.messageId) && r.hi >= r.head;
+    }, 10000, 'the room on screen, cached to its head');
+  };
+  const alerted = async (room, question, text) => {
+    const before = svc.notices.length;
+    const posted = await server.post(olga, ws.id, room, text, { root: question.messageId });
+    await svc.sync(ws.id);
+    assert.equal(svc.notices.length, before + 1, `an alert for ${text}`);
+    assert.equal(svc.notices.at(-1).id, `${roomKey(ws.id, room)}:screen`);
+    return posted;
+  };
+  const key = `${roomKey(ws.id, ws.general)}:screen`;
+  const sideKey = `${roomKey(ws.id, side)}:screen`;
+
+  await show(ws.general, asked);
+  const removed = await alerted(ws.general, asked, 'Me');
+  await api.chatRead(ws.id, ws.general, svc.store.getRoom(ws.id, ws.general).head);
+  await svc.sync(ws.id);
+  assert.deepEqual(hidden, [], 'a read leaves it');
+  await server.redact(olga, ws.id, ws.general, removed.messageId);
+  await svc.sync(ws.id);
+  assert.deepEqual(hidden, [key], 'the removal of its reply takes it back');
+
+  await show(side, askedSide);
+  await alerted(side, askedSide, 'Here');
+  const out = await server.call('DELETE', `/v1/workspaces/${ws.id}/channels/${side}/members/${bartMe.id}`, { token: olga.token });
+  assert.equal(out.status, 204);
+  await svc.sync(ws.id);
+  assert.equal(svc.store.getRoom(ws.id, side), null);
+  assert.deepEqual(hidden, [key, sideKey], 'the eviction takes it back');
+
+  await show(ws.general, asked);
+  await alerted(ws.general, asked, 'Again');
+  await chatApi(() => svc).chatReload(ws.id);
+  assert.deepEqual(hidden, [key, sideKey, key], 'Start over takes it back');
+  await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 30000, 'the pass after Start over');
+
+  await show(ws.general, asked);
+  await alerted(ws.general, asked, 'Once more');
+  await account.signOut();
+  assert.deepEqual(hidden, [key, sideKey, key, key], 'signing out takes it back');
+});
+
+// Review of #376, finding 10: a block committed while an alert's page was on its way counts.
+test('an alert page leaves out the people blocked while it was on its way', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc, account } = await scene(t);
+  const api = chatApi(() => svc);
+  await server.post(olga, ws.id, ws.general, '@Bart look', mentioning('@Bart look', bartMe.id));
+  const held = holdFirst(account, (url) => url.includes(`/conversations/${ws.general}/events?`));
+  const run = svc.sync(ws.id);
+  await until(() => held.waiting, 10000, 'the held alert page');
+  // The block is in the store once the server took it; chatBlock then waits for a run, which waits for this page.
+  const blocking = api.chatBlock(ws.id, ws.me.id);
+  await until(() => svc.store.listBlocks(ws.id).some((b) => b.member === ws.me.id), 10000, 'the block in the store');
+  held.release();
+  await run;
+  await blocking;
+  assert.deepEqual(svc.notices, []);
+  const general = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(general.notified, general.head, 'nothing to show: notified');
+});
+
+// Requirement 11 of #376: a channel with unread messages that wasn't looked at since it was last read gets one page,
+// whether or not this device holds a message of the person's there, within the run's three pages and after the DMs and
+// mention channels. This measures what that costs: at most three pages a run, and one per channel per stretch of
+// unread messages.
+test('ten channels with unread messages cost one page each, three a run at most, after a mention', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, bartMe, svc, account } = await scene(t);
+  const rooms = [];
+  for (let i = 1; i <= 10; i++) rooms.push((await server.seedChannel(olga, ws.id, { name: `busy-${i}`, members: [bartMe.id] })).id);
+  await svc.sync(ws.id);
+  const calls = watchCalls(account);
+  // The mention is the oldest activity of all.
+  await server.post(olga, ws.id, ws.general, '@Bart first', mentioning('@Bart first', bartMe.id));
+  // Bart's question in busy-1 is on the server only, as if asked on his phone; the reply to it comes in the page.
+  const question = await server.post(bart, ws.id, rooms[0], 'Who has the keys?');
+  for (const c of rooms.slice(1)) await server.post(olga, ws.id, c, 'news');
+  const reply = await server.post(olga, ws.id, rooms[0], 'I do', { root: question.messageId });
+  const alertPages = () => calls.filter((c) => c.route.includes('/events?before=')).length;
+  const perRun = [];
+  for (let run = 0; run < 5; run++) {
+    const before = alertPages();
+    await svc.sync(ws.id);
+    perRun.push(alertPages() - before);
+  }
+  assert.deepEqual(perRun, [3, 3, 3, 2, 0], 'three pages a run at most, eleven in all, then none');
+  for (const c of [ws.general, ...rooms]) assert.equal(pages(calls, c), 1, 'one page per room');
+  assert.equal(svc.notices[0].body, 'Olga: @Bart first', 'the mention took the first page, though its activity is the oldest');
+  const replied = svc.notices.find((n) => n.open.conversation === rooms[0]);
+  assert.equal(replied.body, 'Olga replied: I do', 'a first message found on the page counts');
+  assert.equal(replied.open.seq, reply.seq);
+  assert.equal(svc.notices.length, 2, 'the other channels hold nothing for Bart');
+  assert.ok(!svc.notices.some((n) => n.id === summaryKey(ws.id)), 'and none of them goes into a summary');
+  // New messages in channels looked at since Bart read them cost nothing.
+  for (const c of rooms.slice(1, 4)) await server.post(olga, ws.id, c, 'more news');
+  const before = alertPages();
+  await svc.sync(ws.id);
+  assert.equal(alertPages(), before);
 });
