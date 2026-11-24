@@ -4366,6 +4366,34 @@ body.compose-window {
   border-top: 1px solid var(--border);
   flex: none;
 }
+/* The notice above Send once the email went while the editor holds changes made since (composer.js drawSentNote). */
+.compose-sent {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--chip);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.compose-sent p {
+  margin: 0;
+  flex: 1 1 280px;
+  min-width: 0;
+  text-wrap: pretty;
+  user-select: text;
+}
+.compose-sent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
 .save-state {
   font-size: 12px;
   color: var(--text-3);

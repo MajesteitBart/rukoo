@@ -10,6 +10,7 @@ import { editMenu } from './editmenu.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
 import { FREE_LENGTHS, FREE_RANGES, pcZone, freeRange, zoneOptions, duration } from './calendar-shared.js';
 import { mountMentions, outgoingHtml } from './mentions.js';
+import { attachmentPairs, sameEmail } from './composer-match.js';
 
 const EMAIL_RE = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
 // Autosave this long after the last change.
@@ -472,6 +473,13 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // An email that may have gone already: it was on its way when Rukoo ended, or the server didn't answer in time. Send
   // asks first, every time, so a second copy never goes with one click.
   let unsure = opts.unsure === true;
+  // What this editor held at the try that may have gone (undoState()): the send that got no answer in time, or what it
+  // opened with for an email that was on its way when Rukoo ended. When main says that email went after all (kept:
+  // 'done'), the editor closes if it still holds that, and keeps what was changed since otherwise (leftover).
+  let submitted = null;
+  // The email went, and what was changed after Send is only here: Send is off, saves don't go to main, which refuses
+  // that id, and the notice offers to keep the changes as a new draft or to discard them (noteLeftover()).
+  let leftover = false;
   if (restored || keptId || unsure) opts = { ...opts, restore: null, sendError: null, keptId: null, unsure: false };
   // Stable for the life of this composer: the chat panel ties an agent's draft card to it.
   const key = crypto.randomUUID();
@@ -1062,6 +1070,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return;
       case 'discard':
         return discard();
+      case 'leftover-keep':
+        if (!leftover || sending || closing || closed || asking) return;
+        keepAsNew();
+        return saveDraft({ auto: false });
+      case 'leftover-discard':
+        return discardLeftover();
       case 'agent-undo':
         return undoAgent();
       case 'close':
@@ -1286,21 +1300,11 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
 
   // A save replaces the stored draft, and with it the source of the attachments copied from it.
   // The new draft holds what the save sent: files from disk first, then copied ones. Point those
-  // entries at the new draft; attachments added or removed during the save stay as they are.
+  // entries at the new draft; attachments added or removed during the save stay as they are. false, and nothing
+  // changes, when they can't be paired (composer-match.js attachmentPairs).
   function remapAttachments(sent, saved) {
-    const order = [...sent.filter((a) => a.path), ...sent.filter((a) => a.forwardIndex !== undefined)];
-    const stored = [...(saved.attachments || [])].sort((a, b) => a.index - b.index);
-    const pairs = new Map();
-    if (stored.length === order.length) {
-      order.forEach((a, i) => pairs.set(a.key, stored[i]));
-    } else {
-      const free = [...stored];
-      for (const a of order) {
-        const i = free.findIndex((x) => x.filename === a.filename);
-        if (i < 0) return false;
-        pairs.set(a.key, free.splice(i, 1)[0]);
-      }
-    }
+    const pairs = attachmentPairs(sent, saved.attachments);
+    if (!pairs) return false;
     st.attachments = st.attachments.map((a) =>
       pairs.has(a.key) ? { key: a.key, forwardIndex: pairs.get(a.key).index, filename: pairs.get(a.key).filename, size: pairs.get(a.key).size } : a
     );
@@ -1344,6 +1348,11 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     saving = saving.then(async () => {
       await dropping;
       if (sending || closed) return false;
+      // The email went already. What was changed since is kept only as a new draft of its own (keepAsNew()).
+      if (leftover) {
+        if (!auto) toast(t('composer.leftover.note'), 5000);
+        return false;
+      }
       if (auto && !st.dirty) return true;
       flushInputs();
       st.saving = true;
@@ -1383,12 +1392,21 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         if (!auto) toast(t('composer.status.savedToDrafts'));
         return true;
       } catch (err) {
+        // Main is done with the email this editor named: it went or is in Drafts. Holding what went, the editor says
+        // so and closes, naming it to the end, so nothing sends or saves it again. Holding changes made since, it keeps
+        // them (noteLeftover()).
+        if (err && err.kept === 'done') {
+          autosave = false;
+          if (changedSince()) noteLeftover();
+          else {
+            gone = true;
+            st.draftId = null;
+            finish(err.message);
+          }
+          return false;
+        }
         failed = true;
-        // Main is done with the email this editor named: it went or is in Drafts. This editor says so, keeps naming
-        // it, so main refuses every send or save of it from here on, and stops saving by itself.
-        const done = err && err.kept === 'done';
-        if (done) autosave = false;
-        if (!auto || done) toast(err.message, 5000);
+        if (!auto) toast(err.message, 5000);
         return false;
       } finally {
         st.saving = false;
@@ -1458,13 +1476,113 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     };
   }
 
+  // Whether this editor holds something other than the try that may have gone (submitted). Without such a try to
+  // compare with, it counts as changed, so nothing typed here is lost on a guess.
+  const changedSince = () => !submitted || !sameEmail(submitted, undoState());
+
+  // The notice above Send: what became of the email, with the actions that go with it.
+  function drawSentNote(key, actions) {
+    let box = page.querySelector('.compose-sent');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'compose-sent';
+      box.setAttribute('role', 'status');
+      page.querySelector('.composer-bar').before(box);
+    }
+    const buttons = actions
+      ? `<div class="compose-sent-actions"><button class="btn secondary sm" data-c="leftover-discard" data-i18n="composer.leftover.discard">${esc(t('composer.leftover.discard'))}</button><button class="btn primary sm" data-c="leftover-keep" data-i18n="composer.leftover.keep">${esc(t('composer.leftover.keep'))}</button></div>`
+      : '';
+    box.innerHTML = `<p data-i18n="${key}">${esc(t(key))}</p>${buttons}`;
+  }
+
+  // Main is done with this editor's email, which went as it was when Send was pressed, and the editor holds changes
+  // made after that. They stay here, Send is off, and so are saves, which main would refuse for that id. The notice
+  // says so and offers to keep them as a new draft (keepAsNew()) or to discard them after asking (discardLeftover()).
+  // Closing, moving on, popping out and a quit ask the same (keepOrDiscard()).
+  function noteLeftover() {
+    leftover = true;
+    autosave = false;
+    clearTimeout(autosaveTimer);
+    st.dirty = true;
+    page.querySelector('[data-c="send"]').disabled = true;
+    drawSentNote('composer.leftover.note', true);
+    describeSaved();
+  }
+
+  // What the editor holds becomes a draft of its own: no kept id, no draft it replaces, nothing that may have gone.
+  // From here on it is an editor for any new draft, whose Send sends a second email; the notice says the first went.
+  // The caller saves it.
+  function keepAsNew() {
+    leftover = false;
+    keptId = null;
+    unsure = false;
+    submitted = null;
+    st.draftId = null;
+    st.savedAt = null;
+    autosave = true;
+    st.dirty = true;
+    page.querySelector('[data-c="send"]').disabled = false;
+    drawSentNote('composer.leftover.kept', false);
+    describeSaved();
+  }
+
+  // The changes go, and the editor with them; the email that went stays as it went.
+  function dropLeftover() {
+    gone = true;
+    st.draftId = null;
+    finish(null);
+  }
+
+  // Discard changes in the notice, or Delete: asks first. true once the editor closed.
+  async function discardLeftover() {
+    if (asking || closing || closed) return false;
+    asking = true;
+    let ok = false;
+    try {
+      ok = await confirmDialog(t('composer.leftover.discardTitle'), t('composer.leftover.discardHelp'), t('composer.leftover.discard'), true);
+    } finally {
+      asking = false;
+    }
+    if (!ok || closed || !leftover) return closed;
+    dropLeftover();
+    return true;
+  }
+
+  // Closing, moving on to another message, popping out or a quit while the editor holds changes made after its email
+  // went: keep them as a new draft, discard them, or stay. true once the editor closed; message: what it says then.
+  async function keepOrDiscard(message) {
+    asking = true;
+    let choice = null;
+    try {
+      choice = await dialog({
+        title: t('composer.leftover.closeTitle'),
+        body: `<p>${esc(t('composer.leftover.closeHelp'))}</p>`,
+        buttons: [
+          { get label() { return t('composer.leftover.discard'); }, value: 'discard', danger: true },
+          { get label() { return t('common.actions.cancel'); }, value: null },
+          { get label() { return t('composer.leftover.keep'); }, value: 'keep', primary: true }
+        ]
+      });
+    } finally {
+      asking = false;
+    }
+    if (closed) return true;
+    if (!leftover || !choice) return false;
+    if (choice === 'discard') {
+      dropLeftover();
+      return true;
+    }
+    keepAsNew();
+    return saveAndFinish(message);
+  }
+
   let sending = false;
   // While sending: resolves to true once the message is sent and the editor closed, false when it stays open.
   let sent = null;
   function send() {
     // Taken before anything is awaited, so a second click cannot send the message twice.
-    // Nothing is sent once the editor is saving to close.
-    if (sending || closing || closed) return;
+    // Nothing is sent once the editor is saving to close, nor once its email went (leftover).
+    if (sending || closing || closed || leftover) return;
     sending = true;
     const outcome = () => closed;
     sent = trySend()
@@ -1499,13 +1617,22 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       page.inert = true;
       await dropping;
       await saving;
+      // A save still running heard that this email went: the editor closed then, or keeps the changes made since.
+      if (closed) {
+        done = true;
+        return;
+      }
+      if (leftover) return;
       await settleAttachments();
       let res;
       for (;;) {
+        const state = undoState();
         try {
-          res = await api('send', payload(undefined, { sending: true }), undoState(), keptId, unsure);
+          res = await api('send', payload(undefined, { sending: true }), state, keptId, unsure);
           break;
         } catch (err) {
+          // No answer in time: this try may still go, with what the editor held for it.
+          if (err && err.kept === 'unsure' && typeof err.keptId === 'string') submitted = state;
           if (!adopt(err)) throw err;
           await settleAttachments();
         }
@@ -1518,10 +1645,15 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     } catch (err) {
       // Refused straight away: main keeps the email for this editor from now on, under this id. No answer in time:
       // it may still go, so the next Send asks first. Done with: it went or is in Drafts, as when the server took it
-      // after the editor heard it may have gone. The editor says so and closes, naming the email to the end, so
-      // nothing sends or saves it again.
+      // after the editor heard it may have gone. Holding what went, the editor says so and closes, naming the email to
+      // the end, so nothing sends or saves it again. Holding changes made since, it keeps them (noteLeftover()).
       if (err && typeof err.keptId === 'string') keptId = err.keptId;
       if (err && err.kept === 'unsure') unsure = true;
+      if (err && err.kept === 'done' && changedSince()) {
+        noteLeftover();
+        await dialog({ title: t('composer.leftover.title'), body: `<p>${esc(t('composer.leftover.note'))}</p>` });
+        return;
+      }
       await dialog({ title: t('composer.errors.send'), body: `<p>${esc(err.message)}</p>` });
       if (err && err.kept === 'done') {
         done = true;
@@ -1531,7 +1663,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       if (!done) {
         sending = false;
         page.inert = false;
-        btn.disabled = false;
+        btn.disabled = leftover;
         label.textContent = t('composer.actions.send');
         describeSaved();
         if (st.dirty) armAutosave();
@@ -1541,6 +1673,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
 
   async function discard() {
     if (sending || closing || closed) return;
+    if (leftover) return discardLeftover();
     const hasContent = st.dirty || st.draftId;
     if (hasContent) {
       const ok = await confirmDialog(t('composer.discard.title'), st.draftId ? t('composer.discard.savedHelp') : t('composer.discard.unsavedHelp'), t('common.actions.delete'), true);
@@ -1576,6 +1709,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (closed) return true;
     if (closing || sending) return false;
     flushInputs();
+    if (leftover) return keepOrDiscard(null);
     if (!st.dirty) {
       finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
       return true;
@@ -1603,17 +1737,22 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     return false;
   }
 
-  // Lock the editor while the last save runs, so nothing typed now is left out of it.
+  // Lock the editor while the last save runs, so nothing typed now is left out of it. An editor whose email went
+  // asks what to do with the changes made since instead, also when this save is what tells it.
   async function saveAndFinish(message) {
+    if (leftover) return keepOrDiscard(message);
     closing = true;
     page.inert = true;
     const ok = await saveDraft({ auto: false });
+    // The save heard that the email went, and the editor held nothing new: it closed.
+    if (closed) return true;
     if (ok && !st.dirty) {
       finish(message);
       return true;
     }
     closing = false;
     page.inert = false;
+    if (leftover) return keepOrDiscard(message);
     return false;
   }
 
@@ -1862,6 +2001,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     describeSaved();
     armAutosave();
   }
+  // On its way when Rukoo ended: what it opened with is what may have gone.
+  if (unsure) submitted = undoState();
 
   return {
     el: page,

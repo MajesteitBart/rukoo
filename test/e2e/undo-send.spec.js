@@ -1674,8 +1674,13 @@ const draftsNamed = (subject) =>
 
 // Third review of #309 (P1): an editor whose send ran past its time heard that the email may have gone. Once the server
 // took it after all, the next Send heard "already sent", and the editor dropped the email's id, so the Send after that,
-// or a save, went as a new email. The editor now keeps naming the email, says what became of it, and closes on Send.
-test('an editor in the reading pane whose email the server took late sends and saves it no more, however often Send is confirmed', async () => {
+// or a save, went as a new email. The editor now keeps naming the email and says what became of it.
+//
+// Final review of #309 (P1): the editor then closed, also when it held a correction typed after the email went, which
+// was lost with it. It now closes only when it holds what went. A correction stays, with a notice that says the email
+// went without it, Send off, and two ways out: keep it as a new draft of its own, or discard it after a question.
+// The email went once, and Drafts gets the correction once, only when the person keeps it.
+test('an editor in the reading pane whose email the server took late keeps a correction typed since, until it is kept as a new draft', async () => {
   test.setTimeout(120000);
   await refusedInPane('Taken late', 'One copy only.');
   await holdSendsWithoutUndo();
@@ -1683,35 +1688,137 @@ test('an editor in the reading pane whose email the server took late sends and s
   await composer().locator('[data-c="send"]').click();
   await expect(win.locator('.scrim .dialog')).toContainText("didn't say whether it took this email");
   await win.locator('.scrim .dialog .buttons button').click();
-  // The server takes it after all.
+  // The server takes it after all, and the person types a correction.
   await app.evaluate(() => global.__sends[0].resolve(true));
   await expect.poll(kept).toEqual([]);
-  // A save stores nothing, also the one after it.
   await app.evaluate(() => (global.__allowSaves = true));
   await composer().locator('.editor').click();
   await win.keyboard.press('End');
   await win.keyboard.type(' Typed after it went.');
-  for (let i = 0; i < 2; i += 1) {
-    await win.keyboard.press('Control+s');
-    await expect(notice()).toContainText('already sent this email');
-    await win.waitForTimeout(500);
-  }
-  expect((await draftsNamed('Taken late')).count).toBe(0);
-  // Send, confirmed each time the editor asks, for as long as it is there.
-  for (let i = 0; i < 3 && (await composer().count()); i += 1) {
-    await composer().locator('[data-c="send"]').click();
-    await win.click('.scrim .buttons button:text-is("Send anyway")');
-    await win.waitForTimeout(1500);
-    expect(await app.evaluate(() => global.__sends.length)).toBe(1);
-    await expect(win.locator('.scrim .dialog')).toContainText('already sent this email');
-    await win.locator('.scrim .dialog .buttons button').click();
-  }
-  await composerGone();
+  // Send, confirmed: nothing goes, and the editor says what became of the email, with the correction still there.
+  await composer().locator('[data-c="send"]').click();
+  await win.click('.scrim .buttons button:text-is("Send anyway")');
+  await expect(win.locator('.scrim .dialog')).toContainText('This email went as it was when you pressed Send');
+  await win.locator('.scrim .dialog .buttons button').click();
+  await expect(composer().locator('.compose-sent')).toContainText("What you changed after that is still here and wasn't sent.");
+  await expect(composer().locator('.editor')).toContainText('One copy only. Typed after it went.');
+  await expect(composer().locator('[data-c="send"]')).toBeDisabled();
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+  // Ctrl+S and Ctrl+Enter store and send nothing.
+  await composer().locator('.editor').click();
+  await win.keyboard.press('Control+s');
+  await expect(notice()).toContainText('This email went as it was when you pressed Send');
+  await win.keyboard.press('Control+Enter');
+  await win.waitForTimeout(1000);
   expect(await app.evaluate(() => global.__sends.length)).toBe(1);
   expect((await draftsNamed('Taken late')).count).toBe(0);
+  // Moving on to another message asks first; Cancel stays.
+  await win.locator('.item').first().click();
+  await expect(win.locator('.scrim .dialog')).toContainText('Keep your changes?');
+  await win.click('.scrim .buttons button:text-is("Cancel")');
+  await expect(composer().locator('.editor')).toContainText('Typed after it went.');
+  // Discard changes asks first too; Cancel stays.
+  await composer().locator('[data-c="leftover-discard"]').click();
+  await expect(win.locator('.scrim .dialog')).toContainText('Discard your changes?');
+  await win.click('.scrim .buttons button:text-is("Cancel")');
+  await expect(composer().locator('.editor')).toContainText('Typed after it went.');
+  expect((await draftsNamed('Taken late')).count).toBe(0);
+  // Keep as new draft: one draft, with the correction, and from here on an editor for any draft.
+  await composer().locator('[data-c="leftover-keep"]').click();
+  await expect(notice()).toContainText('Saved to Drafts');
+  await expect(composer().locator('.compose-sent')).toContainText('The first version of this email already went');
+  await expect(composer().locator('[data-c="send"]')).toBeEnabled();
+  let drafts = await draftsNamed('Taken late');
+  expect(drafts.count).toBe(1);
+  expect(drafts.html).toContain('Typed after it went.');
+  // Moving on now closes it without a question, and Drafts still has it once.
+  await win.locator('.item').first().click();
+  await composerGone();
+  drafts = await draftsNamed('Taken late');
+  expect(drafts.count).toBe(1);
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
   expect(kept()).toEqual([]);
 });
 
+// Final review of #309 (P2): an editor whose email the server took late, and that held nothing new, couldn't be left by
+// moving to another message: moving on saves first, and main refused every save of that email. It now closes, saying
+// the email went or is in Drafts.
+test('an editor in the reading pane whose email the server took late closes when moved away from, holding nothing new', async () => {
+  test.setTimeout(120000);
+  await refusedInPane('Taken late, left alone', 'One copy only.');
+  await holdSendsWithoutUndo();
+  await app.evaluate(() => (global.__semHeldMail.wait = 1000));
+  await composer().locator('[data-c="send"]').click();
+  await expect(win.locator('.scrim .dialog')).toContainText("didn't say whether it took this email");
+  await win.locator('.scrim .dialog .buttons button').click();
+  await app.evaluate(() => global.__sends[0].resolve(true));
+  await expect.poll(kept).toEqual([]);
+  await app.evaluate(() => (global.__allowSaves = true));
+  await win.locator('.item').first().click();
+  await composerGone();
+  await expect(notice()).toContainText('already sent this email');
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+  expect((await draftsNamed('Taken late, left alone')).count).toBe(0);
+});
+
+// The same in a compose window, closed with its own close button, which is what a quit asks too: the question keeps
+// the correction as a new draft, and the window goes.
+test('a compose window whose email the server took late keeps a correction typed since, and its close button asks to keep it as a new draft', async () => {
+  test.setTimeout(120000);
+  await holdSendsWithoutUndo();
+  await app.evaluate(() => (global.__semHeldMail.wait = 1000));
+  const [page] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  await page.waitForSelector('.composer .editor');
+  page.on('dialog', () => {});
+  await page.locator('[data-rinput="to"]').fill('someone@example.com');
+  await page.locator('[data-rinput="to"]').press('Enter');
+  await page.locator('[data-field="subject"]').fill('Corrected in a window');
+  await page.locator('.editor').click();
+  await page.keyboard.type('One copy only.');
+  await page.locator('[data-c="send"]').click();
+  await expect(page.locator('.scrim .dialog')).toContainText("didn't say whether it took this email");
+  await page.locator('.scrim .dialog .buttons button').click();
+  await app.evaluate(() => global.__sends[0].resolve(true));
+  await expect.poll(kept).toEqual([]);
+  await page.locator('.editor').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' Typed after it went.');
+  await page.locator('[data-c="send"]').click();
+  await page.click('.scrim .buttons button:text-is("Send anyway")');
+  await expect(page.locator('.scrim .dialog')).toContainText('This email went as it was when you pressed Send');
+  await page.locator('.scrim .dialog .buttons button').click();
+  await expect(page.locator('.compose-sent')).toContainText("What you changed after that is still here and wasn't sent.");
+  await expect(page.locator('.editor')).toContainText('One copy only. Typed after it went.');
+  await expect(page.locator('[data-c="send"]')).toBeDisabled();
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+  // Delete asks first; Cancel stays.
+  await page.locator('[data-c="discard"]').click();
+  await expect(page.locator('.scrim .dialog')).toContainText('Discard your changes?');
+  await page.click('.scrim .buttons button:text-is("Cancel")');
+  // The window's close button asks; Cancel keeps the window, then Keep as new draft closes it.
+  await closeComposeWindow();
+  await expect(page.locator('.scrim .dialog')).toContainText('Keep your changes?');
+  await page.click('.scrim .buttons button:text-is("Cancel")');
+  await page.waitForTimeout(500);
+  expect(page.isClosed()).toBe(false);
+  await expect(page.locator('.editor')).toContainText('Typed after it went.');
+  expect((await draftsNamed('Corrected in a window')).count).toBe(0);
+  await closeComposeWindow();
+  await expect(page.locator('.scrim .dialog')).toContainText('Keep your changes?');
+  await clickClosing(page, '.scrim .buttons button:text-is("Keep as new draft")');
+  expect(app.windows()).toHaveLength(1);
+  const drafts = await draftsNamed('Corrected in a window');
+  expect(drafts.count).toBe(1);
+  expect(drafts.html).toContain('Typed after it went.');
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+  expect(kept()).toEqual([]);
+});
+
+// The compose window's own close button: its beforeunload decides whether to ask.
+const closeComposeWindow = () =>
+  app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('compose.html')).close());
+
+// Holding nothing new, the editor closes after Send, as before.
 test('a compose window whose email the server took late sends it no more, however often Send is confirmed', async () => {
   test.setTimeout(120000);
   await holdSendsWithoutUndo();

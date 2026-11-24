@@ -2773,7 +2773,7 @@
   },
   "composer.errors.alreadyDone": {
     "message": "Rukoo already sent this email or saved it to Drafts, so it didn't do that again. Check Sent and Drafts.",
-    "description": "Shown under 'Sending failed' (composer.errors.send), or as a notice after a save, when an editor sends or saves an email Rukoo already sent or saved to Drafts, as a window that is still open after the server took the email late. After Send the editor then closes. Also shown in a compose window whose page loaded again after a crash, when Rukoo can't say what became of its email. src/main/main.js (keptError); src/renderer/compose.js (init)"
+    "description": "Shown under 'Sending failed' (composer.errors.send), or as a notice after a save, when an editor sends or saves an email Rukoo already sent or saved to Drafts, as a window that is still open after the server took the email late. The editor then closes, unless it holds changes made since, which composer.leftover.note is about. Also shown in a compose window whose page loaded again after a crash, when Rukoo can't say what became of its email. src/main/main.js (keptError); src/renderer/compose.js (init)"
   },
   "composer.errors.alreadySending": {
     "message": "This email is already on its way, or open in another window. Check Sent before you send it again.",
@@ -2878,6 +2878,42 @@
   "composer.image.small": {
     "message": "Small",
     "description": "composer > image. Button in the bar under a selected image in the text; makes the image small. src/renderer/editor-images.js"
+  },
+  "composer.leftover.closeHelp": {
+    "message": "This email already went as it was when you pressed Send. Keep what you changed after that as a new draft, or discard it.",
+    "description": "Body of the question composer.leftover.closeTitle, asked when you close, move to another message, pop out or quit while the composer holds changes made after its email went (composer.leftover.note). src/renderer/composer.js (keepOrDiscard)"
+  },
+  "composer.leftover.closeTitle": {
+    "message": "Keep your changes?",
+    "description": "Title of the question with Discard changes, Cancel and Keep as new draft, asked when you close, move to another message, pop out or quit while the composer holds changes made after its email went. src/renderer/composer.js (keepOrDiscard)"
+  },
+  "composer.leftover.discard": {
+    "message": "Discard changes",
+    "description": "Button in the composer's notice that its email already went (composer.leftover.note), and in the questions composer.leftover.closeTitle and composer.leftover.discardTitle: closes the composer without the changes made after Send. The email that went stays as it went. src/renderer/composer.js (drawSentNote, keepOrDiscard, discardLeftover)"
+  },
+  "composer.leftover.discardHelp": {
+    "message": "The email already went as it was when you pressed Send. What you changed after that will be lost.",
+    "description": "Body of the question composer.leftover.discardTitle. src/renderer/composer.js (discardLeftover)"
+  },
+  "composer.leftover.discardTitle": {
+    "message": "Discard your changes?",
+    "description": "Title of the question after Discard changes in the composer's notice that its email already went, or after Delete in that composer. src/renderer/composer.js (discardLeftover)"
+  },
+  "composer.leftover.keep": {
+    "message": "Keep as new draft",
+    "description": "Button in the composer's notice that its email already went (composer.leftover.note), and in the question composer.leftover.closeTitle: saves what the composer holds as a new draft of its own in Drafts. Sending it then sends a second email. src/renderer/composer.js (drawSentNote, keepOrDiscard)"
+  },
+  "composer.leftover.kept": {
+    "message": "Your changes are a new draft now. The first version of this email already went, so Send sends a second email.",
+    "description": "Notice above Send in the composer after Keep as new draft (composer.leftover.keep). src/renderer/composer.js (keepAsNew)"
+  },
+  "composer.leftover.note": {
+    "message": "This email went as it was when you pressed Send. What you changed after that is still here and wasn't sent.",
+    "description": "Notice above Send in a composer whose email the mail server took late, after it had said it may have gone (composer.errors.sendUnknown), while the composer holds changes made since. Send is off, with Keep as new draft and Discard changes beside it. Also the body of the dialog composer.leftover.title, and the notice after Ctrl+S then. src/renderer/composer.js (noteLeftover, trySend, saveDraft)"
+  },
+  "composer.leftover.title": {
+    "message": "This email already went",
+    "description": "Title of the dialog after Send in a composer whose email the mail server took late, while the composer holds changes made since. Its body is composer.leftover.note. src/renderer/composer.js (trySend)"
   },
   "composer.link.address": {
     "message": "Address",
