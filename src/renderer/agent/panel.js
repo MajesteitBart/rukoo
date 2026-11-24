@@ -9,8 +9,8 @@ import { shortcutList, shortcutByKey, actionsFor, commandsFor, skillCommands, ME
 import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
 // BLOCKED: the states that keep an agent from taking a message until they are fixed in Settings. The draft's agent
-// and its hold: see the notes above startDraft() in pick.js.
-import { BLOCKED, readyAgents, startDraft, followDraft, keepDraft, pickDraft } from './pick.js';
+// and its hold: see the notes above startDraft() in pick.js. What Send goes to: sendTarget().
+import { BLOCKED, readyAgents, startDraft, followDraft, keepDraft, pickDraft, sendTarget } from './pick.js';
 
 const AGENTS = ['clark', 'claude', 'codex', 'openclaw'];
 // Product names, not translated.
@@ -240,8 +240,6 @@ export function mountAgentPanel(ctx) {
   transcript.addEventListener('copy', (e) => B.copySkills(e));
   const jump = $('[data-ap="jump"]', pane);
   const foot = $('.ap-foot', pane);
-  // Typing in the chat input: the draft keeps the agent on screen (noteWritten()).
-  foot.addEventListener('input', () => noteWritten());
 
   // ---------- agents ----------
 
@@ -319,9 +317,10 @@ export function mountAgentPanel(ctx) {
 
   // A new chat starts on the default agent, or on the first ready one while the default isn't set up, is turned off,
   // isn't installed or has its key refused, so a fresh profile without Hermes starts on Claude Code or Codex when they
-  // are there. Only while the draft is untouched; the default in Settings is not changed.
+  // are there. Only while the draft is untouched; the default in Settings is not changed. What the input holds right
+  // now decides, not the edit that put it there: a draft with anything in it is kept before the rule can move it.
   function followRule() {
-    setDraft(followDraft(P.next, rule()));
+    setDraft(followDraft(P.next, rule(), draftWritten()));
   }
 
   // The draft is done (sent) or New chat starts another: the next one starts on the rule again.
@@ -330,11 +329,16 @@ export function mountAgentPanel(ctx) {
     noteWritten();
   }
 
-  // Text in the input, an attachment or a file on its way: the draft keeps the agent on screen from now on. While a
-  // chat is open the input belongs to that chat; its text becomes the draft's on New chat (freshDraft()).
+  // Whether the draft on screen holds anything, read from the input as it is now: text after trim, an attached email
+  // or file, or a file on its way. While a chat is open the input belongs to that chat, so the draft holds nothing
+  // then; its text becomes the draft's on New chat (freshDraft()).
+  const draftWritten = () => Boolean(!P.conv && chat && (chat.getValue().trim() || hasAttachments() || holding()));
+
+  // Something in the input: the draft keeps the agent on screen from now on, also once the input is empty again.
+  // Called on every edit of the input (its onChange: typing, paste, cut, undo, a picked skill or command, text set by
+  // code), and when attachments or files on their way change (refreshHolding()).
   function noteWritten() {
-    if (P.conv || P.next.hold !== 'auto' || !chat) return;
-    if (chat.getValue().trim() || hasAttachments() || holding()) P.next = keepDraft(P.next);
+    if (P.next.hold === 'auto' && draftWritten()) P.next = keepDraft(P.next);
   }
 
   function redrawAgents() {
@@ -522,7 +526,9 @@ export function mountAgentPanel(ctx) {
         onDollar: () => loadOwnSkills(currentAgent(), true),
         onRemoveContext: () => detach(),
         onAttach: () => pickFiles(),
-        onFiles: (list) => addFiles(list)
+        onFiles: (list) => addFiles(list),
+        // Any edit of the input, however it came (bui.js changed()): the draft keeps the agent on screen.
+        onChange: () => noteWritten()
       }
     );
     foot.append(chat.el);
@@ -1191,9 +1197,12 @@ export function mountAgentPanel(ctx) {
   // From the agent menu under the input, and Chat with on the setup card. The pick stays with this draft.
   function pickAgent(id) {
     if (!agentIds().includes(id)) return;
+    // The open chat's own agent: nothing changes, and the next new draft still starts on the rule.
+    const next = pickDraft(P.next, id, P.conv ? P.conv.agent : null);
+    if (P.conv && next === P.next) return;
     // A model or effort picked for one agent means nothing to another; the permission level does.
     if (id !== currentAgent()) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
-    setDraft(pickDraft(P.next, id));
+    setDraft(next);
     // A conversation stays with its agent; another agent starts a new one about the same email.
     if (P.conv && P.conv.agent !== id) return showEmpty();
     renderHead();
@@ -1203,26 +1212,36 @@ export function mountAgentPanel(ctx) {
 
   // ---------- sending ----------
 
-  async function ensureConversation() {
-    if (P.conv) return P.conv;
+  // The id of the chat a message goes to, as Send captured it (sent, from capture()): the chat it was sent in, or a new
+  // one on the agent Send was pressed for. Main refuses an agent it doesn't have ('removed') rather than pick another.
+  async function ensureConversation(sent) {
+    if (sent.conv) return sent.conv;
     started++;
+    const conv = await api('agentCreate', { agent: sent.agent, ...sent.create });
+    P.draft = { model: null, effort: null };
+    showConversation(conv);
+    // Sent: the next new chat starts on the rule again, not on this one's agent.
+    freshDraft();
+    return conv.id;
+  }
+
+  // What Send goes to, taken once when it is pressed: the agent the input shows, the chat on screen or the draft, and
+  // for a new chat its email or meeting and the model, effort and level the menus show (a level picked for Claude Code
+  // that a Hermes chat can't have stays behind). Null when the input shows another agent than the panel would send
+  // to: the panel draws itself again and nothing goes.
+  function capture() {
+    const target = sendTarget({ shown: chat ? chat.shownAgent() : null, conv: P.conv, draft: P.next });
+    if (!target || target.conv) return target;
     const meeting = contextMeeting();
     const m = meeting ? null : contextEmail();
-    // The level the menu shows: one picked for Claude Code that a Hermes chat can't have stays behind. The agent on
-    // screen, as the draft holds it; main refuses one it doesn't have ('removed') rather than pick another.
-    const conv = await api('agentCreate', {
-      agent: P.next.agent,
+    target.create = {
       message: m ? messageRef(m) : null,
       meeting: meeting ? { id: meeting.id, title: meeting.title || '', eventId: meeting.eventId || null } : null,
       model: P.draft.model,
       effort: P.draft.effort,
       permission: ownPermission()
-    });
-    P.draft = { model: null, effort: null };
-    showConversation(conv);
-    // Sent: the next new chat starts on the rule again, not on this one's agent.
-    freshDraft();
-    return P.conv;
+    };
+    return target;
   }
 
   // skill: the name of a skill to start. Main writes that message from the skill itself.
@@ -1246,26 +1265,35 @@ export function mountAgentPanel(ctx) {
   function send(text, action = null, skill = null, mode = null) {
     const body = String(text || '').trim();
     if (sending || holding() || (!body && !action && !skill && !hasAttachments())) return false;
+    const sent = capture();
+    if (!sent) {
+      redrawAgents();
+      return false;
+    }
     sending = true;
     clearTurnError();
+    // A draft being sent is touched: it keeps its agent on screen while the chat is made.
+    if (!sent.conv) setDraft(keepDraft(P.next));
     const attached = P.attach;
     P.attach = { files: [], emails: [] };
     showAttachments();
     const busy = Boolean(P.conv && P.conv.status === 'running');
-    deliver({ body, action, skill, attached, mode: busy ? (action || skill ? 'queue' : mode || 'steer') : null }).finally(() => (sending = false));
+    deliver(sent, { body, action, skill, attached, mode: busy ? (action || skill ? 'queue' : mode || 'steer') : null }).finally(() => (sending = false));
     return true;
   }
 
-  async function deliver({ body, action, skill, attached, mode = null }) {
+  // sent: what Send captured (capture()). The chat it goes to and the agent an error names go by it, not by the panel
+  // as it is by the time main answers.
+  async function deliver(sent, { body, action, skill, attached, mode = null }) {
     // Not sent: the chips come back, before anything the user attached meanwhile.
     const restore = () => {
       P.attach = { files: [...attached.files, ...P.attach.files], emails: [...attached.emails, ...P.attach.emails] };
       showAttachments();
     };
     try {
-      const conv = await ensureConversation();
+      const id = await ensureConversation(sent);
       const message = action ? { text: action.prompt, action: action.action, display: action.label } : skill ? { skill } : { text: body };
-      await api('agentSend', conv.id, { ...message, files: attached.files.map((f) => f.id), emails: attached.emails.map((m) => m.id), ...(mode ? { mode } : {}) });
+      await api('agentSend', id, { ...message, files: attached.files.map((f) => f.id), emails: attached.emails.map((m) => m.id), ...(mode ? { mode } : {}) });
       follow(true);
     } catch (err) {
       const why = String((err && err.message) || '');
@@ -1289,7 +1317,7 @@ export function mountAgentPanel(ctx) {
         return;
       }
       if (!action && !skill && chat && !chat.getValue()) chat.setValue(body);
-      showError(err);
+      showError(err, sent.agent);
       // The text is back in the input: the draft keeps the agent it was written for.
       noteWritten();
       // Main no longer has the draft's agent: the draft stays as it is, and the panel catches up with the agent list,
@@ -1330,8 +1358,9 @@ export function mountAgentPanel(ctx) {
     return send(text, null, null, mode);
   }
 
-  function showError(err) {
-    const { text, detail } = describeError(err, agentName(currentAgent()));
+  // agent: whose error it is. A failed send names the agent Send went to, whatever is on screen by then.
+  function showError(err, agent = currentAgent()) {
+    const { text, detail } = describeError(err, agentName(agent));
     toast(detail ? `${text} (${detail})` : text, 6000);
   }
 
@@ -1961,7 +1990,7 @@ export function mountAgentPanel(ctx) {
     const title = t(`agent.empty.${titleKey}`, { name });
     // The input is hidden while the agent can't take a message: what the person wrote is still there, and the card
     // says so.
-    const kept = blocked && !P.unavailable && Boolean((chat && chat.getValue().trim()) || hasAttachments() || holding());
+    const kept = blocked && !P.unavailable && draftWritten();
     const body = removed
       ? t('agent.empty.removedBody', { name })
       : blocked

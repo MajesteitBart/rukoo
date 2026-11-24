@@ -1674,11 +1674,20 @@ export function chatComposer(opts = {}, handlers = {}) {
     placeSelection(Math.min(state.caret, value().length));
   }
 
+  // What the input holds changed. Every edit ends here, whatever put it there: typing and an IME (settle()), a paste
+  // or cut (insert()), undo and redo, a picked skill or command, and text set by code (setValue()) or cleared after
+  // Send. Pastes and undo cancel the browser's own edit and fire no input event, so the owner hears of edits from
+  // this, not from the DOM.
+  function changed() {
+    if (handlers.onChange) handlers.onChange();
+  }
+
   // ---------- undo ----------
 
   // Adds what the input holds now as a step. Keys typed in a row, without a pause and from where the last ones
   // ended, are one step: moving the caret starts a new one, as in a textarea.
   function record(type = '') {
+    changed();
     const snap = { parts: current(), caret: caret() };
     const top = history.list[history.at];
     const from = history.from;
@@ -1706,6 +1715,7 @@ export function chatComposer(opts = {}, handlers = {}) {
     history.list = [{ parts: current(), caret: state.caret }];
     history.at = 0;
     history.type = '';
+    changed();
   }
   // step -1 undoes, 1 redoes.
   function undo(step) {
@@ -1719,6 +1729,7 @@ export function chatComposer(opts = {}, handlers = {}) {
     state.dismissed = false;
     refreshMenu();
     updateSend();
+    changed();
   }
 
   // After the user changed the text: a $name of a skill with a space or punctuation after it becomes a chip, a line
@@ -2128,6 +2139,11 @@ export function chatComposer(opts = {}, handlers = {}) {
     },
     getValue() {
       return value();
+    },
+    // The id of the agent the agent menu shows, as drawn: what Send was pressed for.
+    shownAgent() {
+      const a = state.agents.find((x) => x.id === state.agentId) || state.agents[0];
+      return a ? a.id : null;
     },
     setRunning(running) {
       state.running = Boolean(running);

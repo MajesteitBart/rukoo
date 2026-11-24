@@ -1,7 +1,7 @@
 'use strict';
 
 // The agent of the chat being written and how it holds it (startDraft, followDraft, keepDraft, pickDraft in
-// src/renderer/agent/pick.js), and what Set up focuses in Settings (setupTarget).
+// src/renderer/agent/pick.js), what Send goes to (sendTarget), and what Set up focuses in Settings (setupTarget).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -56,6 +56,35 @@ test('a draft with something in it keeps its agent when it becomes blocked or th
   assert.equal(followDraft(d, rule({ codex: 'ready' }, 'clark', ['clark', 'codex'])), d);
 });
 
+// A paste, a drop, an undo or text set by code fires no input event, so a draft that got its text that way was still
+// 'auto' when a status update came in, and moved to Codex. The status update now reads what the input holds.
+test('a draft that holds anything is kept by the status update itself, whatever put it there', async () => {
+  const { startDraft, followDraft } = await pick;
+  const ready = rule({ clark: 'unconfigured', claude: 'ready', codex: 'ready' });
+  const missing = rule({ clark: 'unconfigured', claude: 'missing', codex: 'ready' });
+  // Pasted into an untouched Claude draft: still 'auto', since no edit told the panel.
+  const pasted = startDraft(ready, 'clark');
+  assert.deepEqual(pasted, { agent: 'claude', hold: 'auto' });
+  // Claude Code goes missing. The panel passes what the input holds: kept on Claude, not moved to Codex.
+  assert.deepEqual(followDraft(pasted, missing, true), { agent: 'claude', hold: 'kept' });
+  // With nothing in it, the same update moves it.
+  assert.deepEqual(followDraft(pasted, missing, false), { agent: 'codex', hold: 'auto' });
+  // A new default with something in the input: kept too.
+  assert.deepEqual(followDraft(pasted, rule({ claude: 'ready', codex: 'ready' }, 'codex'), true), { agent: 'claude', hold: 'kept' });
+});
+
+test('a draft the person emptied again stays on its agent; only a fresh draft follows the rule', async () => {
+  const { startDraft, followDraft } = await pick;
+  const ready = rule({ clark: 'unconfigured', claude: 'ready', codex: 'ready' });
+  const missing = rule({ clark: 'unconfigured', claude: 'missing', codex: 'ready' });
+  // Written in, then emptied: the input holds nothing now, and the draft stays on Claude Code.
+  const d = followDraft(startDraft(ready, 'clark'), ready, true);
+  assert.equal(followDraft(d, missing, false), d);
+  assert.equal(followDraft(d, rule({ claude: 'ready', codex: 'ready' }, 'codex'), false), d);
+  // Send or New chat: the next draft starts on the rule.
+  assert.deepEqual(startDraft(missing, d.agent), { agent: 'codex', hold: 'auto' });
+});
+
 test('a pick keeps its agent across config and status responses, and a fresh draft starts on the rule again', async () => {
   const { startDraft, followDraft, pickDraft } = await pick;
   const blocked = rule({ clark: 'unconfigured', claude: 'ready', codex: 'ready' });
@@ -72,6 +101,30 @@ test('a pick keeps its agent across config and status responses, and a fresh dra
   assert.deepEqual(pickDraft(d, 'clark'), { agent: 'clark', hold: 'kept' });
   // Sent, or New chat: the next draft starts on the rule, not on the pick.
   assert.deepEqual(startDraft(blocked, d.agent), { agent: 'claude', hold: 'auto' });
+});
+
+// In an open Codex chat, choosing the checked Codex row pinned the next new draft to Codex.
+test('choosing the agent an open chat already has changes nothing; another agent is a pick for a new chat', async () => {
+  const { startDraft, pickDraft } = await pick;
+  const d = startDraft(rule({ clark: 'ready' }), 'clark');
+  assert.equal(pickDraft(d, 'codex', 'codex'), d);
+  assert.deepEqual(d, { agent: 'clark', hold: 'auto' });
+  // Another agent than the open chat's: a new chat with that one, kept.
+  assert.deepEqual(pickDraft(d, 'claude', 'codex'), { agent: 'claude', hold: 'kept' });
+  // Without an open chat, picking the draft's own agent is still a pick: it holds.
+  assert.deepEqual(pickDraft(d, 'clark'), { agent: 'clark', hold: 'kept' });
+});
+
+test('Send takes the agent the input shows, with its chat, or nothing when they disagree', async () => {
+  const { sendTarget } = await pick;
+  const draft = { agent: 'claude', hold: 'kept' };
+  assert.deepEqual(sendTarget({ shown: 'claude', draft }), { agent: 'claude', conv: null });
+  // A chat on screen: its own agent and id.
+  assert.deepEqual(sendTarget({ shown: 'codex', conv: { id: 'c1', agent: 'codex' }, draft }), { agent: 'codex', conv: 'c1' });
+  // The draft moved but the input still shows the agent before: nothing goes.
+  assert.equal(sendTarget({ shown: 'claude', draft: { ...draft, agent: 'codex' } }), null);
+  assert.equal(sendTarget({ shown: 'claude', conv: { id: 'c1', agent: 'codex' }, draft }), null);
+  assert.equal(sendTarget({ shown: null, draft }), null);
 });
 
 test('Set up focuses the control for the state the agent is in', async () => {

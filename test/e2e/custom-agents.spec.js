@@ -163,6 +163,79 @@ test('a chat with an agent removed before Send reached main is refused, never mo
   await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['claude']);
 });
 
+const agentHead = () => win.locator('.agentpane .ap-agent');
+const pickAgentRow = async (name) => {
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: new RegExp(`^${name}$`) }) }).click();
+  await expect(agentHead()).toHaveText(name);
+};
+const userMessages = () => app.evaluate(() => global.__semAgents.list().map((c) => [c.agent, global.__semAgents.conversations.get(c.id).items.filter((i) => i.type === 'user').map((i) => i.text)]));
+
+// Send takes its agent once: the chat is asked for Booper, and the error names Booper, also when the person has opened
+// a Codex chat by the time main answers.
+test('a refusal that comes after the person opened another chat names the agent Send went to', async () => {
+  await launch();
+  const id = await win.evaluate(() => window.mail.call('agentAddCustom', 'booper').then((r) => r.id));
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  await win.keyboard.press('Control+j');
+  // A saved Codex chat, to open from the list while Booper's chat is being made.
+  await pickAgentRow('Codex');
+  await input().fill('Hello Codex');
+  await input().press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['codex']);
+  await win.click('.agentpane [data-ap="new"]');
+  await pickAgentRow('Booper');
+  await input().fill('Hello Booper');
+  // Main holds the new chat until the test lets it answer, and Booper is removed meanwhile without telling the window.
+  await app.evaluate((_e, x) => {
+    const hub = global.__semAgents;
+    const create = hub.create.bind(hub);
+    global.__asked = [];
+    global.__create = new Promise((resolve) => (global.__answerCreate = resolve));
+    hub.create = (req) => {
+      global.__asked.push(req.agent);
+      return global.__create.then(() => create(req));
+    };
+    hub.cfg.removeCustom(x);
+  }, id);
+  await input().press('Enter');
+  await expect.poll(() => input().evaluate((el) => el.value)).toBe('');
+  // The person opens the Codex chat before main answers.
+  await win.click('.agentpane [data-ap="history"]');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Codex' }).click();
+  await expect(agentHead()).toHaveText('Codex');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Codex']);
+  await app.evaluate(() => global.__answerCreate());
+  await expect(win.locator('#toast')).toContainText("Booper is no longer in Settings, so your message wasn't sent. Pick another agent.");
+  expect(await app.evaluate(() => global.__asked)).toEqual([id]);
+  expect(await userMessages()).toEqual([['codex', ['Hello Codex']]]);
+});
+
+// Text written in a chat whose custom agent is then removed is never out of reach: the input of that chat is off, and
+// picking another agent brings the text into a new chat with that agent, where it can be sent.
+test('a follow-up written in a chat whose agent is then removed comes along when the person picks another agent', async () => {
+  await launch();
+  const id = await win.evaluate(() => window.mail.call('agentAddCustom', 'booper').then((r) => r.id));
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  await win.keyboard.press('Control+j');
+  await pickAgentRow('Booper');
+  await input().fill('Hello Booper');
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Booper']);
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual([id]);
+  await input().fill('A follow-up for Booper');
+  // Removed in Settings while the chat is open.
+  await win.evaluate((x) => window.mail.call('agentRemoveCustom', x), id);
+  await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText('Booper was removed in Settings.');
+  // Another agent from the menu: a new chat about the same email, with the follow-up in its input.
+  await pickAgentRow('Claude');
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await expect(input()).toBeEditable();
+  expect(await input().evaluate((el) => el.value)).toBe('A follow-up for Booper');
+  await input().press('Enter');
+  await expect.poll(async () => (await userMessages()).sort()).toEqual([['claude', ['A follow-up for Booper']], [id, ['Hello Booper']]]);
+});
+
 test('an OpenAI-compatible agent: its own toggles, and the setup most MCP clients take', async () => {
   await launch();
   await openAgents();

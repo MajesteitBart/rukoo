@@ -41,9 +41,10 @@ export function startingAgent({ defaultAgent, agents, status } = {}) {
 // The chat being written, before it is sent, has an agent and a hold on it ({agent, hold}):
 // - 'auto': nothing typed, attached or picked yet. The rule above decides, and the agent may move as the config and
 //   the statuses come in. Nobody has written anything for it, so moving it sends nothing anywhere.
-// - 'kept': the person typed, attached an email or file, has a file on its way, or picked the agent (agent menu,
-//   Chat with). The agent stays for as long as the draft does, also when it stops taking messages or the default
-//   changes in Settings: the panel then says so and the person chooses. A message only goes to the agent on screen.
+// - 'kept': the input held something (text, an attached email or file, a file on its way), however it got there, or
+//   the person picked the agent (agent menu, Chat with). The agent stays for as long as the draft does, also when the
+//   person empties the input again, when the agent stops taking messages or when the default changes in Settings: the
+//   panel then says so and the person chooses. A message only goes to the agent on screen.
 // A draft ends when it is sent or New chat starts another; the next starts on the rule again (startDraft()).
 //
 // rule: {defaultAgent, agents, status} for startingAgent(), or null while the config isn't in.
@@ -59,21 +60,38 @@ export function startDraft(rule, current) {
   return { agent: ruleAgent(rule) || current, hold: 'auto' };
 }
 
-// The config or the statuses changed: an untouched draft follows the rule, a kept one stays where it is.
-export function followDraft(draft, rule) {
-  if (draft.hold !== 'auto') return draft;
-  const id = ruleAgent(rule);
-  return id && id !== draft.agent ? { agent: id, hold: 'auto' } : draft;
-}
-
 // The draft has something in it (text, an attachment, a file on its way): it keeps the agent it shows.
 export function keepDraft(draft) {
   return draft.hold === 'auto' ? { agent: draft.agent, hold: 'kept' } : draft;
 }
 
-// The person picked an agent for this draft.
-export function pickDraft(draft, id) {
+// The config or the statuses changed: an untouched draft follows the rule, a kept one stays where it is. written:
+// whether the input holds anything right now, as the panel reads it at this moment. The content decides, not the edit
+// that put it there, so text from a paste, a drop, an undo or code keeps the draft like typed text does.
+export function followDraft(draft, rule, written = false) {
+  if (written) return keepDraft(draft);
+  if (draft.hold !== 'auto') return draft;
+  const id = ruleAgent(rule);
+  return id && id !== draft.agent ? { agent: id, hold: 'auto' } : draft;
+}
+
+// The person picked an agent for this draft. In an open chat (convAgent), picking that chat's own agent changes
+// nothing: it is the agent on screen already, and the next new draft still starts on the rule.
+export function pickDraft(draft, id, convAgent = null) {
+  if (convAgent && convAgent === id) return draft;
   return draft.agent === id && draft.hold === 'kept' ? draft : { agent: id, hold: 'kept' };
+}
+
+// ---------- sending ----------
+
+// What Send goes to, taken once when it is pressed: the agent the input shows (shown), with the chat on screen (conv)
+// or else the draft. Null when the two disagree: the panel then draws itself again and sends nothing, so the person
+// sees the agent before anything goes. Creating the chat and the error's name use this value, not the panel as it is
+// by the time main answers.
+export function sendTarget({ shown, conv = null, draft }) {
+  const agent = conv ? conv.agent : draft && draft.agent;
+  if (!agent || shown !== agent) return null;
+  return { agent, conv: conv ? conv.id : null };
 }
 
 // ---------- Set up ----------
