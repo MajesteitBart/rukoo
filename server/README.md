@@ -393,7 +393,9 @@ Cloudflare keeps that 30-day history whether you use it or not, so a message som
 
 ## The server Rukoo uses
 
-The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code until the apps ask for the emailed code at sign-up; then `SIGNUPS` there becomes `"verified"`. Its codes go out from `account@bvdm.ai` once the `RESEND_API_KEY` secret is set. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
+The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code until the apps ask for the emailed code at sign-up; then `SIGNUPS` there becomes `"verified"`. Its codes go out from `account@bvdm.ai` once the `RESEND_API_KEY` secret is set. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
+
+A change that reaches `main` deploys it. `.github/workflows/server.yml` runs when a merge touches `server/src/`, `server/package.json`, `server/package-lock.json` or `server/wrangler.jsonc`: it runs the tests again, deploys with `wrangler deploy --env bvdm`, and then checks that `GET /v1/info` answers on rukoo.io and rukoo-account.bvdm.ai. A failing test stops the deploy. The job reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the GitHub environment `rukoo.io`, the one the website's deploy uses, which only `main` may use. Run the workflow by hand on `main` to deploy again without a change. A deploy keeps the Worker's secrets, and it applies new `migrations` entries, which can't be taken back, so a merge that adds one is a migration of the live server. `npm run deploy -- --env bvdm` deploys by hand, after `wrangler login` or with those two variables set.
 
 The switch to `"verified"` changes more than `SIGNUPS`. In the same deploy:
 
