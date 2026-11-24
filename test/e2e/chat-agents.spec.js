@@ -192,7 +192,8 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   await ask.locator('.buttons button', { hasText: 'Go back' }).click();
   await step.locator('[data-copy-config]').click();
   await expect(toast()).toHaveText('Config copied');
-  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(await step.locator('[name="config"]').inputValue());
+  // Windows' clipboard gives the lines back with CRLF.
+  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText().replace(/\r\n/g, '\n'))).toBe(await step.locator('[name="config"]').inputValue());
   await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
   await step.locator('.buttons button').last().click();
 
