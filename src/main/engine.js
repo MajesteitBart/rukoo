@@ -15,6 +15,7 @@ const invite = require('./calendar/invite');
 const util = require('./mailutil');
 const { cleanSignatureHtml, signatureText } = require('./signature');
 const { normalizeZoom } = require('./zoom');
+const { normalizeHidden } = require('./modes');
 
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
@@ -72,6 +73,8 @@ const DEFAULT_SETTINGS = {
   sort: 'date-desc',
   syncInterval: 5,
   hiddenViews: [],
+  // Settings > General > Tabs: the modes turned off, of 'mail', 'calendar', 'meeting' and 'chat' (modes.js).
+  hiddenModes: [],
   vips: [],
   spam: [],
   defaultAccountId: null,
@@ -130,6 +133,7 @@ function normalizeSettings(s) {
   s.undoSend = UNDO_SEND_SECONDS.includes(s.undoSend) ? s.undoSend : UNDO_SEND_DEFAULT;
   s.newMailSound = s.newMailSound === true;
   s.chatNotifications = s.chatNotifications !== false;
+  s.hiddenModes = normalizeHidden(s.hiddenModes);
   s.chatAppsTip = ['show', 'done'].includes(s.chatAppsTip) ? s.chatAppsTip : '';
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;

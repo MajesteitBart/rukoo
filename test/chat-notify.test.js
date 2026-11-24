@@ -164,6 +164,15 @@ test('mute, the setting and the room on screen keep alerts away, also afterwards
   assert.deepEqual(svc.notices, []);
   assert.equal(svc.state().notifications, true);
 
+  // Chat hidden in Settings > General > Tabs: no alert, and none for that message once Chat shows again.
+  settings.hiddenModes = ['chat'];
+  await server.post(olga, ws.id, dm, 'verborgen');
+  await svc.sync(ws.id);
+  assert.deepEqual(svc.notices, [], 'a hidden Chat alerts nothing');
+  settings.hiddenModes = [];
+  await svc.sync(ws.id);
+  assert.deepEqual(svc.notices, [], 'turning Chat on again brings back no old alert');
+
   // On screen in the focused window.
   svc.setFocused(true);
   svc.setActive({ ws: ws.id, room: dm });

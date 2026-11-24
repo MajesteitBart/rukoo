@@ -563,6 +563,14 @@ body.no-accounts .titlebar-modes,
 body:has(.page) .titlebar-modes {
   display: none;
 }
+/* Settings > General > Tabs turned a mode off (app.js modesChanged): its ways in from the other modes go with its
+ * tab. Meet: the recording clock in the title bar and Record on a calendar event. Calendar: Open in calendar on an
+ * invitation's card. */
+body.hides-meeting .rec-indicator,
+body.hides-meeting .cal-record,
+body.hides-calendar [data-invite='open'] {
+  display: none !important;
+}
 .mode-tabs {
   -webkit-app-region: no-drag;
   position: relative;
@@ -3355,6 +3363,17 @@ body:has(.composer .composer-bar) .toast {
 }
 .row:not(.static):hover {
   background: var(--hover);
+}
+/* A switch that can't change now, such as the last tab that shows in Settings > General > Tabs: it keeps its state,
+ * dimmed, and the help under it says why. */
+.row:disabled {
+  cursor: default;
+}
+.row:disabled:hover {
+  background: none;
+}
+.row:disabled .switch {
+  opacity: 0.45;
 }
 .row + .row::before {
   content: '';

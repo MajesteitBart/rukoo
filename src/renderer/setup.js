@@ -24,7 +24,9 @@ export function setupChatChanged() {
 
 // first: the first-run page, without a way back. chat: open straight on team chat's steps, 'link' or 'account', as
 // Chat's signed-out state does; back closes the page then. added(): after a mail account was added here.
-export function openSetup(ctx, { first = false, chat = null, added = null } = {}) {
+// offerChatOnly: opened from a mode tab by someone who uses team chat without a mail account, so the page also offers
+// to turn Mail, Calendar and Meet off instead.
+export function openSetup(ctx, { first = false, chat = null, added = null, offerChatOnly = false } = {}) {
   // Without a mail account and outside Chat, the page that replaces a first-run one is first-run too: nothing behind
   // it to go back to.
   if (current && current.first) first = true;
@@ -267,6 +269,7 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
         </div>
         <button class="setup-demo" data-s="demo" data-i18n="setup.demo.action">${esc(t('setup.demo.action'))}</button>
         ${ctx.S.data.googleAvailable ? '' : `<button class="setup-demo" style="margin-top:4px" data-s="import-google" data-i18n="setup.google.import">${esc(t('setup.google.import'))}</button>`}
+        ${offerChatOnly ? `<button class="setup-demo" style="margin-top:4px" data-s="chat-only" data-i18n="setup.chatOnly.action">${esc(t('setup.chatOnly.action'))}</button>` : ''}
         <section class="setup-chat" data-setup-chat aria-labelledby="setup-chat-title" hidden></section>
       </div>`;
     renderChatOffer();
@@ -509,6 +512,20 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
           b.disabled = true;
           const acc = await api('addAccount', { type: 'demo' });
           done(acc);
+        } catch (ex) {
+          b.disabled = false;
+          toast(ex.message, 5000);
+        }
+        return;
+      // Team chat without a mail account: Mail, Calendar and Meet go (Settings > General > Tabs), so their tabs stop
+      // leading here.
+      case 'chat-only':
+        try {
+          b.disabled = true;
+          await api('updateSettings', { hiddenModes: ['mail', 'calendar', 'meeting'] });
+          close();
+          await ctx.refresh();
+          toast(t('setup.chatOnly.done'), 6000);
         } catch (ex) {
           b.disabled = false;
           toast(ex.message, 5000);

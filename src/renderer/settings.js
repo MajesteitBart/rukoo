@@ -22,6 +22,10 @@ import { meetingSettingsPages, MEETING_VIEWS } from './meeting-settings.js';
 import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
 import { videoPages, VIDEO_VIEWS } from './video-settings.js';
 import { SCHEMES, ACTIONS as KEY_ACTIONS, bindings, display, keyLabel } from './keymap.js';
+import { MODES, visibleModes, canHide, withMode } from './modes.js';
+
+// Settings > General > Tabs: each mode's switch carries the name its tab has.
+const MODE_LABELS = { mail: 'calendar.mode.mail', calendar: 'calendar.mode.calendar', meeting: 'meeting.mode.label', chat: 'chat.mode.label' };
 
 // Settings > Keyboard shortcuts: the schemes by the name of their app (keymap.js).
 const SCHEME_NAMES = { rukoo: 'Rukoo', gmail: 'Gmail', outlook: 'Outlook', apple: 'Apple Mail', thunderbird: 'Thunderbird' };
@@ -353,8 +357,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   document.addEventListener('keydown', onKey, true);
 
   // preview: markup shown under the value, such as a signature as it will be sent.
-  const row = ({ title, desc, value, preview, action, toggle, sep, cls = '', lead = '' }) => `
-    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}>
+  // disabled: a switch that can't change now, such as the last tab that shows.
+  const row = ({ title, desc, value, preview, action, toggle, sep, cls = '', lead = '', disabled = false }) => `
+    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}${disabled ? ' disabled' : ''}>
       ${lead}
       <div class="text"><div class="title ${cls.includes('danger') ? 'danger' : ''}">${title}</div>
       ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}${preview || ''}</div>
@@ -1145,7 +1150,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || MEETING_VIEWS.includes(view) ? meetingPage.prepare() : null,
       view === 'main' || VIDEO_VIEWS.includes(view) ? videoPage.prepare(view) : null,
       view === 'main' ? api('notificationState').then((n) => (notices.supported = n.supported)).catch(() => null) : null,
-      view === 'main'
+      view === 'main' || view === 'tabs'
         ? api('chatState')
             .then((c) => (chatOn = Boolean(c && c.available)))
             .catch(() => (chatOn = false))
@@ -1192,6 +1197,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         <div class="settings-group-title" data-i18n="settings.groups.general">${esc(t('settings.groups.general'))}</div>
         <div class="card">
           ${row({ title: t('settings.general.language'), desc: t('settings.general.languageHelp'), value: languages.find((language) => language.code === s.language)?.name || 'English', action: 'language' })}
+          ${row({ title: t('settings.general.tabs'), desc: esc(t('settings.general.tabsHelp', { modes: new Intl.ListFormat(getLocale(), { type: 'conjunction' }).format(MODES.filter((m) => m !== 'chat' || chatOn).map((m) => t(MODE_LABELS[m]))) })), action: 'tabs' })}
           ${row({ title: t('settings.general.folders'), desc: t('settings.general.foldersHelp'), action: 'folders' })}
           ${categoriesPage.rowHtml()}
           ${row({ title: t('settings.general.density'), value: labelOf(DENSITY, s.density), action: 'density' })}
@@ -1381,6 +1387,24 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       body = `<div class="settings-group-title" data-i18n="settings.folders.show">${esc(t('settings.folders.show'))}</div><div class="card">${[...hideableViews(), ...folderRows]
         .map(([id, label]) => row({ title: esc(label), action: `hide:${id}`, toggle: !hidden.has(id) }))
         .join('')}</div>`;
+    }
+
+    // A switch per mode, showing whether its tab shows now (modes.js visibleModes). Chat's switch is here while team
+    // chat is available, or while it is turned off, so it can come back. The last tab that shows can't go.
+    if (view === 'tabs') {
+      title = t('settings.general.tabs');
+      const hidden = s.hiddenModes || [];
+      const shown = visibleModes(hidden, chatOn);
+      const rows = MODES.filter((m) => m !== 'chat' || chatOn || hidden.includes('chat')).map((m) => {
+        const on = m === 'chat' && !chatOn ? !hidden.includes('chat') : shown.includes(m);
+        // Mail can show although it is turned off, when nothing else can (visibleModes): its switch stays put too.
+        const locked = on && (hidden.includes(m) || !canHide(hidden, m, chatOn));
+        const desc = locked ? t('settings.modes.lastOn') : m === 'chat' && !chatOn ? t('settings.modes.chatAway') : '';
+        return row({ title: esc(t(MODE_LABELS[m])), desc: esc(desc), action: `mode:${m}`, toggle: on, disabled: locked });
+      });
+      body = `<div class="settings-group-title" data-i18n="settings.modes.show">${esc(t('settings.modes.show'))}</div>
+        <div class="card" data-modes>${rows.join('')}</div>
+        <p class="settings-text" data-i18n="settings.modes.help">${esc(t('settings.modes.help'))}</p>`;
     }
 
     if (view === 'spam' || view === 'vips') {
@@ -1588,6 +1612,13 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       if (quick.length >= 4) return toast(t('settings.swipe.quickMax'));
       return set({ quickActions: QUICK.filter((x) => x === id || quick.includes(x)) });
     }
+    // Settings > General > Tabs: the window that shows a mode turned off leaves it once main has the change (app.js
+    // leaveHiddenMode).
+    if (a.startsWith('mode:')) {
+      const on = Boolean(b.querySelector('.switch.on'));
+      const next = withMode(s.hiddenModes || [], a.slice(5), on, chatOn);
+      return next ? set({ hiddenModes: next }) : undefined;
+    }
     if (a.startsWith('hide:')) {
       const id = a.slice(5);
       const hidden = new Set(s.hiddenViews || []);
@@ -1643,6 +1674,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         return;
       }
       case 'folders':
+      case 'tabs':
       case 'spam':
       case 'vips':
       case 'keyboard':

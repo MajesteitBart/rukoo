@@ -33,6 +33,7 @@ const { oneClickUnsubscribe } = require('./net');
 const { mailImage } = require('./mailimage');
 const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
+const { modeHidden } = require('./modes');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
@@ -270,8 +271,24 @@ function syncOnReturn() {
   engine.syncStale(RETURN_SYNC_AFTER);
 }
 
+// Settings > General > Tabs turned this mode off (modes.js). A hidden mode keeps its accounts, data and sync, and the
+// agents keep its tools; it only stops showing: no notifications, sounds or badges, and no way in from outside.
+function modeOff(mode) {
+  return Boolean(engine) && modeHidden(engine.settings.hiddenModes, mode, Boolean(workspaces && workspaces.available));
+}
+
+// A way in to a hidden mode from outside the window (a mailto: link): the main window comes forward and says the mode
+// is off, with a button that turns it on (app.js modeOffNotice). The window takes the notice when told and after its
+// first state, so a link Rukoo starts with isn't lost when the message comes before the window listens.
+let modeOffWaiting = null;
+function offerHiddenMode(mode) {
+  modeOffWaiting = mode;
+  showWindow();
+  send('mode-off');
+}
+
 function badgeCount() {
-  if (engine.settings.badge === 'none') return 0;
+  if (engine.settings.badge === 'none' || modeOff('mail')) return 0;
   if (engine.settings.badge === 'unread') return engine.unreadCount();
   // Read, moved or put in a category Inbox doesn't show, new mail stops counting.
   return engine.newCount(newSinceFocus);
@@ -296,6 +313,8 @@ function updateTray() {
       actions: {
         open: showWindow,
         compose: () => openComposeWindow({ mode: 'new' }),
+        // New email leaves the menu while Mail is hidden.
+        mail: () => !modeOff('mail'),
         sync: () => engine.syncAll().catch(() => {}),
         quit: () => app.quit()
       }
@@ -306,10 +325,10 @@ function updateTray() {
   if (process.env.SEM_HIDDEN) global.__semTray = tray;
 }
 
-// The tooltip counts unread mail. The icon gets a dot while the taskbar badge has a count, because the badge
-// isn't visible while the window is hidden.
+// The tooltip counts unread mail, while Mail shows. The icon gets a dot while the taskbar badge has a count, because
+// the badge isn't visible while the window is hidden.
 function refreshTray(badge = badgeCount()) {
-  if (tray) tray.update({ unread: engine.unreadCount(), dot: badge > 0 });
+  if (tray) tray.update({ unread: modeOff('mail') ? 0 : engine.unreadCount(), dot: badge > 0 });
 }
 
 // Removed before Rukoo exits; an icon left behind stays in the notification area until the mouse passes over it.
@@ -322,7 +341,12 @@ function destroyTray() {
 // The badge counts first. The notifications get the whole batch: they skip the categories muted on this computer, and
 // mail Jev is about to sort waits for its category (categories/notices.js). The main window's cue and sound for new
 // mail go the same way, so a muted category stays quiet in the window too.
+// With Mail hidden, new mail gets none of it: no count, notification, toast or sound.
 function notify(messages) {
+  if (modeOff('mail')) {
+    if (process.env.SEM_HIDDEN) global.__semHiddenMail = (global.__semHiddenMail || 0) + messages.length;
+    return;
+  }
   for (const m of messages) newSinceFocus.add(m.id);
   refreshBadge();
   if (screenRecording()) {
@@ -357,6 +381,8 @@ function categoryNow(m) {
 // started. messages: the emails these notices are for. The main window hears of them too (app.js onNewMail): its list
 // shows them, or a toast does while the window is in front, where the desktop notification stays away.
 function showMailNotices(list, messages = []) {
+  // Mail was hidden while Jev sorted these.
+  if (modeOff('mail')) return;
   if (screenRecording()) {
     heldNotices(list.length);
     return;
@@ -417,16 +443,18 @@ function calendarNotice({ title, body, open }) {
   n.show();
 }
 
-// Calendar reminders: always a desktop notification, also while Rukoo is focused (design 2.8).
+// Calendar reminders: always a desktop notification, also while Rukoo is focused (design 2.8). None while Calendar is
+// hidden.
 function showReminders(list) {
-  if (list.length) calendarNotice(reminderNotice(list));
+  if (list.length && !modeOff('calendar')) calendarNotice(reminderNotice(list));
 }
 
 // Booking news (design 1.2): a toast while the main window is focused, a desktop notification otherwise. open:
 // { id, start } for an event, { request } for a request, { start } for the day a cancelled booking was on. The toast
 // is inside Rukoo's window, which a meeting keeps out of the recording; the desktop notification waits while the
-// screen records.
+// screen records. None while Calendar is hidden.
 function showBookingNotification({ title, body, open }) {
+  if (modeOff('calendar')) return;
   if (win && !win.isDestroyed() && win.isFocused() && !process.env.SEM_HIDDEN) {
     send('toast', String(body).slice(0, 200));
     return;
@@ -541,6 +569,8 @@ function openChatNotice(open) {
 // A toast carries the alert's id, so taking the alert back (a read, a removal, an eviction, signing out) takes the toast
 // down too when it still shows.
 function showChatNotification({ id, title, body, open } = {}) {
+  // notify.js already stays quiet while Chat is hidden; an alert that was on its way stays away too.
+  if (modeOff('chat')) return;
   const key = String(id || '').slice(0, 200);
   if (win && !win.isDestroyed() && win.isFocused()) {
     send('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
@@ -606,8 +636,10 @@ function safeUrl(url) {
 }
 
 // A mailto: link, from a message, an agent or another app, opens a filled-in compose window; the user sends it.
-// Without an account the compose window says so, and the main window comes forward to add one.
+// Without an account the compose window says so, and the main window comes forward to add one. With Mail hidden
+// nothing opens: the main window says Mail is off and offers to turn it on, and never asks for an account.
 function openMailto(url) {
+  if (modeOff('mail')) return offerHiddenMode('mail');
   if (!engine.accounts.length) showWindow();
   openComposeWindow({ mode: 'new', ...mailto.parse(url) });
 }
@@ -1238,6 +1270,12 @@ const api = {
     return true;
   },
   toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
+  // The hidden mode a way in from outside asked for (offerHiddenMode), once.
+  takeModeOff: () => {
+    const mode = modeOffWaiting;
+    modeOffWaiting = null;
+    return mode;
+  },
   // Settings > General: whether this system offers Rukoo notifications, and a test notification that shows also while
   // Rukoo is in front, with what came of it (desktop.js testNotice).
   notificationState: () => ({ supported: Notification.isSupported() }),
@@ -1285,6 +1323,13 @@ const api = {
       send('meeting', { kind: 'state', state: voiceState() });
     }
     if ('chatNotifications' in patch && workspaces) workspaces.settingsChanged();
+    // A mode turned off or on: its badge, the tray's count and menu, and chat alerts follow at once. The windows
+    // hear it through 'updated'.
+    if ('hiddenModes' in patch) {
+      refreshBadge();
+      if (tray) tray.relabel();
+      if (workspaces) workspaces.settingsChanged();
+    }
     return s;
   },
   // Settings → General resets it; the keys and the wheel go through watchZoom.

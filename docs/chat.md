@@ -4,6 +4,8 @@ Team chat lets you talk with your colleagues in Rukoo, next to your mail and cal
 
 Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on, as the server at rukoo.io has, signed in or not: Rukoo asks the server at start and then every hour. When that first ask fails, for example because the network isn't up yet, Rukoo asks again after 15 seconds, a minute and five minutes, and also when the window gets focus, the computer wakes, the network comes back or the setup page opens. On a server you or your team runs yourselves, its operator turns it on ([Running your own server](account.md#running-your-own-server)).
 
+Settings → General → Tabs can turn Chat off, and Mail, Calendar and Meet too for someone who only chats. A Chat that is off sends no notifications; your workspaces keep syncing. See [Tabs](tabs.md).
+
 Team chat doesn't need a mail account. With only a Rukoo account, Rukoo opens in Chat; Mail, Calendar and Meet ask you to add a mail account first.
 
 Agents can be in channels too, as accounts of their own that answer when someone mentions them ([Agents in channels](#agents-in-channels)).
