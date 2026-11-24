@@ -67,7 +67,8 @@ function endpoint(base, route) {
   try {
     url = new URL(String(base || '').trim());
   } catch {
-    throw new BackendError(`The backend's "url" is not an address: ${base}`, 'config');
+    // Without the value, which can hold a token.
+    throw new BackendError('The backend\'s "url" is not an address', 'config');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BackendError('The backend\'s "url" must start with http:// or https://', 'config');
   const out = new URL(url.pathname.replace(/\/+$/, '') + route, url.origin);
@@ -189,8 +190,9 @@ class RunsBackend {
     if (!config.url) throw new BackendError('The runs backend needs "url"', 'config');
   }
 
-  headers(extra = {}) {
-    const key = secret(this.config);
+  // What every request carries; --check sends the same (env: where the key's variable is read).
+  headers(extra = {}, env = process.env) {
+    const key = secret(this.config, env);
     return { Accept: 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}), ...extra };
   }
 
@@ -296,9 +298,15 @@ class OpenAiBackend {
     if (!config.url) throw new BackendError('The openai backend needs "url"', 'config');
   }
 
+  // The key and the config's own headers, which every request carries; --check sends the same.
+  authHeaders(env = process.env) {
+    const key = secret(this.config, env);
+    const extra = this.config.headers && typeof this.config.headers === 'object' ? this.config.headers : {};
+    return { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...extra };
+  }
+
   async run(prompt, { id, signal } = {}) {
     const deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs(this.config)), ...(signal ? [signal] : [])]);
-    const key = secret(this.config);
     const user = `${String(this.config.user || 'rukoo-agent').trim()}:${id}`;
     const body = {
       model: String(this.config.model || '').trim() || 'default',
@@ -309,12 +317,11 @@ class OpenAiBackend {
         { role: 'user', content: prompt.input }
       ]
     };
-    const extra = this.config.headers && typeof this.config.headers === 'object' ? this.config.headers : {};
     let res;
     try {
       res = await fetch(endpoint(this.config.url, '/v1/chat/completions'), {
         method: 'POST',
-        headers: { Accept: 'text/event-stream, application/json', 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}), ...extra },
+        headers: { Accept: 'text/event-stream, application/json', 'Content-Type': 'application/json', ...this.authHeaders() },
         body: JSON.stringify(body),
         redirect: 'error',
         signal: deadline
@@ -699,12 +706,18 @@ class CommandBackend {
 
 // ---- Checks (--check) ----
 //
-// What a backend needs before the first mention comes, as a list of { level, message, code }: 'error' when it can't
-// answer as configured, 'info' for what was found. Each error says what to do next, and its code what kind of problem
-// it is, for a program that shows it in its own words (Rukoo's desktop app): missing (the program isn't there),
-// placeholder (my-agent), key_env (the variable for its secret is empty), unreachable (nothing answers at its
-// address) or backend_key (the server there refused the key, or asks for one). The runner's --check prints them and
-// exits with 1 for an error; a normal start prints them as warnings and runs anyway, since a server can come up later.
+// Whether a backend can answer before the first mention comes, as a list of { level, message, code }: 'error' when it
+// can't as configured, 'warn' when the check couldn't tell or something else is worth knowing, 'info' for what was
+// found. Each error says what to do next, and its code what kind of problem it is, for a program that shows it in its
+// own words (Rukoo's desktop app): missing (the program isn't there), placeholder (my-agent), config (a setting the
+// runner can't use), unreachable (nothing answers at its address), backend_key (the server there refused the key, or
+// asks for one), key_env (the variable for its secret is empty and the server asks for a key), protocol (an answer of
+// another kind, or a route that isn't there), http (another status) or other. The runner's --check prints them and
+// exits with 1 for an error; a normal start logs the errors and warnings as warnings and runs anyway, since a server
+// can come up later. signal: the runner's stop, which ends a check that still waits.
+//
+// A message names a backend's address by its origin only: a path or query can hold a token. A failed request is said
+// in the check's own words (a timeout, or the system's error code), never with the request's error text.
 
 const CHECK_TIMEOUT = 5000;
 // The backend command of a config made without one of the person's agents (src/renderer/chat-agents.js).
@@ -733,76 +746,194 @@ function findProgram(file, { cwd = process.cwd(), env = process.env } = {}) {
   return null;
 }
 
-// A backend that names a variable for its secret, with that variable empty, sends no key at all.
-function keyProblem(config, env) {
-  if (typeof config.key === 'string' && config.key.trim()) return null;
-  const name = typeof config.keyEnv === 'string' ? config.keyEnv.trim() : '';
-  if (!name || String(envValue(env, name) || '').trim()) return null;
-  return { level: 'error', code: 'key_env', message: `${name} is not set, and the backend needs it for its key or token. Set it in the terminal or service that starts the runner, then start it again.` };
+// A .cmd or .bat file, which Windows starts only through cmd.exe: spawn() without a shell fails on it (EINVAL).
+const needsShell = (file) => WINDOWS && /\.(cmd|bat)$/i.test(String(file || '').trim());
+// What the runner's README says to do instead.
+const shellAdvice = (file) => `On Windows a .cmd or .bat file needs ["cmd", "/c", ${JSON.stringify(String(file))}] as "command".`;
+
+// The address of a backend as messages say it: its origin, or the setting's name when it isn't an address.
+function originOf(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.origin;
+  } catch {}
+  return 'the backend\'s "url"';
 }
 
-// Whether something answers at a backend's address: { status } for any HTTP answer, else { reason }.
-async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT } = {}) {
+// The variable a backend names for its secret, when it is where the key comes from and isn't set: the runner then
+// sends no key, which matters only to a server that asks for one.
+function unsetKeyEnv(config, env) {
+  if (typeof config.key === 'string' && config.key.trim()) return null;
+  const name = typeof config.keyEnv === 'string' ? config.keyEnv.trim() : '';
+  return name && !String(envValue(env, name) || '').trim() ? name : null;
+}
+
+// The most of an answer's body the check reads: a contract's answer is small, and anything larger isn't one.
+const CHECK_BODY_MAX = 256 * 1024;
+
+// One request to a backend's route with the headers the runner sends: { status, type, data } for an HTTP answer, with
+// the parsed JSON body of a 2xx (data: undefined when it isn't JSON); else { reason } and how it failed: bad (the
+// setting isn't an address), timedOut, or stopped (signal).
+async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT, signal } = {}) {
   let target;
   try {
     target = endpoint(url, route);
   } catch (err) {
-    return { reason: err.message };
+    return { reason: err.message, bad: true };
   }
   try {
-    const res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeout) });
-    res.body?.cancel().catch(() => {});
-    return { status: res.status };
+    // Like the runner's own requests, never a redirect: one shows as its 3xx status.
+    const res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]) });
+    const type = String(res.headers.get('content-type') || '').toLowerCase();
+    if (res.status < 200 || res.status > 299) {
+      res.body?.cancel().catch(() => {});
+      return { status: res.status, type };
+    }
+    const text = await bodyText(res);
+    let data;
+    try {
+      data = text === null ? undefined : JSON.parse(text);
+    } catch {
+      data = undefined;
+    }
+    return { status: res.status, type, data };
   } catch (err) {
-    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return { reason: `no answer within ${Math.round(timeout / 1000)} s` };
-    const cause = err && err.cause;
-    return { reason: clip((cause && (cause.code || cause.message)) || (err && err.message) || 'no answer', 120) };
+    if (signal && signal.aborted) return { reason: 'stopped', stopped: true };
+    if (err && err.name === 'TimeoutError') return { reason: `no answer within ${Math.round(timeout / 1000)} s`, timedOut: true };
+    const code = err && err.cause && err.cause.code;
+    return { reason: typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : 'no connection' };
   }
 }
 
-// The checks of an HTTP backend: its address answers (health, a route that needs no key), and when keyed (keyed, a
-// route that needs the key) it doesn't refuse the key.
-async function checkHttp(backend, { env, timeout, health, keyed, what }) {
-  const config = backend.config;
-  const out = [];
-  const missing = keyProblem(config, env);
-  if (missing) out.push(missing);
-  const url = String(config.url || '').trim();
-  const first = await probe(url, health, { timeout });
-  if (first.reason) {
-    out.push({ level: 'error', code: 'unreachable', message: `Nothing answers at ${url} (${first.reason}). Start ${what} there, or correct the backend's "url".` });
-    return out;
+// An answer's body as text, or null past CHECK_BODY_MAX.
+async function bodyText(res) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > CHECK_BODY_MAX) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
   }
-  if (missing) return out;
-  const key = secret(config, env);
-  const second = keyed === health && !key ? first : await probe(url, keyed, { timeout, headers: key ? { Authorization: `Bearer ${key}` } : {} });
-  if (second.status === 401 || second.status === 403) {
-    out.push({
-      level: 'error',
-      code: 'backend_key',
-      message: key
-        ? `${url} refused the backend's key (HTTP ${second.status}). Check the key or token in ${config.keyEnv ? config.keyEnv : '"key"'}.`
-        : `${url} asks for a key (HTTP ${second.status}). Add "keyEnv" to the backend and set that variable to its key or token.`
-    });
-  } else out.push({ level: 'info', message: `The backend answers at ${url}` });
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+// What a 2xx answer was when it isn't the contract's, in the check's words: never the answer's own text.
+const answerKind = (p) => (/html/.test(p.type) ? 'an HTML page' : p.data === undefined ? 'an answer that isn\'t JSON' : 'JSON of another shape');
+
+// The routes each HTTP backend's contract has, as Rukoo's own adapters check them (src/main/agents/hermes.js,
+// openai.js, openclaw.js), in the order the check asks them. required: the backend can't answer without it; a route
+// that isn't required (an OpenAI-compatible server's /v1/models) can be missing or closed while chat works. refused:
+// the statuses that mean the key or token was refused. shape(data): whether a 2xx answer is the one the contract
+// defines; problem(data): a 2xx in that shape that still says the backend can't answer. The README's "--check" has the
+// table of what each answer means.
+const RUNS_CONTRACT = {
+  what: 'the Hermes or Booper server',
+  routes: [
+    { route: '/health', required: true, refused: [], shape: isObject, expect: 'a Runs API server\'s health' },
+    {
+      route: '/v1/capabilities',
+      required: true,
+      refused: [401, 403],
+      shape: (d) => isObject(d) && (d.features === undefined || isObject(d.features)),
+      expect: 'a Runs API server\'s capabilities',
+      problem: (d) => (d.features && d.features.run_submission === false ? 'it takes no runs (run_submission is off in /v1/capabilities)' : ''),
+      missing: 'Check that the address is the Runs API of Hermes Agent or Booper\'s app channel.'
+    }
+  ]
+};
+const MODELS = { route: '/v1/models', refused: [401, 403], shape: (d) => isObject(d) && Array.isArray(d.data), expect: 'a list of models' };
+const OPENCLAW_CONTRACT = {
+  what: 'the OpenClaw gateway',
+  routes: [{ ...MODELS, required: true, missing: 'Turn on the gateway\'s Chat Completions endpoint (gateway.http.endpoints.chatCompletions.enabled), or correct the backend\'s "url".' }]
+};
+const OPENAI_CONTRACT = { what: 'the server', routes: [{ ...MODELS, required: false }] };
+
+// An openai backend for an OpenClaw gateway: its model names an OpenClaw agent, as the config Rukoo gives for OpenClaw
+// has it (src/renderer/chat-agents.js), or it sends the gateway's x-openclaw-model header.
+function forOpenClaw(config) {
+  const headers = isObject(config.headers) ? Object.keys(config.headers) : [];
+  return /^openclaw\//i.test(String(config.model || '').trim()) || headers.some((h) => h.toLowerCase() === 'x-openclaw-model');
+}
+
+// Whether an HTTP backend can answer, asked of the routes of its contract with the headers its requests carry. One of
+// three verdicts: it can (every route answered in its contract's shape: an info line); it can't (nothing at the
+// address, a refused key or a missing route the contract requires, any other answer to a required route, or a 2xx
+// that isn't the contract's: an error); or the check couldn't tell, only on a route that isn't required (a warning that
+// names the route).
+async function checkHttp(backend, { env, timeout, signal, headers, contract }) {
+  const config = backend.config;
+  const url = String(config.url || '').trim();
+  const origin = originOf(url);
+  const unset = unsetKeyEnv(config, env);
+  const unsetWarn = { level: 'warn', message: `${unset} is not set, so the runner sends no key.` };
+  const named = typeof config.keyEnv === 'string' && config.keyEnv.trim() ? config.keyEnv.trim() : '"key"';
+  const cannot = (message, code) => [{ level: 'error', code, message }];
+  const cantTell = (route, why) => [
+    { level: 'warn', message: `The check couldn't tell whether ${origin} can answer: ${why} on ${route}, a route a server can chat without. The runner tries anyway, and its log says when a request fails.` },
+    ...(unset ? [unsetWarn] : [])
+  ];
+  for (const [i, r] of contract.routes.entries()) {
+    const p = await probe(url, r.route, { headers, timeout, signal });
+    if (p.stopped) return [];
+    if (p.bad) return cannot(p.reason, 'config');
+    if (p.reason) {
+      if (i === 0) return cannot(`Nothing answers at ${origin} (${p.reason}). Start ${contract.what} there, or correct the backend's "url".`, 'unreachable');
+      return r.required ? cannot(`${origin} doesn't answer ${r.route} (${p.reason}), which ${contract.what} answers.`, 'unreachable') : cantTell(r.route, p.reason);
+    }
+    if (p.status >= 200 && p.status < 300) {
+      if (!r.shape(p.data)) return cannot(`${origin} answered ${r.route} with ${answerKind(p)}, not ${r.expect}. Correct the backend's "url" so it points at ${contract.what}.`, 'protocol');
+      const problem = r.problem ? r.problem(p.data) : '';
+      if (problem) return cannot(`${origin} can't answer: ${problem}.`, 'other');
+      continue;
+    }
+    const status = `HTTP ${p.status}`;
+    if (!r.required) return cantTell(r.route, r.refused.includes(p.status) ? `it refused the key (${status})` : `it answered ${status}`);
+    if (r.refused.includes(p.status)) {
+      return cannot(
+        unset
+          ? `${unset} is not set, and ${origin} asks for a key (${status} on ${r.route}). Set it in the terminal or service that starts the runner, then start it again.`
+          : secret(config, env)
+            ? `${origin} refused the backend's key (${status} on ${r.route}). Check the key or token in ${named}.`
+            : `${origin} asks for a key (${status} on ${r.route}). Add "keyEnv" to the backend and set that variable to its key or token.`,
+        unset ? 'key_env' : 'backend_key'
+      );
+    }
+    if (p.status === 404) return cannot(`${origin} has no ${r.route} (HTTP 404), which ${contract.what} answers. ${r.missing || 'Correct the backend\'s "url".'}`, 'protocol');
+    return cannot(`${origin} answered ${r.route} with ${status}, where ${contract.what} answers 200.`, 'http');
+  }
+  const out = [{ level: 'info', message: `The backend answers at ${origin}` }];
+  if (unset) out.push({ level: 'warn', message: `${unset} is not set, so the runner sends no key. ${origin} answered without one.` });
   return out;
 }
 
-RunsBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT } = {}) {
-  return checkHttp(this, { env, timeout, health: '/health', keyed: '/v1/capabilities', what: 'the Hermes or Booper server' });
+RunsBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT, signal } = {}) {
+  return checkHttp(this, { env, timeout, signal, headers: this.headers({}, env), contract: RUNS_CONTRACT });
 };
 
-OpenAiBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT } = {}) {
-  return checkHttp(this, { env, timeout, health: '/v1/models', keyed: '/v1/models', what: 'the server' });
+OpenAiBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT, signal } = {}) {
+  const contract = forOpenClaw(this.config) ? OPENCLAW_CONTRACT : OPENAI_CONTRACT;
+  return checkHttp(this, { env, timeout, signal, headers: { Accept: 'application/json', ...this.authHeaders(env) }, contract });
 };
 
-// Claude Code and Codex: the program is found where the runner looks for it.
+// Claude Code and Codex: the program is found where the runner looks for it, and starts without a shell.
 async function checkCli() {
+  let exe;
   try {
-    return [{ level: 'info', message: `The backend runs ${this.exe()}` }];
+    exe = this.exe();
   } catch (err) {
     return [{ level: 'error', code: 'missing', message: err.message }];
   }
+  if (needsShell(exe)) return [{ level: 'error', code: 'config', message: `"exe" is ${exe}, a .cmd or .bat file, which the runner can't start: it starts programs without a shell. Set "exe" to the program's .exe.` }];
+  return [{ level: 'info', message: `The backend runs ${exe}` }];
 }
 ClaudeBackend.prototype.check = checkCli;
 CodexBackend.prototype.check = checkCli;
@@ -812,10 +943,13 @@ CommandBackend.prototype.check = async function check({ env = process.env } = {}
   if (program === PLACEHOLDER_COMMAND) {
     return [{ level: 'error', code: 'placeholder', message: `The backend's "command" is still ${PLACEHOLDER_COMMAND}, the placeholder from Rukoo. Put your own program there: it gets the prompt on stdin and answers on stdout. Or pick one of your agents when you copy the config.` }];
   }
+  if (needsShell(program)) {
+    return [{ level: 'error', code: 'config', message: `The backend's program ${program} is a .cmd or .bat file, which the runner can't start: it starts programs without a shell. ${shellAdvice(program)}` }];
+  }
   const cwd = this.config.cwd ? path.resolve(String(this.config.cwd)) : process.cwd();
   const found = findProgram(program, { cwd, env: { ...env, ...(this.config.env || {}) } });
   if (!found) {
-    const shim = WINDOWS && !path.extname(program) ? ` On Windows a .cmd or .bat file needs ["cmd", "/c", "${program}.cmd"].` : '';
+    const shim = WINDOWS && !path.extname(program) ? ` ${shellAdvice(`${program}.cmd`)}` : '';
     return [{ level: 'error', code: 'missing', message: `The backend's program ${program} was not found${/[\\/]/.test(program) ? '' : ' on PATH'}. Set "command" to a program on this computer.${shim}` }];
   }
   return [{ level: 'info', message: `The backend runs ${found}` }];

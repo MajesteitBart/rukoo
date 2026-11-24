@@ -25,8 +25,8 @@ import {
   canManageAgent,
   canRenewAgentKey
 } from './chat-model.js';
-import { runnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, sinceText, runStateText, ranElsewhere, useName, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL, KEY_MASK, keepsTools } from './chat-agents.js';
-import { seenOf, loadSeen, rememberAgents } from './chat-agent-seen.js';
+import { runnerChoices, askedRunnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, sinceText, runStateText, ranElsewhere, useName, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL, KEY_MASK, keepsTools } from './chat-agents.js';
+import { seenOf, loadSeen, rememberAgents, forgetSeen } from './chat-agent-seen.js';
 import { loadRuns, runsNow, runOf, onRuns } from './chat-agent-runs.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
@@ -85,10 +85,15 @@ const agentTag = () => `<span class="ch-tag ch-agent-tag">${esc(t('chat.roles.ag
 const byName = (a, b) => collator().compare(displayName(a, t), displayName(b, t));
 // "Made by Olga · Answers only Olga" under an agent's name, as a channel's members and Workspace members show it.
 const agentLine = (m) => agentNote(m, { members: K.CH.members, t, listFormat: listFormat() });
-// "Not connected yet" or "Last active 5 minutes ago", when the app knows (chat-agent-seen.js).
-const seenLine = (id, lastSeen = seenOf(K.CH.ws, id)) => agentSeenText(lastSeen, { t, locale: getLocale() });
-// Whether this person can read when the workspace's agents were last active (GET /agents is for full members).
-const seesAgents = () => agentsOn() && !K.isGuest();
+// Whether this person can read when the workspace's agents were last active (GET /agents is for full members). A
+// person who became a guest sees nothing of it, and what the app had is dropped.
+const seesAgents = () => {
+  if (agentsOn() && !K.isGuest()) return true;
+  forgetSeen(K.CH.ws);
+  return false;
+};
+// "Not connected yet" or "Last active 5 minutes ago", when the app knows (chat-agent-seen.js) and the person may know.
+const seenLine = (id, lastSeen = seenOf(K.CH.ws, id)) => (seesAgents() ? agentSeenText(lastSeen, { t, locale: getLocale() }) : '');
 // A member's name in a list row; an agent's with its line under it: who made it, whom it answers, whether it connected.
 const personName = (m, label) => {
   const note = isAgent(m) ? [agentLine(m), seenLine(m.id)].filter(Boolean).join(' · ') : null;
@@ -188,7 +193,9 @@ function focusKey(el) {
 
 // A dialog about the workspace on screen: it closes when that workspace changes or goes (desktop-ui 7.11).
 // opts.redraw(body): draws the dialog's lists again when the directory changes, keeping what was typed, picked or
-// checked; the focus stays on the same control.
+// checked; the focus stays on the same control. opts.stay(): for a dialog that holds what it is about itself, such as
+// a key that shows only once: it stays when the workspace on screen changes, and closes once stay() says that what it
+// holds is gone.
 function wsDialog(opts) {
   const gen = K.CH.generation;
   let timer = null;
@@ -197,7 +204,7 @@ function wsDialog(opts) {
     ...opts,
     render(body, done) {
       timer = setInterval(() => {
-        if (K.CH.generation !== gen || !body.isConnected) done(null);
+        if (!body.isConnected || (opts.stay ? !opts.stay() : K.CH.generation !== gen)) done(null);
       }, 250);
       chatDialog(body);
       if (opts.quietClose) body.closest('.dialog').classList.add('ch-quiet-close');
@@ -2193,11 +2200,15 @@ export async function agentsDialog() {
   let names = null;
   if (!WEB) api('agentConfig').then((c) => ((names = c), draw()), () => {});
   const load = async () => {
+    // After Add an agent or an agent's menu the dialog may be gone with its workspace or session, as a sign-out takes
+    // it: no request, and no error that would cover what the key step said.
+    if (!body || !body.isConnected || K.CH.ws !== ws) return;
     loadedFor = directoryIds();
     try {
       const [res] = await Promise.all([api('chatAgents', ws), loadRuns()]);
       list = (res && res.agents) || [];
-      rememberAgents(ws, list);
+      // A person who became a guest meanwhile keeps none of it (chat-agent-seen.js).
+      if (!K.isGuest()) rememberAgents(ws, list);
       failed = null;
     } catch (err) {
       failed = err;
@@ -2278,35 +2289,49 @@ export async function agentsDialog() {
   }
 }
 
-// The choices of "Answers with" in the key step (chat-agents.js runnerChoices): on desktop the person's agents of
-// Settings, Agents, ready ones first. A status check can take seconds (an offline server), so it gets 3 s and is asked
-// as early as possible; without an answer the agents keep Settings' order. Without Settings, as in the browser, or
-// when none of them can answer, the agents the runner finds on its computer by itself.
+// The choices of "Answers with" in the key step (chat-agents.js askedRunnerChoices): on desktop only the person's
+// agents of Settings, Agents that can answer, ready ones first, each with a status check of its own that gets 3 s, so
+// a slow one doesn't hold up the others; it is asked as early as possible. An empty list leaves A program of my own,
+// and the step says why. In the browser, without Settings, the agents the runner finds on its computer by itself.
 function askRunnerChoices() {
   if (WEB) return Promise.resolve(runnerChoices(null));
-  const status = Promise.race([api('agentStatus').catch(() => null), sleep(3000).then(() => null)]);
-  return Promise.all([api('agentConfig').catch(() => null), status]).then(([config, st]) => {
-    const list = config ? runnerChoices(config, { status: st }) : [];
-    return list.length ? list : runnerChoices(null);
-  });
+  return api('agentConfig')
+    .catch(() => null)
+    .then((config) => askedRunnerChoices(config, (id) => api('agentStatus', id)));
 }
 
-// The channel on screen, when a new agent of the person's may join it there and then (canAddAgent).
-function channelToJoin(agent) {
+// The channel on screen, when a new agent of the person's may join it there and then (canAddAgent), and the agent's
+// workspace (ws) is the one on screen.
+function channelToJoin(agent, ws) {
+  if (!agent || ws !== K.CH.ws) return null;
   const room = K.CH.openId ? K.CH.rooms.get(K.CH.openId) : null;
   const candidate = { id: agent.id, kind: 'agent', state: 'active', agent: { sponsor: K.me() } };
   // The person sees the channel, so they are in it: a private one takes their agent from its managers.
   return room && canAddAgent(candidate, room, K.me(), new Set([K.me()])) ? room : null;
 }
 
+// Whether a key made for ws in session (ChatState.session) may still show: the same session is signed in, and ws is
+// still among its workspaces. Signing out, here or in another window or tab, leaving the workspace, being removed from
+// it and its deletion end that; another workspace coming on screen doesn't.
+const keyHolds = (ws, session) => Boolean(K.CH.state?.signedIn) && K.CH.state.session === session && (K.CH.state.workspaces || []).some((w) => w.id === ws);
+// A key that went before it was copied or kept here: it can't be shown again, and New key makes another.
+const keyLost = (agent) => toast(t('chat.agents.keyLost', { name: agent.name }), 8000);
+
 // Add an agent: the form, then the key step, with Run on this computer on the computer and the config for the runner,
 // and the offer to add it to the channel on screen. On the computer main keeps the key for this window (made.held),
-// and the window never gets it; in the browser it comes in the answer (made.key).
+// and the window never gets it; in the browser it comes in the answer (made.key). The key step gets the workspace,
+// server and session the agent was made in, whatever is on screen by then.
 export async function addAgent() {
+  const ws = K.CH.ws;
+  const server = K.CH.state?.server || '';
+  const session = K.CH.state?.session;
   const choices = askRunnerChoices();
   const runs = WEB ? null : await loadRuns();
   const made = await agentForm(null, { runsHere: Boolean(runs && runs.available) });
-  if (made && (made.key || made.held)) await showAgentKey(made, { choices: await choices, room: channelToJoin(made.agent) });
+  if (made && (made.key || made.held)) {
+    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices, room: channelToJoin(made.agent, ws) });
+    else keyLost(made.agent);
+  }
   return made ? made.agent : null;
 }
 
@@ -2322,6 +2347,8 @@ export async function editAgent(agent) {
 export async function newAgentKey(agent, { runHere = false } = {}) {
   const ws = K.CH.ws;
   if (!ws || !agent) return null;
+  const server = K.CH.state?.server || '';
+  const session = K.CH.state?.session;
   // Asked while the question is open, so the key step needn't wait for a slow status check after the key is made.
   const choices = askRunnerChoices();
   const here = WEB ? null : runOf(ws, agent.id);
@@ -2331,8 +2358,13 @@ export async function newAgentKey(agent, { runHere = false } = {}) {
   if (!ok || ws !== K.CH.ws) return null;
   try {
     const made = await api('chatNewAgentKey', ws, agent.id);
-    // An agent set up here took the new key in main (runsHere): the step shows it running, without the key.
-    if (made && (made.key || made.held || made.runsHere) && ws === K.CH.ws) await showAgentKey(made, { choices: await choices });
+    // The old key stopped: the new one shows, for this workspace, whatever is on screen by now, while the session that
+    // asked for it holds. An agent set up here took the new key in main (runsHere): the step shows it running, without
+    // the key, and nothing is lost when the step can't show.
+    if (made && (made.key || made.held || made.runsHere)) {
+      if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices });
+      else if (!made.runsHere) keyLost(made.agent || agent);
+    }
     return made ? made.agent : null;
   } catch (err) {
     toast(K.errorText(err), 5000);
@@ -2371,6 +2403,9 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
   const chosen = new Set(editing && agent.answers === 'members' ? agent.members || [] : []);
   let finish = null;
   let busy = false;
+  // The request Make or Save sent: an agent made after the dialog closed (the workspace on screen changed, or Escape)
+  // still comes back, so its key is never dropped without a word.
+  let inFlight = null;
   // The people it may answer besides its sponsor: active people, never an agent.
   const people = () => activeMembers().filter((m) => isPerson(m) && m.id !== sponsor).sort(byName);
   const sponsorName = () => nameOf(sponsor);
@@ -2432,9 +2467,14 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
     busy = true;
     setBusy(scrim, true);
     try {
-      const res = editing
-        ? await api('chatUpdateAgent', ws, agent.id, { name, answers, agents, ...(answers === 'members' ? { members } : {}) })
-        : await api('chatCreateAgent', ws, { name, answers, agents, ...(answers === 'members' ? { members } : {}) });
+      const call = editing
+        ? api('chatUpdateAgent', ws, agent.id, { name, answers, agents, ...(answers === 'members' ? { members } : {}) })
+        : api('chatCreateAgent', ws, { name, answers, agents, ...(answers === 'members' ? { members } : {}) });
+      inFlight = call.then(
+        (res) => res || null,
+        () => null
+      );
+      const res = await call;
       finish(res || null);
     } catch (err) {
       busy = false;
@@ -2501,12 +2541,13 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
       drawPeople(body);
       setTimeout(() => body.querySelector('[name="name"]')?.[editing ? 'select' : 'focus'](), 0);
     }
-  });
+  }).then((value) => value || (inFlight ? inFlight : null));
 }
 
 // The key step after Add an agent and New key, "Connect <name>". 1, Answers with: the agent that answers for it,
-// preselected (askRunnerChoices), with A program of my own last. An agent that keeps tools of its own (Hermes,
-// OpenClaw, a custom server) gets the line that it can use them for anyone it answers.
+// preselected (askRunnerChoices), with A program of my own last; an empty choices (desktop, where no agent of Settings
+// can answer) leaves A program of my own, and the line under it says why. An agent that keeps tools of its own
+// (Hermes, OpenClaw, a custom server) gets the line that it can use them for anyone it answers.
 //
 // On the computer main holds the key for this window document and the window never gets it (src/main/agent-runs.js):
 // the config shows it masked, and Copy config asks main to export it, which main does after the person said so in a
@@ -2517,30 +2558,44 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
 // without a keyring), 2 is the config with Copy config as the filled button and 3 how to start the runner with
 // Node.js 22 or newer.
 //
-// A new agent of the person's can join the channel on screen when the step closes (room). Closing before the agent
-// runs here or its config was copied asks first, as the invitation link does: the key doesn't show again. Closing lets
-// go of the key main holds.
-async function showAgentKey({ agent, key = null, held = false, runsHere = false }, { choices = [], room = null } = {}) {
-  const ws = K.CH.ws;
+// A new agent of the person's can join the channel on screen (room): Done with the box checked adds it there, and a
+// refusal keeps the step open, says why and offers Done again. Closing before the agent runs here or its config was
+// copied asks first, as the invitation link does: the key doesn't show again. ws, server and session: the workspace
+// the key is for, which the step keeps when the workspace on screen changes, and the session that made it: the step
+// goes once that session ends or loses ws (keyHolds), and says so when the key wasn't kept. Closing lets go of the key
+// main holds.
+async function showAgentKey({ agent, key = null, held = false, runsHere = false }, { ws = K.CH.ws, server = K.CH.state?.server || '', session = K.CH.state?.session, choices = [], room = null } = {}) {
   if (!ws || !agent || !(key || held || runsHere)) return null;
-  const server = K.CH.state?.server || '';
   // On the computer: main has the key, for this window only.
   const desktop = !key && !WEB;
   const runs = desktop ? await loadRuns() : null;
   const canRun = Boolean(runs && runs.available);
   const before = desktop ? runOf(ws, agent.id) : null;
   let pick = choices.length ? choices[0].id : OWN_PROGRAM;
+  const noneUsable = !choices.length;
   // New key for an agent that runs here: it goes on with the agent it had, and with the new key already.
   if (before && choices.some((c) => c.id === before.use)) pick = before.use;
   let running = Boolean(runsHere && before && before.on);
-  let kept = running;
+  let kept = running || (desktop && runsHere);
   let join = Boolean(room);
-  // Whether main still holds the key for this window: not once it is kept here (stored), after 10 minutes or after a
-  // reload (gone). New key for an agent set up here goes straight to its setup.
-  let holds = desktop && held;
+  // Whether main still holds the key for this window (mainHolds): not once it is kept here (stored), after 10 minutes
+  // or after a reload (gone). New key for an agent set up here goes straight to its setup.
+  let mainHolds = desktop && held;
   let stored = desktop && runsHere;
   let gone = false;
   let off = () => {};
+  // Done was pressed and the close question answered; a join that the server refused waits for Done again.
+  let leaving = false;
+  let busy = false;
+  // The session ended or lost ws while the step was open (holds()), and the close question it may have open.
+  let lost = false;
+  let closeAsk = null;
+  const holds = () => {
+    if (keyHolds(ws, session)) return true;
+    lost = true;
+    closeAsk?.(true);
+    return false;
+  };
   const choice = () => choices.find((c) => c.id === pick) || null;
   const backend = () => choice()?.backend || PLACEHOLDER_BACKEND;
   const config = () => runnerConfig({ server, workspace: ws, key: desktop ? KEY_MASK : key || '', backend: backend() });
@@ -2555,14 +2610,16 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     const cfg = config();
     field.value = runnerText(cfg);
     field.scrollTop = 0;
-    if (!copy.hasAttribute('aria-busy')) copy.disabled = desktop && !holds;
-    const why = !desktop ? '' : holds ? t('chat.agents.keyHidden') : stored && !gone ? t('chat.agents.keyKeptHere', { name: agent.name }) : t('chat.agents.keyGone', { name: agent.name });
+    if (!copy.hasAttribute('aria-busy')) copy.disabled = desktop && !mainHolds;
+    const why = !desktop ? '' : mainHolds ? t('chat.agents.keyHidden') : stored && !gone ? t('chat.agents.keyKeptHere', { name: agent.name }) : t('chat.agents.keyGone', { name: agent.name });
     note.hidden = !why;
     note.textContent = why;
-    note.classList.toggle('ch-warn', desktop && !holds);
+    note.classList.toggle('ch-warn', desktop && !mainHolds);
     const env = runnerEnv(cfg);
     const help = body.querySelector(canRun ? '[data-key-help]' : '[data-use-help]');
-    const text = pick === OWN_PROGRAM ? t('chat.agents.ownHelp', { command: PLACEHOLDER_BACKEND.command }) : env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
+    // Where Run on this computer leads, the line that none of the agents can answer is under Answers with (drawRun).
+    const own = [noneUsable && !canRun ? t('chat.agents.noneUsable') : '', t('chat.agents.ownHelp', { command: PLACEHOLDER_BACKEND.command })].filter(Boolean).join(' ');
+    const text = pick === OWN_PROGRAM ? own : env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
     help.hidden = !text;
     help.textContent = text;
     help.classList.toggle('ch-warn', env.length > 0 && pick !== OWN_PROGRAM);
@@ -2572,7 +2629,8 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     tools.hidden = !keepsTools(c);
     tools.textContent = keepsTools(c) ? t('chat.agents.toolsWarning', { use: c.name, name: agent.name }) : '';
   };
-  // Run on this computer until it runs, then the line of what it does here. A program of one's own can't run here.
+  // Run on this computer until it runs, then the line of what it does here. A program of one's own can't run here; why
+  // goes under Answers with, after the line that none of the person's agents can answer, when none can.
   const drawRun = (body) => {
     const button = body.querySelector('[data-run]');
     if (!button) return;
@@ -2582,7 +2640,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     const run = found && room && join && found.channels === 0 ? { ...found, channels: null } : found;
     const state = running && run ? runStateText(run, { t, use: choices.find((c) => c.id === run.use)?.name || '', locale: getLocale() }) : null;
     button.hidden = Boolean(state);
-    if (!button.hasAttribute('aria-busy')) button.disabled = own || (!holds && !found);
+    if (!button.hasAttribute('aria-busy')) button.disabled = own || (!mainHolds && !found);
     const line = body.querySelector('[data-run-state]');
     line.hidden = !state;
     if (state) {
@@ -2590,8 +2648,9 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
       line.querySelector('.ch-run-text').textContent = state.text;
     }
     const help = body.querySelector('[data-use-help]');
-    help.hidden = !own;
-    help.textContent = own ? t('chat.agents.runOwnHelp') : '';
+    const text = own ? [noneUsable ? t('chat.agents.noneUsable') : '', t('chat.agents.runOwnHelp')].filter(Boolean).join(' ') : '';
+    help.hidden = !text;
+    help.textContent = text;
   };
   // The filled button: Run on this computer, or Copy config without it, until the agent runs or something was copied;
   // Done after.
@@ -2614,13 +2673,43 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
       buttons: [
         { label: t('chat.invite.goBack'), value: false },
         { label: t('common.actions.close'), value: true }
-      ]
-    });
+      ],
+      render: (_, done) => (closeAsk = done)
+    }).finally(() => (closeAsk = null));
+  };
+
+  // Done: the close question when nothing was kept, then, with the box checked, the agent joins the channel the box
+  // names. A refusal keeps the step open with the reason, and Done tries again; clearing the box closes it.
+  let close = null;
+  const finish = async (scrim) => {
+    if (busy) return;
+    busy = true;
+    try {
+      if (!leaving && !(await leaveOk())) return;
+      // The step went while the question was open: nothing joins for a session that ended.
+      if (lost) return;
+      leaving = true;
+      if (room && join) {
+        const body = scrim.querySelector('.dialog-body');
+        clearErrors(body);
+        setBusy(scrim, true);
+        try {
+          await api('chatAddToChannel', ws, room.id, agent.id);
+        } catch (err) {
+          setBusy(scrim, false);
+          showError(body, 'join', `${t('chat.channel.addFailed', { names: agent.name })} ${K.errorText(err)} ${t('chat.agents.joinRetry', { name: agent.name })}`);
+          return;
+        }
+      }
+      close(true);
+    } finally {
+      busy = false;
+    }
   };
   // A refused call: the line says why, and a key main no longer holds shows as gone.
   const refused = (body, err) => {
     if (err && err.message === 'no_key') {
-      holds = false;
+      mainHolds = false;
       gone = true;
     }
     const text = runErrorText(err, agent.name, choice()?.name || '');
@@ -2637,8 +2726,8 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
       await api('agentRunStart', ws, agent.id, { use: pick, name: agent.name });
       running = true;
       // The key is on this computer now, encrypted: main no longer holds it for this window.
-      if (holds) stored = true;
-      holds = false;
+      if (mainHolds) stored = true;
+      mainHolds = false;
       keep(scrim);
     } catch (err) {
       refused(body, err);
@@ -2722,9 +2811,13 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     await wsDialog({
       title: t('chat.agents.keyTitle', { name: agent.name }),
       wide: true,
-      buttons: [{ get label() { return t('chat.invite.done'); }, value: true }],
-      beforeClose: () => leaveOk(),
-      render(body) {
+      // The key is for ws, whatever is on screen: the step stays until it is closed, or the session that made it goes.
+      stay: holds,
+      buttons: [{ get label() { return t('chat.invite.done'); }, value: (scrim) => (finish(scrim), KEEP_OPEN) }],
+      // Escape and a click outside: the close question, and the agent joins nothing.
+      beforeClose: () => !busy && leaveOk(),
+      render(body, done) {
+        close = done;
         const scrim = body.closest('.scrim');
         body.innerHTML = `<div class="form ch-form ch-agent-key">
         ${steps}
@@ -2732,7 +2825,8 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
           room
             ? `<label class="ch-check-row ch-agent-join"><input type="checkbox" name="join" checked/><span class="ch-radio-text"><span class="ch-check-label">${esc(
                 t('chat.agents.joinChannel', { name: agent.name, channel: room.name || '' })
-              )}</span><span class="field-help">${esc(t('chat.host.agents'))}</span></span></label>`
+              )}</span><span class="field-help">${esc(t('chat.host.agents'))}</span></span></label>
+              <p class="error" data-error="join" hidden></p>`
             : ''
         }
       </div>`;
@@ -2777,6 +2871,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
         body.querySelector('[data-get-runner]').addEventListener('click', () => api('openExternal', RUNNER_URL).catch(() => {}));
         body.querySelector('[name="join"]')?.addEventListener('change', (e) => {
           join = e.target.checked;
+          if (!join) clearErrors(body);
           drawRun(body);
         });
         // The config shows from its top, where the server, the workspace and the key are. The filled button takes the
@@ -2791,15 +2886,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     // Main lets go of the key: from now on only a stored, encrypted one is on this computer.
     if (desktop) api('agentRunRelease', ws, agent.id).catch(() => {});
   }
-  // However the step closed, the agent joins the channel when the box stayed checked: the channel shows "Bart added
-  // Clark", and a refusal says why.
-  if (room && join && ws === K.CH.ws) {
-    try {
-      await api('chatAddToChannel', ws, room.id, agent.id);
-    } catch (err) {
-      toast(`${t('chat.channel.addFailed', { names: agent.name })} ${K.errorText(err)}`, 5000);
-    }
-  }
+  if (lost && !kept) keyLost(agent);
   return null;
 }
 

@@ -161,25 +161,26 @@ class Rukoo {
     return `/v1/workspaces/${this.workspace}${rest}`;
   }
 
-  // The server's /v1/info, without the key: its wire versions and agent limits.
-  async info() {
-    const info = await this.ok('GET', '/v1/info', { auth: false });
+  // The server's /v1/info, without the key: its wire versions and agent limits. signal, here and below: ends the
+  // request, as the runner's stop does.
+  async info({ signal } = {}) {
+    const info = await this.ok('GET', '/v1/info', { auth: false, signal });
     const w = info && info.workspace;
     const versions = w && Array.isArray(w.versions) ? w.versions : [1];
     this.version = VERSIONS.find((v) => versions.includes(v)) || 1;
     return info;
   }
 
-  workspaceInfo() {
-    return this.ok('GET', this.ws());
+  workspaceInfo({ signal } = {}) {
+    return this.ok('GET', this.ws(), { signal });
   }
 
-  async me() {
-    return (await this.ok('GET', this.ws('/agents/me'))).agent;
+  async me({ signal } = {}) {
+    return (await this.ok('GET', this.ws('/agents/me'), { signal })).agent;
   }
 
-  async members() {
-    return (await this.ok('GET', this.ws('/members'))).members || [];
+  async members({ signal } = {}) {
+    return (await this.ok('GET', this.ws('/members'), { signal })).members || [];
   }
 
   async channelMembers(conversation) {

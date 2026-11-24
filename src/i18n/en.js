@@ -12277,7 +12277,19 @@
   },
   "chat.agents.joinChannel": {
     "message": "Add {name} to #{channel}",
-    "description": "Key step after Add an agent: checkbox, on by default, that adds the new agent to the channel on screen when the step closes. {name}: the agent; {channel}: the channel name, after #. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Key step after Add an agent: checkbox, on by default, that adds the new agent to the channel on screen when the person chooses Done (chat.invite.done) with it checked. Closing the step another way adds it nowhere. {name}: the agent; {channel}: the channel name, after #. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.noneUsable": {
+    "message": "None of your agents in Settings → Agents can answer: each is off, not set up or not installed.",
+    "description": "Key step, desktop: first sentence of the line under Answers with when no agent of Settings → Agents can answer, so A program of my own is the only choice. Followed by chat.agents.ownHelp. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.joinRetry": {
+    "message": "Choose Done to try again, or clear the box and add {name} later with Add agents in the channel's menu.",
+    "description": "Key step: after the error when the server refused to add the new agent to the channel, under the Add to #channel box. {name}: the agent. Done and Add agents are chat.invite.done and chat.channel.addAgents. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyLost": {
+    "message": "The key for {name} wasn't saved. New key in the Agents dialog makes another.",
+    "description": "Toast when the key step closed on its own before the config was copied, because the person signed out (also in another window or tab), left the workspace, was removed from it or it was deleted. The key can't be shown again. {name}: the agent. New key is chat.agents.newKey. src/renderer/chat-dialogs.js (keyLost)"
   },
   "chat.agents.notConnectedSent": {
     "message": "{name} isn't connected yet, so it won't answer until its runner starts.",

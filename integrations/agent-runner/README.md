@@ -133,7 +133,34 @@ node runner.js --config clark.json --once    # one pass over the workspace, then
 node runner.js --config clark.json           # runs until stopped
 ```
 
-`--check` fails, with exit code 1 and a line that says what to do, when the backend can't answer as configured: a `command` or `claude` or `codex` program that isn't found where the runner looks for it, the placeholder `my-agent` still in `command`, a variable the backend's `keyEnv` names that isn't set, a `runs` or `openai` address where nothing answers within 5 seconds, or a server there that refuses the key. It warns, and passes, when the agent is in no channel yet, since no mention can reach it there. A normal start logs the same backend problems as warnings and runs anyway, because a server can come up later.
+`--check` answers one question about the backend: can it answer? It fails, with exit code 1 and a line that says what to do, when it can't: a `command` or `claude` or `codex` program that isn't found where the runner looks for it, on Windows a `.cmd` or `.bat` file named directly (wrap it as above), the placeholder `my-agent` still in `command`, or a `runs` or `openai` server that can't, as the table below says. It also warns, and passes, when the agent is in no channel yet, since no mention can reach it there.
+
+A `runs` or `openai` backend is asked the routes its contract has, in order, with the headers a run sends, the key included. Each route waits up to 5 seconds. A route is required when the backend can't answer without it; `/v1/models` of an OpenAI-compatible server other than OpenClaw isn't, because such a server can chat without it. The check can't tell only on a route that isn't required, and then it passes with a warning that names the route. An `openai` backend is OpenClaw's when its `model` is `openclaw/…` or its `headers` have `x-openclaw-model`, as the config Rukoo gives for OpenClaw has.
+
+| Backend | Route | Answer | Verdict |
+| --- | --- | --- | --- |
+| `runs` or `openai` | the first route | no connection | Can't answer: nothing answers at the address |
+| `runs` or `openai` | the first route | no answer within 5 seconds | Can't answer: nothing answers at the address |
+| `runs` (Hermes, Booper) | `GET /health`, required | 2xx with a JSON object | Goes on to `/v1/capabilities` |
+| `runs` | `GET /health` | 2xx with anything else, such as an HTML page | Can't answer: not a Runs API server |
+| `runs` | `GET /health` | any other status, a redirect or 404 included | Can't answer |
+| `runs` | `GET /v1/capabilities`, required | 2xx with a JSON object | Can answer |
+| `runs` | `GET /v1/capabilities` | 401 or 403 | Can't answer: the key was refused |
+| `runs` | `GET /v1/capabilities` | 404 | Can't answer: the route is missing |
+| `runs` | `GET /v1/capabilities` | any other status, or no answer within 5 seconds | Can't answer |
+| `runs` | `GET /v1/capabilities` | 2xx with anything but a JSON object, or with `features.run_submission` false | Can't answer |
+| `openai` for OpenClaw | `GET /v1/models`, required | 2xx with a JSON object whose `data` is a list | Can answer |
+| `openai` for OpenClaw | `GET /v1/models` | 401 or 403 | Can't answer: the token was refused |
+| `openai` for OpenClaw | `GET /v1/models` | 404 | Can't answer: the gateway's Chat Completions endpoint is off |
+| `openai` for OpenClaw | `GET /v1/models` | any other status | Can't answer |
+| `openai` for OpenClaw | `GET /v1/models` | 2xx with anything else | Can't answer |
+| `openai`, another server | `GET /v1/models`, not required | 2xx with a JSON object whose `data` is a list | Can answer |
+| `openai`, another server | `GET /v1/models` | 2xx with anything else, such as an HTML page | Can't answer |
+| `openai`, another server | `GET /v1/models` | 401, 403, 404 or any other status | Couldn't tell: a warning that names `/v1/models` |
+
+401 and 403 mean a refused key where Rukoo's own adapters for these servers read them so (`src/main/agents/hermes.js`, `openclaw.js`). When the variable that `keyEnv` names isn't set, the line for a refused key says to set it; when the server answered without a key, a warning says the runner sends none. The lines name a backend by its address's origin, never its path or query, and never quote what a server answered.
+
+A normal start logs the check's errors and warnings as warnings and runs anyway, because a server can come up later. Stopping the runner while the check or the first connection to the Rukoo server still waits stops it at once.
 
 It logs to stderr, one line per event: connected, answered, skipped and why, failed and why. It logs messages by their ids. When a runtime fails, the line quotes up to 200 characters of its error output, which can contain text the runtime got. Exit codes: 0 when it stopped normally, 1 for a config or startup problem (and, with `--once`, a pass that couldn't finish), 2 when the key stopped working. Restarting doesn't help with 2; a new key does. A server that doesn't answer when the runner starts is tried again, up to a minute apart.
 

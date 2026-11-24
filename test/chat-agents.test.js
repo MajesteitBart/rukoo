@@ -136,6 +136,36 @@ test('Answers with offers the agents a status check passed first, the default ag
   assert.deepEqual(runnerChoices(config, { status: { claude: { state: 'starting' } } }).find((a) => a.id === 'claude').ready, false);
 });
 
+test("on desktop Answers with asks each agent's status on its own, so a slow one doesn't hide the others, and offers only what Settings has", async () => {
+  const { askedRunnerChoices } = await loading;
+  const ids = (list) => list.map((a) => a.id);
+  const asked = [];
+  // Hermes never answers; Claude Code is ready; Booper is offline; the other custom agent's check fails.
+  const statusOf = (id) => {
+    asked.push(id);
+    if (id === 'clark') return new Promise(() => {});
+    if (id === 'claude') return Promise.resolve({ state: 'ready' });
+    if (id === 'openclaw') return Promise.resolve({ state: 'unconfigured' });
+    if (id === 'cx_abcdefghij') return Promise.resolve({ state: 'offline' });
+    return Promise.reject(new Error('no'));
+  };
+  const started = Date.now();
+  const list = await askedRunnerChoices({ ...config, defaultAgent: 'clark' }, statusOf, { wait: 200 });
+  assert.ok(Date.now() - started < 2000);
+  assert.deepEqual(asked.sort(), ['clark', 'claude', 'cx_abcdefghij', 'cx_klmnopqrst', 'openclaw']);
+  // The ready one first, though Hermes is the default; OpenClaw, which isn't set up, is left out; Hermes, which didn't
+  // answer in time, and the agents whose check failed or that are offline stay, in Settings' order.
+  assert.deepEqual(ids(list), ['claude', 'clark', 'cx_abcdefghij', 'cx_klmnopqrst']);
+  assert.deepEqual(list.map((a) => a.ready), [true, false, false, false]);
+
+  // Every agent off, not set up or not installed: nothing, and never the browser's Claude Code and Codex.
+  const none = await askedRunnerChoices(config, (id) => Promise.resolve({ state: id === 'clark' || id === 'openclaw' ? 'unconfigured' : 'missing' }), { wait: 200 });
+  assert.deepEqual(none, []);
+  const off = { clark: { enabled: false }, claude: { enabled: false }, codex: { enabled: false }, openclaw: { enabled: false }, custom: [] };
+  assert.deepEqual(await askedRunnerChoices(off, () => Promise.resolve({ state: 'ready' })), []);
+  assert.deepEqual(await askedRunnerChoices(null, () => Promise.resolve({ state: 'ready' })), []);
+});
+
 test('without Settings, as in the browser and on the phone, Answers with offers Claude Code and Codex, which need no settings', async () => {
   const { runnerChoices, PLAIN_AGENTS, OWN_PROGRAM } = await loading;
   const list = runnerChoices(null);
@@ -248,4 +278,61 @@ test('starting here warns of a runner elsewhere only when the server saw the key
   assert.equal(useName(config, 'cx_abcdefghij'), 'Booper');
   assert.equal(useName(null, 'codex'), 'Codex');
   assert.equal(useName(null, 'cx_gonegonego'), 'cx_gonegonego');
+});
+
+// chat-agent-seen.js with ui.js's api() replaced: every chatAgents call waits until the test answers it. Each load is a
+// module of its own, so its cache starts empty.
+let seenLoads = 0;
+async function seenModule() {
+  const calls = [];
+  const id = ++seenLoads;
+  globalThis[`__seenApi${id}`] = (method, ws) =>
+    new Promise((resolve, reject) => {
+      calls.push({ method, ws, resolve: (agents) => resolve({ agents }), reject });
+    });
+  const stub = `export const api = (...args) => globalThis.__seenApi${id}(...args);`;
+  const source = fs
+    .readFileSync(path.join(__dirname, '../src/renderer/chat-agent-seen.js'), 'utf8')
+    .replace("from './ui.js'", `from 'data:text/javascript;base64,${Buffer.from(stub).toString('base64')}'`);
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${id}`).toString('base64')}`);
+  return { ...mod, calls };
+}
+const AGENT = 'u_AbCdEfGhIjKlMnOpQrStUv';
+
+test('a fresh status request starts after what happened, never joins one already on its way, and an older answer never replaces a newer one', async () => {
+  const { refreshSeen, seenOf, calls } = await seenModule();
+  // The mention list asks while the person types; the agent hasn't connected yet.
+  const before = refreshSeen(W);
+  // The server took the message: the toast asks again, on a request of its own.
+  const after = refreshSeen(W, { fresh: true });
+  assert.equal(calls.length, 2, 'the fresh request is a new one');
+  // Asking without fresh joins the newest request on its way.
+  assert.equal(refreshSeen(W), after);
+  assert.equal(calls.length, 2);
+  calls[1].resolve([{ id: AGENT, lastSeen: null }]);
+  assert.equal((await after).get(AGENT), null);
+  assert.equal(seenOf(W, AGENT), null);
+  // The earlier request answers last, with what was true before: it doesn't replace the newer answer.
+  calls[0].resolve([{ id: AGENT, lastSeen: 1000 }]);
+  assert.equal((await before).get(AGENT), 1000);
+  assert.equal(seenOf(W, AGENT), null);
+});
+
+test('an answer that arrives for what forgetSeen dropped is thrown away, as after sign-out or becoming a guest', async () => {
+  const { refreshSeen, forgetSeen, seenOf, loadSeen, calls } = await seenModule();
+  const asked = refreshSeen(W);
+  forgetSeen(W);
+  calls[0].resolve([{ id: AGENT, lastSeen: 1000 }]);
+  assert.equal(await asked, null, 'the caller gets nothing to show');
+  assert.equal(seenOf(W, AGENT), undefined, 'and the cache stays empty');
+  // A failed request for a dropped workspace leaves nothing behind either, so the next look asks at once.
+  const failing = refreshSeen(W);
+  forgetSeen();
+  calls[1].reject(new Error('forbidden'));
+  assert.equal(await failing, null);
+  const next = loadSeen(W);
+  assert.equal(calls.length, 3);
+  calls[2].resolve([{ id: AGENT, lastSeen: 2000 }]);
+  assert.equal((await next).get(AGENT), 2000);
+  assert.equal(seenOf(W, AGENT), 2000);
 });
