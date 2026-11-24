@@ -414,7 +414,8 @@ test('every chat*, account and host method answers; anything else says it is not
   const page = openPage();
   t.after(() => page.close());
   await page.ready();
-  assert.equal(CHAT_METHODS.length, 55);
+  // 55 before agents in channels, plus chatAgents, chatCreateAgent, chatUpdateAgent, chatNewAgentKey, chatRemoveAgent.
+  assert.equal(CHAT_METHODS.length, 60);
   for (const name of CHAT_METHODS) {
     const res = await page.invoke(name);
     if (name === 'chatState') {
@@ -535,7 +536,8 @@ test('every method the chat, account, ui, i18n, diag and web shell modules call 
     const text = fs.readFileSync(path.join(root, 'src', 'renderer', file), 'utf8');
     for (const m of text.matchAll(/\b(?:api|invoke|call)\(\s*['"`]([A-Za-z]+)['"`]/g)) called.add(m[1]);
   }
-  const desktopOnly = new Set(['accountSetServer', 'accountSync', 'accountChangePassword', 'accountNewRecoveryKey', 'accountExport', 'nativeEdit']);
+  // agentConfig: the Settings, Agents a runner's backend comes from, which chat-dialogs.js asks for only off the web.
+  const desktopOnly = new Set(['accountSetServer', 'accountSync', 'accountChangePassword', 'accountNewRecoveryKey', 'accountExport', 'nativeEdit', 'agentConfig']);
   const page = openPage();
   t.after(() => page.close());
   await page.ready();

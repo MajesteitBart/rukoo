@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import pkg from '../package.json' with { type: 'json' };
 import { call, device, key, newEmail, salt, sealed, KDF, INVITE, withVars } from './helpers.js';
 import worker from '../src/index.js';
+import { privacy } from '../src/privacy.js';
 import { createExecutionContext } from 'cloudflare:test';
 import { s3Vars } from './fixtures/fake-s3.js';
 
@@ -141,6 +142,88 @@ describe('GET /privacy', () => {
       const off = await page(lang);
       expect(off, lang).not.toContain('id="team-chat"');
       expect(off.toLowerCase(), lang).not.toContain(name);
+    }
+  });
+
+  it('says what an agent in a channel reads, where that goes and what its key is, while the server has agents', async () => {
+    const page = async (lang, vars) => (await call('GET', `/privacy?lang=${lang}`, { vars })).text;
+    const languages = {
+      en: {
+        // The paragraphs sit between who sees whom and the invitations.
+        before: 'Guests see the people in the channels they are in.',
+        after: 'An invitation is a link with a secret in it.',
+        parts: [
+          'Owners, admins and members can make agents: accounts in the workspace that a program answers for',
+          'Whoever makes one is its sponsor and picks that program, which runs outside this server',
+          'In each channel it is in, it can read what a person there can: the messages, earlier ones included, their files and who is in the channel.',
+          'It passes what it reads on to that program, which may send it on to the provider of an AI model.',
+          'This server can’t see or control that program',
+          'An agent posts only to answer a message that mentions it',
+          'a hash of its key',
+          'An agent’s key is a secret like a password: whoever has it can read the agent’s channels and post there as the agent.',
+          'An agent is also removed when its sponsor leaves the workspace, is removed from it, becomes a guest or deletes their account.',
+          // Where it is kept, and who helps.
+          'An agent in a channel passes what it reads there on to a program its sponsor chose, which isn’t part of this server (see Team chat).'
+        ]
+      },
+      nl: {
+        before: 'Gasten zien de mensen in de kanalen waarin ze zitten.',
+        after: 'Een uitnodiging is een link met een geheim erin.',
+        parts: [
+          'Eigenaren, beheerders en leden kunnen agents maken: accounts in de werkruimte waar een programma voor antwoordt',
+          'Wie er een maakt, is de sponsor ervan en kiest dat programma, dat buiten deze server draait',
+          'In elk kanaal waarin hij zit, kan hij lezen wat een persoon daar kan lezen: de berichten, ook de eerdere, hun bestanden en wie er in het kanaal zitten.',
+          'Wat hij leest, geeft hij door aan dat programma, dat het weer kan doorsturen naar de aanbieder van een AI-model.',
+          'Deze server kan dat programma niet zien of sturen',
+          'Een agent plaatst alleen een bericht als antwoord op een bericht waarin hij wordt genoemd',
+          'een hash van zijn sleutel',
+          'De sleutel van een agent is geheim, net als een wachtwoord: wie hem heeft, kan de kanalen van de agent lezen en er als de agent in schrijven.',
+          'Een agent wordt ook verwijderd als zijn sponsor de werkruimte verlaat, eruit wordt verwijderd, gast wordt of het eigen account verwijdert.',
+          'Een agent in een kanaal geeft wat hij daar leest door aan een programma dat zijn sponsor koos, en dat programma hoort niet bij deze server (zie Teamchat).'
+        ]
+      }
+    };
+    // What privacy() gets from index.js with team chat on, without files or previews.
+    const chat = (agents) => ({ retentionDays: 90, inviteSignups: false, previews: false, files: null, agents });
+    const statement = (lang, agents) => privacy({ operator: { name: null, url: null, contact: null }, jurisdiction: null, chat: chat(agents) }, lang);
+    for (const [lang, { before, after, parts }] of Object.entries(languages)) {
+      // Agents are on wherever team chat is, unless WORKSPACE_AGENTS turns them off.
+      const text = await page(lang, { WORKSPACE_MODE: 'on' });
+      for (const part of parts) expect(text, part).toContain(escapeHtml(part));
+      const at = text.indexOf(escapeHtml(parts[0]));
+      expect(at, lang).toBeGreaterThan(text.indexOf(escapeHtml(before)));
+      expect(at, lang).toBeLessThan(text.indexOf(escapeHtml(after)));
+      // Without team chat there are no agents to describe.
+      const off = await page(lang);
+      for (const part of parts) expect(off, part).not.toContain(escapeHtml(part));
+      // A server with agents turned off leaves them out and keeps the rest of team chat; an unset flag counts as on.
+      const without = statement(lang, false);
+      expect(without, lang).toContain('id="team-chat"');
+      expect(without, lang).toContain(escapeHtml(after));
+      for (const part of parts) expect(without, part).not.toContain(escapeHtml(part));
+      for (const flag of [true, undefined]) {
+        const withAgents = statement(lang, flag);
+        for (const part of parts) expect(withAgents, `${flag} ${part}`).toContain(escapeHtml(part));
+      }
+    }
+  });
+
+  it('leaves agents out of the statement of a server that turned them off with WORKSPACE_AGENTS', async () => {
+    const page = async (lang, vars) => (await call('GET', `/privacy?lang=${lang}`, { vars })).text;
+    const agentText = {
+      en: ['Owners, admins and members can make agents', 'An agent in a channel passes what it reads there on to a program its sponsor chose'],
+      nl: ['Eigenaren, beheerders en leden kunnen agents maken', 'Een agent in een kanaal geeft wat hij daar leest door aan een programma dat zijn sponsor koos']
+    };
+    for (const [lang, parts] of Object.entries(agentText)) {
+      for (const off of ['off', '0', 'false']) {
+        const text = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_AGENTS: off });
+        // Team chat is still described, without agents.
+        expect(text, `${lang} ${off}`).toContain('id="team-chat"');
+        for (const part of parts) expect(text, `${lang} ${off}: ${part}`).not.toContain(escapeHtml(part));
+      }
+      // A number of agents leaves them on.
+      const on = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_AGENTS: '5' });
+      for (const part of parts) expect(on, `${lang}: ${part}`).toContain(escapeHtml(part));
     }
   });
 

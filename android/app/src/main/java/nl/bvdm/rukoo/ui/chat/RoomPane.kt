@@ -69,6 +69,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.ui.components.AgentAvatarShape
 import nl.bvdm.rukoo.ui.components.Avatar
 import nl.bvdm.rukoo.ui.components.EmptyState
 import nl.bvdm.rukoo.ui.components.Hairline
@@ -306,12 +307,17 @@ data class TimelineScroll(val opening: Long, val key: String?, val index: Int, v
 
 @Composable
 private fun roomSubtitle(room: Room, host: String): String =
-    if (room.kind == RoomKind.DM) stringResource(R.string.chat_head_direct, host) else channelSubtitle(room.members, room.visibility)
+    if (room.kind == RoomKind.DM) stringResource(R.string.chat_head_direct, host) else channelSubtitle(room.members, room.visibility, room.agents)
 
+/** "3 members · 1 agent · Private": the people, the agents when there are any, and a private channel's lock. */
 @Composable
-private fun channelSubtitle(members: Int, visibility: String): String {
-    val count = pluralStringResource(R.plurals.chat_head_members, members, members)
-    return if (visibility == "private") "$count · ${stringResource(R.string.chat_head_private)}" else count
+private fun channelSubtitle(members: Int, visibility: String, agents: Int = 0): String {
+    val parts = buildList {
+        add(pluralStringResource(R.plurals.chat_head_members, members, members))
+        if (agents > 0) add(pluralStringResource(R.plurals.chat_head_agents, agents, agents))
+        if (visibility == "private") add(stringResource(R.string.chat_head_private))
+    }
+    return parts.joinToString(" · ")
 }
 
 /**
@@ -825,7 +831,7 @@ private fun MessageRow(row: ChatTimeline.Message, ctx: RowContext) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box(Modifier.width(32.dp)) {
-            if (row.head) Avatar(if (author?.state == "deleted") "?" else author?.name, row.actor, size = 32.dp)
+            if (row.head) Avatar(if (author?.state == "deleted") "?" else author?.name, row.actor, size = 32.dp, agent = author?.isAgent == true)
         }
         Column(Modifier.weight(1f)) {
             if (row.reply && row.head) row.context?.let { ReplyContext(it, ctx) }
@@ -868,11 +874,15 @@ private fun messageText(text: String, row: ChatTimeline.Message, ctx: RowContext
     }
 }
 
-/** The tag after a name: Former member for someone who left, Guest for a guest; a deleted member's name is the tag. */
+/**
+ * The tag after a name: Former member for someone who left (a removed agent too), Agent for an agent, Guest for a
+ * guest; a deleted member's name is the tag.
+ */
 @Composable
 private fun memberTag(member: Member?): String? = when {
     member == null || member.state == "deleted" -> null
     member.state != "active" -> stringResource(R.string.chat_log_former_member)
+    member.isAgent -> stringResource(R.string.chat_roles_agent)
     member.role == "guest" -> stringResource(R.string.chat_roles_guest)
     else -> null
 }
@@ -930,7 +940,9 @@ private fun ReplySummaryRow(r: ChatTimeline.Replies, ctx: RowContext, onClick: (
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy((-4).dp)) {
             for (a in r.actors) {
-                Box(Modifier.background(c.panel, CircleShape).padding(1.dp)) { Avatar(ctx.members[a]?.name, a, size = 16.dp) }
+                // An agent's rounded square keeps its ring in the same shape.
+                val agent = ctx.members[a]?.isAgent == true
+                Box(Modifier.background(c.panel, if (agent) AgentAvatarShape else CircleShape).padding(1.dp)) { Avatar(ctx.members[a]?.name, a, size = 16.dp, agent = agent) }
             }
         }
         if (r.hasNew) Box(Modifier.size(6.dp).background(c.accent, CircleShape))

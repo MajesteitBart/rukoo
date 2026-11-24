@@ -32,6 +32,7 @@ import nl.bvdm.rukoo.ui.mail.DialogRequest
 import nl.bvdm.rukoo.ui.mail.ResourceStrings
 import nl.bvdm.rukoo.ui.mail.UiStrings
 import nl.bvdm.rukoo.workspaces.ChatState
+import nl.bvdm.rukoo.workspaces.MadeAgent
 import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.ResendMode
 import nl.bvdm.rukoo.workspaces.Room
@@ -58,6 +59,18 @@ interface ChatUiHost {
  * ([member], a display name) and the server of an invitation link for another server ([linkHost]).
  */
 data class ErrorContext(val host: String = "", val workspace: String = "", val member: String? = null, val linkHost: String? = null)
+
+/**
+ * What a channel's mention list is loaded again by, in [ChatUi.mentionMembers] and the open picker: the room's roster
+ * revision ([Room.roster]), which moves with every join and leave, also when one agent replaces another and both
+ * counts stay. The counts come with the feed's row and the join or leave with the room's events, which can arrive a
+ * run later when the cache was behind; either one changing loads the list again.
+ */
+data class MentionRoster(val people: Int, val agents: Int, val roster: Long) {
+    companion object {
+        fun of(room: Room) = MentionRoster(room.members, room.agents, room.roster)
+    }
+}
 
 /** The texts of contract §3.15 for a [WorkspaceError], and of a failed send's reason (§3.8). Pure, for the tests. */
 object ChatErrors {
@@ -99,6 +112,12 @@ object ChatErrors {
                 else -> s.get(R.string.chat_errors_quota, ctx.workspace)
             }
             "invalid" -> if (e.field in NAME_FIELDS) s.get(R.string.chat_errors_invalid_name) else s.get(R.string.chat_errors_invalid)
+            "agent_limit" -> s.get(R.string.chat_errors_agent_limit, ctx.workspace)
+            "agent_in_dm" -> s.get(R.string.chat_errors_agent_in_dm)
+            "agent_not_manager" -> s.get(R.string.chat_errors_agent_not_manager)
+            "agent_block" -> s.get(R.string.chat_errors_agent_block)
+            "agent_role" -> s.get(R.string.chat_errors_agent_role)
+            "sponsor_not_in_channel" -> s.get(R.string.chat_errors_agent_sponsor_not_in_channel)
             "bad_link" -> s.get(R.string.chat_join_bad_link)
             "other_server" -> s.get(R.string.chat_join_other_host, ctx.linkHost.orEmpty(), ctx.host)
             "not_saved" -> s.get(R.string.chat_errors_not_saved)
@@ -334,23 +353,23 @@ class ChatUi(
         mentionIds.clear()
     }
 
-    // Who can be mentioned in each channel, with the member count it was loaded at: `GET /channels/{c}/members`.
-    private val mentionIds = HashMap<String, Pair<Int, List<String>>>()
+    // Who can be mentioned in each channel, with the roster it was loaded at: `GET /channels/{c}/members`.
+    private val mentionIds = HashMap<String, Pair<MentionRoster, List<String>>>()
 
     /**
      * The member IDs of [room], for the mention picker; null when they couldn't load (offline). A channel's list is
-     * kept while its member count stays, and loaded again when it changes or with [fresh], which the picker asks for
-     * each time it opens: someone replaced in the channel leaves the count as it was (§3.17). When that load fails,
-     * the kept list stands in.
+     * kept while its [MentionRoster] stays, and loaded again when it changes or with [fresh], which the picker asks
+     * for each time it opens (§3.17). When that load fails, the kept list stands in.
      */
     suspend fun mentionMembers(ws: String, room: Room, fresh: Boolean = false): List<String>? {
         if (room.kind == RoomKind.DM) return room.participants.orEmpty()
         val key = "$ws/${room.id}"
         val kept = mentionIds[key]
-        if (!fresh && kept != null && kept.first == room.members) return kept.second
+        val roster = MentionRoster.of(room)
+        if (!fresh && kept != null && kept.first == roster) return kept.second
         val w = workspaces ?: return kept?.second
         return try {
-            w.roomMembers(ws, room.id).map { it.member }.also { mentionIds[key] = room.members to it }
+            w.roomMembers(ws, room.id).map { it.member }.also { mentionIds[key] = roster to it }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -610,7 +629,7 @@ class ChatUi(
     fun askLeaveChannel(ws: String, room: Room, members: Map<String, Member>, me: String?) = launch("leave:${room.id}", context(ws)) {
         if (SheetRules.sharedManaged(listOf(room)).isNotEmpty()) {
             val inside = membersOrNull(ws, room.id)
-            if (inside != null && SheetRules.soleManager(inside, me)) {
+            if (inside != null && SheetRules.soleManager(inside, me, agentIds(members))) {
                 expectGone(room.id)
                 promptError = null
                 prompt = ChatPrompt.Successor(ws, room, SheetRules.successors(inside.map { it.member }, members, me, collator()))
@@ -737,7 +756,7 @@ class ChatUi(
                         return@launch
                     }
                     val channels = when {
-                        SheetRules.soleManager(inside, me) -> shown.channels.map { ch ->
+                        SheetRules.soleManager(inside, me, agentIds(directory)) -> shown.channels.map { ch ->
                             if (ch.id == room.id) ch.copy(people = SheetRules.successors(inside.map { it.member }, directory, me, collator())) else ch
                         }
                         else -> shown.channels.filter { it.id != room.id }
@@ -959,6 +978,52 @@ class ChatUi(
             }
         }
 
+    // ---- agents in channels ----
+
+    /** The busy key of making a new key for [agent]. */
+    fun agentKeyKey(agent: String) = "agentKey:$agent"
+
+    /** A key made from Workspace members, on its way to the Agents sheet, which shows it once. Never saved. */
+    private var heldAgentKey: Pair<String, MadeAgent>? = null
+
+    /** Keeps [made], the new key of an agent in workspace [ws], for the Agents sheet to show next. */
+    fun holdAgentKey(ws: String, made: MadeAgent) {
+        heldAgentKey = ws to made
+    }
+
+    /** The key [holdAgentKey] kept for [agent] in [ws], once: it is forgotten either way. */
+    fun takeAgentKey(ws: String, agent: String): MadeAgent? {
+        val held = heldAgentKey
+        heldAgentKey = null
+        return held?.takeIf { it.first == ws && it.second.agent.id == agent }?.second
+    }
+
+    /**
+     * A new key for [agent] (named [name]), asked first, as the old key stops working at once; [onKey] gets the agent
+     * and its key, which nothing else shows again.
+     */
+    fun askNewAgentKey(ws: String, agent: String, name: String, onKey: (MadeAgent) -> Unit) = launch(agentKeyKey(agent), context(ws)) {
+        val ok = confirm(
+            strings.get(R.string.chat_agents_new_key_title, name),
+            strings.get(R.string.chat_agents_new_key_body),
+            strings.get(R.string.chat_agents_new_key_confirm),
+        )
+        if (ok) onKey(newAgentKey(ws, agent))
+    }
+
+    /** Remove an agent from the workspace, asked first: its key stops working and it leaves every channel. */
+    fun askRemoveAgent(ws: String, agent: String, name: String) = launch("remove:$agent", context(ws)) {
+        val ok = confirm(
+            strings.get(R.string.chat_agents_remove_title, name),
+            strings.get(R.string.chat_agents_remove_body, name),
+            strings.get(R.string.chat_agents_remove_confirm),
+            danger = true,
+        )
+        if (!ok) return@launch
+        removeAgent(ws, agent)
+        toasts.showToast(strings.get(R.string.chat_agents_removed, name))
+    }
+
     /** Remove someone from a channel (desktop-ui 6.6), asked first. */
     fun askRemoveFromChannel(ws: String, channel: Room, member: String, name: String) = launch("channelRemove:$member", context(ws)) {
         val channelName = channel.name.orEmpty()
@@ -1006,6 +1071,9 @@ sealed interface ChatPrompt {
  * they load; empty and [failed] when they didn't load).
  */
 data class HandOverChannel(val id: String, val name: String, val private: Boolean, val people: List<Member>? = null, val failed: Boolean = false)
+
+/** The agents of a directory, which never count as a channel's people (SheetRules.soleManager). */
+internal fun agentIds(members: Map<String, Member>): Set<String> = members.values.filter { it.isAgent }.mapTo(HashSet()) { it.id }
 
 /** Members' names as [s] words them: Former member, Deleted member, " and N others" and the language's list. */
 fun chatNames(s: UiStrings): ChatNames = ChatNames(

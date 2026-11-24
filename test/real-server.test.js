@@ -418,6 +418,45 @@ test('blocks and direct messages, once the server has their routes', async (t) =
   assert.equal(blocked.member, bartMe.id);
 });
 
+test('an agent in general answers a mention with its own key, and its key reaches nothing else', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const info = await server.call('GET', '/v1/info');
+  assert.ok(info.body.workspace.capabilities.includes('agents'));
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga);
+  const bartMe = await server.seedMember(ws, bart, 'Bart');
+  const { agent, key } = await server.seedAgent(olga, ws, { name: 'Clark', answers: 'members', members: [bartMe.id], agents: true });
+  assert.match(key, /^rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(
+    { name: agent.name, sponsor: agent.sponsor, answers: agent.answers, members: agent.members, agents: agent.agents },
+    { name: 'Clark', sponsor: ws.me.id, answers: 'members', members: [bartMe.id], agents: true }
+  );
+  const added = await server.call('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/members`, { token: olga.token, body: { member: agent.id } });
+  assert.equal(added.status, 200);
+
+  const text = '@Clark what is next?';
+  const asked = await server.post(bart, ws.id, ws.general, text, { mentions: [mention(text, '@Clark', agent.id)] });
+  const answered = await server.agentReply(key, ws.id, ws.general, { trigger: asked.messageId, text: 'The launch.' });
+  assert.ok(answered.messageId);
+  const page = await server.call('GET', `/v1/workspaces/${ws.id}/conversations/${ws.general}/events?after=0`, { token: bart.token });
+  const event = page.body.events.find((e) => e.id === answered.messageId);
+  assert.equal(event.actor, agent.id);
+  assert.equal(event.root, asked.messageId);
+  assert.equal(event.trigger, asked.messageId);
+  assert.equal(event.depth, 1);
+  // A second reply to the same part is refused, and agentReply says so.
+  await assert.rejects(server.agentReply(key, ws.id, ws.general, { trigger: asked.messageId, text: 'Again' }), /agent reply: 409 .*already_answered/);
+
+  const me = await server.agentCall(key, 'GET', `/v1/workspaces/${ws.id}/agents/me`);
+  assert.equal(me.status, 200);
+  assert.equal(me.body.agent.id, agent.id);
+  const members = await server.call('GET', `/v1/workspaces/${ws.id}/members`, { token: bart.token });
+  assert.equal(members.body.members.find((m) => m.id === agent.id).kind, 'agent');
+  assert.equal((await server.agentCall(key, 'POST', `/v1/workspaces/${ws.id}/channels`, { body: { name: 'mine', visibility: 'workspace' } })).body.error, 'agent_forbidden');
+  assert.equal((await server.agentCall(key, 'GET', '/v1/account')).status, 401);
+});
+
 test('stop() then start() keeps the address, the session and the message; an open socket closes on the stop', async (t) => {
   if (skipWithoutServer(t)) return;
   const olga = await server.seedAccount();

@@ -1,0 +1,15 @@
+{
+  "server": "https://rukoo.io",
+  "workspace": "w_AAAAAAAAAAAAAAAAAAAAAA",
+  "keyEnv": "RUKOO_AGENT_KEY",
+  "backend": {
+    "type": "runs",
+    "url": "http://100.64.0.9:8642",
+    "keyEnv": "HERMES_API_KEY",
+    "model": "",
+    "timeout": 600
+  },
+  "context": { "threadMessages": 50, "channelMessages": 20, "maxChars": 30000 },
+  "instructions": "Answer in the language of the question. Say so when you don't know.",
+  "pollSeconds": 30
+}

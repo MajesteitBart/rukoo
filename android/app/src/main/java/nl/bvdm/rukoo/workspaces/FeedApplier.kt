@@ -643,6 +643,7 @@ class FeedApplier(
             need(GRANT.matches(c.grant), "$where.grant")
             need(c.role in ROOM_ROLES, "$where.role")
             need(c.members >= 0, "$where.members")
+            need(c.agents >= 0, "$where.agents")
             need(c.head >= 0, "$where.head")
             need(c.floor >= 0, "$where.floor")
             need(c.lastAt == null || c.lastAt >= 0, "$where.lastAt")
@@ -694,6 +695,11 @@ class FeedApplier(
             when (e.kind) {
                 WireEvent.MESSAGE_POSTED -> {
                     need(e.root == null || WorkspaceIds.isEvent(e.root), "$where.root")
+                    // An agent's reply names the message it answers, its depth in a chain of agents, 1 and up, and
+                    // the person who started that chain.
+                    need(e.trigger == null || WorkspaceIds.isEvent(e.trigger), "$where.trigger")
+                    need(e.depth == null || e.depth >= 1, "$where.depth")
+                    need(e.origin == null || WorkspaceIds.isMember(e.origin), "$where.origin")
                     if (e.redacted) {
                         need(e.text == null && e.mentions.isEmpty(), "$where.redacted")
                     } else {

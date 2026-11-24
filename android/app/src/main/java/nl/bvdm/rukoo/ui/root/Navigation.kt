@@ -22,10 +22,11 @@ enum class ChatPane { HOME, ROOM, THREAD }
 
 /**
  * Chat's sheets and dialogs over the panes, which ChatSheets.kt draws. [ChatNav.sheetTarget] names what one is about:
- * the room of DETAILS, MEMBERS and ADD_PEOPLE (null for the workspace's members).
+ * the room of DETAILS, MEMBERS and ADD_PEOPLE (null for the workspace's members). AGENTS is the workspace's agents;
+ * its target, when Workspace members sends the person there, names an agent's form or its new key (AgentRules.opened).
  */
 @Serializable
-enum class ChatSheet { NEW, JOIN, CREATE_WORKSPACE, NEW_CHANNEL, NEW_DM, BROWSE, DETAILS, MEMBERS, ADD_PEOPLE, INVITE, BLOCKED }
+enum class ChatSheet { NEW, JOIN, CREATE_WORKSPACE, NEW_CHANNEL, NEW_DM, BROWSE, DETAILS, MEMBERS, ADD_PEOPLE, INVITE, BLOCKED, AGENTS }
 
 /**
  * Where Chat is: the workspace, the room and the thread open in it, and the one-pane back stack, bottom first and

@@ -177,7 +177,8 @@ function blankState() {
     unread: false,
     workspaces: [],
     capabilities: [],
-    files: null
+    files: null,
+    agents: null
   };
 }
 
@@ -202,6 +203,15 @@ function filesOf(info) {
     }
   }
   return { maxBytes: isInt(f.maxBytes) ? f.maxBytes : null, workspaceBytes: isInt(f.workspaceBytes) ? f.workspaceBytes : null, origin };
+}
+
+// /v1/info's workspace.agents when agents are listed (server/WORKSPACES.md "Agents"): { max, depth, repliesPerHour },
+// each null when the server doesn't say.
+function agentsOf(info) {
+  if (!capabilitiesOf(info).includes('agents')) return null;
+  const a = info.workspace.agents && typeof info.workspace.agents === 'object' ? info.workspace.agents : {};
+  const n = (v) => (isInt(v) ? v : null);
+  return { max: n(a.max), depth: n(a.depth), repliesPerHour: n(a.repliesPerHour) };
 }
 
 class WorkspaceService extends EventEmitter {
@@ -1225,6 +1235,11 @@ class WorkspaceService extends EventEmitter {
     return filesOf(this.info);
   }
 
+  // /v1/info's workspace.agents, or null without agents.
+  agentsInfo() {
+    return agentsOf(this.info);
+  }
+
   // { id, name, role } of the person in ws, from GET /, or null before it answered.
   me(ws) {
     const row = this.store && this.store.getWs(ws);
@@ -1339,7 +1354,9 @@ class WorkspaceService extends EventEmitter {
       workspaces,
       // Rich messages (rich contract 2.1): what the renderer shows only when the server lists it.
       capabilities: this.capabilities(),
-      files: this.filesInfo()
+      files: this.filesInfo(),
+      // Agents in channels: how many a workspace may have and how deep they answer each other.
+      agents: this.agentsInfo()
     };
     if (take && this.lostUnsent) {
       this.lostUnsent = 0;

@@ -70,8 +70,9 @@ test("chat's caption grey passes 4.5:1 on the panel, the sidebar and dialogs, an
   }
   assert.equal(themes.light.get('--ch-text-3'), '#666b7a');
   assert.equal(themes.dark.get('--ch-text-3'), '#8a909e');
-  // The override is scoped to chat's surfaces; the token blocks keep mail's --text-3.
-  assert.equal(rule('.chat, .ch-nav, .ch-ws-switch, .ch-form').get('--text-3'), 'var(--ch-text-3)');
+  // The override is scoped to chat's surfaces, its dialogs and its mention list included (they open on the body,
+  // outside .chat); the token blocks keep mail's --text-3.
+  assert.equal(rule('.chat, .ch-nav, .ch-ws-switch, .ch-form, .dialog.ch-dialog, .ch-suggest').get('--text-3'), 'var(--ch-text-3)');
   assert.equal(themes.light.get('--text-3'), '#868b98');
   assert.equal(themes.dark.get('--text-3'), '#7a808e');
 });

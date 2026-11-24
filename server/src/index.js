@@ -15,6 +15,7 @@ import {
   ACCOUNT_NAME,
   accountName,
   accountObject,
+  agentsOn,
   blockedHandles,
   bookingFormerRoots,
   bookingObject,
@@ -85,7 +86,8 @@ async function handle(request, env, ctx) {
   if (path === '/' && reading) return html(page(config(env, url)), method);
   if (path === '/privacy' && reading) {
     // The statement covers team chat only while the server runs it, with the retention it is set to, link previews
-    // while it makes them and files while it has a bucket for them, with their limits and the store that holds them.
+    // while it makes them, files while it has a bucket for them, with their limits and the store that holds them, and
+    // agents unless WORKSPACE_AGENTS turns them off.
     const limits = workspaceLimits(env);
     const storage = filesStorage(env);
     const chat = workspacesOn(env)
@@ -93,7 +95,8 @@ async function handle(request, env, ctx) {
           retentionDays: limits.retentionDays,
           inviteSignups: inviteSignups(env),
           previews: previewsOn(env),
-          files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null
+          files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null,
+          agents: agentsOn(env)
         }
       : null;
     // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator

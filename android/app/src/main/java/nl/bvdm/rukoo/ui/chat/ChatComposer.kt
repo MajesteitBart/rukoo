@@ -204,8 +204,9 @@ fun ChatComposer(
     LaunchedEffect(token == null) { if (token == null) dismissed = null }
     val picking = token?.takeIf { it.start != dismissed }
     val open = picking != null
-    // Loaded again each time the picker opens, so someone who left or joined the channel meanwhile is (or isn't) offered.
-    val ids by produceState<List<String>?>(null, ws, room.id, room.members, room.participants, open) { value = ui.mentionMembers(ws, room, fresh = open) }
+    // Loaded again each time the picker opens, so someone who left or joined the channel meanwhile is (or isn't) offered,
+    // and while it is open whenever the roster moves: a person or an agent came or went, also one agent for another.
+    val ids by produceState<List<String>?>(null, ws, room.id, MentionRoster.of(room), room.participants, open) { value = ui.mentionMembers(ws, room, fresh = open) }
     // Offline, a channel's members can't load: the people who wrote in it stand in.
     val people = remember(ids, members, recent) { (ids ?: recent).distinct().mapNotNull { members[it] } }
     val query = picking?.query
@@ -236,7 +237,7 @@ fun ChatComposer(
 
     Column(modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp)) {
         if (open) {
-            MentionPicker(matches, active, members, onPick = ::pick)
+            MentionPicker(matches, active, members, me, onPick = ::pick)
             Spacer(Modifier.size(6.dp))
         }
         val left = wire.bytesLeft
@@ -361,9 +362,13 @@ private fun SendButton(enabled: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** The people to mention, above the field: avatar, name and the Guest tag; "Nobody here by that name" without a match. */
+/**
+ * The people and agents to mention, above the field: avatar, name and the Guest or Agent tag; "Nobody here by that
+ * name" without a match. An agent that won't answer [me] says whom it answers ("Answers only Olga"); it can still be
+ * mentioned.
+ */
 @Composable
-private fun MentionPicker(matches: List<Member>, active: Int, members: Map<String, Member>, onPick: (Member) -> Unit) {
+private fun MentionPicker(matches: List<Member>, active: Int, members: Map<String, Member>, me: String?, onPick: (Member) -> Unit) {
     val c = Rk.colors
     val label = stringResource(R.string.chat_mentions_label)
     Column(
@@ -394,13 +399,25 @@ private fun MentionPicker(matches: List<Member>, active: Int, members: Map<Strin
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Avatar(m.name, m.id, size = 24.dp)
-                Text(m.name, style = Rk.type.text13.medium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                // Two members with one name: the end of the ID tells them apart (desktop-ui 2).
-                if (members.values.count { it.state == "active" && it.name.trim().equals(m.name.trim(), ignoreCase = true) } > 1) {
-                    Text(m.id.takeLast(4), style = Rk.type.text12, color = c.text3, maxLines = 1)
+                Avatar(m.name, m.id, size = 24.dp, agent = m.isAgent)
+                Column(Modifier.weight(1f, fill = false)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(m.name, style = Rk.type.text13.medium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        // Two members with one name: the end of the ID tells them apart (desktop-ui 2).
+                        if (members.values.count { it.state == "active" && it.name.trim().equals(m.name.trim(), ignoreCase = true) } > 1) {
+                            Text(m.id.takeLast(4), style = Rk.type.text12, color = c.text3, maxLines = 1)
+                        }
+                        val tag = when {
+                            m.isAgent -> stringResource(R.string.chat_roles_agent)
+                            m.role == "guest" -> stringResource(R.string.chat_roles_guest)
+                            else -> null
+                        }
+                        if (tag != null) Text(tag, style = Rk.type.text11.medium, color = c.text2, modifier = Modifier.background(c.chip, Rk.shapes.chip).padding(horizontal = 6.dp, vertical = 1.dp))
+                    }
+                    if (m.isAgent && !AgentRules.answers(m.agent, me)) {
+                        agentAnswersText(m.agent, members)?.let { Text(it, style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
                 }
-                if (m.role == "guest") Text(stringResource(R.string.chat_roles_guest), style = Rk.type.text11.medium, color = c.text2, modifier = Modifier.background(c.chip, Rk.shapes.chip).padding(horizontal = 6.dp, vertical = 1.dp))
             }
         }
     }

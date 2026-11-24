@@ -153,11 +153,12 @@ function inOrder() {
   return [...channels, ...dms.filter((r) => !guest || r.closedReason)];
 }
 
+// An agent's avatar is a rounded square, so it stands apart from the people's round ones.
 function memberAvatar(id, cls = 'ch-av-18') {
   const m = CH.members.get(id);
   const deleted = m && m.state === 'deleted';
   const text = deleted ? '?' : initials({ name: displayName(m, t) });
-  return `<span class="avatar ${cls}" style="--h:${hue(id || '')}" aria-hidden="true">${esc(text)}</span>`;
+  return `<span class="avatar ${cls}${m && m.kind === 'agent' ? ' is-agent' : ''}" style="--h:${hue(id || '')}" aria-hidden="true">${esc(text)}</span>`;
 }
 
 function tileHtml(w, { dot = false } = {}) {
@@ -174,6 +175,8 @@ export function hostNote() {
   const lines = [`${t('chat.host.lineNoLocation', { operator, host: s.host || '' })}${where ? ` ${where}.` : ''}`];
   if (s.retention && s.retention.contentDays) lines.push(t('chat.host.retention', { count: s.retention.contentDays }));
   lines.push(t('chat.host.reads'));
+  // Agents in a channel (server/WORKSPACES.md "Agents") pass what they read to whatever runs them.
+  if (caps().has('agents')) lines.push(t('chat.host.agents'));
   return `<div class="note ch-host">${lines.map((l) => esc(l)).join(' ')}</div>`;
 }
 
@@ -258,6 +261,19 @@ export function chatErrorText(err, context = {}) {
       return WEB ? t('chat.errors.webNotSaved') : t('chat.errors.notSaved');
     case 'paused':
       return t('chat.errors.paused', { workspace });
+    // Agents in channels (server/WORKSPACES.md "Agents").
+    case 'agent_limit':
+      return t('chat.errors.agentLimit', { workspace });
+    case 'agent_in_dm':
+      return t('chat.errors.agentInDm');
+    case 'agent_not_manager':
+      return t('chat.errors.agentNotManager');
+    case 'agent_block':
+      return t('chat.errors.agentBlock');
+    case 'agent_role':
+      return t('chat.errors.agentRole');
+    case 'sponsor_not_in_channel':
+      return t('chat.errors.agentSponsorNotInChannel');
     default:
       return t('chat.errors.failed');
   }
@@ -294,6 +310,8 @@ export function init(context) {
       api('chatState')
         .then(applyState)
         .catch(() => {}),
+    // What the server offers (RUK-211 contract 2.1), such as agents.
+    caps: () => caps(),
     // from: { ws, generation } of the workspace the call was made in. A late answer for another workspace, or for this
     // one before a switch away and back, is dropped: it would replace that workspace's list with this one's.
     setBlocks: (blocks, from = null) => {
@@ -912,7 +930,8 @@ function directoryDrawn() {
     CH.generation,
     me ? [me.id, me.name, me.role] : null,
     Boolean(CH.view?.membersMore),
-    [...CH.members.values()].map((m) => [m.id, m.name, m.role, m.state]),
+    // An agent's kind and settings too: Add people and the mention list say whom it answers.
+    [...CH.members.values()].map((m) => [m.id, m.name, m.role, m.state, m.kind || '', m.agent ? JSON.stringify(m.agent) : '']),
     (CH.view?.channels || []).map((c) => [c.id, c.name, c.joined, c.members, c.visibility, c.archived]),
     [...CH.blocks].sort(),
     [...CH.rooms.values()].map((r) => `${r.id}:${r.closedReason || ''}`).sort()
@@ -1074,7 +1093,10 @@ function roomItems(room) {
   const admin = ['owner', 'admin'].includes(myRole());
   if (room.kind === 'channel') {
     const manager = room.role === 'manager' && !room.archived;
+    // A sponsor adds their own agents to a channel the workspace can see (server/WORKSPACES.md "Agents"): Add agents,
+    // since they can't add people.
     if (manager) top.push({ icon: 'userPlus', label: t('chat.head.addPeople'), action: () => D.channelMembers(room, { add: true }) });
+    else if (D.sponsorsHere(room)) top.push({ icon: 'userPlus', label: t('chat.channel.addAgents'), action: () => D.channelMembers(room, { add: true }) });
     top.push({ icon: 'people', label: t('chat.head.membersButton'), action: () => D.channelMembers(room) });
     if (manager) top.push({ icon: 'edit', label: t('chat.head.rename'), action: () => D.renameChannel(room) });
     bottom.push({ icon: 'leave', label: t('chat.head.leave'), action: () => D.leaveChannel(room) });

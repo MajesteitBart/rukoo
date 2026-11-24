@@ -700,9 +700,9 @@ describe('the trash', () => {
 describe('without a bucket', () => {
   it('offers no files and answers files_off on every file route', async () => {
     const info = await api('GET', '/v1/info', { vars: OFF });
-    expect(info.body.workspace.capabilities).toEqual(['reactions', 'unread', 'previews']);
+    expect(info.body.workspace.capabilities).toEqual(['reactions', 'unread', 'previews', 'agents']);
     expect(info.body.workspace).not.toHaveProperty('files');
-    expect((await api('GET', '/v1/info', { vars: { ...OFF, WORKSPACE_PREVIEWS: 'off' } })).body.workspace.capabilities).toEqual(['reactions', 'unread']);
+    expect((await api('GET', '/v1/info', { vars: { ...OFF, WORKSPACE_PREVIEWS: 'off' } })).body.workspace.capabilities).toEqual(['reactions', 'unread', 'agents']);
 
     const ws = await newWorkspace();
     const made = await upload(ws.person, ws.id, ws.general);

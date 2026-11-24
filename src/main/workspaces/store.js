@@ -10,14 +10,15 @@
 //
 // Version 2 (rich chat contract 4.2) adds what rich messages need: a message's files, link cards and reactions, the
 // files of an unsent message and of a draft, a room's readMark and whether this device holds back its reads of it,
-// and the index of downloaded files. Version 3 adds the seq a cached message's reactions and cards are current to. An
-// older file migrates in place; a new file is made as version 1 and migrated the same way, so both end with the same
-// tables.
+// and the index of downloaded files. Version 3 adds the seq a cached message's reactions and cards are current to.
+// Version 4 adds agents in channels (server/WORKSPACES.md "Agents"): an agent's reply settings in its member row, and
+// how many agents a room holds. An older file migrates in place; a new file is made as version 1 and migrated the same
+// way, so both end with the same tables.
 const fs = require('fs');
 const path = require('path');
 const { ChatError, jsonList } = require('./wire');
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const ROOM_CACHE_MAX = 2000;
 // Downloaded files live next to chat.db (rich contract 4.6); staged uploads made from dropped or pasted bytes too.
 const FILES_DIR = 'chat-files';
@@ -173,6 +174,13 @@ CREATE INDEX file_cache_sha ON file_cache (sha256);
 `,
   3: `
 ALTER TABLE event ADD COLUMN asOf INTEGER;          -- a message's: the seq its reactions and cards are current to
+`,
+  4: `
+ALTER TABLE member ADD COLUMN agent TEXT;           -- an agent's: JSON { sponsor, answers, members, agents }; NULL for a person
+ALTER TABLE room ADD COLUMN agents INTEGER NOT NULL DEFAULT 0;           -- the agents holding a grant, from the feed
+-- An older app kept an agent's row without its settings: the next run loads the directory again, as Android's
+-- ChatDb MIGRATIONS[2] does.
+UPDATE ws SET membersStale = 1;
 `
 };
 
@@ -187,7 +195,7 @@ const WS_FIELDS = [
 const ROOM_FIELDS = [
   'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'grantId', 'role', 'members',
   'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted',
-  'readMark', 'readPaused'
+  'readMark', 'readPaused', 'agents'
 ];
 const OUTBOX_FIELDS = ['grantId', 'generation', 'text', 'mentions', 'root', 'operationId', 'state', 'reason', 'attempts', 'nextAt', 'attachments'];
 const JSON_FIELDS = new Set(['limits', 'retention', 'participants', 'mentions', 'attachments']);
@@ -537,12 +545,12 @@ class Store {
       const newer = grantChanged ? '0' : 'excluded.readMark > room.readMark';
       this.run(
         `INSERT INTO room (ws, id, kind, name, visibility, archived, closedReason, participants, startedBy, grantId, role,
-           members, head, floor, lastAt, read, readLocal, readSent, unread, mentions, readMark)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           members, head, floor, lastAt, read, readLocal, readSent, unread, mentions, readMark, agents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (ws, id) DO UPDATE SET
            kind = excluded.kind, name = excluded.name, visibility = excluded.visibility, archived = excluded.archived,
            closedReason = excluded.closedReason, participants = excluded.participants, startedBy = excluded.startedBy,
-           grantId = excluded.grantId, role = excluded.role, members = excluded.members, head = excluded.head,
+           grantId = excluded.grantId, role = excluded.role, members = excluded.members, agents = excluded.agents, head = excluded.head,
            floor = excluded.floor, lastAt = excluded.lastAt,
            read = CASE WHEN ${older} THEN room.read ELSE excluded.read END,
            readLocal = CASE WHEN ${older} THEN room.readLocal WHEN ${newer} THEN excluded.read
@@ -573,7 +581,8 @@ class Store {
         feed.read,
         feed.unread,
         feed.mentions,
-        mark
+        mark,
+        feed.agents ?? 0
       );
       const dropped = this.applyFloor(ws, feed.conversation, feed.floor);
       return { row: this.getRoom(ws, feed.conversation), inserted: !before, grantChanged, dropped };
@@ -654,7 +663,8 @@ class Store {
       const message = e.kind === 'message.posted';
       const removed = message && (e.redacted === true || this.hasTombstone(ws, e.id));
       const data = {};
-      for (const [k, v] of Object.entries(e)) if (!EVENT_COLUMNS.has(k) && !(message && RICH_COLUMNS.has(k))) data[k] = v;
+      // A removed message keeps nothing of what it was, also not the trigger, depth and origin of an agent's reply.
+      if (!removed) for (const [k, v] of Object.entries(e)) if (!EVENT_COLUMNS.has(k) && !(message && RICH_COLUMNS.has(k))) data[k] = v;
       const rich = message && !removed;
       const current = rich ? Math.max(e.seq, asOf ?? 0) : null;
       this.run(
@@ -843,8 +853,9 @@ class Store {
     });
   }
 
-  // Removed messages lose their text and mentions, and their files, cards and reactions, in any room of the workspace.
-  // Returns { [room]: ids } for the ones that were cached with text, so the service can emit redacted.
+  // Removed messages lose their text and mentions, and their files, cards and reactions, in any room of the workspace;
+  // an agent's reply also its trigger, depth and origin, which are a message's only data. Returns { [room]: ids } for
+  // the ones that were cached with text, so the service can emit redacted.
   redact(ws, ids) {
     return this.tx(() => {
       const out = {};
@@ -852,7 +863,9 @@ class Store {
         const row = this.get('SELECT room, redacted FROM event WHERE ws = ? AND id = ?', ws, id);
         if (!row) continue;
         this.run(
-          'UPDATE event SET text = NULL, mentions = NULL, attachments = NULL, previews = NULL, reactions = NULL, redacted = 1 WHERE ws = ? AND id = ?',
+          `UPDATE event SET text = NULL, mentions = NULL, attachments = NULL, previews = NULL, reactions = NULL, redacted = 1,
+             data = CASE WHEN kind = 'message.posted' THEN NULL ELSE data END
+           WHERE ws = ? AND id = ?`,
           ws,
           id
         );
@@ -933,19 +946,37 @@ class Store {
 
   // ---- directory ----
 
-  // Each replaces the workspace's rows and clears its stale flag.
+  // Each replaces the workspace's rows and clears its stale flag. An agent's reply settings (wire.checkMember's agent)
+  // are kept as JSON with its row.
   replaceMembers(ws, rows, more = false) {
     this.tx(() => {
       this.run('DELETE FROM member WHERE ws = ?', ws);
       for (const m of rows) {
-        this.run('INSERT INTO member (ws, id, kind, name, role, state, joinedAt) VALUES (?, ?, ?, ?, ?, ?, ?)', ws, m.id, m.kind, m.name, m.role, m.state, m.joinedAt);
+        const agent = m.kind === 'agent' && m.agent && typeof m.agent === 'object' ? JSON.stringify(m.agent) : null;
+        this.run(
+          'INSERT INTO member (ws, id, kind, name, role, state, joinedAt, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          ws,
+          m.id,
+          m.kind,
+          m.name,
+          m.role,
+          m.state,
+          m.joinedAt,
+          agent
+        );
       }
       this.run('UPDATE ws SET membersStale = 0, membersMore = ? WHERE id = ?', more ? 1 : 0, ws);
     });
   }
 
+  // The members as checkMember gives them: an agent with its agent settings, a person without the field.
   listMembers(ws) {
-    return this.all('SELECT id, kind, name, role, state, joinedAt FROM member WHERE ws = ? ORDER BY id', ws);
+    return this.all('SELECT id, kind, name, role, state, joinedAt, agent FROM member WHERE ws = ? ORDER BY id', ws).map((row) => {
+      const { agent, ...m } = row;
+      if (agent === null || agent === undefined) return m;
+      const settings = parseData(agent);
+      return Object.keys(settings).length ? { ...m, agent: settings } : m;
+    });
   }
 
   replaceChannels(ws, rows) {

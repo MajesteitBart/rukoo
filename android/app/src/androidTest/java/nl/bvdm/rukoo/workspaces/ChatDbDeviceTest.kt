@@ -73,7 +73,7 @@ class ChatDbDeviceTest {
         db.read {
             val version = one("SELECT sqlite_version()") { it.text(0) }
             Log.i("ChatDbDeviceTest", "platform SQLite $version on API ${android.os.Build.VERSION.SDK_INT}")
-            assertEquals("1", one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) })
+            assertEquals(ChatDb.SCHEMA_VERSION.toString(), one("SELECT value FROM meta WHERE key = 'schema'") { it.text(0) })
             // The framework adds its own android_metadata table beside the twelve of §3.5.
             assertEquals(12L, long("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name != 'android_metadata'"))
             assertEquals(1L, long("PRAGMA foreign_keys"))

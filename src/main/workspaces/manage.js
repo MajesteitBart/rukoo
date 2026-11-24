@@ -51,6 +51,7 @@ function roomOfFeed(dm) {
     startedBy: dm.startedBy,
     role: dm.role,
     members: dm.members,
+    agents: dm.agents ?? 0,
     head: dm.head,
     floor: dm.floor,
     lastAt: dm.lastAt,
@@ -91,7 +92,13 @@ class Manage {
     chatStartDm: (svc, ws, members) => svc.manage.startDm(ws, members),
     chatLeaveDm: (svc, ws, c) => svc.manage.leaveDm(ws, c),
     chatBlock: (svc, ws, member) => svc.manage.block(ws, member),
-    chatUnblock: (svc, ws, member) => svc.manage.unblock(ws, member)
+    chatUnblock: (svc, ws, member) => svc.manage.unblock(ws, member),
+    // Agents in channels (server/WORKSPACES.md "Agents").
+    chatAgents: (svc, ws) => svc.manage.agents(ws),
+    chatCreateAgent: (svc, ws, input) => svc.manage.createAgent(ws, input),
+    chatUpdateAgent: (svc, ws, agent, input) => svc.manage.updateAgent(ws, agent, input),
+    chatNewAgentKey: (svc, ws, agent) => svc.manage.newAgentKey(ws, agent),
+    chatRemoveAgent: (svc, ws, agent) => svc.manage.removeAgent(ws, agent)
   };
 
   constructor(svc) {
@@ -741,6 +748,69 @@ class Manage {
     svc.guard(epoch);
     svc.store.run('DELETE FROM block WHERE ws = ? AND member = ?', ws, member);
     return this.afterBlocks(epoch, ws);
+  }
+
+  // ---- agents in channels (server/WORKSPACES.md "Agents") ----
+  //
+  // An agent is a member with kind agent, made by a full member (its sponsor) and run by its own runtime with a key. A
+  // change to one is a change of the directory: each write marks the members stale and waits for the run, so the
+  // directory the window reads next (Add people, the mention list, Members) has it.
+
+  // chatAgents: the workspace's active agents, live (GET /agents), for full members.
+  async agents(ws) {
+    this.row(ws);
+    return { agents: wire.checkAgents(await this.svc.call(ws, 'GET', '/agents')).agents };
+  }
+
+  // chatCreateAgent: POST /agents. The caller becomes its sponsor. The key is in this answer only.
+  async createAgent(ws, { name, answers, members, agents }) {
+    const epoch = this.svc.epoch;
+    this.row(ws);
+    const body = { name, answers, agents, ...(answers === 'members' ? { members } : {}) };
+    const made = wire.checkAgentAnswer(await this.write(ws, 'POST', '/agents', body), { key: true });
+    await this.agentChanged(epoch, ws);
+    return made;
+  }
+
+  // chatUpdateAgent: PATCH /agents/{u} with what changes.
+  async updateAgent(ws, agent, patch) {
+    const epoch = this.svc.epoch;
+    this.row(ws);
+    const answer = wire.checkAgentAnswer(await this.write(ws, 'PATCH', `/agents/${agent}`, patch));
+    await this.agentChanged(epoch, ws);
+    return answer;
+  }
+
+  // chatNewAgentKey: POST /agents/{u}/key. The old key stops at once; the new one is in this answer only.
+  async newAgentKey(ws, agent) {
+    const epoch = this.svc.epoch;
+    this.row(ws);
+    const made = wire.checkAgentAnswer(await this.write(ws, 'POST', `/agents/${agent}/key`), { key: true });
+    this.svc.guard(epoch);
+    return made;
+  }
+
+  // chatRemoveAgent: DELETE /agents/{u}. An agent that is gone already counts as removed.
+  async removeAgent(ws, agent) {
+    const epoch = this.svc.epoch;
+    this.row(ws);
+    try {
+      await this.write(ws, 'DELETE', `/agents/${agent}`);
+    } catch (err) {
+      if (!(err && err.code === 'not_found' && !err.scope)) throw err;
+    }
+    await this.agentChanged(epoch, ws);
+    return true;
+  }
+
+  // After a write that changed an agent: the directory loads again, and the call returns once it did. A run's failure
+  // doesn't fail the write, which the server already took.
+  async agentChanged(epoch, ws) {
+    const svc = this.svc;
+    svc.guard(epoch);
+    if (!svc.store.getWs(ws)) return;
+    svc.store.updateWs(ws, { membersStale: 1 });
+    await this.confirm(epoch, ws, true);
   }
 
   // The server's block list replaces the cached one; when it can't be loaded now, the row written above stands and

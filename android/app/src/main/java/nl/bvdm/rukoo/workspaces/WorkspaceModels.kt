@@ -24,7 +24,16 @@ data class WorkspaceServerInfo(
     val inviteSignups: Boolean = false,
     /** True when such a sign-up also needs a code emailed to the address, as on a server that checks addresses. */
     val inviteSignupsNeedCode: Boolean = false,
-)
+    /** With the `agents` capability: how many agents a workspace may have and how deep they answer each other. */
+    val agents: WorkspaceAgentLimits? = null,
+) {
+    /** The server has agents in channels on (`capabilities` lists `agents`). */
+    val agentsOn: Boolean get() = AGENTS_CAPABILITY in capabilities
+}
+
+/** `info.workspace.agents`: [max] active agents per workspace, [depth] replies in a chain of agents, [repliesPerHour] per agent. */
+@Serializable
+data class WorkspaceAgentLimits(val max: Int = 0, val depth: Int = 3, val repliesPerHour: Int = 0)
 
 @Serializable
 data class WorkspaceHome(val origin: String? = null, val installation: String? = null)
@@ -72,18 +81,74 @@ data class WorkspaceInfo(
 @Serializable
 data class WorkspaceDetails(val workspace: WorkspaceInfo, val me: Member)
 
-/** A person in a workspace: `GET /members`, `PATCH /members/…`, and the UI's member rows (§4.6 `Member`). */
+/**
+ * A person or an agent in a workspace: `GET /members`, `PATCH /members/…`, and the UI's member rows (§4.6 `Member`).
+ * An agent has [kind] `agent`, [role] `member` and its reply settings in [agent]; it is never in a DM, never a
+ * manager, a successor or blockable, so every list of people leaves it out through [isAgent].
+ */
 @Serializable
 data class Member(
     val id: String,
+    /** human | agent */
     val kind: String = "human",
     val name: String,
-    /** owner | admin | member | guest */
+    /** owner | admin | member | guest; an agent is always `member`. */
     val role: String,
-    /** active | former | deleted */
+    /** active, deleted, or what ended the membership (`left`, `removed`), which the UI shows as a former member. */
     val state: String,
     val joinedAt: Long = 0,
+    /** An agent's settings as the directory shows them; null for a person. */
+    val agent: AgentSettings? = null,
+) {
+    val isAgent: Boolean get() = kind == KIND_AGENT
+
+    companion object {
+        const val KIND_AGENT = "agent"
+    }
+}
+
+/**
+ * An agent's reply settings in the directory (`agent` on a member): its [sponsor], whom it [answers] (`everyone`,
+ * `sponsor`, or `members`: the sponsor and [members]), and whether a mention by another agent counts ([agents]).
+ */
+@Serializable
+data class AgentSettings(
+    val sponsor: String,
+    /** everyone | sponsor | members */
+    val answers: String,
+    val members: List<String> = emptyList(),
+    val agents: Boolean = false,
 )
+
+/**
+ * An agent as `GET /agents` and the routes that change one answer it (WORKSPACES.md "Agents in channels"). [members]
+ * is `[]` unless [answers] is `members`. [lastSeen] is its last request, written once a minute at most.
+ */
+@Serializable
+data class Agent(
+    val id: String,
+    val name: String,
+    val sponsor: String,
+    /** everyone | sponsor | members */
+    val answers: String,
+    val members: List<String> = emptyList(),
+    val agents: Boolean = false,
+    val lastSeen: Long? = null,
+    val createdAt: Long = 0,
+) {
+    /** The same settings as the directory carries them. */
+    val settings: AgentSettings get() = AgentSettings(sponsor, answers, members, agents)
+}
+
+@Serializable
+data class AgentsPage(val agents: List<Agent> = emptyList())
+
+@Serializable
+data class AgentAnswer(val agent: Agent)
+
+/** `POST /agents` and `POST /agents/{u}/key`: the agent and its key, which only this answer carries. */
+@Serializable
+data class MadeAgent(val agent: Agent, val key: String)
 
 /** `POST /v1/workspaces` and `POST /join`. */
 @Serializable
@@ -175,10 +240,11 @@ data class InvitePreview(
 )
 
 /**
- * An event as the server sends it. Message events carry [text], [mentions] and [root], or [redacted] once removed.
- * Other kinds carry their own fields flat: [name] and [visibility] (`channel.created`, `channel.renamed`), [member]
- * (`member.joined`, `member.left`, `member.role`), [members] (`dm.started`), [target] and [targetSeq]
- * (`message.redacted`).
+ * An event as the server sends it. Message events carry [text], [mentions] and [root], or [redacted] once removed;
+ * an agent's reply also carries the message it answers as [trigger], its [depth] and [origin], the member ID of the
+ * person who started the chain (a person's message has none of them, which counts as depth 0). Other kinds carry their own fields flat: [name] and [visibility] (`channel.created`,
+ * `channel.renamed`), [member] (`member.joined`, `member.left`, `member.role`), [members] (`dm.started`), [target]
+ * and [targetSeq] (`message.redacted`).
  */
 @Serializable
 data class WireEvent(
@@ -198,13 +264,18 @@ data class WireEvent(
     val role: String? = null,
     val target: String? = null,
     val targetSeq: Long? = null,
+    val trigger: String? = null,
+    val depth: Int? = null,
+    val origin: String? = null,
 ) {
     val isMessage: Boolean get() = kind == MESSAGE_POSTED
 
-    /** The fields of a kind other than a message, as the cache keeps them in `event.data`; null when there are none. */
+    /**
+     * The fields besides a message's own, as the cache keeps them in `event.data`: an agent reply's [trigger],
+     * [depth] and [origin], or the fields of another kind. Null when there are none, as for a person's message.
+     */
     fun data(): EventData? {
-        if (isMessage) return null
-        val out = EventData(name, visibility, member, members, role, target, targetSeq)
+        val out = if (isMessage) EventData(trigger = trigger, depth = depth, origin = origin) else EventData(name, visibility, member, members, role, target, targetSeq)
         return out.takeIf { it != EventData() }
     }
 
@@ -250,6 +321,8 @@ data class Change(
     val mentions: Int,
     val removed: List<String> = emptyList(),
     val removedMore: Boolean = false,
+    /** How many agents hold a grant in the room now; [members] counts only people. */
+    val agents: Int = 0,
 )
 
 /**
@@ -321,6 +394,9 @@ const val SOCKET_PROTOCOL = "rukoo.workspace.v1"
 const val WORKSPACES_FEATURE = "workspaces-v1"
 const val WORKSPACE_VERSION = 1
 
+/** What `info.workspace.capabilities` lists while agents in channels are on. */
+const val AGENTS_CAPABILITY = "agents"
+
 /** IDs as the server makes them: a prefix and 22 base64url characters. */
 object WorkspaceIds {
     private fun id(prefix: String) = Regex("^${prefix}_[A-Za-z0-9_-]{22}$")
@@ -332,10 +408,17 @@ object WorkspaceIds {
     val INVITE = id("i")
     val SECRET = Regex("^[A-Za-z0-9_-]{43}$")
 
+    /** An agent's key: `rka_`, the 22 characters of its member ID after `u_`, a dot and 43 of a secret. */
+    val AGENT_KEY = Regex("^rka_([A-Za-z0-9_-]{22})\\.[A-Za-z0-9_-]{43}$")
+
     fun isWorkspace(s: String?) = s != null && WORKSPACE.matches(s)
     fun isMember(s: String?) = s != null && MEMBER.matches(s)
     fun isConversation(s: String?) = s != null && CONVERSATION.matches(s)
     fun isEvent(s: String?) = s != null && EVENT.matches(s)
+
+    /** Whether [key] is a key of the agent [member] (`u_…`). */
+    fun isAgentKey(key: String?, member: String): Boolean =
+        key != null && AGENT_KEY.matchEntire(key)?.groupValues?.get(1)?.let { "u_$it" == member } == true
 }
 
 /** Reads a JSON body into one of the types above, for the client and the tests. */

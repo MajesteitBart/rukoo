@@ -1,6 +1,6 @@
 # Workspace protocol proposal
 
-**Status.** The server has the text slice of Gate 1, with direct messages, blocks, signing up with an invitation, deleting a workspace, and reactions, files, link cards and marking unread: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal. Where the first release does less than the proposal, [the first release is lighter](#where-the-first-release-is-lighter) says what and why.
+**Status.** The server has the text slice of Gate 1, with direct messages, blocks, signing up with an invitation, deleting a workspace, reactions, files, link cards and marking unread, and agents in channels: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal. Where the first release does less than the proposal, [the first release is lighter](#where-the-first-release-is-lighter) says what and why.
 
 Contract for the workspace server, desktop, Android and agent runner. [Architecture](../docs/workspace-architecture.md) · [Existing account and Book protocol](PROTOCOL.md) · [Optional recovery](WORKSPACE-RECOVERY.md)
 
@@ -165,6 +165,8 @@ Android foreground/tray behavior follows OS capabilities; WorkManager's periodic
 
 ## Agents
 
+*First release:* an agent is an account a full member makes in the workspace, Mattermost style, with a key that any runtime connects with through the routes the apps use. Its settings say whom it answers and whether it answers other agents, and the server checks them in the transaction that writes each reply. [Agents in channels](#agents-in-channels) has the routes. Runner leases, enrollment codes, the MCP endpoint, agents in DMs and agents posting without a trigger aren't built. Agents answering agents is an opt-in per agent, bounded by a depth limit. The proposal follows.
+
 Install one named, revocable identity in one workspace. Admin approves sponsor and scope, channel managers admit it, and sponsor can issue a ten-minute, one-use enrollment code. Server stores hashed credentials; runner journals proposed secret and rotation ID before preparing a replacement. Idempotent prepare leaves the active credential valid until activation or its 30-day expiry. Proving the saved new secret atomically activates it and retires the old. Disablement revokes both. Sponsor reassignment requires admin approval, new install version, fresh credentials and active channel approvals. Show reduced/suspended access and disclosed downstream providers.
 
 Installation credentials carry a verifiable host-issued envelope (issuer, workspace ID, installation ID, token version, expiry and hash/binding of the random bearer secret). Validate the signature/MAC, expiry and secret binding at stateless ingress before addressing the Workspace. Keep envelope issuance keys in the host secret store. This filters invented installs; inside Workspace still check the stored credential hash, rotation/disable status, sponsor and scope.
@@ -216,9 +218,9 @@ Desktop, Android and runner enforce their own limits on redirects, response byte
 
 ## Gate 1 routes
 
-This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js`, `test/workspace-live.test.js`, `test/workspace-signup.test.js`, `test/workspace-reactions.test.js`, `test/workspace-reaction-cleared.test.js`, `test/workspace-files.test.js` and `test/workspace-previews.test.js` are the runnable vectors for these routes.
+This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js`, `test/workspace-live.test.js`, `test/workspace-signup.test.js`, `test/workspace-reactions.test.js`, `test/workspace-reaction-cleared.test.js`, `test/workspace-files.test.js`, `test/workspace-previews.test.js` and `test/workspace-agents.test.js` are the runnable vectors for these routes.
 
-Every route takes the account's session token as `Authorization: Bearer <token>`, like the account API, apart from the file links of [Rich messages](#rich-messages), which carry their own capability. A client names the wire version it speaks in `Rukoo-Workspace-Version`, the highest that it and `versions` in `GET /v1/info` share; a request without one is version 1. Version 2 changes one thing: its reader takes a `message.posted` whose `text` is `''` because the message has only files. A version 1 reader gets such a message with `text` set to `📎 ` and the files' names joined by `, `, and `mentions: []`, in the events of a conversation and the feed's `inlineEvents` alike; what is stored doesn't change. An ID is a letter, an underscore and 22 base64url characters: `w_` for a workspace, `c_` a conversation, `u_` a member, `e_` an event, `g_` a grant, `i_` an invitation and `f_` a file. A member's ID belongs to one workspace, so two workspaces can't tell that they share a person. The account's incarnation is only ever sent to its own devices, in `GET /v1/account`.
+Every route takes the account's session token as `Authorization: Bearer <token>`, like the account API, apart from the file links of [Rich messages](#rich-messages), which carry their own capability. An agent takes its key the same way, on the routes [Agents in channels](#agents-in-channels) lists. A client names the wire version it speaks in `Rukoo-Workspace-Version`, the highest that it and `versions` in `GET /v1/info` share; a request without one is version 1. Version 2 changes one thing: its reader takes a `message.posted` whose `text` is `''` because the message has only files. A version 1 reader gets such a message with `text` set to `📎 ` and the files' names joined by `, `, and `mentions: []`, in the events of a conversation and the feed's `inlineEvents` alike; what is stored doesn't change. An ID is a letter, an underscore and 22 base64url characters: `w_` for a workspace, `c_` a conversation, `u_` a member, `e_` an event, `g_` a grant, `i_` an invitation and `f_` a file. A member's ID belongs to one workspace, so two workspaces can't tell that they share a person. The account's incarnation is only ever sent to its own devices, in `GET /v1/account`.
 
 `GET /v1/info` lists `workspaces-v1` in `features` and adds:
 
@@ -226,8 +228,9 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
 "workspace": {
   "versions": [1, 2],
   "home": { "origin": "https://rukoo.example", "installation": "…" },
-  "capabilities": ["reactions", "unread", "files", "previews"],
+  "capabilities": ["reactions", "unread", "files", "previews", "agents"],
   "files": { "maxBytes": 26214400, "workspaceBytes": 5368709120, "origin": "https://rukoo.example" },
+  "agents": { "max": 20, "depth": 3, "repliesPerHour": 120 },
   "recovery": "basic",
   "inviteSignups": true,
   "inviteSignupsNeedCode": false,
@@ -236,24 +239,32 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
 }
 ```
 
-`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)), and `inviteSignupsNeedCode` when that sign-up also needs a code emailed to the address, as on a `verified` server. `capabilities` lists `reactions` and `unread` on every server of this version, `files` only when the operator gave it a file store (an R2 binding or an S3-compatible bucket), and `previews` unless the operator turned link cards off. `files` is there only with the `files` capability: the largest file, the file bytes one workspace may keep, and the origin upload and download links use.
+`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)), and `inviteSignupsNeedCode` when that sign-up also needs a code emailed to the address, as on a `verified` server. `capabilities` lists `reactions` and `unread` on every server of this version, `files` only when the operator gave it a file store (an R2 binding or an S3-compatible bucket), `previews` unless the operator turned link cards off, and `agents` unless the operator turned agents off (`WORKSPACE_AGENTS` set to `0` or `off`). `files` is there only with the `files` capability: the largest file, the file bytes one workspace may keep, and the origin upload and download links use. `agents` is there only with the `agents` capability: how many agents a workspace may have (`WORKSPACE_AGENTS`), how deep agents answer each other (`WORKSPACE_AGENT_DEPTH`) and how many replies one agent posts in an hour (`WORKSPACE_AGENT_REPLIES`).
 
 ### Errors
 
-An error is `{ "error", "message" }`, with `field` for a refused input, `minVersion` for a refused version, `limit` for the limit a `413` or a `429` hit, and `scope` when the answer tells a device what to let go of: `account` means sign in again, `workspace` and `conversation` mean that thing is gone for this member.
+An error is `{ "error", "message" }`, with `field` for a refused input, `minVersion` for a refused version, `limit` for the limit a `409`, `413` or `429` hit, `reason` for a reply an agent may not post, and `scope` when the answer tells a device what to let go of: `account` means sign in again, `agent` that an agent's key no longer works, `workspace` and `conversation` mean that thing is gone for this member.
 
 | Status | `error` | Meaning |
 | --- | --- | --- |
 | 400 | `invalid` | The input named in `field` is wrong. For an upload, `field: size` means the bytes aren't as many as reserved and `field: sha256` that their digest doesn't match. |
-| 401 | `unauthorized` | The session ended (`scope: account`), or a socket ticket was refused. |
+| 400 | `agent_in_dm`, `agent_not_manager`, `agent_block`, `agent_role` | An agent can't be in a DM (`field: members`), manage a channel or take one over (`field: member` or `successor`), be blocked or have its role changed (`field: member`). |
+| 400 | `agent_attachments`, `bad_trigger`, `bad_root` | An agent's post carries files (`field: attachments`), names a trigger it may not answer (`field: trigger`), or a thread other than its trigger's (`field: root`). |
+| 401 | `unauthorized` | The session ended (`scope: account`), an agent's key is wrong, was replaced or removed, or its sponsor can't have agents any more (`scope: agent`), or a socket ticket was refused. |
 | 403 | `forbidden`, `cosign_required`, `workspace_limit`, `workspaces_full`, `workspace_account_scope` | The caller's role, or the server's capacity, doesn't allow it. |
 | 403 | `dm_unavailable` | With `field: members`: a DM can't be started with these people. One answer for every reason the caller mustn't tell apart ([Direct messages](#direct-messages)). |
 | 403 | `files_off` | The server has no file store. Every file route answers this, and so does a post that names files. |
+| 403 | `agent_forbidden` | An agent's key on a route agents can't use. |
+| 403 | `not_answered` | The agent's settings don't let it answer the trigger, or its author or the person who started the chain left the channel. `reason` is `agents_off`, `author_gone`, `sponsor_only` or `not_listed`. |
 | 404 | `not_found` | With `scope: workspace`: the caller isn't a member, or there is no such workspace. With `scope: conversation`: the caller isn't in it, or there is no such conversation. Each pair gets the same answer. |
 | 409 | `operation_conflict`, `submission_expired`, `stale_grant`, `stale_generation`, `archived`, `name_taken`, `last_owner`, `last_manager`, `history_regressed` | The request conflicts with what is there. `archived` is also the answer to a post in a closed DM. |
 | 409 | `members_remain` | An owner tried to delete a workspace that has other active members: "Remove everyone else first." |
 | 409 | `blocked` | The caller blocked someone in the DM they tried to start. `member` names the first of them. |
 | 409 | `reaction_limit` | The message has 20 different emoji already. |
+| 409 | `agent_limit` | The workspace has as many agents as `WORKSPACE_AGENTS` allows, with `limit: agents`. |
+| 409 | `sponsor_not_in_channel` | An agent can come into a private channel only while its sponsor is in it. |
+| 409 | `already_answered` | The agent answered this part of this trigger already, with another operation. `messageId` is that reply. |
+| 409 | `too_deep` | The reply would be deeper than `WORKSPACE_AGENT_DEPTH`, with `limit: depth`. |
 | 409 | `files_unavailable` | A post names an upload that isn't ready, was sent already, expired, is someone else's or is for another conversation. `files` lists them. Nothing was posted. |
 | 409 | `invalid_state` | A PUT to an upload that was sent, cancelled, expired or is gone. |
 | 410 | `reset_required`, `invite_gone` | The cursor or the invitation can no longer be used. |
@@ -261,7 +272,7 @@ An error is `{ "error", "message" }`, with `field` for a refused input, `minVers
 | 413 | `quota` | The workspace is full. `limit` says what ran out: `members` when joining, `conversations` for a new channel or DM, `invites` for open invitations, `bytes` for stored text, `files` for file bytes. |
 | 413 | `too_large` | With `limit: fileBytes`: the file is larger than the server takes. |
 | 426 | `upgrade_required` | The server doesn't speak this version of the protocol. `minVersion` says which it does. |
-| 429 | `rate_limited` | Too many requests. `Retry-After` gives the seconds to wait. `limit: dailyDms` means the caller started 20 DMs in the past day, `limit: uploads` that they hold 20 open uploads, `limit: attempts` that two PUTs to the same upload are under way. |
+| 429 | `rate_limited` | Too many requests. `Retry-After` gives the seconds to wait. `limit: dailyDms` means the caller started 20 DMs in the past day, `limit: uploads` that they hold 20 open uploads, `limit: attempts` that two PUTs to the same upload are under way, `limit: agentReplies` that an agent posted `WORKSPACE_AGENT_REPLIES` replies in the past hour. |
 | 503 | `unavailable` | Deleting a workspace failed because its files couldn't be deleted, or waits for a file that is being uploaded, or for five minutes after an upload failed, while its write may still land. The workspace is still there; try again after `Retry-After` seconds. |
 
 ### Workspaces, members and invitations
@@ -274,10 +285,10 @@ Paths below `/v1/workspaces/{id}` are written from there.
 | `POST /v1/workspaces` | `{ name, displayName }` → `201 { workspace, me }`. The maker is its owner and manages a first channel, `general`. When the answer gets lost on the way, the server finds out from the workspace itself whether it was made, so its place under the server's limit is never counted twice or left taken. |
 | `GET /` | → `{ workspace: { id, name, createdAt, generation, keyId, time, limits, retention }, me }`. `time` is the server's clock, which a device reads before it makes an operation ID. `limits` is `{ members, conversations, textBytes, fileBytes, filesBytes }`. |
 | `DELETE /` | → `204`. Deletes the workspace, for an owner who is its only active member: `403 forbidden` for anyone else, `409 members_remain` while someone else is in it. Its files leave the bucket first, while the workspace stays as it is; only then its open invitations stop working, every socket closes with code 4003 and everything else it held goes. The owner's account forgets it, so it no longer counts against `workspacesPerAccount`, and its place under the server's limit is free. Afterwards every route answers the 404 of a workspace that doesn't exist, and so does a join that was under way when it went. While a file of the workspace is being uploaded or a link card's image stored, for five minutes after such a write failed, as the bucket may still store it, when the bucket fails, and when the server has no file store while the workspace still has files in the bucket, the answer is `503 unavailable` with `Retry-After: 30`, and the workspace stays as it was, apart from files already deleted, for the owner to try again. |
-| `GET /members` | → `{ members: [{ id, kind, name, role, state, joinedAt }], more }`. `role` is `owner`, `admin`, `member` or `guest`; `state` is `active`, `left`, `removed` or `deleted`. A full member gets everyone who is active and the 1,000 who left most recently; `more` says there were others. A guest gets the active members of the channels they are in. |
+| `GET /members` | → `{ members: [{ id, kind, name, role, state, joinedAt, agent? }], more }`. `kind` is `human` or `agent`. `role` is `owner`, `admin`, `member` or `guest`, and `member` for an agent; `state` is `active`, `left`, `removed` or `deleted`. An agent carries `agent: { sponsor, answers, members, agents }`, its settings without its key ([Agents in channels](#agents-in-channels)). A full member gets everyone who is active and the 1,000 who left most recently; `more` says there were others. A guest, and an agent, gets the active members of the channels they are in, and an agent's `members` only lists those. |
 | `PATCH /members/me` | `{ name }` → `{ me }`. |
-| `PATCH /members/{u}` | `{ role }` → `{ member }`. Owners change anyone. Admins move people between `member` and `guest`. |
-| `DELETE /members/{u}`, `DELETE /members/me` | → `204`. Removing someone, or leaving. Every grant ends, and so do the invitations they issued. Someone who is the only manager of channels other people are in appoints a manager in each before leaving: `409 last_manager` lists them as `channels`. A channel whose last member goes is archived. The account keeps a note that it was a member, so the workspace still hears when that account is deleted and takes the name off what it wrote. |
+| `PATCH /members/{u}` | `{ role }` → `{ member }`. Owners change anyone. Admins move people between `member` and `guest`. An agent has no role to change: `400 agent_role`. Someone who becomes a guest loses their agents. |
+| `DELETE /members/{u}`, `DELETE /members/me` | → `204`. Removing someone, or leaving. Every grant ends, and so do the invitations they issued, and their agents are removed. Someone who is the only manager of channels other people are in appoints a manager in each before leaving: `409 last_manager` lists them as `channels`. Agents don't count as other people there. A channel whose last person goes is archived, and the grants of agents in it end. For an agent this is `DELETE /agents/{u}`, for its sponsor, an owner or an admin. The account keeps a note that it was a member, so the workspace still hears when that account is deleted and takes the name off what it wrote. |
 | `POST /invites` | `{ role, channels?, expiresIn? }` → `201 { invite: { id, role, channels, channelCount, issuer, createdAt, expiresAt }, secret }`. `role` is `member` or `guest`, `channels` are channels the issuer manages, `expiresIn` is in seconds: 24 hours unless given, seven days at most. The secret is shown once; the server keeps its hash. A channel its issuer stops managing drops out of the invitation, and managing it again doesn't bring it back. |
 | `GET /invites`, `DELETE /invites/{i}` | The open invitations, and withdrawing one. `channels` lists the channels the caller can see and `channelCount` says how many the invitation leads into right now, without the ones that were archived since and, for a `member` invitation, with the default channel. `POST /invites` answers the same way. An admin outside a private channel so learns that there is one, not which. |
 | `POST /invites/preview` | `{ invite }` → `{ workspace: { id, name }, role, channels, issuer: { name }, expiresAt }`, for any signed-in account, to show before joining. `channels` is a count of the channels joining leads into, the default channel of a `member` invitation included. |
@@ -301,14 +312,14 @@ On a `verified` server the sign-up also carries `emailCode`, a `signup` code for
 
 | Route | Request and answer |
 | --- | --- |
-| `GET /channels` | → `{ channels: [{ id, name, visibility, archived, joined, role, members }] }`. `visibility` is `workspace` or `private`; `role` is the caller's `manager` or `member`, or null. A full member gets every channel they are in and every channel the workspace can see. A guest gets the channels they are in. It lists channels only, never a DM. |
+| `GET /channels` | → `{ channels: [{ id, name, visibility, archived, joined, role, members }] }`. `visibility` is `workspace` or `private`; `role` is the caller's `manager` or `member`, or null; `members` counts the people in it, without agents. A full member gets every channel they are in and every channel the workspace can see. A guest gets the channels they are in. It lists channels only, never a DM. |
 | `POST /channels` | `{ name, visibility }` → `201 { channel }`. Full members only. Names are unique among the channels the workspace can see. |
 | `PATCH /channels/{c}` | `{ name }` renames, for a manager. `{ archived: true }` archives, for a manager or for an admin who can see the channel. → `{ channel }`. |
 | `POST /channels/{c}/join` | → `{ channel }`. A full member lets themselves into a channel the workspace can see. |
 | `GET /channels/{c}/members` | → `{ members: [{ member, role }] }`. |
-| `POST /channels/{c}/members` | `{ member }` → `{ member, role }`. A manager lets a member in. For a guest that manager must also be an owner or admin. |
-| `PATCH /channels/{c}/members/{u}` | `{ role }`, for a manager. |
-| `DELETE /channels/{c}/members/{u}`, `…/me` | → `204`. A manager takes someone out, or the caller leaves. The last manager passes the channel on with `?successor={u}`. The last person to leave archives it. |
+| `POST /channels/{c}/members` | `{ member }` → `{ member, role }`. A manager lets a member in. For a guest that manager must also be an owner or admin. An agent comes in the same way, or through its sponsor into a channel the workspace can see that the sponsor is in. Into a private channel an agent comes only while its sponsor is in it: `409 sponsor_not_in_channel` otherwise, also for a manager. |
+| `PATCH /channels/{c}/members/{u}` | `{ role }`, for a manager. An agent can't be a manager: `400 agent_not_manager`. |
+| `DELETE /channels/{c}/members/{u}`, `…/me` | → `204`. A manager takes someone out, or the caller leaves. An agent's sponsor takes it out of any channel it is in, also one the sponsor isn't in. When someone's grant in a private channel ends, however it ends, the grants of their agents there end in the same transaction, each with its own `member.left`. The last manager passes the channel on with `?successor={u}`, a person: an agent answers `400 agent_not_manager`. The last person to leave archives it, and the grants of agents in it end. |
 
 Every channel route answers a DM's ID with the 404 of a conversation that doesn't exist, also to someone in the DM: renaming, archiving, joining, the member routes, and a DM's ID in the `channels` of `POST /invites`.
 
@@ -333,6 +344,7 @@ A DM is a conversation of `kind: dm` between 2 and 8 full members (owners, admin
 | --- | --- | --- |
 | 1 | `400 invalid`, `field: members` | The list isn't 1 to 7 different member IDs, or it names the caller. |
 | 2 | `403 dm_unavailable`, `field: members` | The caller is a guest, an ID isn't an active member, or someone in the set is a guest. |
+| 2a | `400 agent_in_dm`, `field: members` | Someone in the set is an agent. A guest caller gets order 2's answer instead. |
 | 3 | `200 { dm }` | The set has an open DM. |
 | 4 | `409 blocked`, `member` | The caller blocked someone in the set. `member` is the first of them, in the set's order. |
 | 5 | `403 dm_unavailable` | Someone in the set blocked the caller, or two others in it blocked one another. The same body as order 2. |
@@ -346,7 +358,7 @@ The Worker checks the list's shape first. Before the transaction, starting a DM 
 | Route | Request and answer |
 | --- | --- |
 | `GET /blocks` | → `{ blocks: [{ member, at }] }`: the caller's own blocks, newest first. |
-| `POST /blocks` | `{ member }` → `201 { block: { member, at } }` for a new block, `200` with the same body when it was there already. `400 invalid` with `field: member` for a malformed ID or the caller's own. `404 not_found`, without a scope, when the ID isn't an active member the caller can see: a full member sees every active member, a guest the people they share a room with. An ID nobody has gets the same answer. |
+| `POST /blocks` | `{ member }` → `201 { block: { member, at } }` for a new block, `200` with the same body when it was there already. `400 invalid` with `field: member` for a malformed ID or the caller's own, and `400 agent_block` for an agent, which its sponsor or a channel manager removes instead. `404 not_found`, without a scope, when the ID isn't an active member the caller can see: a full member sees every active member, a guest the people they share a room with. An ID nobody has gets the same answer. |
 | `DELETE /blocks/{u}` | → `204`, also when there was no block. |
 
 A block, in the transaction that makes it:
@@ -366,7 +378,7 @@ The blocked person's posts stay visible in shared channels and still count as un
 | `POST /conversations/{c}/messages` | `{ operationId, grant, generation, text, mentions?, root?, attachments? }` → `201 { operationId, messageId, seq }`. A retry with the same ID and content gets `200` and the first answer. `attachments` are ready uploads ([Rich messages](#rich-messages)). |
 | `GET /conversations/{c}/operations/{operationId}` | → `{ messageId, seq, visible }`, or 404 when no message of the caller came from that operation. |
 | `GET /conversations/{c}/events` | `?after=<seq>&limit=<n>` pages forward. `?before=<seq>&limit=<n>` gives the newest events before a sequence. → `{ events, head, floor, more }`, oldest first, 50 unless `limit` says otherwise, 100 at most. |
-| `POST /conversations/{c}/messages/{e}/redact` | → `{ messageId, redacted: true }`. For the author and for a channel manager; in a DM for the author only, also once it closed. |
+| `POST /conversations/{c}/messages/{e}/redact` | → `{ messageId, redacted: true }`. For the author and for a channel manager, and for an agent's message also for the agent's sponsor, after the agent was removed too; in a DM for the author only, also once it closed. The caller needs a grant in the conversation. |
 | `POST /conversations/{c}/read` | `{ seq, readMark? }` → `{ read, readMark }`. `readMark` is the room's `readMark` the device knew when it read; one lower than the room's now moves nothing ([Marking unread](#marking-unread)). |
 
 A post to an archived channel or a closed DM gets `409 archived`, unless it is the retry of a message that was already in. `operationId` is a UUIDv7 in lowercase. One older than 30 days gets `409 submission_expired`. A message whose retention ran out before that keeps a receipt, so its retry still gets the first answer. `grant` is the grant the device held in the conversation when the message was written, from the feed, and `generation` the workspace's. A message written under a grant that has since ended gets `409 stale_grant`, also when the member is back in under a new one, and the device asks before sending it again. One from before a restore gets `409 stale_generation`. `text` is 1 to 16,384 bytes of UTF-8 and is stored as sent; a message with files may have none, which a reader of wire version 1 gets as the files' names ([Gate 1 routes](#gate-1-routes)). A mention is `{ actor, start, end }`: a member of the conversation, and a byte range of the text that starts and ends between characters. Mentions come in order and don't overlap, 32 at most. `root` is the ID of a top-level message in the same conversation that hasn't been removed.
@@ -375,7 +387,7 @@ Every event is `{ seq, id, kind, actor, at }` plus what its kind adds:
 
 | `kind` | Adds |
 | --- | --- |
-| `message.posted` | `text`, `mentions`, `attachments`, `previews`, `reactions`, and `root` for a reply. Once removed: `redacted: true` in place of all but `root`. |
+| `message.posted` | `text`, `mentions`, `attachments`, `previews`, `reactions`, and `root` for a reply. An agent's reply also has `trigger`, the ID of the message it answers, `depth` and `origin`, the member ID of the person who started the chain ([Agents in channels](#agents-in-channels)); a person's message has none of them, which counts as depth 0. Once removed: `redacted: true` in place of all but `root`. |
 | `reaction.added`, `reaction.removed` | `target`, `targetSeq`, `emoji`. `actor` is who reacted or took it back. |
 | `reaction.cleared` | `target`, `targetSeq`. A `reaction.added` or `reaction.removed` of a message that was removed afterwards, in its place. `actor` is who removed the message. |
 | `message.previewed` | `target`, `targetSeq`, `previews`: the message's link cards as they are now. `actor` is the message's author. |
@@ -420,7 +432,7 @@ A message can carry files, reactions and link cards, and a member can mark a mes
 | `DELETE /conversations/{c}/uploads/{f}` | → `204`, also when there was nothing to cancel. Cancels the caller's own upload that no message has. |
 | `POST /conversations/{c}/files/{f}/download` | → `{ url, expiresAt, name, type, size, sha256 }`. A link to a file of a message, valid for 60 seconds. |
 | `GET <download url>` | The file, with no `Authorization`. |
-| `POST /conversations/{c}/messages/{e}/previews` | `{ remove: url }` → `{ previews }`. The author takes a link card off their message. |
+| `POST /conversations/{c}/messages/{e}/previews` | `{ remove: url }` → `{ previews }`. The author takes a link card off their message, or a sponsor off their agent's. |
 
 #### Reactions
 
@@ -455,7 +467,46 @@ When `previews` is on, a post that was just made (a `201`, never a retry's `200`
 - **What a card holds.** `title` from `og:title`, `twitter:title` or the page's first `<title>`; `description` from `og:description`, `twitter:description` or `<meta name="description">`; `site` from `og:site_name`, else the host without `www.`; `video` when `og:type` starts with `video` or the page has an `og:video` tag. Character references are decoded, white space collapsed and control characters dropped, and the title, description and site are cut to 200, 500 and 100 characters, a cut ending in `…`. A page without a title makes no card. `url` is the address as the message has it.
 - **The image**, only with a file store: from `og:image` or `twitter:image`, resolved against the page's final address and fetched by the same rules, at most 2 MiB, PNG, JPEG, GIF or WebP by its first bytes. It is stored as a file of the message named `preview.<ext>`, with `width` and `height` from the image's header when the format gives them, and counts against the workspace's file bytes. When those are used up, the card has no image.
 - **Publishing.** The cards are stored on the message and announced with `message.previewed`, whose `actor` is the message's author and whose `previews` are the cards. A message gets cards once. When it was removed meanwhile, or its author removed a card before they came, nothing is appended and the images go to the trash.
-- **Removing a card.** Only the message's author (`403 forbidden` for anyone else). The card goes, its image goes to the trash, and `message.previewed` carries the cards that are left; a card that isn't there changes nothing. A message whose author removed a card is never given cards again. Removing the message removes its cards.
+- **Removing a card.** Only the message's author, and for an agent's message the agent's sponsor (`403 forbidden` for anyone else). The `message.previewed` that follows names the message's author as `actor` either way. The card goes, its image goes to the trash, and `message.previewed` carries the cards that are left; a card that isn't there changes nothing. A message whose author removed a card is never given cards again. Removing the message removes its cards.
+
+### Agents in channels
+
+An agent is a member of kind `agent` that a full member makes, who is its **sponsor**. A runtime connects with the agent's key through the routes below, as the reference runner in `integrations/agent-runner/` does, and posts replies to messages that mention the agent. The agent is in the directory, comes into channels and is mentioned there like a person, and is never in a DM, a channel's manager or its successor. It can't make channels, invite, join channels by itself or change anything about the workspace.
+
+| Route | Request and answer |
+| --- | --- |
+| `GET /agents` | → `{ agents: [agent] }`, every active agent. Full members only. |
+| `POST /agents` | `{ name, answers, members?, agents? }` → `201 { agent, key }`. Full members only; the caller is its sponsor. A workspace has at most `WORKSPACE_AGENTS` active agents (20): `409 agent_limit`. |
+| `PATCH /agents/{u}` | `{ name?, answers?, members?, agents? }` → `{ agent }`. Its sponsor, an owner or an admin; anyone else gets `403 forbidden`, and an ID that isn't an active agent `404 not_found`. What isn't given stays. |
+| `POST /agents/{u}/key` | → `{ agent, key }`, for its sponsor only: anyone else, owners and admins included, gets `403 forbidden`. The key reads every channel the agent is in, from the start of what the channel keeps, and an owner or admin isn't in every private channel. The old key stops working at once, and the agent's tickets and sockets with it (code 4001). |
+| `DELETE /agents/{u}` | → `204`, for its sponsor, an owner or an admin. Its grants end with a `member.left` in each channel, its key stops working and its sockets close (code 4003). Its messages stay, and the directory keeps it as a former member with `state: removed`. `DELETE /members/{u}` does the same for an agent. |
+| `GET /agents/me` | → `{ agent }`: the agent asking with its key gets its own, so a runner reads its settings. `404` for a person. |
+
+An agent is `{ id, name, sponsor, answers, members, agents, lastSeen, createdAt }`. `sponsor` is a member ID. `answers` is `everyone` (every person who can post in the channel), `sponsor` (only its sponsor) or `members` (its sponsor and the people in `members`). `members` is `[]` unless it answers `members`. `agents` is true when a mention by another agent is a trigger for it, false unless given. `lastSeen` is the time of its last request, written once a minute at most, or null; `createdAt` is when it was made. `name` follows the rules of a member's name. `members` names at most 50 active people of the workspace, guests included; the sponsor is always answered and left out of it, and an agent or an ID that isn't an active member is `400 invalid` with `field: members`. `answers` other than `members` clears the list, and someone whose membership ends leaves every list. A change to an agent is a directory change, as a rename is: in the directory an agent carries `agent: { sponsor, answers, members, agents }`, never its key or `lastSeen`.
+
+**The key.** `rka_`, the 22 characters of the agent's member ID after `u_`, a dot and 43 base64url characters of 32 random bytes the server makes. The key is in the answer that makes it and nowhere else; the server keeps a SHA-256 of the secret and compares in constant time. Only the routes of one workspace take it: the account routes never do, `GET /v1/workspaces` included. A key that is wrong, replaced, of a removed agent, of another workspace, or of an agent whose sponsor is no longer an active full member gets `401 unauthorized` with `scope: agent`, and so does every key while agents are off.
+
+**What an agent's key reaches.** `GET /`, `GET /members`, `GET /channels` (the channels it is in), `GET /changes`, `POST /socket-ticket` and the socket, `GET /channels/{c}/members`, `GET /agents/me`, `GET /conversations/{c}/events`, `POST /conversations/{c}/read`, `GET /conversations/{c}/operations/{op}`, `POST /conversations/{c}/files/{f}/download`, `POST /conversations/{c}/messages/{e}/react` and `POST /conversations/{c}/messages`. Everything else is `403 agent_forbidden`. It sees what a guest sees: its own channels and the people in them.
+
+**A reply.** An agent's post is the usual message without files, `{ operationId, grant, generation, text, mentions?, root?, trigger, part? }` → `201 { operationId, messageId, seq }`. `trigger` is the ID of the message it answers (`400 invalid` with `field: trigger` when it is missing or no event ID), and `part` is 0 to 4, 0 unless given (`field: part`), so a long answer goes out as up to five messages. `attachments` other than `[]` is `400 agent_attachments`. The operation's hash covers `trigger` and `part` too. The transaction that writes the reply checks, in this order:
+
+1. The key is still the agent's current one and its sponsor still an active full member, else `401 unauthorized` with `scope: agent`.
+2. What every post checks ([Messages](#messages)): the agent's grant in the channel, a retry of the same operation and payload, which gets `200` and the first answer also when the rules below changed since, the grant and generation, the operation's age, `archived` and the workspace's room for text. Then the mentions.
+3. `trigger` is a `message.posted` in this channel that wasn't removed, came after the agent's grant started, isn't the agent's own and has a structured mention of the agent, else `400 bad_trigger` with `field: trigger`.
+4. The reply goes in the trigger's thread, or starts one under the trigger. `root` may be left out; any other `root` is `400 bad_root`, and so is a thread whose first message was removed.
+5. One reply per agent, trigger and part: another operation for a part that has its reply gets `409 already_answered` with `messageId`, which a runner counts as done.
+6. The trigger may get an answer, else `403 not_answered` with a `reason`. Whom the agent answers applies to the trigger's **origin**, the person who started the chain: the trigger's author when a person wrote it, and the trigger's own `origin` when another agent did. So an agent that answers only its sponsor answers nobody else through another agent either. In this order:
+   1. A trigger another agent wrote needs this agent's `agents` setting on: `agents_off`.
+   2. The trigger's author and the origin are still active members with a grant in the channel: `author_gone`. This comes first because someone who left also leaves every agent's chosen members.
+   3. The origin is the sponsor, or `answers` covers them: `everyone` covers every person in the channel, guests included; `sponsor` nobody else (`sponsor_only`); `members` the people in `members` (`not_listed`). A `members` list that is empty answers only the sponsor.
+7. The reply's depth is the trigger's plus 1, a person's message being 0, and at most `WORKSPACE_AGENT_DEPTH` (3), else `409 too_deep` with `limit: depth`. A person, agent A at 1, agent B at 2, A at 3, and no further.
+8. The agent posted fewer than `WORKSPACE_AGENT_REPLIES` (120) replies in the past hour, else `429 rate_limited` with `limit: agentReplies` and `Retry-After`.
+
+The reply is a `message.posted` with `trigger`, `depth` and `origin`, which removing it takes away with its text. The agent's read position moves to it, as a person's does. Its mentions follow the usual rules, and a mention of an agent counts for that agent as for a person, so another agent's mention reaches its feed's `mentions`. A mention is the only trigger. A runner reads the rooms whose `mentions` are past its read position and moves the read position past what it answered or skipped. A reply moves the read position past mentions that came in while the runtime worked, so a runner that lost its own state starts after the trigger of the agent's newest reply, which its feed row names in `lastTrigger` ([The feed](#the-feed)), also once that reply was removed. It can check the rules of step 6 before it calls its runtime: `GET /agents/me` has the settings, a trigger from another agent has its `depth` and `origin`, and `GET /channels/{c}/members` lists who is still in the channel, so it can tell an author who left (`author_gone`) from one the agent doesn't answer.
+
+**Sponsors.** When the sponsor leaves the workspace, is removed, becomes a guest or deletes their account, their agents are removed in the same transaction, as `DELETE /agents/{u}` removes one. Whoever holds an agent's key reads what the agent reads, and only the sponsor gets a key, so an agent is in a private channel only while its sponsor is: it comes in only then, and it leaves in the same transaction when the sponsor's grant there ends, by leaving, by a manager taking them out, or with their membership. A channel the workspace can see keeps the agent, as its sponsor could come back in by themselves. The sponsor can remove the agent's messages and their link cards, also once the agent was removed.
+
+**What doesn't count agents.** The workspace's `members` limit, the check for other members before deleting a workspace (deleting it removes its agents), the people a last manager must hand a channel to, and `members` in channel and feed rows; feed rows count agents apart in `agents`. A channel whose last person leaves is archived, and the grants of the agents still in it end.
 
 ### The feed
 
@@ -465,13 +516,13 @@ When `previews` is on, a post that was just made (a `201`, never a retry's `200`
 {
   "changes": [{
     "conversation": "c_…", "kind": "channel", "name": "general", "visibility": "workspace", "archived": false,
-    "grant": "g_…", "role": "member", "members": 14,
+    "grant": "g_…", "role": "member", "members": 14, "agents": 1,
     "head": 42, "floor": 1, "lastAt": 1763550000000, "read": 40, "readMark": 0, "unread": 2, "mentions": 1,
     "removed": ["e_…"], "removedMore": false
   }, {
     "conversation": "c_…", "kind": "dm", "name": null, "visibility": "dm", "archived": false,
     "participants": ["u_…", "u_…", "u_…"], "startedBy": "u_…", "closedReason": null,
-    "grant": "g_…", "role": "member", "members": 3,
+    "grant": "g_…", "role": "member", "members": 3, "agents": 0,
     "head": 12, "floor": 1, "lastAt": 1763550000000, "read": 10, "readMark": 0, "unread": 2, "mentions": 0,
     "removed": [], "removedMore": false
   }],
@@ -483,7 +534,9 @@ When `previews` is on, a post that was just made (a `201`, never a retry's `200`
 }
 ```
 
-`members` is how many people hold a grant in the room now. `lastAt` is the time of the room's newest event that isn't a reaction or a link card (`reaction.added`, `reaction.removed`, `reaction.cleared`, `message.previewed`), or null once retention removed it; clients order DMs by it. `readMark` counts how often the member marked a message unread there: a device that sees it higher than it knew takes `read` from the row, also when that is lower than its own. A DM has `name: null` and three fields of its own: `participants`, its fixed set of people as member IDs in the order of `dm.started`, the caller included; `startedBy`; and `closedReason`, null while it is open and else `left`, `ineligible` or `closed`. `archived` is true exactly when `closedReason` isn't null, so a device can post in any room that isn't `archived`. Names, roles and states come from `GET /members`: everyone in a DM is a full member, and full members get every active member and the 1,000 most recent former ones.
+`members` is how many people hold a grant in the room now, and `agents` how many agents. `lastAt` is the time of the room's newest event that isn't a reaction or a link card (`reaction.added`, `reaction.removed`, `reaction.cleared`, `message.previewed`), or null once retention removed it; clients order DMs by it. `readMark` counts how often the member marked a message unread there: a device that sees it higher than it knew takes `read` from the row, also when that is lower than its own. A DM has `name: null` and three fields of its own: `participants`, its fixed set of people as member IDs in the order of `dm.started`, the caller included; `startedBy`; and `closedReason`, null while it is open and else `left`, `ineligible` or `closed`. `archived` is true exactly when `closedReason` isn't null, so a device can post in any room that isn't `archived`. Names, roles and states come from `GET /members`: everyone in a DM is a full member, and full members get every active member and the 1,000 most recent former ones.
+
+A row in an agent's feed has one more field, `lastTrigger`: the `seq` of the trigger of the agent's newest reply in that room, the one posted last, or null when the room keeps no reply of the agent's. Removing the reply takes `trigger` out of its event and leaves `lastTrigger` as it was. Once retention removes a trigger, the replies to it no longer count. A runner that lost its state uses it to find the mentions a reply moved the read position past ([Agents in channels](#agents-in-channels)). Rows for people never have it.
 
 Without `after` the answer starts a pass over every room the caller is in. `limit` is 32 unless given, 100 at most. `unread` and `mentions` count up to 100, which a device shows as 99+. `removed` lists the messages redacted in that room since the cursor, 64 at most, and `removedMore` says there were more. `evictions` are rooms the caller lost. `inlineEvents` are up to 20 events of the `active` room after `roomAfter`. `directory` says whether to load `GET /members`, `GET /channels` and `GET /blocks` again. For a guest `channels` is always false, and `members` is true only when someone they share a room with changed, came or went. `blocks` is true on a pass from the start and when the caller's own blocks changed since the cursor, and never because someone blocked them. A cursor is sealed: it opens only for its member, in its restore generation, and its length says nothing.
 
@@ -499,11 +552,11 @@ The server sends one frame, `{"t":"wake"}`, when something changed for this memb
 
 ### Limits on requests
 
-The workspace counts requests in memory, per account: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, a socket ticket every five seconds with bursts of 6, and a new DM every ten seconds with bursts of 10. Listing blocks and asking for a download link are reads; unblocking, reacting, marking unread, reserving or cancelling an upload and removing a link card are writes. A PUT to an upload link has no session, so each upload gets the allowance of an account that isn't a member. Removing a member or a message, leaving a channel, a DM or the workspace, archiving, changing a role, withdrawing an invitation, blocking someone and deleting the workspace draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
+The workspace counts requests in memory, per account and per agent key: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, a socket ticket every five seconds with bursts of 6, and a new DM every ten seconds with bursts of 10. Listing blocks and asking for a download link are reads; unblocking, reacting, marking unread, reserving or cancelling an upload and removing a link card are writes. A PUT to an upload link has no session, so each upload gets the allowance of an account that isn't a member. Removing a member or a message, leaving a channel, a DM or the workspace, archiving, changing a role, withdrawing an invitation, blocking someone and deleting the workspace draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Listing agents and an agent's own settings are reads, making and changing an agent are writes, and a new key and removing an agent skip the ceiling. An agent's allowance is for requests with its current key: the name a key starts with is the agent's member ID, which every member sees, so a key with a wrong secret, a replaced key and a removed agent's key draw from the allowance of accounts that aren't members. The workspace compares the secret's hash with one it keeps in memory, so no query runs first. On top of its writes, an agent posts at most `WORKSPACE_AGENT_REPLIES` replies an hour. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
 
 ### Not built yet
 
-DMs with guests, editing and forwarding messages, thumbnails made by the server, ranged downloads, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans and reports, closing a workspace that still has other members, renaming a workspace, opening invitation links in the apps, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
+DMs with guests, editing and forwarding messages, thumbnails made by the server, ranged downloads, runner leases for agents, agents in DMs, agents posting without a trigger, the MCP endpoint, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans and reports, closing a workspace that still has other members, renaming a workspace, opening invitation links in the apps, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
 
 ## Fixture index
 

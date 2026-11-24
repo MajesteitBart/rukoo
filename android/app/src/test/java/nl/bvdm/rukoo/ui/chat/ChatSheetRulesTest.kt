@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.ui.chat
 
 import nl.bvdm.rukoo.ui.root.ChatSheet
+import nl.bvdm.rukoo.workspaces.AgentSettings
 import nl.bvdm.rukoo.workspaces.Block
 import nl.bvdm.rukoo.workspaces.Channel
 import nl.bvdm.rukoo.workspaces.Member
@@ -448,5 +449,256 @@ class ChatSheetRulesTest {
         // Once made, the question about an unshared link holds it, as before.
         assertTrue(SheetRules.inviteCloseHeld(making = false, made = true, kept = false, withdrawn = false))
         assertFalse(SheetRules.inviteCloseHeld(making = false, made = true, kept = true, withdrawn = false))
+    }
+
+    // ---- agents in channels ----
+
+    private val clark = id("u", "clark")
+    private val revy = id("u", "revy")
+
+    private fun agent(id: String, name: String, sponsor: String, answers: String = AgentRules.EVERYONE, chosen: List<String> = emptyList(), state: String = "active") =
+        Member(id, Member.KIND_AGENT, name, "member", state, agent = AgentSettings(sponsor, answers, chosen))
+
+    private val withAgents = people + agent(clark, "Clark", sponsor = me, answers = AgentRules.SPONSOR) + agent(revy, "Revy", sponsor = bo)
+
+    @Test
+    fun `agents are never in a DM, never successors, and don't make a workspace less empty`() {
+        assertEquals(listOf("Ann", "Bo"), SheetRules.dmCandidates(withAgents, me, setOf(cy), byName).map { it.name })
+        val picker = SheetRules.dmPicker(withAgents, me, emptySet(), "", byName)
+        assertTrue((picker.pick + picker.blocked + picker.guests).none { it.isAgent })
+        assertTrue(SheetRules.dmPicker(withAgents, me, emptySet(), "cl", byName).let { it.pick.isEmpty() && it.guests.isEmpty() && it.empty == PickerEmpty.NONE })
+        val byId = withAgents.associateBy { it.id }
+        assertEquals(listOf("Ann", "Bo"), SheetRules.successors(listOf(ann, bo, clark, revy), byId, me, byName).map { it.name })
+        // Alone with only your agents, you can still delete the workspace.
+        val mine = listOf(member(me, "Me", role = "owner"), agent(clark, "Clark", sponsor = me))
+        assertTrue(SheetRules.alone(view(members = mine)))
+        assertTrue(SheetRules.canDelete(view(members = mine)))
+    }
+
+    @Test
+    fun `a channel's last manager with only agents beside them has nobody to hand it to`() {
+        val agents = setOf(clark, revy)
+        val withClark = listOf(RoomMember(me, "manager"), RoomMember(clark, "member"))
+        assertTrue("without the agents' IDs it looks shared", SheetRules.soleManager(withClark, me))
+        assertFalse(SheetRules.soleManager(withClark, me, agents))
+        assertTrue(SheetRules.soleManager(withClark + RoomMember(bo, "member"), me, agents))
+        assertEquals(setOf(clark, revy), agentIds(withAgents.associateBy { it.id }))
+    }
+
+    @Test
+    fun `Add people lists people without agents, and the agents someone may add apart`() {
+        assertEquals(listOf("Ann", "Bo", "Cy", "Gus"), SheetRules.addCandidates(withAgents, setOf(me), byName).map { it.name })
+        val removed = agent(id("u", "old"), "Old", sponsor = me, state = "former")
+        val all = withAgents + removed
+        // A manager may add any agent that isn't in yet.
+        assertEquals(listOf("Clark", "Revy"), AgentRules.addable(all, setOf(me), channel("c1", "plans", role = "manager"), me, byName, on = true).map { it.name })
+        assertEquals(listOf("Revy"), AgentRules.addable(all, setOf(me, bo, clark), channel("c1", "plans", role = "manager", visibility = "private"), me, byName, on = true).map { it.name })
+        // Anyone else only their own agents, in a channel the workspace sees.
+        assertEquals(listOf("Clark"), AgentRules.addable(all, setOf(me), channel("c1", "plans"), me, byName, on = true).map { it.name })
+        assertEquals(emptyList<Member>(), AgentRules.addable(all, setOf(me), channel("c1", "plans", visibility = "private"), me, byName, on = true))
+        assertEquals(emptyList<Member>(), AgentRules.addable(all, setOf(me), channel("c1", "plans", role = "manager", archived = true), me, byName, on = true))
+        assertEquals(emptyList<Member>(), AgentRules.addable(all, emptySet(), dm("d1", ann), me, byName, on = true))
+    }
+
+    @Test
+    fun `a private channel is offered only the agents whose sponsor is in it, as the server refuses the others`() {
+        val private = channel("c1", "plans", role = "manager", visibility = "private")
+        // Bo isn't in the channel: his Revy would get 409 sponsor_not_in_channel, so the manager isn't offered it.
+        assertEquals(listOf("Clark"), AgentRules.addable(withAgents, setOf(me, ann), private, me, byName, on = true).map { it.name })
+        assertEquals(listOf("Clark", "Revy"), AgentRules.addable(withAgents, setOf(me, bo), private, me, byName, on = true).map { it.name })
+        // Settings this phone can't read don't name a sponsor, so such an agent isn't offered for a private channel.
+        val unread = Member(id("u", "odd"), Member.KIND_AGENT, "Odd", "member", "active")
+        assertEquals(emptyList<Member>(), AgentRules.addable(people + unread, setOf(me), private, me, byName, on = true))
+        assertEquals(listOf("Odd"), AgentRules.addable(people + unread, setOf(me), channel("c1", "plans", role = "manager"), me, byName, on = true).map { it.name })
+    }
+
+    @Test
+    fun `nothing offers to add an agent while the server has agents off`() {
+        val manages = channel("c1", "plans", role = "manager")
+        assertEquals(emptyList<Member>(), AgentRules.addable(withAgents, setOf(me), manages, me, byName, on = false))
+        assertTrue(AgentRules.ownAgents(withAgents, me, on = true))
+        assertFalse(AgentRules.ownAgents(withAgents, me, on = false))
+        assertFalse(AgentRules.ownAgents(withAgents, cy, on = true))
+        val plain = channel("c1", "plans")
+        assertFalse(DetailAction.ADD_AGENTS in SheetRules.detailActions(plain, "member", me, emptySet(), ownAgents = AgentRules.ownAgents(withAgents, me, on = false)))
+        assertFalse(AgentRules.sponsorAdds(plain, AgentRules.ownAgents(withAgents, me, on = false)))
+        // Workspace members offers nothing for an agent either; its people keep their menu.
+        val revyM = withAgents.first { it.id == revy }
+        assertEquals(emptyList<MemberAction>(), SheetRules.memberActions("owner", me, revyM, emptySet(), agents = false))
+        assertTrue(MemberAction.REMOVE in SheetRules.memberActions("owner", me, withAgents.first { it.id == bo }, emptySet(), agents = false))
+    }
+
+    @Test
+    fun `a sponsor who doesn't manage a channel the workspace sees gets Add agents in its details`() {
+        assertTrue(AgentRules.sponsors(withAgents, me))
+        assertFalse(AgentRules.sponsors(withAgents, cy))
+        assertFalse("a removed agent doesn't count", AgentRules.sponsors(people + agent(clark, "Clark", sponsor = cy, state = "former"), cy))
+        val plain = SheetRules.detailActions(channel("c1", "plans"), "member", me, emptySet(), ownAgents = true)
+        assertEquals(
+            listOf(DetailAction.MUTE, DetailAction.MARK_READ, DetailAction.MEMBERS, DetailAction.ADD_AGENTS, DetailAction.LEAVE_CHANNEL),
+            plain,
+        )
+        assertFalse(DetailAction.ADD_AGENTS in SheetRules.detailActions(channel("c1", "plans", visibility = "private"), "member", me, emptySet(), ownAgents = true))
+        assertFalse(DetailAction.ADD_AGENTS in SheetRules.detailActions(channel("c1", "plans"), "member", me, emptySet(), ownAgents = false))
+        assertFalse(DetailAction.ADD_AGENTS in SheetRules.detailActions(channel("c1", "plans"), "member", me, emptySet(), writable = false, ownAgents = true))
+        // A manager has Add people, which lists the agents too.
+        val manager = SheetRules.detailActions(channel("c1", "plans", role = "manager"), "member", me, emptySet(), ownAgents = true)
+        assertTrue(DetailAction.ADD_PEOPLE in manager)
+        assertFalse(DetailAction.ADD_AGENTS in manager)
+    }
+
+    @Test
+    fun `in members lists an agent is edited and removed by its sponsor, an owner or an admin, re-keyed by its sponsor, and a channel's managers remove it`() {
+        val clarkM = withAgents.first { it.id == clark }
+        val revyM = withAgents.first { it.id == revy }
+        // Workspace members, as on the desktop: Edit agent, New key for its sponsor only, Remove agent.
+        assertEquals(
+            listOf(MemberAction.EDIT_AGENT, MemberAction.AGENT_KEY, MemberAction.REMOVE),
+            SheetRules.memberActions("member", me, clarkM, emptySet(), agents = true),
+        )
+        assertEquals(emptyList<MemberAction>(), SheetRules.memberActions("member", me, revyM, emptySet(), agents = true))
+        assertEquals(listOf(MemberAction.EDIT_AGENT, MemberAction.REMOVE), SheetRules.memberActions("admin", me, revyM, emptySet(), agents = true))
+        assertEquals(listOf(MemberAction.EDIT_AGENT, MemberAction.REMOVE), SheetRules.memberActions("owner", me, revyM, emptySet(), agents = true))
+        assertEquals(emptyList<MemberAction>(), SheetRules.memberActions("owner", me, revyM, emptySet(), writable = false, agents = true))
+        assertEquals(emptyList<MemberAction>(), SheetRules.memberActions("guest", me, revyM, emptySet(), agents = true))
+        // Settings this phone can't read leave Edit out: the form would have nothing to start from.
+        val unread = Member(revy, Member.KIND_AGENT, "Revy", "member", "active")
+        assertEquals(listOf(MemberAction.REMOVE), SheetRules.memberActions("owner", me, unread, emptySet(), agents = true))
+        // In a channel: never Make manager; Remove for its managers and the agent's sponsor.
+        val manages = channel("c1", "plans", role = "manager")
+        assertEquals(listOf(ChannelMemberAction.REMOVE), SheetRules.channelMemberActions(manages, me, RoomMember(revy, "member"), member = revyM))
+        assertEquals(listOf(ChannelMemberAction.REMOVE), SheetRules.channelMemberActions(channel("c1", "plans"), me, RoomMember(clark, "member"), member = clarkM))
+        assertEquals(emptyList<ChannelMemberAction>(), SheetRules.channelMemberActions(channel("c1", "plans"), me, RoomMember(revy, "member"), member = revyM))
+        // Archived, the agent still reads the channel and the server still takes it out: Remove stays, and only Remove.
+        val archived = channel("c1", "plans", archived = true)
+        val archivedManaged = channel("c1", "plans", role = "manager", archived = true)
+        assertEquals(listOf(ChannelMemberAction.REMOVE), SheetRules.channelMemberActions(archived, me, RoomMember(clark, "member"), member = clarkM))
+        assertEquals(listOf(ChannelMemberAction.REMOVE), SheetRules.channelMemberActions(archivedManaged, me, RoomMember(revy, "member"), member = revyM))
+        assertEquals(emptyList<ChannelMemberAction>(), SheetRules.channelMemberActions(archived, me, RoomMember(revy, "member"), member = revyM))
+        assertEquals(emptyList<ChannelMemberAction>(), SheetRules.channelMemberActions(archived, me, RoomMember(clark, "member"), writable = false, member = clarkM))
+        assertEquals(
+            emptyList<ChannelMemberAction>(),
+            SheetRules.channelMemberActions(archivedManaged, me, RoomMember(bo, "member"), member = withAgents.first { it.id == bo }),
+        )
+        // A person in the same channel still gets the manager's menu.
+        assertEquals(
+            listOf(ChannelMemberAction.MAKE_MANAGER, ChannelMemberAction.REMOVE),
+            SheetRules.channelMemberActions(manages, me, RoomMember(bo, "member"), member = withAgents.first { it.id == bo }),
+        )
+    }
+
+    @Test
+    fun `the drawer has Agents for full members while the server has agents on`() {
+        assertTrue(WorkspaceAction.AGENTS in SheetRules.workspaceActions(view(role = "member"), agents = true))
+        assertFalse(WorkspaceAction.AGENTS in SheetRules.workspaceActions(view(role = "member"), agents = false))
+        assertFalse(WorkspaceAction.AGENTS in SheetRules.workspaceActions(view(role = "guest"), agents = true))
+        assertEquals(listOf(WorkspaceAction.MEMBERS), SheetRules.workspaceActions(view(), writable = false, agents = true))
+        assertEquals(
+            listOf(WorkspaceAction.RENAME_ME, WorkspaceAction.MEMBERS, WorkspaceAction.INVITE, WorkspaceAction.AGENTS, WorkspaceAction.BLOCKED, WorkspaceAction.LEAVE, WorkspaceAction.DELETE),
+            SheetRules.workspaceActions(view(), agents = true),
+        )
+        assertFalse(SheetRules.opensWhileReadOnly(ChatSheet.AGENTS))
+    }
+
+    @Test
+    fun `whom an agent answers, and whether it answers you`() {
+        val everyone = AgentSettings(bo, AgentRules.EVERYONE)
+        val sponsorOnly = AgentSettings(bo, AgentRules.SPONSOR)
+        val chosen = AgentSettings(bo, AgentRules.MEMBERS, listOf(ann, cy))
+        assertTrue(AgentRules.answers(everyone, me))
+        assertFalse(AgentRules.answers(sponsorOnly, me))
+        assertTrue("its sponsor always", AgentRules.answers(sponsorOnly, bo))
+        assertTrue(AgentRules.answers(chosen, ann))
+        assertFalse(AgentRules.answers(chosen, me))
+        assertTrue("its sponsor is answered without being listed", AgentRules.answers(chosen, bo))
+        assertTrue("settings not loaded yet claim nothing", AgentRules.answers(null, me))
+        assertFalse("an unknown choice answers only its sponsor", AgentRules.answers(AgentSettings(bo, "later"), me))
+        assertNull(AgentRules.answered(everyone))
+        assertEquals(listOf(bo), AgentRules.answered(sponsorOnly))
+        assertEquals(listOf(bo, ann, cy), AgentRules.answered(chosen))
+        assertEquals(listOf(bo, ann), AgentRules.answered(AgentSettings(bo, AgentRules.MEMBERS, listOf(bo, ann))))
+        // Up to three are named, past that the first two and how many more.
+        assertEquals(listOf(bo) to 0, AgentRules.named(listOf(bo)))
+        assertEquals(listOf(bo, ann, cy) to 0, AgentRules.named(listOf(bo, ann, cy)))
+        assertEquals(listOf(bo, ann) to 3, AgentRules.named(listOf(bo, ann, cy, me, gone)))
+        assertTrue(AgentRules.canManage(me, me, "member"))
+        assertFalse(AgentRules.canManage(bo, me, "member"))
+        assertTrue(AgentRules.canManage(bo, me, "admin"))
+        assertTrue(AgentRules.canManage(bo, me, "owner"))
+        assertFalse(AgentRules.canManage(bo, me, "guest"))
+    }
+
+    @Test
+    fun `only its sponsor makes a new key for an agent, owners and admins included`() {
+        assertTrue(AgentRules.canNewKey(me, me))
+        assertFalse(AgentRules.canNewKey(bo, me))
+        assertFalse(AgentRules.canNewKey(null, me))
+        assertFalse(AgentRules.canNewKey(bo, null))
+    }
+
+    @Test
+    fun `whom an agent answers names only people the directory lists, never Former member`() {
+        val known = setOf(me, ann)
+        // A guest's directory may not hold the sponsor: the line then names whom it does know.
+        assertEquals(emptyList<String>(), AgentRules.answeredKnown(AgentSettings(bo, AgentRules.SPONSOR)) { it in known })
+        assertEquals(listOf(ann), AgentRules.answeredKnown(AgentSettings(bo, AgentRules.MEMBERS, listOf(ann, cy))) { it in known })
+        assertEquals(listOf(me, ann), AgentRules.answeredKnown(AgentSettings(me, AgentRules.MEMBERS, listOf(ann))) { it in known })
+        assertNull(AgentRules.answeredKnown(AgentSettings(bo, AgentRules.EVERYONE)) { it in known })
+        assertEquals("an unknown choice reads as its sponsor only", emptyList<String>(), AgentRules.answeredKnown(AgentSettings(bo, "later")) { it in known })
+    }
+
+    @Test
+    fun `Workspace members opens the Agents sheet on an agent's form or its new key`() {
+        assertEquals(AgentRules.Opened(clark, key = false), AgentRules.opened(AgentRules.editTarget(clark)))
+        assertEquals(AgentRules.Opened(clark, key = true), AgentRules.opened(AgentRules.keyTarget(clark)))
+        assertNull(AgentRules.opened(null))
+        assertNull(AgentRules.opened(clark))
+        // The form starts from the directory's settings.
+        assertEquals(
+            nl.bvdm.rukoo.workspaces.Agent(clark, "Clark", me, AgentRules.SPONSOR),
+            AgentRules.agentOf(withAgents.first { it.id == clark }),
+        )
+        assertNull(AgentRules.agentOf(withAgents.first { it.id == bo }))
+        assertNull(AgentRules.agentOf(Member(clark, Member.KIND_AGENT, "Clark", "member", "active")))
+    }
+
+    @Test
+    fun `the agent form takes a name, a known choice and chosen people for Chosen people`() {
+        assertTrue(AgentRules.formReady("Clark", AgentRules.SPONSOR, emptySet()))
+        assertTrue(AgentRules.formReady("Clark", AgentRules.EVERYONE, emptySet()))
+        assertFalse(AgentRules.formReady(" ", AgentRules.EVERYONE, emptySet()))
+        assertFalse(AgentRules.formReady("Clark", AgentRules.MEMBERS, emptySet()))
+        assertTrue(AgentRules.formReady("Clark", AgentRules.MEMBERS, setOf(ann)))
+        assertFalse(AgentRules.formReady("Clark", "later", emptySet()))
+        assertFalse(AgentRules.formReady("Clark", AgentRules.MEMBERS, (1..51).map { "u_$it" }))
+        // The people to choose: active people, guests too, never an agent, nor its sponsor.
+        assertEquals(listOf("Ann", "Bo", "Cy", "Gus"), AgentRules.choosable(withAgents, me, byName).map { it.name })
+        assertEquals(listOf("Ann", "Cy", "Gus", "Me"), AgentRules.choosable(withAgents, bo, byName).map { it.name })
+    }
+
+    @Test
+    fun `the runner config is the desktop's, with the server, the workspace, the key and a command to replace`() {
+        val key = "rka_" + "a".repeat(22) + "." + "b".repeat(43)
+        val w = id("w", "acme")
+        // Byte for byte what desktop's chat-agents.js runnerText writes for a config without one of the person's agents.
+        val expected = """
+            |{
+            |  "server": "https://rukoo.io",
+            |  "workspace": "$w",
+            |  "key": "$key",
+            |  "backend": {
+            |    "type": "command",
+            |    "command": "my-agent"
+            |  },
+            |  "context": {
+            |    "threadMessages": 50,
+            |    "channelMessages": 20,
+            |    "maxChars": 30000
+            |  },
+            |  "instructions": ""
+            |}
+            |""".trimMargin()
+        assertEquals(expected, AgentRules.runnerConfig("https://rukoo.io/", w, key))
+        assertEquals("node integrations/agent-runner/runner.js --config agent.json", AgentRules.RUNNER_COMMAND)
     }
 }

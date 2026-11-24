@@ -19,10 +19,11 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { blob, fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
-import { accountObject, filesOn, workspaceLimits } from './config.js';
+import { accountObject, agentLimits, filesOn, workspaceLimits } from './config.js';
 import { fileStore } from './filestore.js';
 
 const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
 // An operation id older than this is refused even when its retry receipt is gone; one further ahead than the second
 // number can't come from a device that asked this server for the time (WORKSPACES.md, Messaging and sync).
 const OPERATION_AGE = 30 * DAY;
@@ -77,6 +78,58 @@ const QUIET = new Set(['reaction.added', 'reaction.removed', 'reaction.cleared',
 
 const FULL = new Set(['owner', 'admin', 'member']);
 const ADMIN = new Set(['owner', 'admin']);
+
+// Agents (WORKSPACES.md, Agents in channels). An agent is a member row of kind 'agent' with the role 'agent', which
+// is in neither FULL nor ADMIN, so every role check refuses it unless it names agents. It has no incarnation and no
+// account, so no session can ever be it: it signs in with a key of its own, "rka_" and the 22 characters of its member
+// id after "u_", a dot and 43 characters of secret. Its devices see it as role 'member' with kind 'agent'. Its key may
+// do only what a runner needs; everything else is agent_forbidden.
+const AGENT_PREFIX = 'rka_';
+const AGENT_OPERATIONS = new Set([
+  'workspace.get',
+  'members.list',
+  'channels.list',
+  'channel.members',
+  'changes',
+  'ticket',
+  'agent.me',
+  'events',
+  'read',
+  'operation',
+  'file.download',
+  'react',
+  'post'
+]);
+// How often an agent's lastSeen is written, at most.
+const SEEN_EVERY = 60 * 1000;
+// Who an agent answers: everyone who can post in the channel, only its sponsor, or its sponsor and chosen members.
+const ANSWERS = new Set(['everyone', 'sponsor', 'members']);
+
+// The name an agent's key starts with, and which its buckets are kept under.
+function agentName(id) {
+  return `${AGENT_PREFIX}${id.slice(2)}`;
+}
+
+// The mentions a message.posted stores: a list, or for an agent's reply, the list with the trigger and depth.
+function storedMentions(data) {
+  if (!data) return [];
+  const value = JSON.parse(data);
+  return Array.isArray(value) ? value : (value.mentions ?? []);
+}
+
+// The depth of a stored message.posted: an agent's reply says, a person's message is 0.
+function storedDepth(data) {
+  if (!data) return 0;
+  const value = JSON.parse(data);
+  return Array.isArray(value) ? 0 : (value.depth ?? 0);
+}
+
+// The member id of the person who started the chain an agent's stored reply is in, or null for a person's message.
+function storedOrigin(data) {
+  if (!data) return null;
+  const value = JSON.parse(data);
+  return Array.isArray(value) ? null : (value.origin ?? null);
+}
 
 // Conversations and members have small integer keys inside the database and random ids outside it: a message row
 // names its channel and its author, and at 16 KiB of text or less the keys are a real share of what a workspace
@@ -136,6 +189,38 @@ const RICH_TABLES = `
   CREATE INDEX IF NOT EXISTS trash_at ON trash (at);
 `;
 
+// The tables of agents, which a new workspace makes with the rest and an older one adds in #upgrade(), after the
+// member columns they index. An agent row holds an agent's reply settings: answers, members (the chosen members' keys
+// as a JSON list, for 'members') and agents (whether a mention by another agent is a trigger). keyHash is the SHA-256
+// of its key's secret, null once it was removed, and keyVersion counts its keys. An agent_reply row is one reply an
+// agent posted to one part of one trigger: the primary key is what keeps a trigger to one reply per part, whichever
+// runner posts it, at counts an agent's replies in the past hour, and agent_reply_seq finds an agent's newest reply in
+// a room for its feed row (lastTrigger). Removing a reply leaves its row.
+const AGENT_TABLES = `
+  CREATE TABLE IF NOT EXISTS agent (
+    member INTEGER PRIMARY KEY,
+    answers TEXT NOT NULL,
+    members TEXT NOT NULL DEFAULT '[]',
+    agents INTEGER NOT NULL DEFAULT 0,
+    keyHash BLOB,
+    keyVersion INTEGER NOT NULL DEFAULT 1,
+    lastSeen INTEGER,
+    createdAt INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS agent_reply (
+    agent INTEGER NOT NULL,
+    conversation INTEGER NOT NULL,
+    triggerSeq INTEGER NOT NULL,
+    part INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (agent, conversation, triggerSeq, part)
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS agent_reply_at ON agent_reply (agent, at);
+  CREATE INDEX IF NOT EXISTS agent_reply_seq ON agent_reply (agent, conversation, seq);
+  CREATE INDEX IF NOT EXISTS member_sponsor ON member (sponsor) WHERE sponsor IS NOT NULL;
+`;
+
 // Rich messages: conversation.last is the sequence of the newest event that counts as activity (lastAt in the feed),
 // and grants.readMark counts how often the member marked something unread there. A reaction row is one person's
 // emoji on one message, ord the sequence of the reaction.added that made it, which orders who reacted. event.previews
@@ -172,7 +257,9 @@ const SCHEMA = `
     joinedAt INTEGER NOT NULL,
     endedAt INTEGER,
     rev INTEGER NOT NULL DEFAULT 0,
-    blocksRev INTEGER NOT NULL DEFAULT 0
+    blocksRev INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'human',
+    sponsor INTEGER
   );
   CREATE TABLE IF NOT EXISTS retired (incarnation TEXT PRIMARY KEY, at INTEGER NOT NULL);
   CREATE TABLE conversation (
@@ -243,6 +330,7 @@ const SCHEMA = `
   CREATE UNIQUE INDEX event_op ON event (actor, op) WHERE op IS NOT NULL;
   CREATE INDEX event_at ON event (at);
 ${RICH_TABLES}
+${AGENT_TABLES}
   CREATE TABLE receipt (
     actor INTEGER NOT NULL,
     op BLOB NOT NULL,
@@ -313,6 +401,10 @@ const OPERATIONS = {
   operation: 'fetch',
   'blocks.list': 'fetch',
   'file.download': 'fetch',
+  'agents.list': 'fetch',
+  'agent.me': 'fetch',
+  'agent.create': 'send',
+  'agent.update': 'send',
   post: 'send',
   read: 'send',
   react: 'send',
@@ -340,7 +432,9 @@ const OPERATIONS = {
   'dm.leave': 'control',
   block: 'control',
   redact: 'control',
-  'workspace.delete': 'control'
+  'workspace.delete': 'control',
+  'agent.key': 'control',
+  'agent.remove': 'control'
 };
 
 // A refusal thrown inside a transaction: the transaction rolls back and the caller gets this answer.
@@ -373,6 +467,10 @@ const NO_FILE = () => new Refusal(404, 'not_found', 'There is no file with this 
 const INVALID_STATE = () => new Refusal(409, 'invalid_state', 'This upload was sent, cancelled or has expired. Attach the file again.');
 const FILES_QUOTA = () =>
   new Refusal(413, 'quota', 'This workspace has no room for more files. Remove some first.', { scope: 'workspace', limit: 'files' });
+// An agent key that isn't one here: wrong, replaced, removed, or its sponsor can no longer have agents.
+const AGENT_UNAUTHORIZED = () => new Refusal(401, 'unauthorized', 'This agent key is not valid here.', { scope: 'agent' });
+const NO_AGENT = () => new Refusal(404, 'not_found', 'There is no agent with this id.');
+const NOT_ANSWERED = (reason, message) => new Refusal(403, 'not_answered', message, { reason });
 
 function newId(prefix) {
   return `${prefix}_${toBase64url(randomBytes(16))}`;
@@ -388,7 +486,12 @@ function eventBytes(id) {
   return bytes && bytes.length === 16 ? bytes : null;
 }
 
-function memberOut(row) {
+// A member as the directory shows them. An agent is role 'member' with kind 'agent' and its reply settings in agent,
+// which #memberOut reads: older apps take only the four roles.
+function memberOut(row, agent = null) {
+  if (row.kind === 'agent') {
+    return { id: row.id, kind: 'agent', name: row.name, role: 'member', state: row.state, joinedAt: row.joinedAt, ...(agent ? { agent } : {}) };
+  }
   return { id: row.id, kind: 'human', name: row.name, role: row.role, state: row.state, joinedAt: row.joinedAt };
 }
 
@@ -437,9 +540,21 @@ export class Workspace extends DurableObject {
     if (this.present) this.#upgrade();
     // The accounts of the people in this workspace, so a request can be given its own bucket before any query runs.
     this.accounts = new Set();
+    // The same for the active agents: the hash of each one's current key, by the name its key starts with. An agent's
+    // name is its member id, which every member can see, so a request gets the agent's buckets only once its secret
+    // matches this hash (request). Making an agent, a new key and a removal change it once their transaction commits.
+    this.agentKeys = new Map();
     if (this.present) {
-      for (const row of this.sql.exec("SELECT account FROM member WHERE state = 'active'")) this.accounts.add(row.account);
+      for (const row of this.sql.exec("SELECT account FROM member WHERE state = 'active' AND account IS NOT NULL")) this.accounts.add(row.account);
+      for (const row of this.sql.exec(
+        `SELECT m.id, a.keyHash FROM member m JOIN agent a ON a.member = m.n
+         WHERE m.state = 'active' AND m.kind = 'agent' AND a.keyHash IS NOT NULL`
+      )) {
+        this.agentKeys.set(agentName(row.id), new Uint8Array(row.keyHash));
+      }
     }
+    // What a change asks to happen once its transaction has committed, such as closing an agent's sockets (#write).
+    this.after = [];
     const now = Date.now();
     this.buckets = new Map();
     this.strangers = new Bucket(STRANGER_LANE, now);
@@ -459,10 +574,10 @@ export class Workspace extends DurableObject {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
-  // A workspace made by the first release of workspaces has no columns or tables for direct messages and blocks, and
-  // one made before rich messages none for reactions, files and link cards. They are added before the object answers
-  // anything. Each step can run again, so an object stopped halfway finishes the next time it starts, and one already
-  // up to date only reads its table definitions and the upgrade table. That table holds a row for each one-time change
+  // A workspace made by the first release of workspaces has no columns or tables for direct messages and blocks, one
+  // made before rich messages none for reactions, files and link cards, and one made before agents none for those. They
+  // are added before the object answers anything. Each step can run again, so an object stopped halfway finishes the
+  // next time it starts, and one already up to date only reads its table definitions and the upgrade table. That table holds a row for each one-time change
   // to the data a workspace already has, written with the change's last write, so the change runs once. A workspace
   // made since a change was written records it when it is made (create) and never runs it.
   #upgrade() {
@@ -483,7 +598,11 @@ export class Workspace extends DurableObject {
     if (!has('event', 'noPreviews')) this.sql.exec('ALTER TABLE event ADD COLUMN noPreviews INTEGER NOT NULL DEFAULT 0');
     if (!has('workspace', 'fileBytes')) this.sql.exec('ALTER TABLE workspace ADD COLUMN fileBytes INTEGER NOT NULL DEFAULT 0');
     if (!has('workspace', 'landingUntil')) this.sql.exec('ALTER TABLE workspace ADD COLUMN landingUntil INTEGER NOT NULL DEFAULT 0');
+    // Agents: every member of a workspace made before them is a person.
+    if (!has('member', 'kind')) this.sql.exec("ALTER TABLE member ADD COLUMN kind TEXT NOT NULL DEFAULT 'human'");
+    if (!has('member', 'sponsor')) this.sql.exec('ALTER TABLE member ADD COLUMN sponsor INTEGER');
     this.sql.exec(RICH_TABLES);
+    this.sql.exec(AGENT_TABLES);
     this.sql.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
       CREATE TABLE IF NOT EXISTS block (
@@ -603,7 +722,14 @@ export class Workspace extends DurableObject {
   // Every other route. token is the caller's session token, op one of OPERATIONS, args what the Worker checked.
   async request(token, op, args = {}) {
     const name = token.slice(0, token.indexOf('.'));
-    const wait = this.#admit(name, op, Date.now());
+    // An agent's key has a name of 26 characters, an account's 43, so neither is ever taken for the other. Its name is
+    // the agent's member id, which every member can see, so only a key whose secret matches draws from the agent's
+    // buckets. Any other key with that name is a stranger's: someone who sends wrong secrets under an agent's name
+    // can't use up the agent's allowance. The hash is checked against memory, so no query runs before the buckets.
+    const agent = name.length === AGENT_PREFIX.length + 22 && name.startsWith(AGENT_PREFIX);
+    const hash = agent ? await sha256(utf8(token.slice(token.indexOf('.') + 1))) : null;
+    const known = agent ? this.agentKeys.has(name) && sameBytes(this.agentKeys.get(name), hash) : this.accounts.has(name);
+    const wait = this.#admit(known ? name : null, op, Date.now());
     if (wait) {
       return reply(
         429,
@@ -611,6 +737,7 @@ export class Workspace extends DurableObject {
         { 'retry-after': String(wait) }
       );
     }
+    if (agent) return this.#agentRequest(name, hash, op, args);
     const who = await accountObject(this.env, name).principal(token);
     if (who.status !== 200) return reply(who.status, { ...who.body, scope: 'account' });
     try {
@@ -627,6 +754,72 @@ export class Workspace extends DurableObject {
       if (err instanceof Refusal) return err.reply;
       throw err;
     }
+  }
+
+  // A request with an agent's key. The key is checked here, against the hash this object keeps, instead of with an
+  // account: the agent is active, its key is the current one and its sponsor is still a full member. Then only the
+  // operations a runner needs go through. A post checks the agent again in its own transaction (#post).
+  async #agentRequest(name, hash, op, args) {
+    try {
+      if (!this.present || agentLimits(this.env).agents === 0) throw AGENT_UNAUTHORIZED();
+      const me = this.#agentFor(name, hash);
+      if (!me) throw AGENT_UNAUTHORIZED();
+      if (!AGENT_OPERATIONS.has(op)) throw new Refusal(403, 'agent_forbidden', "An agent's key can't do this.");
+      const now = Date.now();
+      if (me.lastSeen === null || now - me.lastSeen >= SEEN_EVERY) this.sql.exec('UPDATE agent SET lastSeen = ? WHERE member = ?', now, me.n);
+      const session = this.#agentSession(me);
+      this.#renew(session);
+      const result = await this.#dispatch(op, me, { session }, args);
+      await this.#settle();
+      return result;
+    } catch (err) {
+      if (err instanceof Refusal) return err.reply;
+      throw err;
+    }
+  }
+
+  // The active agent a key names, with its key version and lastSeen, when hash, the SHA-256 of the key's secret, is
+  // its current one's and its sponsor may have agents. Otherwise null. The hash was made before, so nothing waits
+  // between the checks and the use.
+  #agentFor(name, hash) {
+    if (!this.present) return null;
+    const row = this.sql
+      .exec(
+        `SELECT m.*, a.keyHash, a.keyVersion, a.lastSeen FROM member m JOIN agent a ON a.member = m.n
+         WHERE m.id = ? AND m.kind = 'agent' AND m.state = 'active'`,
+        `u_${name.slice(AGENT_PREFIX.length)}`
+      )
+      .toArray()[0];
+    if (!row || !row.keyHash || !sameBytes(new Uint8Array(row.keyHash), hash)) return null;
+    if (!this.#sponsorQualifies(row.sponsor)) return null;
+    const { keyHash, ...me } = row;
+    return me;
+  }
+
+  // Whether member n may have agents: an active full member.
+  #sponsorQualifies(n) {
+    const sponsor = this.sql.exec("SELECT role, kind FROM member WHERE n = ? AND state = 'active'", n).toArray()[0];
+    return Boolean(sponsor && sponsor.kind !== 'agent' && FULL.has(sponsor.role));
+  }
+
+  // What stands for a session for an agent: its id and key version. A ticket holds it, and its sockets are tagged
+  // with it, so a new key ends both.
+  #agentSession(agent) {
+    return `agent:${agent.id}:${agent.keyVersion}`;
+  }
+
+  // The session an agent holds right now, or null when it holds none: removed, without a key, or its sponsor can't
+  // have agents any more.
+  #currentAgentSession(n) {
+    const row = this.sql
+      .exec(
+        `SELECT m.id, m.sponsor, a.keyHash, a.keyVersion FROM member m JOIN agent a ON a.member = m.n
+         WHERE m.n = ? AND m.kind = 'agent' AND m.state = 'active'`,
+        n
+      )
+      .toArray()[0];
+    if (!row || !row.keyHash || !this.#sponsorQualifies(row.sponsor)) return null;
+    return this.#agentSession(row);
   }
 
   // ---- Called by the Worker for files and link cards ----
@@ -721,6 +914,8 @@ export class Workspace extends DurableObject {
       const member = this.sql.exec('SELECT * FROM member WHERE incarnation = ?', incarnation).toArray()[0];
       if (!member) return null;
       if (member.state === 'active') this.#endMembership(member, member, now);
+      // The account's agents go with it, also when its sponsor had already left: they went then.
+      this.#dropSponsored(member, member, now);
       this.sql.exec(
         `UPDATE member SET state = 'deleted', incarnation = NULL, account = NULL, ref = NULL, name = '',
            endedAt = COALESCE(endedAt, ?) WHERE n = ?`,
@@ -749,16 +944,22 @@ export class Workspace extends DurableObject {
     if (!this.present) return new Response(null, { status: 404 });
     const now = Date.now();
     const nonce = request.headers.get('x-ticket') || '';
-    const active = (n) => this.sql.exec("SELECT incarnation, account FROM member WHERE n = ? AND state = 'active'", n).toArray()[0];
+    const active = (n) => this.sql.exec("SELECT n, kind, incarnation, account FROM member WHERE n = ? AND state = 'active'", n).toArray()[0];
+    // An agent's ticket holds its key version, which must still be the agent's current one.
+    const holds = (row) => {
+      const member = active(row.member);
+      return Boolean(member && (member.kind !== 'agent' || this.#currentAgentSession(member.n) === row.session));
+    };
     const asked = this.sql.exec('SELECT member, session, expiresAt FROM ticket WHERE nonce = ?', nonce).toArray()[0];
     const holder = asked && asked.expiresAt > now ? active(asked.member) : null;
     // A ticket that is being checked right now is in use: a second upgrade with it gets no check of its own.
     if (!holder || this.checking.has(nonce)) return new Response(null, { status: 401 });
-    // The ticket's session may have been signed out since it asked. Only its account knows.
+    // The ticket's session may have been signed out since it asked. Only its account knows; an agent's key is known
+    // here.
     this.checking.add(nonce);
     let alive;
     try {
-      alive = await accountObject(this.env, holder.account).session(holder.incarnation, asked.session);
+      alive = holder.kind === 'agent' ? holds(asked) : await accountObject(this.env, holder.account).session(holder.incarnation, asked.session);
     } finally {
       this.checking.delete(nonce);
     }
@@ -771,7 +972,7 @@ export class Workspace extends DurableObject {
     // That waited, so the ticket is taken and the member checked again, in one step: a ticket opens one socket.
     const ticket = this.ctx.storage.transactionSync(() => {
       const row = this.sql.exec('DELETE FROM ticket WHERE nonce = ? RETURNING member, session, expiresAt', nonce).toArray()[0];
-      return row && row.expiresAt > Date.now() && active(row.member) ? row : null;
+      return row && row.expiresAt > Date.now() && holds(row) ? row : null;
     });
     if (!ticket) return new Response(null, { status: 401 });
     if (this.ctx.getWebSockets().length >= workspaceLimits(this.env).sockets) {
@@ -841,10 +1042,12 @@ export class Workspace extends DurableObject {
 
   // 0 to let a request in, else the seconds to wait. No query and no call to another object happens before this.
   // The caller's own allowance comes first, so a caller who is over theirs takes nothing from what everyone shares.
+  // name is the account of a member, or an agent's key name once its secret matched (request), which has buckets of
+  // its own with the same lanes. null is anyone else, who shares the strangers' allowance.
   #admit(name, op, now) {
     const lane = OPERATIONS[op] ?? 'send';
     let wait;
-    if (!this.accounts.has(name)) wait = this.strangers.take(now);
+    if (name === null) wait = this.strangers.take(now);
     else {
       let mine = this.buckets.get(name);
       if (!mine) {
@@ -869,17 +1072,27 @@ export class Workspace extends DurableObject {
   }
 
   // Runs a change in one transaction. A Refusal thrown inside rolls it back. The devices it concerns are woken once
-  // it has committed.
+  // it has committed, and what it asked to do afterwards (this.after) is done; a change that rolled back does neither.
   #write(fn) {
     this.wakes = new Set();
-    // A request that was waiting when the workspace was deleted finds nothing to write to.
-    const result = this.ctx.storage.transactionSync(() => {
-      if (!this.present) throw NO_WORKSPACE();
-      return fn();
-    });
+    this.after = [];
+    let result;
+    try {
+      // A request that was waiting when the workspace was deleted finds nothing to write to.
+      result = this.ctx.storage.transactionSync(() => {
+        if (!this.present) throw NO_WORKSPACE();
+        return fn();
+      });
+    } catch (err) {
+      this.after = [];
+      throw err;
+    }
     const wakes = this.wakes;
+    const after = this.after;
     this.wakes = new Set();
+    this.after = [];
     this.#wake(wakes);
+    for (const step of after) step();
     return result;
   }
 
@@ -956,16 +1169,24 @@ export class Workspace extends DurableObject {
   }
 
   // Someone left or was removed: their sockets go, and their bucket too, unless the same account is an active member
-  // again under a newer incarnation.
+  // again under a newer incarnation. A removed agent's key name goes with its buckets.
   #forget(member) {
     const again = member.account && this.sql.exec("SELECT 1 FROM member WHERE account = ? AND state = 'active'", member.account).toArray().length > 0;
     if (member.account && !again) {
       this.accounts.delete(member.account);
       this.buckets.delete(member.account);
     }
-    for (const ws of this.ctx.getWebSockets(`m:${member.n}`)) {
+    if (member.kind === 'agent') {
+      this.agentKeys.delete(agentName(member.id));
+      this.buckets.delete(agentName(member.id));
+    }
+    this.#closeSockets(member.n, 4003, 'removed');
+  }
+
+  #closeSockets(n, code, reason) {
+    for (const ws of this.ctx.getWebSockets(`m:${n}`)) {
       try {
-        ws.close(4003, 'removed');
+        ws.close(code, reason);
       } catch {
         // Already closed.
       }
@@ -1008,8 +1229,9 @@ export class Workspace extends DurableObject {
     this.#wakeFull();
   }
 
+  // Full members. An agent's role is 'agent', so it isn't one.
   #wakeFull() {
-    for (const row of this.sql.exec("SELECT n FROM member WHERE state = 'active' AND role != 'guest'")) this.wakes.add(row.n);
+    for (const row of this.sql.exec("SELECT n FROM member WHERE state = 'active' AND role IN ('owner', 'admin', 'member')")) this.wakes.add(row.n);
   }
 
   #wakeRoom(c) {
@@ -1134,9 +1356,21 @@ export class Workspace extends DurableObject {
   async #dispatch(op, me, who, a) {
     switch (op) {
       case 'workspace.get':
-        return reply(200, { workspace: await this.#workspaceOut(), me: memberOut(me) });
+        return reply(200, { workspace: await this.#workspaceOut(), me: this.#memberOut(me) });
       case 'members.list':
         return this.#members(me);
+      case 'agents.list':
+        return this.#agents(me);
+      case 'agent.me':
+        return this.#agentMe(me);
+      case 'agent.create':
+        return this.#createAgent(me, a);
+      case 'agent.update':
+        return this.#write(() => this.#updateAgent(me, a));
+      case 'agent.key':
+        return this.#newKey(me, a.agent);
+      case 'agent.remove':
+        return this.#write(() => this.#removeAgent(me, a.agent));
       case 'member.rename':
         return this.#write(() => this.#rename(me, a.name));
       case 'member.role':
@@ -1246,7 +1480,8 @@ export class Workspace extends DurableObject {
   }
 
   // Full members see everyone who is active, and the most recent of those who left, so old messages keep their
-  // author's name. A guest sees the people in the channels they were let into.
+  // author's name. A guest sees the people in the channels they were let into, and so does an agent. An agent's chosen
+  // members are left out of what a guest or an agent sees when they aren't among those people.
   #members(me) {
     if (!FULL.has(me.role)) {
       const rows = this.sql
@@ -1258,14 +1493,222 @@ export class Workspace extends DurableObject {
           me.n
         )
         .toArray();
-      return reply(200, { members: rows.map(memberOut), more: false });
+      const visible = new Set(rows.map((row) => row.id));
+      return reply(200, { members: rows.map((row) => this.#memberOut(row, visible)), more: false });
     }
     const active = this.sql.exec("SELECT * FROM member WHERE state = 'active'").toArray();
     const former = this.sql
       .exec("SELECT * FROM member WHERE state != 'active' ORDER BY endedAt DESC, n DESC LIMIT ?", FORMER_MEMBERS + 1)
       .toArray();
     const rows = [...active, ...former.slice(0, FORMER_MEMBERS)].sort((a, b) => a.n - b.n);
-    return reply(200, { members: rows.map(memberOut), more: former.length > FORMER_MEMBERS });
+    return reply(200, { members: rows.map((row) => this.#memberOut(row)), more: former.length > FORMER_MEMBERS });
+  }
+
+  // A member for the directory, with an agent's settings: { sponsor, answers, members, agents }. Its key and lastSeen
+  // are never in the directory. visible: the member ids the viewer may know of, or null for all of them.
+  #memberOut(row, visible = null) {
+    if (row.kind !== 'agent') return memberOut(row);
+    const settings = this.sql.exec('SELECT answers, members, agents FROM agent WHERE member = ?', row.n).toArray()[0];
+    if (!settings) return memberOut(row);
+    const chosen = this.#idsOf(JSON.parse(settings.members)).filter((id) => !visible || visible.has(id));
+    return memberOut(row, { sponsor: this.#idOf(row.sponsor), answers: settings.answers, members: chosen, agents: settings.agents === 1 });
+  }
+
+  // The ids of the active members among the keys ns, in the order of their keys.
+  #idsOf(ns) {
+    if (!ns.length) return [];
+    return this.sql
+      .exec(`SELECT id FROM member WHERE n IN (${ns.map(() => '?').join(', ')}) AND state = 'active' ORDER BY n`, ...ns)
+      .toArray()
+      .map((row) => row.id);
+  }
+
+  #idOf(n) {
+    return this.sql.exec('SELECT id FROM member WHERE n = ?', n).toArray()[0]?.id ?? null;
+  }
+
+  // ---- Agents ----
+
+  // An agent as its sponsor and the full members see it: AgentOut in WORKSPACES.md (Agents). members is [] unless it
+  // answers 'members'.
+  #agentOut(n) {
+    const row = this.sql
+      .exec(
+        `SELECT m.id, m.name, m.sponsor, a.answers, a.members, a.agents, a.lastSeen, a.createdAt
+         FROM member m JOIN agent a ON a.member = m.n WHERE m.n = ?`,
+        n
+      )
+      .one();
+    return {
+      id: row.id,
+      name: row.name,
+      sponsor: this.#idOf(row.sponsor),
+      answers: row.answers,
+      members: this.#idsOf(JSON.parse(row.members)),
+      agents: row.agents === 1,
+      lastSeen: row.lastSeen ?? null,
+      createdAt: row.createdAt
+    };
+  }
+
+  // Every active agent, for full members.
+  #agents(me) {
+    if (!FULL.has(me.role)) throw FORBIDDEN('Only full members see the agents of a workspace.');
+    const rows = this.sql.exec("SELECT n FROM member WHERE kind = 'agent' AND state = 'active' ORDER BY n").toArray();
+    return reply(200, { agents: rows.map((row) => this.#agentOut(row.n)) });
+  }
+
+  // An agent's own settings, for its runner.
+  #agentMe(me) {
+    if (me.kind !== 'agent') throw new Refusal(404, 'not_found', 'There is nothing here.');
+    return reply(200, { agent: this.#agentOut(me.n) });
+  }
+
+  // The active agent an id names, for someone who may manage it: its sponsor, an owner or an admin (a new key is the
+  // sponsor's alone, #newKey). Whether the caller may manage agents at all is settled before the agent is looked up, so
+  // a guest learns nothing about ids.
+  #managedAgent(me, id) {
+    if (!FULL.has(me.role)) throw FORBIDDEN('Only full members manage agents.');
+    const agent = this.sql.exec("SELECT * FROM member WHERE id = ? AND kind = 'agent' AND state = 'active'", id).toArray()[0];
+    if (!agent) throw NO_AGENT();
+    if (agent.sponsor !== me.n && !ADMIN.has(me.role)) throw FORBIDDEN('Only its sponsor, an owner or an admin changes an agent.');
+    return agent;
+  }
+
+  // The chosen members of an agent that answers 'members': the keys of active people, without its sponsor, who is
+  // always answered. Agents can't be chosen.
+  #chosen(ids, sponsor) {
+    const ns = new Set();
+    for (const id of ids) {
+      const member = this.#member(id);
+      if (!member || member.kind === 'agent') {
+        throw new Refusal(400, 'invalid', 'members names someone who is not an active member of this workspace.', { field: 'members' });
+      }
+      if (member.n !== sponsor) ns.add(member.n);
+    }
+    return [...ns].sort((x, y) => x - y);
+  }
+
+  // A full member makes an agent and becomes its sponsor. The key is in this answer and nowhere else: only its hash is
+  // kept.
+  async #createAgent(me, a) {
+    const secret = toBase64url(randomBytes(32));
+    const hash = await sha256(utf8(secret));
+    const now = Date.now();
+    const agent = this.#write(() => {
+      // Making the hash waited: the caller is checked again.
+      const sponsor = this.#member(me.id);
+      if (!sponsor || !FULL.has(sponsor.role)) throw FORBIDDEN('Only full members make agents.');
+      const limit = agentLimits(this.env).agents;
+      const count = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE kind = 'agent' AND state = 'active'").one().n;
+      if (count >= limit) {
+        throw new Refusal(409, 'agent_limit', `A workspace has at most ${limit} agents. Remove one first.`, { limit: 'agents' });
+      }
+      if (!ANSWERS.has(a.answers)) throw new Refusal(400, 'invalid', 'answers must be everyone, sponsor or members.', { field: 'answers' });
+      const chosen = a.answers === 'members' ? this.#chosen(a.members ?? [], sponsor.n) : [];
+      const id = newId('u');
+      this.sql.exec(
+        `INSERT INTO member (id, incarnation, account, ref, role, state, name, joinedAt, kind, sponsor)
+         VALUES (?, NULL, NULL, NULL, 'agent', 'active', ?, ?, 'agent', ?)`,
+        id,
+        a.name,
+        now,
+        sponsor.n
+      );
+      const row = this.#member(id);
+      this.sql.exec(
+        'INSERT INTO agent (member, answers, members, agents, keyHash, keyVersion, createdAt) VALUES (?, ?, ?, ?, ?, 1, ?)',
+        row.n,
+        a.answers,
+        JSON.stringify(chosen),
+        a.agents ? 1 : 0,
+        blob(hash),
+        now
+      );
+      this.#memberChanged(row);
+      this.after.push(() => this.agentKeys.set(agentName(id), hash));
+      return row;
+    });
+    return reply(201, { agent: this.#agentOut(agent.n), key: `${agentName(agent.id)}.${secret}` });
+  }
+
+  // Renames an agent or changes whom it answers. An answers other than 'members' clears the chosen members. Its
+  // settings are in the directory, so a change is a directory change, as a rename is.
+  #updateAgent(me, a) {
+    const agent = this.#managedAgent(me, a.agent);
+    const settings = this.sql.exec('SELECT * FROM agent WHERE member = ?', agent.n).one();
+    const answers = a.answers ?? settings.answers;
+    if (!ANSWERS.has(answers)) throw new Refusal(400, 'invalid', 'answers must be everyone, sponsor or members.', { field: 'answers' });
+    let chosen = [];
+    if (answers === 'members') chosen = a.members !== undefined ? this.#chosen(a.members, agent.sponsor) : JSON.parse(settings.members);
+    const agents = a.agents ?? settings.agents === 1;
+    const name = a.name ?? agent.name;
+    const changed =
+      name !== agent.name || answers !== settings.answers || JSON.stringify(chosen) !== settings.members || agents !== (settings.agents === 1);
+    if (changed) {
+      this.sql.exec('UPDATE member SET name = ? WHERE n = ?', name, agent.n);
+      this.sql.exec('UPDATE agent SET answers = ?, members = ?, agents = ? WHERE member = ?', answers, JSON.stringify(chosen), agents ? 1 : 0, agent.n);
+      this.#memberChanged(agent);
+    }
+    return reply(200, { agent: this.#agentOut(agent.n) });
+  }
+
+  // A new key replaces the old one at once: the old one stops working, its unused tickets go and its sockets close
+  // with 4001. Only the sponsor makes one. The key reads every channel the agent is in, from its first message on, and
+  // an owner or admin isn't in every private channel: a key in their hands would open the ones they aren't in. They
+  // can still change the agent or remove it.
+  async #newKey(me, id) {
+    const secret = toBase64url(randomBytes(32));
+    const hash = await sha256(utf8(secret));
+    const agent = this.#write(() => {
+      const fresh = this.#member(me.id);
+      if (!fresh) throw NO_WORKSPACE();
+      const target = this.#managedAgent(fresh, id);
+      if (target.sponsor !== fresh.n) throw FORBIDDEN('Only its sponsor makes a new key for an agent.');
+      this.sql.exec('UPDATE agent SET keyHash = ?, keyVersion = keyVersion + 1 WHERE member = ?', blob(hash), target.n);
+      this.sql.exec('DELETE FROM ticket WHERE member = ?', target.n);
+      this.after.push(() => {
+        this.agentKeys.set(agentName(target.id), hash);
+        this.#closeSockets(target.n, 4001, 'key');
+      });
+      return target;
+    });
+    return reply(200, { agent: this.#agentOut(agent.n), key: `${agentName(agent.id)}.${secret}` });
+  }
+
+  #removeAgent(me, id) {
+    this.#dropAgent(this.#managedAgent(me, id), me, Date.now());
+    return reply(204);
+  }
+
+  // Removes an agent: its grants end, with member.left in each channel, its key stops working and its sockets close.
+  // Its messages stay, under a former member, as anyone's do.
+  #dropAgent(agent, by, now) {
+    this.#endMembership(agent, by, now);
+    this.sql.exec("UPDATE member SET state = 'removed', endedAt = ? WHERE n = ?", now, agent.n);
+    this.sql.exec('UPDATE agent SET keyHash = NULL WHERE member = ?', agent.n);
+    this.#memberChanged(agent);
+    this.after.push(() => this.#forget(agent));
+  }
+
+  // A sponsor left, was removed, became a guest or deleted their account: their agents go with them.
+  #dropSponsored(sponsor, by, now) {
+    for (const agent of this.sql.exec("SELECT * FROM member WHERE sponsor = ? AND kind = 'agent' AND state = 'active'", sponsor.n).toArray()) {
+      this.#dropAgent(agent, by, now);
+    }
+  }
+
+  // Someone whose membership ended is no longer one of the chosen members of any agent.
+  #unlist(n) {
+    const rows = this.sql
+      .exec("SELECT a.member, a.members FROM agent a JOIN member m ON m.n = a.member WHERE m.state = 'active' AND a.answers = 'members'")
+      .toArray();
+    for (const row of rows) {
+      const chosen = JSON.parse(row.members);
+      if (!chosen.includes(n)) continue;
+      this.sql.exec('UPDATE agent SET members = ? WHERE member = ?', JSON.stringify(chosen.filter((m) => m !== n)), row.member);
+      this.#memberChanged({ n: row.member });
+    }
   }
 
   #rename(me, name) {
@@ -1281,6 +1724,8 @@ export class Workspace extends DurableObject {
     if (!ADMIN.has(me.role)) throw FORBIDDEN('Your role in this workspace does not allow this change.');
     const target = this.#member(id);
     if (!target) throw new Refusal(404, 'not_found', 'There is no member with this id.');
+    // An agent has no role of its own to change: whom it answers is in its settings (PATCH /agents/{u}).
+    if (target.kind === 'agent') throw new Refusal(400, 'agent_role', 'An agent has no role to change.', { field: 'member' });
     const allowed =
       me.role === 'owner' || (me.role === 'admin' && !ADMIN.has(target.role) && (role === 'member' || role === 'guest'));
     if (!allowed) throw FORBIDDEN('Your role in this workspace does not allow this change.');
@@ -1288,9 +1733,12 @@ export class Workspace extends DurableObject {
       throw new Refusal(409, 'last_owner', 'A workspace needs an owner. Appoint another one first.');
     }
     this.sql.exec('UPDATE member SET role = ? WHERE n = ?', role, target.n);
+    // A guest is in no DM and has no agents, so someone who becomes one leaves every open DM closed behind them, and
+    // their agents go.
     if (role === 'guest' && target.role !== 'guest') {
       const now = Date.now();
       for (const c of this.#openDms(target.n)) this.#closeDm(c, 'ineligible', now);
+      this.#dropSponsored(target, me, now);
     }
     this.#memberChanged(target);
     return reply(200, { member: memberOut({ ...target, role }) });
@@ -1300,8 +1748,14 @@ export class Workspace extends DurableObject {
   // one it left, so the workspace still hears if the account is deleted and can take the name off what it wrote.
   async #removeMember(me, id) {
     const now = Date.now();
+    const self = id === 'me' || id === me.id;
+    // Removing an agent is removing it as DELETE /agents/{u} does, for its sponsor, an owner or an admin. Anyone else
+    // gets the refusal a person's removal gets.
+    if (!self && this.#member(id)?.kind === 'agent') {
+      if (!FULL.has(me.role)) throw FORBIDDEN('Your role in this workspace does not allow removing this member.');
+      return this.#write(() => this.#removeAgent(me, id));
+    }
     const gone = this.#write(() => {
-      const self = id === 'me' || id === me.id;
       if (!self && !ADMIN.has(me.role)) throw FORBIDDEN('Your role in this workspace does not allow removing this member.');
       const target = this.#member(self ? me.id : id);
       if (!target) throw new Refusal(404, 'not_found', 'There is no member with this id.');
@@ -1313,13 +1767,14 @@ export class Workspace extends DurableObject {
       }
       if (self) {
         // Leaving a workspace is leaving each of its channels, and a channel's only manager hands it over first.
-        // Being removed is different: nobody waits for a removed member to appoint anyone.
+        // Being removed is different: nobody waits for a removed member to appoint anyone. Agents don't count: a
+        // channel with only agents left is archived when its last person goes.
         const mine = this.sql
           .exec(
             `SELECT c.id FROM grants g JOIN conversation c ON c.n = g.conversation
              WHERE g.member = ? AND g.role = 'manager' AND c.archivedAt IS NULL
                AND (SELECT COUNT(*) FROM grants WHERE conversation = c.n AND role = 'manager') = 1
-               AND (SELECT COUNT(*) FROM grants WHERE conversation = c.n) > 1
+               AND (SELECT COUNT(*) FROM grants gg JOIN member mm ON mm.n = gg.member WHERE gg.conversation = c.n AND mm.kind != 'agent') > 1
              ORDER BY c.n`,
             target.n
           )
@@ -1332,6 +1787,7 @@ export class Workspace extends DurableObject {
       }
       this.#endMembership(target, me, now);
       this.sql.exec('UPDATE member SET state = ?, endedAt = ? WHERE n = ?', self ? 'left' : 'removed', now, target.n);
+      this.#dropSponsored(target, me, now);
       this.#memberChanged(target);
       return target;
     });
@@ -1353,6 +1809,7 @@ export class Workspace extends DurableObject {
     for (const c of rooms) this.#endGrant(member, c, by, now);
     this.sql.exec('UPDATE invite SET revokedAt = ? WHERE issuer = ? AND redeemedAt IS NULL AND revokedAt IS NULL', now, member.n);
     this.sql.exec('DELETE FROM ticket WHERE member = ?', member.n);
+    this.#unlist(member.n);
     this.wakes.add(member.n);
   }
 
@@ -1557,7 +2014,8 @@ export class Workspace extends DurableObject {
         return { member: again, made: false };
       }
       const { invite, issuer } = this.#usable(hash, now);
-      const members = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active'").one().n;
+      // Agents don't count against the members a workspace may have.
+      const members = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND kind != 'agent'").one().n;
       if (members >= workspaceLimits(this.env).members) {
         throw new Refusal(413, 'quota', 'This workspace is full.', { scope: 'workspace', limit: 'members' });
       }
@@ -1587,7 +2045,8 @@ export class Workspace extends DurableObject {
     const check = () => {
       const self = this.#member(me.id);
       if (!self || self.role !== 'owner') throw FORBIDDEN('Only an owner deletes a workspace.');
-      const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
+      // Agents don't count: they go with the workspace.
+      const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND kind != 'agent' AND n != ?", self.n).one().n;
       if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
       // A write under way could land after the bucket was listed: an upload's attempt, also one that lost to another
       // or whose upload went, and a link card's image. So could one that failed in the last LANDING_TIME.
@@ -1629,6 +2088,7 @@ export class Workspace extends DurableObject {
     for (const timer of this.trailing.values()) clearTimeout(timer);
     this.trailing.clear();
     this.accounts.clear();
+    this.agentKeys.clear();
     this.buckets.clear();
     this.key = null;
     this.alarmAt = null;
@@ -1713,11 +2173,12 @@ export class Workspace extends DurableObject {
   }
 
   // The directory: every channel the caller is in, and for full members every channel the workspace can see. DMs are
-  // never in it: the feed is where a member finds their own.
+  // never in it: the feed is where a member finds their own. members counts the people in a channel, not its agents.
   #channels(me) {
     const rows = this.sql
       .exec(
-        `SELECT c.*, g.role AS grantRole, (SELECT COUNT(*) FROM grants WHERE conversation = c.n) AS members
+        `SELECT c.*, g.role AS grantRole,
+           (SELECT COUNT(*) FROM grants gg JOIN member mm ON mm.n = gg.member WHERE gg.conversation = c.n AND mm.kind != 'agent') AS members
          FROM conversation c LEFT JOIN grants g ON g.conversation = c.n AND g.member = ?
          WHERE c.kind = 'channel' AND (g.member IS NOT NULL OR (? AND c.visibility = 'workspace' AND c.archivedAt IS NULL))
          ORDER BY c.name COLLATE NOCASE, c.n`,
@@ -1731,8 +2192,19 @@ export class Workspace extends DurableObject {
   #channelOut(me, c) {
     const fresh = this.#conversation(c.id);
     const grant = this.#grant(me, fresh);
-    const members = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', fresh.n).one().n;
-    return channelRow({ ...fresh, grantRole: grant?.role ?? null, members });
+    return channelRow({ ...fresh, grantRole: grant?.role ?? null, members: this.#held(fresh.n).people });
+  }
+
+  // How many people and how many agents hold a grant in a conversation.
+  #held(conversation) {
+    const row = this.sql
+      .exec(
+        `SELECT COALESCE(SUM(m.kind != 'agent'), 0) AS people, COALESCE(SUM(m.kind = 'agent'), 0) AS agents
+         FROM grants g JOIN member m ON m.n = g.member WHERE g.conversation = ?`,
+        conversation
+      )
+      .one();
+    return { people: row.people, agents: row.agents };
   }
 
   #renameChannel(me, id, name) {
@@ -1798,15 +2270,24 @@ export class Workspace extends DurableObject {
   }
 
   // A manager lets a member into their channel. For a guest the manager must also be an admin, who signs off on
-  // letting someone from outside the team in. Two different people signing isn't built yet.
+  // letting someone from outside the team in. Two different people signing isn't built yet. An agent comes in as a
+  // person does, let in by a manager, or by its sponsor into a channel the workspace can see that they are in. Into a
+  // private channel it comes only while its sponsor is in it: whoever holds its key reads what it reads, and the
+  // sponsor mustn't read a private channel through their agent that they couldn't read themselves (#endGrant).
   #admitToChannel(me, id, memberId) {
     const { c, grant } = this.#channel(me, id);
-    if (grant.role !== 'manager') throw FORBIDDEN('Only a channel manager adds people.');
+    if (grant.role !== 'manager') {
+      const own = c.visibility === 'workspace' && this.#member(memberId);
+      if (!(own && own.kind === 'agent' && own.sponsor === me.n)) throw FORBIDDEN('Only a channel manager adds people.');
+    }
     if (c.archivedAt) throw new Refusal(409, 'archived', 'This channel is archived.', { scope: 'conversation' });
     const target = this.#member(memberId);
     if (!target) throw new Refusal(404, 'not_found', 'There is no member with this id.');
     if (target.role === 'guest' && !ADMIN.has(me.role)) {
       throw new Refusal(403, 'cosign_required', 'Adding a guest to a channel needs a workspace admin.');
+    }
+    if (target.kind === 'agent' && c.visibility === 'private' && !this.#grant(target, c) && !this.#grant({ n: target.sponsor }, c)) {
+      throw new Refusal(409, 'sponsor_not_in_channel', 'An agent comes into a private channel only while its sponsor is in it. Add its sponsor first.');
     }
     if (!this.#grant(target, c)) this.#grantTo(target, c, 'member', me, Date.now());
     return reply(200, { member: target.id, role: this.#grant(target, c).role });
@@ -1818,6 +2299,9 @@ export class Workspace extends DurableObject {
     const target = this.#member(memberId);
     const theirs = target && this.#grant(target, c);
     if (!theirs) throw new Refusal(404, 'not_found', 'There is no member with this id in the channel.');
+    if (target.kind === 'agent' && role === 'manager') {
+      throw new Refusal(400, 'agent_not_manager', 'An agent cannot manage a channel.', { field: 'member' });
+    }
     if (theirs.role === 'manager' && role !== 'manager' && this.#managers(c) <= 1) {
       throw new Refusal(409, 'last_manager', 'A channel needs a manager. Appoint another one first.');
     }
@@ -1847,20 +2331,28 @@ export class Workspace extends DurableObject {
   }
 
   // Leaving a channel, or a manager taking someone out. A channel's last manager names who takes over before they
-  // leave; the last person in a channel archives it by leaving.
+  // leave; the last person in a channel archives it by leaving. An agent's sponsor takes it out of any channel it is
+  // in, also one they aren't in themselves: their agent passes on what it reads there.
   #leaveChannel(me, id, memberId, successorId) {
-    const { c, grant } = this.#channel(me, id);
+    const c = this.#conversation(id);
+    const channel = c && c.kind === 'channel' ? c : null;
+    const grant = channel && this.#grant(me, channel);
     const now = Date.now();
     const target = memberId === 'me' ? me : this.#member(memberId);
-    const theirs = target && this.#grant(target, c);
+    const sponsor = Boolean(target && target.kind === 'agent' && target.sponsor === me.n);
+    const theirs = channel && target && this.#grant(target, channel);
+    if (!grant && !(sponsor && theirs)) throw NO_CONVERSATION();
     if (!theirs) throw new Refusal(404, 'not_found', 'There is no member with this id in the channel.');
     const self = target.n === me.n;
-    if (!self && grant.role !== 'manager') throw FORBIDDEN('Only a channel manager removes people.');
+    if (!self && !sponsor && grant.role !== 'manager') throw FORBIDDEN('Only a channel manager removes people.');
     if (theirs.role === 'manager' && this.#managers(c) <= 1 && !c.archivedAt) {
-      const others = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n - 1;
+      const others = this.#held(c.n).people - 1;
       if (others === 0) this.#archiveChannel(c, me, now);
       else {
         const successor = self && successorId ? this.#member(successorId) : null;
+        if (successor && successor.kind === 'agent') {
+          throw new Refusal(400, 'agent_not_manager', 'An agent cannot manage a channel. Name a person who takes over.', { field: 'successor' });
+        }
         const next = successor && successor.n !== me.n && this.#grant(successor, c);
         if (!next) throw new Refusal(409, 'last_manager', 'A channel needs a manager. Name who takes over.');
         this.sql.exec("UPDATE grants SET role = 'manager', rev = ? WHERE member = ? AND conversation = ?", this.#rev(), successor.n, c.n);
@@ -1906,6 +2398,14 @@ export class Workspace extends DurableObject {
     this.sql.exec('UPDATE conversation SET roster = ? WHERE n = ?', this.#rev(), c.n);
     this.#wakeRoom(c);
     this.wakes.add(member.n);
+    // A private channel keeps someone's agents only while they are in it themselves (#admitToChannel), however their
+    // grant ends: leaving, being taken out, leaving the workspace. Its key would read on for them.
+    if (c.kind === 'channel' && c.visibility === 'private' && member.kind !== 'agent') {
+      const theirs = this.sql
+        .exec("SELECT m.* FROM grants g JOIN member m ON m.n = g.member WHERE g.conversation = ? AND m.kind = 'agent' AND m.sponsor = ? ORDER BY m.n", c.n, member.n)
+        .toArray();
+      for (const agent of theirs) this.#endGrant(agent, c, by, now);
+    }
     const left = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n;
     // A DM's set is fixed: one person going closes it for the rest. A closed one that nobody holds any more goes.
     if (c.kind === 'dm') {
@@ -1914,8 +2414,14 @@ export class Workspace extends DurableObject {
       return;
     }
     // A channel nobody is in can't be reached by anyone, so it is archived, whichever way its last member went.
-    // Retention then collects it and its place is free again.
-    if (!c.archivedAt && left === 0) this.#archiveChannel(c, by, now);
+    // Retention then collects it and its place is free again. Agents are nobody here: when the last person goes, the
+    // channel is archived and the agents' grants end too.
+    if (member.kind === 'agent' || this.#held(c.n).people > 0) return;
+    if (!c.archivedAt) this.#archiveChannel(c, by, now);
+    const agents = this.sql
+      .exec("SELECT m.* FROM grants g JOIN member m ON m.n = g.member WHERE g.conversation = ? AND m.kind = 'agent' ORDER BY m.n", c.n)
+      .toArray();
+    for (const agent of agents) this.#endGrant(agent, c, by, now);
   }
 
   // ---- Direct messages ----
@@ -1936,6 +2442,11 @@ export class Workspace extends DurableObject {
       const member = this.#member(id);
       if (!member) throw DM_UNAVAILABLE();
       rows.push(member);
+    }
+    // Agents talk in channels only. A full member sees who is an agent in the directory, so saying so tells them
+    // nothing new; a guest gets the answer every other refusal gives them.
+    if (FULL.has(me.role) && rows.some((row) => row.kind === 'agent')) {
+      throw new Refusal(400, 'agent_in_dm', 'Agents are not in direct messages. Mention them in a channel.', { field: 'members' });
     }
     if (rows.some((row) => !FULL.has(row.role))) throw DM_UNAVAILABLE();
     rows.sort((a, b) => a.n - b.n);
@@ -2066,6 +2577,10 @@ export class Workspace extends DurableObject {
     if (id === me.id) throw new Refusal(400, 'invalid', 'You cannot block yourself.', { field: 'member' });
     const target = this.#visibleMember(me, id);
     if (!target) throw new Refusal(404, 'not_found', 'There is no member with this id.');
+    // An agent is in no DM, so there is nothing a block would close. Its sponsor or a manager takes it out of a channel.
+    if (target.kind === 'agent') {
+      throw new Refusal(400, 'agent_block', 'An agent cannot be blocked. Ask its sponsor or a channel manager to remove it.', { field: 'member' });
+    }
     const old = this.sql.exec('SELECT at FROM block WHERE blocker = ? AND blocked = ?', me.n, target.n).toArray()[0];
     if (old) return reply(200, { block: { member: target.id, at: old.at } });
     const now = Date.now();
@@ -2144,14 +2659,26 @@ export class Workspace extends DurableObject {
   // is kept, and on a receipt after that for as long as a retry could still come. The device also says under which
   // grant it wrote the message: one written before the member lost the channel is not sent because they got back in.
   // Files come uploaded and ready beforehand; the message names them, and binding them to it is part of the post.
+  //
+  // An agent's post is a reply to a trigger, and every rule about replies is checked in the transaction that writes it
+  // (#replyRules). Its operation covers the trigger and the part as well.
   async #post(me, a) {
+    const agent = me.kind === 'agent';
+    if (agent && a.attachments.length) {
+      throw new Refusal(400, 'agent_attachments', 'An agent posts text only.', { field: 'attachments' });
+    }
+    if (agent && !eventBytes(a.trigger)) throw new Refusal(400, 'invalid', 'trigger must be the id of the message this replies to.', { field: 'trigger' });
     // A message with files covers their ids too. One without hashes as before, so the retry of a message sent before
     // files existed still matches what it sent.
     const covered = [a.conversation, a.text, a.mentions, a.root];
     if (a.attachments.length) covered.push(a.attachments);
+    if (agent) covered.push({ trigger: a.trigger, part: a.part ?? 0 });
     const hash = (await sha256(utf8(JSON.stringify(covered)))).slice(0, 16);
     const now = Date.now();
     return this.#write(() => {
+      // The agent's key was checked before the hash was made: it is checked again, with its sponsor, where the reply
+      // is written, so a new key or a removal in between stops it.
+      if (agent && this.#currentAgentSession(me.n) !== this.#agentSession(me)) throw AGENT_UNAUTHORIZED();
       const { c, grant } = this.#room(me, a.conversation);
       const before = this.#sent(me, a.op);
       if (before) {
@@ -2183,8 +2710,9 @@ export class Workspace extends DurableObject {
         }
         mentioned.push(target.n);
       }
-      let root = null;
-      if (a.root) {
+      const answer = agent ? this.#replyRules(me, c, grant, a, now) : null;
+      let root = answer ? answer.root : null;
+      if (!agent && a.root) {
         root = eventBytes(a.root);
         const top = this.sql
           .exec("SELECT root, redactedAt FROM event WHERE id = ? AND conversation = ? AND kind = 'message.posted'", blob(root), c.n)
@@ -2203,14 +2731,31 @@ export class Workspace extends DurableObject {
       if (missing.length) {
         throw new Refusal(409, 'files_unavailable', 'A file in this message is no longer available. Attach it again.', { files: missing });
       }
+      // An agent's reply keeps its trigger, depth and origin next to its mentions.
+      const data = answer
+        ? { mentions: a.mentions, trigger: a.trigger, depth: answer.depth, origin: answer.origin }
+        : a.mentions.length
+          ? a.mentions
+          : null;
       const { seq, id } = this.#append(c, 'message.posted', me, now, {
         text: a.text,
-        data: a.mentions.length ? a.mentions : null,
+        data,
         root,
         size: a.size,
         op: a.op,
         opHash: hash
       });
+      if (answer) {
+        this.sql.exec(
+          'INSERT INTO agent_reply (agent, conversation, triggerSeq, part, seq, at) VALUES (?, ?, ?, ?, ?, ?)',
+          me.n,
+          c.n,
+          answer.triggerSeq,
+          answer.part,
+          seq,
+          now
+        );
+      }
       files.forEach((row, pos) => {
         this.sql.exec("UPDATE upload SET state = 'bound', seq = ?, pos = ? WHERE n = ?", seq, pos, row.n);
       });
@@ -2227,6 +2772,78 @@ export class Workspace extends DurableObject {
     });
   }
 
+  // The rules an agent's reply follows, checked in the transaction that writes it. Returns where it goes: its root (the
+  // trigger's thread, or the trigger itself), its depth, its origin (the person who started the chain), and the
+  // trigger's sequence and the part, the slot it takes.
+  //
+  // The trigger is a message.posted in this channel that is still there, came after the agent's grant started, isn't
+  // the agent's own and mentions it. A trigger another agent wrote needs this agent's agents setting. Whom it answers
+  // applies to the origin, a person, who is still in the channel, as is the trigger's author. The depth stays within
+  // agentLimits().depth, and each part of a trigger gets one reply.
+  #replyRules(me, c, grant, a, now) {
+    if (c.kind !== 'channel') throw NO_CONVERSATION();
+    const BAD = (message) => new Refusal(400, 'bad_trigger', message, { field: 'trigger' });
+    const part = a.part ?? 0;
+    if (!Number.isSafeInteger(part) || part < 0 || part > 4) throw new Refusal(400, 'invalid', 'part must be a whole number from 0 to 4.', { field: 'part' });
+    const trigger = this.sql
+      .exec("SELECT seq, id, actor, root, data, redactedAt FROM event WHERE id = ? AND conversation = ? AND kind = 'message.posted'", blob(eventBytes(a.trigger)), c.n)
+      .toArray()[0];
+    if (!trigger || trigger.redactedAt) throw BAD('trigger must be a message in this channel that is still there.');
+    if (trigger.seq <= grant.startSeq) throw BAD('trigger came before this agent was added to the channel.');
+    if (trigger.actor === me.n) throw BAD('An agent does not answer its own messages.');
+    if (!storedMentions(trigger.data).some((m) => m.actor === me.id)) throw BAD('trigger does not mention this agent.');
+    // The reply goes in the trigger's thread, or starts one under the trigger. A thread whose first message was removed
+    // takes no more replies, as for anyone.
+    const root = new Uint8Array(trigger.root ?? trigger.id);
+    if (trigger.root) {
+      const top = this.sql.exec('SELECT redactedAt FROM event WHERE id = ? AND conversation = ?', trigger.root, c.n).toArray()[0];
+      if (!top || top.redactedAt) throw new Refusal(400, 'bad_root', 'The thread this message is in was removed.', { field: 'root' });
+    }
+    if (a.root && a.root !== eventId(root)) {
+      throw new Refusal(400, 'bad_root', "root must be the trigger's thread, which the server sets.", { field: 'root' });
+    }
+    const answered = this.sql
+      .exec('SELECT seq FROM agent_reply WHERE agent = ? AND conversation = ? AND triggerSeq = ? AND part = ?', me.n, c.n, trigger.seq, part)
+      .toArray()[0];
+    if (answered) {
+      const reply = this.sql.exec('SELECT id FROM event WHERE conversation = ? AND seq = ?', c.n, answered.seq).toArray()[0];
+      throw new Refusal(409, 'already_answered', 'This agent answered this message already.', { messageId: reply ? eventId(reply.id) : null });
+    }
+    const settings = this.sql.exec('SELECT answers, members, agents FROM agent WHERE member = ?', me.n).one();
+    const author = this.sql.exec('SELECT * FROM member WHERE n = ?', trigger.actor).toArray()[0];
+    // Whom the agent answers is about the person who started the chain: the trigger's author, or for a trigger another
+    // agent wrote, that reply's origin. So an agent that answers only its sponsor doesn't answer someone else who asks
+    // it through another agent.
+    let origin = author;
+    if (author?.kind === 'agent') {
+      if (settings.agents !== 1) throw NOT_ANSWERED('agents_off', 'This agent does not answer other agents.');
+      const id = storedOrigin(trigger.data);
+      origin = id ? this.sql.exec("SELECT * FROM member WHERE id = ? AND kind != 'agent'", id).toArray()[0] : undefined;
+    }
+    // Whoever wrote the trigger and whoever started the chain are both still in the channel. This comes before whom it
+    // answers: someone who left also left every agent's chosen members (#unlist), and is gone, not unlisted.
+    for (const who of new Set([author, origin])) {
+      if (!who || who.state !== 'active' || !this.#grant(who, c)) {
+        throw NOT_ANSWERED('author_gone', 'Whoever wrote this message, or started the conversation it answers, is no longer in the channel.');
+      }
+    }
+    if (origin.n !== me.sponsor) {
+      if (settings.answers === 'sponsor') throw NOT_ANSWERED('sponsor_only', 'This agent answers only its sponsor.');
+      if (settings.answers === 'members' && !JSON.parse(settings.members).includes(origin.n)) {
+        throw NOT_ANSWERED('not_listed', 'This agent does not answer this member.');
+      }
+    }
+    const limits = agentLimits(this.env);
+    const depth = storedDepth(trigger.data) + 1;
+    if (depth > limits.depth) throw new Refusal(409, 'too_deep', `Agents answer each other at most ${limits.depth} deep.`, { limit: 'depth' });
+    const recent = this.sql.exec('SELECT COUNT(*) AS n, MIN(at) AS first FROM agent_reply WHERE agent = ? AND at > ?', me.n, now - HOUR).one();
+    if (recent.n >= limits.replies) {
+      const wait = Math.max(1, Math.ceil((recent.first + HOUR - now) / 1000));
+      throw new Refusal(429, 'rate_limited', `An agent posts at most ${limits.replies} replies an hour.`, { limit: 'agentReplies' }, { 'retry-after': String(wait) });
+    }
+    return { root, depth, origin: origin.id, triggerSeq: trigger.seq, part };
+  }
+
   // Whether a message with this operation id is here, for a device that never got its answer and whose id has since
   // become too old to send again.
   #operation(me, conversation, op) {
@@ -2236,7 +2853,13 @@ export class Workspace extends DurableObject {
     return reply(200, { messageId: eventId(row.id), seq: row.seq, visible: !row.redactedAt });
   }
 
-  // Removes a message's text for everyone: its author can, and so can a manager of the channel. The message's place
+  // Whether member n is an agent that me sponsors or sponsored: its sponsor answers for what it wrote.
+  #sponsorOf(me, n) {
+    return this.sql.exec("SELECT 1 FROM member WHERE n = ? AND kind = 'agent' AND sponsor = ?", n, me.n).toArray().length > 0;
+  }
+
+  // Removes a message's text for everyone: its author can, and so can a manager of the channel, and for an agent's
+  // message its sponsor, also once the agent was removed. The message's place
   // in the order stays, a later event says it was removed, and the feed tells every device to drop its copy. Its
   // reactions and link cards go with the text, without events of their own, and its files go to the trash. The events
   // that added and took back its reactions keep their place but no longer say who reacted with what.
@@ -2247,7 +2870,9 @@ export class Workspace extends DurableObject {
       .exec("SELECT seq, actor, size, redactedAt FROM event WHERE id = ? AND conversation = ? AND kind = 'message.posted'", blob(id), c.n)
       .toArray()[0];
     if (!target) throw new Refusal(404, 'not_found', 'There is no message with this id here.');
-    if (target.actor !== me.n && grant.role !== 'manager') throw FORBIDDEN('Only its author or a channel manager removes a message.');
+    if (target.actor !== me.n && grant.role !== 'manager' && !this.#sponsorOf(me, target.actor)) {
+      throw FORBIDDEN("Only its author, a channel manager or, for an agent's message, the agent's sponsor removes a message.");
+    }
     if (target.redactedAt) return reply(200, { messageId: message, redacted: true });
     const now = Date.now();
     this.sql.exec(
@@ -2697,13 +3322,15 @@ export class Workspace extends DurableObject {
     return { published: true, previews: out };
   }
 
-  // The author takes a link card off their message: the card goes, its image to the trash, and message.previewed
-  // carries the cards left. Asking at all also means the message never gets cards again, so cards still being made
-  // for it are dropped when they arrive.
+  // The author takes a link card off their message, or a sponsor off their agent's: the card goes, its image to the
+  // trash, and message.previewed carries the cards left, with the message's author as its actor. Asking at all also
+  // means the message never gets cards again, so cards still being made for it are dropped when they arrive.
   #removePreview(me, conversation, message, url) {
     const { c } = this.#room(me, conversation);
     const target = this.#message(c, message);
-    if (target.actor !== me.n) throw FORBIDDEN('Only its author removes a link card from a message.');
+    if (target.actor !== me.n && !this.#sponsorOf(me, target.actor)) {
+      throw FORBIDDEN("Only its author or, for an agent's message, the agent's sponsor removes a link card from a message.");
+    }
     const previews = target.previews ? JSON.parse(target.previews) : [];
     const kept = previews.filter((p) => p.url !== url);
     this.sql.exec('UPDATE event SET noPreviews = 1 WHERE conversation = ? AND seq = ?', c.n, target.seq);
@@ -2715,7 +3342,7 @@ export class Workspace extends DurableObject {
         if (row) this.#dropUpload(row, now);
       }
       this.sql.exec('UPDATE event SET previews = ? WHERE conversation = ? AND seq = ?', JSON.stringify(kept), c.n, target.seq);
-      this.#append(c, 'message.previewed', me, now, { data: { target: message, targetSeq: target.seq, previews: kept } });
+      this.#append(c, 'message.previewed', { n: target.actor }, now, { data: { target: message, targetSeq: target.seq, previews: kept } });
       this.#wakeRoom(c);
     }
     return reply(200, { previews: kept });
@@ -2880,9 +3507,12 @@ export class Workspace extends DurableObject {
 
   // One room as the feed shows it. after is the cursor's base, or null on the first page of a pass from the start,
   // which builds the room's cache from history that already leaves out what was removed. members is how many people
-  // hold the room now, lastAt when its newest event that is activity happened (reactions and link cards aren't), or
+  // hold the room now and agents how many agents, lastAt when its newest event that is activity happened (reactions
+  // and link cards aren't), or
   // null once retention took that event. readMark counts the member's marks of unread here. A DM has no name: it names
-  // its people instead, who started it, and why it closed.
+  // its people instead, who started it, and why it closed. An agent's row also has lastTrigger, the sequence of the
+  // trigger of its newest reply here or null, which stays when the reply is removed: a runner that lost its state finds
+  // the mentions that reply moved its read position past. A person's row doesn't have it.
   #roomOut(me, id, after) {
     const c = this.#conversation(id);
     const grant = this.#grant(me, c);
@@ -2903,10 +3533,14 @@ export class Workspace extends DurableObject {
       after === null
         ? []
         : this.sql.exec('SELECT id FROM removal WHERE conversation = ? AND rev > ? ORDER BY rev LIMIT ?', c.n, after, REMOVED_IDS + 1).toArray();
-    const members = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n;
+    const held = this.#held(c.n);
     const last = this.sql.exec('SELECT at FROM event WHERE conversation = ? AND seq = ?', c.n, c.last).toArray()[0];
     const dm = c.kind === 'dm';
     const people = dm ? this.#dmPeople(c) : null;
+    const newest =
+      me.kind === 'agent'
+        ? this.sql.exec('SELECT triggerSeq FROM agent_reply WHERE agent = ? AND conversation = ? ORDER BY seq DESC LIMIT 1', me.n, c.n).toArray()[0]
+        : undefined;
     return {
       conversation: c.id,
       kind: c.kind,
@@ -2916,7 +3550,8 @@ export class Workspace extends DurableObject {
       ...(dm ? { participants: people.ids, startedBy: people.startedBy, closedReason: c.closedWhy ?? null } : {}),
       grant: grant.id,
       role: grant.role,
-      members,
+      members: held.people,
+      agents: held.agents,
       head: c.head,
       floor: c.floor,
       lastAt: last ? last.at : null,
@@ -2925,7 +3560,8 @@ export class Workspace extends DurableObject {
       unread,
       mentions,
       removed: removed.slice(0, REMOVED_IDS).map((row) => eventId(row.id)),
-      removedMore: removed.length > REMOVED_IDS
+      removedMore: removed.length > REMOVED_IDS,
+      ...(me.kind === 'agent' ? { lastTrigger: newest ? newest.triggerSeq : null } : {})
     };
   }
 
@@ -2977,6 +3613,8 @@ export class Workspace extends DurableObject {
       );
       this.sql.exec('DELETE FROM event WHERE conversation = ? AND seq <= ?', conversation, upto);
       this.sql.exec('DELETE FROM mention WHERE conversation = ? AND seq <= ?', conversation, upto);
+      // A trigger that is gone can't be answered again, so the slots of its replies aren't needed any more.
+      this.sql.exec('DELETE FROM agent_reply WHERE conversation = ? AND triggerSeq <= ?', conversation, upto);
       this.#dropRich('conversation = ? AND seq <= ?', conversation, upto);
       this.sql.exec('UPDATE workspace SET bytes = MAX(0, bytes - ?) WHERE id = 1', freed.bytes);
       this.sql.exec('UPDATE conversation SET floor = ?, rev = ? WHERE n = ?', upto + 1, this.#rev(), conversation);
@@ -2991,6 +3629,7 @@ export class Workspace extends DurableObject {
       this.sql.exec('DELETE FROM grants WHERE conversation = ?', c.n);
       this.sql.exec('DELETE FROM mention WHERE conversation = ?', c.n);
       this.sql.exec('DELETE FROM removal WHERE conversation = ?', c.n);
+      this.sql.exec('DELETE FROM agent_reply WHERE conversation = ?', c.n);
       this.#dropRich('conversation = ?', c.n);
       this.sql.exec('DELETE FROM conversation WHERE n = ?', c.n);
     }
@@ -3043,19 +3682,25 @@ function channelRow(row) {
 }
 
 // An event as devices get it. A message carries its files in the order it named them, its link cards and its
-// reactions, each [] when it has none. A redacted message keeps its place, its author and its time, and nothing else.
+// reactions, each [] when it has none. An agent's reply also carries its trigger, its depth and its origin, the person
+// who started the chain; a person's message has none of them. A redacted message keeps its place, its author and its
+// time, and nothing else.
 function eventOut(row, attachments = [], reactions = []) {
   const out = { seq: row.seq, id: eventId(row.id), kind: row.kind, actor: row.actor, at: row.at };
   if (row.kind !== 'message.posted') return { ...out, ...(row.data ? JSON.parse(row.data) : {}) };
   if (row.root) out.root = eventId(row.root);
   if (row.redactedAt) return { ...out, redacted: true };
+  const data = row.data ? JSON.parse(row.data) : null;
+  const reply =
+    data && !Array.isArray(data) ? { trigger: data.trigger, depth: data.depth, ...(data.origin ? { origin: data.origin } : {}) } : {};
   return {
     ...out,
     text: row.text,
-    mentions: row.data ? JSON.parse(row.data) : [],
+    mentions: Array.isArray(data) ? data : (data?.mentions ?? []),
     attachments,
     previews: row.previews ? JSON.parse(row.previews) : [],
-    reactions
+    reactions,
+    ...reply
   };
 }
 

@@ -74,6 +74,16 @@ fun redaction(seq: Long, target: String, targetSeq: Long, room: Int = 1) = WireE
     target = target, targetSeq = targetSeq,
 )
 
+/** [member] coming into the room at [seq], added by Olga. */
+fun joined(seq: Long, member: String, room: Int = 1) = WireEvent(
+    seq = seq, id = Ids.event(seq, room), kind = "member.joined", actor = Ids.OLGA, at = 1_000L + seq, member = member,
+)
+
+/** [member] leaving the room at [seq], taken out by Olga. */
+fun left(seq: Long, member: String, room: Int = 1) = WireEvent(
+    seq = seq, id = Ids.event(seq, room), kind = "member.left", actor = Ids.OLGA, at = 1_000L + seq, member = member,
+)
+
 /** A mention of [who] over the first [bytes] bytes. */
 fun mention(who: String = Ids.ME, bytes: Int = 4) = Mention(who, 0, bytes)
 

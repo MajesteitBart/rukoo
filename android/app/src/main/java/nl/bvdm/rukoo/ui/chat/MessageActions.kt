@@ -118,11 +118,13 @@ object MessageRules {
     }
 
     /**
-     * Whether [me] may remove [message] in [room] (§3.14): their own messages anywhere, open or closed, and any message
-     * in a channel they manage. Removed and unsent messages can't be.
+     * Whether [me] may remove [message] in [room] (§3.14): their own messages anywhere, open or closed, any message in
+     * a channel they manage, and the replies of an agent they made ([author]), also once it was removed. Removed and
+     * unsent messages can't be.
      */
-    fun canRemove(message: ChatTimeline.Message, me: String?, room: Room): Boolean {
+    fun canRemove(message: ChatTimeline.Message, me: String?, room: Room, author: Member? = null): Boolean {
         if (message.removed || message.pending != null || message.id == null || me == null) return false
+        if (author != null && author.isAgent && author.id == message.actor && author.agent?.sponsor == me) return true
         return message.actor == me || (room.kind == RoomKind.CHANNEL && room.role == "manager")
     }
 
@@ -135,11 +137,12 @@ object MessageRules {
 
     /**
      * Whether the menu offers Block {author} (contract §5.5, desktop chat-view.js): a full member ([myRole]) on a sent
-     * message by someone else who is an active full member and isn't blocked yet. Unblocking is the Blocked list's.
+     * message by someone else who is an active full member and isn't blocked yet. Unblocking is the Blocked list's. An
+     * agent is never blocked: a channel's manager or its sponsor removes it instead.
      */
     fun canBlock(message: ChatTimeline.Message, me: String?, myRole: String?, author: Member?, blocked: Set<String>): Boolean =
         message.pending == null && message.id != null && me != null && message.actor != me && ChatListModel.isFullMember(myRole) &&
-            author != null && author.state == "active" && ChatListModel.isFullMember(author.role) && message.actor !in blocked
+            author != null && author.state == "active" && !author.isAgent && ChatListModel.isFullMember(author.role) && message.actor !in blocked
 
     /**
      * The menu's items in their order: Reply in thread, Copy text, Block {author}, Remove message. Block and Remove are
@@ -158,7 +161,7 @@ object MessageRules {
         if (canReply(message, inThread)) add(MessageAction.REPLY)
         if (canCopy(message)) add(MessageAction.COPY)
         if (writable && canBlock(message, me, myRole, author, blocked)) add(MessageAction.BLOCK)
-        if (writable && canRemove(message, me, room)) add(MessageAction.REMOVE)
+        if (writable && canRemove(message, me, room, author)) add(MessageAction.REMOVE)
     }
 
     /** How many characters of a message's first line the menu's title and Remove's question quote. */

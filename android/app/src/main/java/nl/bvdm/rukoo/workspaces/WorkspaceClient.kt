@@ -171,6 +171,35 @@ class WorkspaceClient internal constructor(
     /** `DELETE …/blocks/{u}`, also when there was no block. */
     suspend fun unblock(w: String, member: String) = none("DELETE", ws(w, "/blocks/${id(member)}"))
 
+    // ---- agents ----
+
+    /** `GET …/agents`: every active agent, for full members. */
+    suspend fun agents(w: String): List<Agent> = fetch(ws(w, "/agents"), AgentsPage.serializer()).agents
+
+    /** `POST …/agents`: an agent the caller sponsors, with its key. [members] counts only for `answers: members`. */
+    suspend fun createAgent(w: String, name: String, answers: String, members: List<String>, agents: Boolean): MadeAgent =
+        send("POST", ws(w, "/agents"), MadeAgent.serializer(), buildJsonObject {
+            put("name", name)
+            put("answers", answers)
+            putJsonArray("members") { members.forEach { add(it) } }
+            put("agents", agents)
+        })
+
+    /** `PATCH …/agents/{u}`: what is given changes, the rest stays. */
+    suspend fun updateAgent(w: String, agent: String, name: String? = null, answers: String? = null, members: List<String>? = null, agents: Boolean? = null): Agent =
+        send("PATCH", ws(w, "/agents/${id(agent)}"), AgentAnswer.serializer(), buildJsonObject {
+            if (name != null) put("name", name)
+            if (answers != null) put("answers", answers)
+            if (members != null) putJsonArray("members") { members.forEach { add(it) } }
+            if (agents != null) put("agents", agents)
+        }).agent
+
+    /** `POST …/agents/{u}/key`: a new key; the old one stops working at once. */
+    suspend fun agentKey(w: String, agent: String): MadeAgent = send("POST", ws(w, "/agents/${id(agent)}/key"), MadeAgent.serializer())
+
+    /** `DELETE …/agents/{u}`: its grants end and its key stops working. */
+    suspend fun removeAgent(w: String, agent: String) = none("DELETE", ws(w, "/agents/${id(agent)}"))
+
     // ---- messages ----
 
     /** `POST …/conversations/{c}/messages`: the same [body] on every attempt; a replay answers the first result. */

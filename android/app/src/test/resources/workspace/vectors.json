@@ -1,29 +1,32 @@
 {
   "about": "Answers of the real account server (server/src) to the team chat routes, recorded by android/app/src/test/workspace-fixtures/make-fixtures.js. Do not edit by hand: run it again.",
   "ids": {
-    "workspace": "w_aih4BLwKPeezeauOPGEHvg",
-    "olga": "u_69xoS94rD7uZWjn-6qlEDQ",
-    "general": "c_nTSJn3RWkZ7tSGre5fggrQ",
-    "invite": "i_o0upNGSWvj9081024CDV3Q",
-    "secret": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c",
-    "mila": "u_SeUlzGJlRl0wxLhC4YLiRg",
-    "bart": "u_XN0js20bZkcTi7HbEZp2ow",
-    "pia": "u_9kbdcfRDTeZ68TUIinuzag",
-    "tom": "u_rMxAVZVRi1IzeCJ-xoWggg",
-    "gus": "u_jd4Tb1fVINms9A7XqRIGSw",
-    "goneInvite": "i_bOvfumKpC8f-GT6tRt50iA",
-    "project": "c_CtYzeAPdosRrdWenK6RAvQ",
-    "random": "c_VFcf8dlgQYTRU5CNCMEWLw",
-    "design": "c_puUrLpkcJ2xzcSgAx6_RxQ",
-    "old": "c_3EBmRVQPRvZM9H3YjqvoFg",
-    "operation": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
-    "message": "e_bDjzAslREfPV1_8CwZvHiA",
-    "reply": "e_o46bttM4IB5qcZq1HqB09A",
-    "dm": "c_ywkAxXkwVlDkI7jloVd9Fw",
-    "group": "c_eTe_MI9ecYnwJUzY-o4uyw",
-    "bartDm": "c_xbrGcT2qO3WsuNxxppRWYw",
-    "tiny": "w_R0sjEfTox4OKvsoVNgtEQA",
-    "solo": "w_DjlQ1SRasVYVhT5K1CS9pw"
+    "workspace": "w_rsl5lkXW-TB6bnTCOyIF9A",
+    "olga": "u_9KrqVgpKtT_HyO5ApgryZg",
+    "general": "c_yKtAjMjyS19TvQ72Tyb90g",
+    "invite": "i_bxpY0So4y8cozOi3KjW28w",
+    "secret": "Td8KvdoeFQBEIkDJ4dCxFZNzJT9L-vyjhgSYy6PgQWo",
+    "mila": "u_oLOSPpUpkCvGowI8FnWpDA",
+    "bart": "u_20S_xr4P7x6hLeDFvtGjuQ",
+    "pia": "u_Dke2ScfDbh031qFRr-G9KQ",
+    "tom": "u_7bQnv4q9edii1guIm95TkQ",
+    "gus": "u_xAtXkuwPVSvIyImiyidgrg",
+    "goneInvite": "i_s7XHN9EAVgWGs87_zq3zdQ",
+    "project": "c_3qYoTEj-1sJfbJE8yIjTkA",
+    "random": "c_Zf7WGDJOGfpLlQxcKPAwOw",
+    "design": "c_8_mOTklpsh3R2rYEWCNiTg",
+    "old": "c_JOO2o59aQac3dhYoMjW51g",
+    "operation": "01a20a7b-a660-7173-b49d-0a7765f10cb8",
+    "message": "e_EAX3851hw_dY5cqozcsxcQ",
+    "reply": "e_7ykxGw6sP5lzgMgS9eMhqw",
+    "dm": "c_kD8ENKlkRU7vUyJeubi3ZQ",
+    "group": "c_F1wB2Ke0DTssc5E-xyNQ5g",
+    "bartDm": "c__ZB1damTUaP-BUxB_ED1HQ",
+    "clark": "u_JYCExPNkiDEMF1bFYCYSdQ",
+    "agentTrigger": "e_aScnRahve8DaK2qpcfwiLQ",
+    "agentReply": "e_9KHBOHJtABpyGKqAJdJ5lg",
+    "tiny": "w_Dn8QGr9Zaqfdyh9MOy1O2w",
+    "solo": "w_z-0gqhC_sCFQChVarO53IA"
   },
   "exchanges": [
     {
@@ -64,15 +67,33 @@
           ],
           "workspace": {
             "versions": [
-              1
+              1,
+              2
             ],
             "home": {
               "origin": "{server}",
-              "installation": "hEFiCuKiLzmDU2cF0atnsQ"
+              "installation": "gjIb75n9QeoIjVNvh1BpUg"
             },
-            "capabilities": [],
+            "capabilities": [
+              "reactions",
+              "unread",
+              "files",
+              "previews",
+              "agents"
+            ],
+            "files": {
+              "maxBytes": 26214400,
+              "workspaceBytes": 5368709120,
+              "origin": "{server}"
+            },
+            "agents": {
+              "max": 2,
+              "depth": 3,
+              "repliesPerHour": 120
+            },
             "recovery": "basic",
             "inviteSignups": true,
+            "inviteSignupsNeedCode": false,
             "limits": {
               "workspacesPerAccount": 3,
               "membershipsPerAccount": 50,
@@ -102,7 +123,7 @@
         "status": 200,
         "body": {
           "email": "olga@example.com",
-          "createdAt": 1795127288890,
+          "createdAt": 1795472204775,
           "class": "full",
           "incarnation": null,
           "kdf": {
@@ -123,11 +144,11 @@
           },
           "devices": [
             {
-              "id": "WFlwR9poCya685fSzXz-wA",
+              "id": "r6D_hPM1H9iMVH3FacjKkQ",
               "name": "Seeded",
               "platform": "linux",
-              "createdAt": 1795127288890,
-              "lastSeenAt": 1795127288890,
+              "createdAt": 1795472204775,
+              "lastSeenAt": 1795472204775,
               "current": true
             }
           ]
@@ -164,16 +185,18 @@
         "status": 201,
         "body": {
           "workspace": {
-            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "id": "w_rsl5lkXW-TB6bnTCOyIF9A",
             "name": "Acme",
-            "createdAt": 1795127289087,
-            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
-            "keyId": "rr6B_FsOnzQ",
-            "time": 1795127289089,
+            "createdAt": 1795472204945,
+            "generation": "4nGgPhYu1XAz53lYMqTC5g",
+            "keyId": "LFaKCjJRGbs",
+            "time": 1795472204947,
             "limits": {
               "members": 6,
               "conversations": 12,
-              "textBytes": 16384
+              "textBytes": 16384,
+              "fileBytes": 26214400,
+              "filesBytes": 5368709120
             },
             "retention": {
               "contentDays": 90,
@@ -181,12 +204,12 @@
             }
           },
           "me": {
-            "id": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "id": "u_9KrqVgpKtT_HyO5ApgryZg",
             "kind": "human",
             "name": "Olga Owner",
             "role": "owner",
             "state": "active",
-            "joinedAt": 1795127289087
+            "joinedAt": 1795472204945
           }
         }
       }
@@ -224,7 +247,7 @@
         "body": {
           "workspaces": [
             {
-              "id": "w_aih4BLwKPeezeauOPGEHvg",
+              "id": "w_rsl5lkXW-TB6bnTCOyIF9A",
               "name": "Acme",
               "role": "owner"
             }
@@ -236,7 +259,7 @@
       "name": "workspace",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A",
         "auth": "olga",
         "body": null
       },
@@ -244,16 +267,18 @@
         "status": 200,
         "body": {
           "workspace": {
-            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "id": "w_rsl5lkXW-TB6bnTCOyIF9A",
             "name": "Acme",
-            "createdAt": 1795127289087,
-            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
-            "keyId": "rr6B_FsOnzQ",
-            "time": 1795127289112,
+            "createdAt": 1795472204945,
+            "generation": "4nGgPhYu1XAz53lYMqTC5g",
+            "keyId": "LFaKCjJRGbs",
+            "time": 1795472204968,
             "limits": {
               "members": 6,
               "conversations": 12,
-              "textBytes": 16384
+              "textBytes": 16384,
+              "fileBytes": 26214400,
+              "filesBytes": 5368709120
             },
             "retention": {
               "contentDays": 90,
@@ -261,12 +286,12 @@
             }
           },
           "me": {
-            "id": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "id": "u_9KrqVgpKtT_HyO5ApgryZg",
             "kind": "human",
             "name": "Olga Owner",
             "role": "owner",
             "state": "active",
-            "joinedAt": 1795127289087
+            "joinedAt": 1795472204945
           }
         }
       }
@@ -275,7 +300,7 @@
       "name": "create invite",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/invites",
         "auth": "olga",
         "body": {
           "role": "member",
@@ -287,17 +312,17 @@
         "status": 201,
         "body": {
           "invite": {
-            "id": "i_o0upNGSWvj9081024CDV3Q",
+            "id": "i_bxpY0So4y8cozOi3KjW28w",
             "role": "member",
             "channels": [
-              "c_nTSJn3RWkZ7tSGre5fggrQ"
+              "c_yKtAjMjyS19TvQ72Tyb90g"
             ],
             "channelCount": 1,
-            "issuer": "u_69xoS94rD7uZWjn-6qlEDQ",
-            "createdAt": 1795127289125,
-            "expiresAt": 1795213689125
+            "issuer": "u_9KrqVgpKtT_HyO5ApgryZg",
+            "createdAt": 1795472204980,
+            "expiresAt": 1795558604980
           },
-          "secret": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c"
+          "secret": "Td8KvdoeFQBEIkDJ4dCxFZNzJT9L-vyjhgSYy6PgQWo"
         }
       }
     },
@@ -305,7 +330,7 @@
       "name": "create invite bad expiry",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/invites",
         "auth": "olga",
         "body": {
           "role": "member",
@@ -326,7 +351,7 @@
       "name": "invites",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/invites",
         "auth": "olga",
         "body": null
       },
@@ -335,15 +360,15 @@
         "body": {
           "invites": [
             {
-              "id": "i_o0upNGSWvj9081024CDV3Q",
+              "id": "i_bxpY0So4y8cozOi3KjW28w",
               "role": "member",
               "channels": [
-                "c_nTSJn3RWkZ7tSGre5fggrQ"
+                "c_yKtAjMjyS19TvQ72Tyb90g"
               ],
               "channelCount": 1,
-              "issuer": "u_69xoS94rD7uZWjn-6qlEDQ",
-              "createdAt": 1795127289125,
-              "expiresAt": 1795213689125
+              "issuer": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "createdAt": 1795472204980,
+              "expiresAt": 1795558604980
             }
           ]
         }
@@ -353,17 +378,17 @@
       "name": "preview invite",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites/preview",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/invites/preview",
         "auth": "mila",
         "body": {
-          "invite": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c"
+          "invite": "Td8KvdoeFQBEIkDJ4dCxFZNzJT9L-vyjhgSYy6PgQWo"
         }
       },
       "response": {
         "status": 200,
         "body": {
           "workspace": {
-            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "id": "w_rsl5lkXW-TB6bnTCOyIF9A",
             "name": "Acme"
           },
           "role": "member",
@@ -371,7 +396,7 @@
           "issuer": {
             "name": "Olga Owner"
           },
-          "expiresAt": 1795213689125
+          "expiresAt": 1795558604980
         }
       }
     },
@@ -379,10 +404,10 @@
       "name": "join",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/join",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/join",
         "auth": "mila",
         "body": {
-          "invite": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c",
+          "invite": "Td8KvdoeFQBEIkDJ4dCxFZNzJT9L-vyjhgSYy6PgQWo",
           "name": "Mila Member"
         }
       },
@@ -390,16 +415,18 @@
         "status": 201,
         "body": {
           "workspace": {
-            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "id": "w_rsl5lkXW-TB6bnTCOyIF9A",
             "name": "Acme",
-            "createdAt": 1795127289087,
-            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
-            "keyId": "rr6B_FsOnzQ",
-            "time": 1795127289154,
+            "createdAt": 1795472204945,
+            "generation": "4nGgPhYu1XAz53lYMqTC5g",
+            "keyId": "LFaKCjJRGbs",
+            "time": 1795472205010,
             "limits": {
               "members": 6,
               "conversations": 12,
-              "textBytes": 16384
+              "textBytes": 16384,
+              "fileBytes": 26214400,
+              "filesBytes": 5368709120
             },
             "retention": {
               "contentDays": 90,
@@ -407,12 +434,12 @@
             }
           },
           "me": {
-            "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+            "id": "u_oLOSPpUpkCvGowI8FnWpDA",
             "kind": "human",
             "name": "Mila Member",
             "role": "member",
             "state": "active",
-            "joinedAt": 1795127289154
+            "joinedAt": 1795472205009
           }
         }
       }
@@ -421,10 +448,10 @@
       "name": "join again",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/join",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/join",
         "auth": "mila",
         "body": {
-          "invite": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c",
+          "invite": "Td8KvdoeFQBEIkDJ4dCxFZNzJT9L-vyjhgSYy6PgQWo",
           "name": "Mila Member"
         }
       },
@@ -432,16 +459,18 @@
         "status": 200,
         "body": {
           "workspace": {
-            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "id": "w_rsl5lkXW-TB6bnTCOyIF9A",
             "name": "Acme",
-            "createdAt": 1795127289087,
-            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
-            "keyId": "rr6B_FsOnzQ",
-            "time": 1795127289163,
+            "createdAt": 1795472204945,
+            "generation": "4nGgPhYu1XAz53lYMqTC5g",
+            "keyId": "LFaKCjJRGbs",
+            "time": 1795472205019,
             "limits": {
               "members": 6,
               "conversations": 12,
-              "textBytes": 16384
+              "textBytes": 16384,
+              "fileBytes": 26214400,
+              "filesBytes": 5368709120
             },
             "retention": {
               "contentDays": 90,
@@ -449,12 +478,12 @@
             }
           },
           "me": {
-            "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+            "id": "u_oLOSPpUpkCvGowI8FnWpDA",
             "kind": "human",
             "name": "Mila Member",
             "role": "member",
             "state": "active",
-            "joinedAt": 1795127289154
+            "joinedAt": 1795472205009
           }
         }
       }
@@ -463,10 +492,10 @@
       "name": "join full workspace",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/join",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/join",
         "auth": "zoe",
         "body": {
-          "invite": "caJV84SGLxE8MtZ4DsoNHw7T4_6pmIc6Vj15sg7Z87I",
+          "invite": "bU7NMNuumXAxPGTIf2TezlctY-EXHa0cnVa4gNIrsXg",
           "name": "Zoë"
         }
       },
@@ -484,7 +513,7 @@
       "name": "withdraw invite",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites/i_bOvfumKpC8f-GT6tRt50iA",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/invites/i_s7XHN9EAVgWGs87_zq3zdQ",
         "auth": "olga",
         "body": null
       },
@@ -497,10 +526,10 @@
       "name": "preview withdrawn invite",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites/preview",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/invites/preview",
         "auth": "zoe",
         "body": {
-          "invite": "mNbqi8zTsE6ICHqTvo_VlTYKJifMFeYbHprAfgXzPX4"
+          "invite": "eRW0zZY1OrN9nm_0gcCbvlh5br4rgF-S6oBad1vdqwc"
         }
       },
       "response": {
@@ -515,7 +544,7 @@
       "name": "create invite as member",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/invites",
         "auth": "mila",
         "body": {
           "role": "member",
@@ -534,7 +563,7 @@
       "name": "members",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members",
         "auth": "mila",
         "body": null
       },
@@ -543,52 +572,52 @@
         "body": {
           "members": [
             {
-              "id": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "id": "u_9KrqVgpKtT_HyO5ApgryZg",
               "kind": "human",
               "name": "Olga Owner",
               "role": "owner",
               "state": "active",
-              "joinedAt": 1795127289087
+              "joinedAt": 1795472204945
             },
             {
-              "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "id": "u_oLOSPpUpkCvGowI8FnWpDA",
               "kind": "human",
               "name": "Mila Member",
               "role": "member",
               "state": "active",
-              "joinedAt": 1795127289154
+              "joinedAt": 1795472205009
             },
             {
-              "id": "u_XN0js20bZkcTi7HbEZp2ow",
+              "id": "u_20S_xr4P7x6hLeDFvtGjuQ",
               "kind": "human",
               "name": "Bart",
               "role": "member",
               "state": "active",
-              "joinedAt": 1795127289180
+              "joinedAt": 1795472205035
             },
             {
-              "id": "u_9kbdcfRDTeZ68TUIinuzag",
+              "id": "u_Dke2ScfDbh031qFRr-G9KQ",
               "kind": "human",
               "name": "Pia",
               "role": "member",
               "state": "active",
-              "joinedAt": 1795127289206
+              "joinedAt": 1795472205059
             },
             {
-              "id": "u_rMxAVZVRi1IzeCJ-xoWggg",
+              "id": "u_7bQnv4q9edii1guIm95TkQ",
               "kind": "human",
               "name": "Tom",
               "role": "member",
               "state": "active",
-              "joinedAt": 1795127289233
+              "joinedAt": 1795472205084
             },
             {
-              "id": "u_jd4Tb1fVINms9A7XqRIGSw",
+              "id": "u_xAtXkuwPVSvIyImiyidgrg",
               "kind": "human",
               "name": "Gus Guest",
               "role": "guest",
               "state": "active",
-              "joinedAt": 1795127289259
+              "joinedAt": 1795472205109
             }
           ],
           "more": false
@@ -599,7 +628,7 @@
       "name": "rename me",
       "request": {
         "method": "PATCH",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/me",
         "auth": "mila",
         "body": {
           "name": "Mila M."
@@ -609,12 +638,12 @@
         "status": 200,
         "body": {
           "me": {
-            "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+            "id": "u_oLOSPpUpkCvGowI8FnWpDA",
             "kind": "human",
             "name": "Mila M.",
             "role": "member",
             "state": "active",
-            "joinedAt": 1795127289154
+            "joinedAt": 1795472205009
           }
         }
       }
@@ -623,7 +652,7 @@
       "name": "set role",
       "request": {
         "method": "PATCH",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/u_XN0js20bZkcTi7HbEZp2ow",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/u_20S_xr4P7x6hLeDFvtGjuQ",
         "auth": "olga",
         "body": {
           "role": "admin"
@@ -633,12 +662,12 @@
         "status": 200,
         "body": {
           "member": {
-            "id": "u_XN0js20bZkcTi7HbEZp2ow",
+            "id": "u_20S_xr4P7x6hLeDFvtGjuQ",
             "kind": "human",
             "name": "Bart",
             "role": "admin",
             "state": "active",
-            "joinedAt": 1795127289180
+            "joinedAt": 1795472205035
           }
         }
       }
@@ -647,7 +676,7 @@
       "name": "set role bad role",
       "request": {
         "method": "PATCH",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/u_XN0js20bZkcTi7HbEZp2ow",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/u_20S_xr4P7x6hLeDFvtGjuQ",
         "auth": "olga",
         "body": {
           "role": "king"
@@ -666,7 +695,7 @@
       "name": "leave workspace last owner",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/me",
         "auth": "olga",
         "body": null
       },
@@ -682,7 +711,7 @@
       "name": "channels",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels",
         "auth": "mila",
         "body": null
       },
@@ -691,7 +720,7 @@
         "body": {
           "channels": [
             {
-              "id": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "id": "c_yKtAjMjyS19TvQ72Tyb90g",
               "name": "general",
               "visibility": "workspace",
               "archived": false,
@@ -707,7 +736,7 @@
       "name": "create channel",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels",
         "auth": "mila",
         "body": {
           "name": "project",
@@ -718,7 +747,7 @@
         "status": 201,
         "body": {
           "channel": {
-            "id": "c_CtYzeAPdosRrdWenK6RAvQ",
+            "id": "c_3qYoTEj-1sJfbJE8yIjTkA",
             "name": "project",
             "visibility": "private",
             "archived": false,
@@ -733,7 +762,7 @@
       "name": "create channel name taken",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels",
         "auth": "olga",
         "body": {
           "name": "General",
@@ -752,7 +781,7 @@
       "name": "create channel bad name",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels",
         "auth": "olga",
         "body": {
           "name": "two\nlines",
@@ -772,7 +801,7 @@
       "name": "rename channel",
       "request": {
         "method": "PATCH",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_3qYoTEj-1sJfbJE8yIjTkA",
         "auth": "mila",
         "body": {
           "name": "Project X"
@@ -782,7 +811,7 @@
         "status": 200,
         "body": {
           "channel": {
-            "id": "c_CtYzeAPdosRrdWenK6RAvQ",
+            "id": "c_3qYoTEj-1sJfbJE8yIjTkA",
             "name": "Project X",
             "visibility": "private",
             "archived": false,
@@ -797,16 +826,16 @@
       "name": "admit",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_3qYoTEj-1sJfbJE8yIjTkA/members",
         "auth": "mila",
         "body": {
-          "member": "u_9kbdcfRDTeZ68TUIinuzag"
+          "member": "u_Dke2ScfDbh031qFRr-G9KQ"
         }
       },
       "response": {
         "status": 200,
         "body": {
-          "member": "u_9kbdcfRDTeZ68TUIinuzag",
+          "member": "u_Dke2ScfDbh031qFRr-G9KQ",
           "role": "member"
         }
       }
@@ -815,10 +844,10 @@
       "name": "admit guest as manager",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_3qYoTEj-1sJfbJE8yIjTkA/members",
         "auth": "mila",
         "body": {
-          "member": "u_jd4Tb1fVINms9A7XqRIGSw"
+          "member": "u_xAtXkuwPVSvIyImiyidgrg"
         }
       },
       "response": {
@@ -833,7 +862,7 @@
       "name": "channel members",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_3qYoTEj-1sJfbJE8yIjTkA/members",
         "auth": "mila",
         "body": null
       },
@@ -842,11 +871,11 @@
         "body": {
           "members": [
             {
-              "member": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "member": "u_oLOSPpUpkCvGowI8FnWpDA",
               "role": "manager"
             },
             {
-              "member": "u_9kbdcfRDTeZ68TUIinuzag",
+              "member": "u_Dke2ScfDbh031qFRr-G9KQ",
               "role": "member"
             }
           ]
@@ -857,7 +886,7 @@
       "name": "leave workspace last manager",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/me",
         "auth": "mila",
         "body": null
       },
@@ -867,7 +896,7 @@
           "error": "last_manager",
           "message": "You are the only manager of channels other people are in. Appoint a manager in each first.",
           "channels": [
-            "c_CtYzeAPdosRrdWenK6RAvQ"
+            "c_3qYoTEj-1sJfbJE8yIjTkA"
           ]
         }
       }
@@ -876,7 +905,7 @@
       "name": "leave channel last manager",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members/me",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_3qYoTEj-1sJfbJE8yIjTkA/members/me",
         "auth": "mila",
         "body": null
       },
@@ -892,7 +921,7 @@
       "name": "channel role",
       "request": {
         "method": "PATCH",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members/u_9kbdcfRDTeZ68TUIinuzag",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_3qYoTEj-1sJfbJE8yIjTkA/members/u_Dke2ScfDbh031qFRr-G9KQ",
         "auth": "mila",
         "body": {
           "role": "manager"
@@ -901,7 +930,7 @@
       "response": {
         "status": 200,
         "body": {
-          "member": "u_9kbdcfRDTeZ68TUIinuzag",
+          "member": "u_Dke2ScfDbh031qFRr-G9KQ",
           "role": "manager"
         }
       }
@@ -910,7 +939,7 @@
       "name": "join channel",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_VFcf8dlgQYTRU5CNCMEWLw/join",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_Zf7WGDJOGfpLlQxcKPAwOw/join",
         "auth": "tom",
         "body": null
       },
@@ -918,7 +947,7 @@
         "status": 200,
         "body": {
           "channel": {
-            "id": "c_VFcf8dlgQYTRU5CNCMEWLw",
+            "id": "c_Zf7WGDJOGfpLlQxcKPAwOw",
             "name": "random",
             "visibility": "workspace",
             "archived": false,
@@ -933,7 +962,7 @@
       "name": "leave channel",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_VFcf8dlgQYTRU5CNCMEWLw/members/me",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_Zf7WGDJOGfpLlQxcKPAwOw/members/me",
         "auth": "tom",
         "body": null
       },
@@ -946,7 +975,7 @@
       "name": "remove from channel",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_VFcf8dlgQYTRU5CNCMEWLw/members/u_rMxAVZVRi1IzeCJ-xoWggg",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_Zf7WGDJOGfpLlQxcKPAwOw/members/u_7bQnv4q9edii1guIm95TkQ",
         "auth": "olga",
         "body": null
       },
@@ -959,7 +988,7 @@
       "name": "leave channel with successor",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_puUrLpkcJ2xzcSgAx6_RxQ/members/me?successor=u_XN0js20bZkcTi7HbEZp2ow",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_8_mOTklpsh3R2rYEWCNiTg/members/me?successor=u_20S_xr4P7x6hLeDFvtGjuQ",
         "auth": "mila",
         "body": null
       },
@@ -972,7 +1001,7 @@
       "name": "archive channel",
       "request": {
         "method": "PATCH",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_3EBmRVQPRvZM9H3YjqvoFg",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_JOO2o59aQac3dhYoMjW51g",
         "auth": "olga",
         "body": {
           "archived": true
@@ -982,7 +1011,7 @@
         "status": 200,
         "body": {
           "channel": {
-            "id": "c_3EBmRVQPRvZM9H3YjqvoFg",
+            "id": "c_JOO2o59aQac3dhYoMjW51g",
             "name": "old",
             "visibility": "workspace",
             "archived": true,
@@ -997,7 +1026,7 @@
       "name": "feed first pass",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes",
         "auth": "olga",
         "body": null
       },
@@ -1006,54 +1035,60 @@
         "body": {
           "changes": [
             {
-              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "conversation": "c_yKtAjMjyS19TvQ72Tyb90g",
               "kind": "channel",
               "name": "general",
               "visibility": "workspace",
               "archived": false,
-              "grant": "g_0sljd32asfa3rzsbHwpCew",
+              "grant": "g_flfHknoMthRA-26Afno0uQ",
               "role": "manager",
               "members": 6,
+              "agents": 0,
               "head": 7,
               "floor": 1,
-              "lastAt": 1795127289259,
+              "lastAt": 1795472205109,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
               "removedMore": false
             },
             {
-              "conversation": "c_VFcf8dlgQYTRU5CNCMEWLw",
+              "conversation": "c_Zf7WGDJOGfpLlQxcKPAwOw",
               "kind": "channel",
               "name": "random",
               "visibility": "workspace",
               "archived": false,
-              "grant": "g_tPZh5FulacF_3QPlRq5Nog",
+              "grant": "g_kq3f0xiOgeTY7jwoH6Nang",
               "role": "manager",
               "members": 1,
+              "agents": 0,
               "head": 6,
               "floor": 1,
-              "lastAt": 1795127289484,
+              "lastAt": 1795472205319,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
               "removedMore": false
             },
             {
-              "conversation": "c_3EBmRVQPRvZM9H3YjqvoFg",
+              "conversation": "c_JOO2o59aQac3dhYoMjW51g",
               "kind": "channel",
               "name": "old",
               "visibility": "workspace",
               "archived": true,
-              "grant": "g_E_r-35uYnx7RdJ0Q7V84bw",
+              "grant": "g_M8muitVYPcLLuL3Phe0Feg",
               "role": "manager",
               "members": 1,
+              "agents": 0,
               "head": 3,
               "floor": 1,
-              "lastAt": 1795127289536,
+              "lastAt": 1795472205374,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
@@ -1068,7 +1103,7 @@
             "blocks": true
           },
           "more": false,
-          "next": "AUePEwP-ckpnPs8ui272t8k_CK3C12RTsNrUp0z33-ITUtH-nwdYkIjQEm-hrA4CTiXsxe1Tk77zfRFmDK6dEBHSAiQS7MGCzA6JRUGFYtZbB_2z7CL86eCNGiGi-baabggvQ187agAcZxee6sYWh33Moog8agiE"
+          "next": "ARoLSI3MqGZstarzifdK4PoZHobldVaDVUr3oN7UmAaATblxqVHLPlZDSf6u8Iy-SARJ5u7csT8fNz7-UsqErY6jrU3oGyugGSH6ONDhtDNkQn8M5gjY8xP1gdyKGIkR7Eutkkrh6fSiw5gAq9AWqpTQyZegCBdP"
         }
       }
     },
@@ -1076,7 +1111,7 @@
       "name": "feed small page",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?limit=2",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes?limit=2",
         "auth": "olga",
         "body": null
       },
@@ -1085,36 +1120,40 @@
         "body": {
           "changes": [
             {
-              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "conversation": "c_yKtAjMjyS19TvQ72Tyb90g",
               "kind": "channel",
               "name": "general",
               "visibility": "workspace",
               "archived": false,
-              "grant": "g_0sljd32asfa3rzsbHwpCew",
+              "grant": "g_flfHknoMthRA-26Afno0uQ",
               "role": "manager",
               "members": 6,
+              "agents": 0,
               "head": 7,
               "floor": 1,
-              "lastAt": 1795127289259,
+              "lastAt": 1795472205109,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
               "removedMore": false
             },
             {
-              "conversation": "c_VFcf8dlgQYTRU5CNCMEWLw",
+              "conversation": "c_Zf7WGDJOGfpLlQxcKPAwOw",
               "kind": "channel",
               "name": "random",
               "visibility": "workspace",
               "archived": false,
-              "grant": "g_tPZh5FulacF_3QPlRq5Nog",
+              "grant": "g_kq3f0xiOgeTY7jwoH6Nang",
               "role": "manager",
               "members": 1,
+              "agents": 0,
               "head": 6,
               "floor": 1,
-              "lastAt": 1795127289484,
+              "lastAt": 1795472205319,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
@@ -1129,7 +1168,7 @@
             "blocks": true
           },
           "more": true,
-          "next": "ATZ6hDBCuM_DnYnjA5kAhgGD_nQQ6ypL0HAxGxJ1EolyxbDWBjM1IJrfr0BSeIrzye2tIVJHCHQn2SE6jY3RwxESBT86HsU3IrWfRJhB-djiSYsbEIVswAQpEyHM2c8Fd0xLg7NYRUKYb80zAvjo4pR2B_ZpPAEs"
+          "next": "AXoVJBgYdCda9uFdPazY2w033_coODKReRxikpRabHp0kyMYdZA2qUqO6c1PQyXrdgrPQysWjxuAeBruvjJ1t_BmX5wFA8Przy4R8soW-mUIkORUmnk2mCGvAzlS3wNBIJRize3AWzOyaMJnldGlKCbNpV6oVJo7"
         }
       }
     },
@@ -1137,7 +1176,7 @@
       "name": "feed next page",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}&limit=2",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes?after={cursor}&limit=2",
         "auth": "olga",
         "body": null
       },
@@ -1146,18 +1185,20 @@
         "body": {
           "changes": [
             {
-              "conversation": "c_3EBmRVQPRvZM9H3YjqvoFg",
+              "conversation": "c_JOO2o59aQac3dhYoMjW51g",
               "kind": "channel",
               "name": "old",
               "visibility": "workspace",
               "archived": true,
-              "grant": "g_E_r-35uYnx7RdJ0Q7V84bw",
+              "grant": "g_M8muitVYPcLLuL3Phe0Feg",
               "role": "manager",
               "members": 1,
+              "agents": 0,
               "head": 3,
               "floor": 1,
-              "lastAt": 1795127289536,
+              "lastAt": 1795472205374,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
@@ -1172,7 +1213,7 @@
             "blocks": false
           },
           "more": false,
-          "next": "AXAPgrK6Yo3bLfAE_s7lWjc7B-Zg4VZHj5LkeD37EBJupz8S-qzVHZsNq_hCvHwhy8vCe52Xmu7CKs0dV2kme3MNmeKfLfa_pzHD2sCdjrclVgMul_9zKRBHvP5HYXNF5scAXcqRIex5ZT-9mV518tFA0w8l-K4L"
+          "next": "AbLShdYJ0bAd74zvvTTKvBUgtqOex5z78vdjuUZbmZnEQrFrWviV1u_IlhujRrNdTossYbjCUdi7MSJYNhCQeB9yxuNMmQhRgh7Ki-p1idaPUPHuX0DZlJzn6Mjv-WftWPZjeZ27CtcA9oGMtYHTa4nLMNObgNRV"
         }
       }
     },
@@ -1180,7 +1221,7 @@
       "name": "member feed",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes",
         "auth": "mila",
         "body": null
       },
@@ -1189,36 +1230,40 @@
         "body": {
           "changes": [
             {
-              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "conversation": "c_yKtAjMjyS19TvQ72Tyb90g",
               "kind": "channel",
               "name": "general",
               "visibility": "workspace",
               "archived": false,
-              "grant": "g_G6LaETROG6o4y9qQZatUYg",
+              "grant": "g_cjZB-O7YXOfv5BwS4rwm4w",
               "role": "member",
               "members": 6,
+              "agents": 0,
               "head": 7,
               "floor": 1,
-              "lastAt": 1795127289259,
+              "lastAt": 1795472205109,
               "read": 3,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
               "removedMore": false
             },
             {
-              "conversation": "c_CtYzeAPdosRrdWenK6RAvQ",
+              "conversation": "c_3qYoTEj-1sJfbJE8yIjTkA",
               "kind": "channel",
               "name": "Project X",
               "visibility": "private",
               "archived": false,
-              "grant": "g_r4JlVzuUPCwJJFPcpLf64A",
+              "grant": "g_4PAYYV24Z7xU74gOgCT4qQ",
               "role": "manager",
               "members": 2,
+              "agents": 0,
               "head": 4,
               "floor": 1,
-              "lastAt": 1795127289413,
+              "lastAt": 1795472205253,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
@@ -1226,7 +1271,7 @@
             }
           ],
           "evictions": [
-            "c_puUrLpkcJ2xzcSgAx6_RxQ"
+            "c_8_mOTklpsh3R2rYEWCNiTg"
           ],
           "inlineEvents": [],
           "directory": {
@@ -1235,7 +1280,7 @@
             "blocks": true
           },
           "more": false,
-          "next": "AXq2fM_aCMXjQ-tFmMeNBYRHM3ZT7v-b1RdJwpGx4C9kmxihisD_nT_MSCVJosoq_TqdBPPoMnHYmUPrvaWzlr8PYY3P26w78qfOvrV2_y8eer-zkB33QiaLz6RLWCCksuc_I4Mj_xDIoFGNhGdm76YwOrj537my"
+          "next": "ATb44Kj3PzXd10eSwNGTHm8TScp0t2SPD3mXwT8rY8oalAppan6VhqM8g_nDRb_f8ea4_idhUFOYpvVjJbYZWRhmoIIr_e8SksXBArKEmIs4TMuIOyKjKDpY5p730mzsfzIwFahd0w-H_dOP8jfxVQgMxZmyBviT"
         }
       }
     },
@@ -1243,16 +1288,16 @@
       "name": "post",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
-          "grant": "g_0sljd32asfa3rzsbHwpCew",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-7173-b49d-0a7765f10cb8",
+          "grant": "g_flfHknoMthRA-26Afno0uQ",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hoi @Mila, zie je Zoë?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 4,
               "end": 9
             }
@@ -1262,8 +1307,8 @@
       "response": {
         "status": 201,
         "body": {
-          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
-          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "operationId": "01a20a7b-a660-7173-b49d-0a7765f10cb8",
+          "messageId": "e_EAX3851hw_dY5cqozcsxcQ",
           "seq": 8
         }
       }
@@ -1272,16 +1317,16 @@
       "name": "post retry",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
-          "grant": "g_0sljd32asfa3rzsbHwpCew",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-7173-b49d-0a7765f10cb8",
+          "grant": "g_flfHknoMthRA-26Afno0uQ",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hoi @Mila, zie je Zoë?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 4,
               "end": 9
             }
@@ -1291,8 +1336,8 @@
       "response": {
         "status": 200,
         "body": {
-          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
-          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "operationId": "01a20a7b-a660-7173-b49d-0a7765f10cb8",
+          "messageId": "e_EAX3851hw_dY5cqozcsxcQ",
           "seq": 8
         }
       }
@@ -1301,16 +1346,16 @@
       "name": "post changed retry",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
-          "grant": "g_0sljd32asfa3rzsbHwpCew",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-7173-b49d-0a7765f10cb8",
+          "grant": "g_flfHknoMthRA-26Afno0uQ",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hoi @Mila, zie je Joël?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 4,
               "end": 9
             }
@@ -1329,16 +1374,16 @@
       "name": "post stale grant",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-7fb2-aa6c-2c3950920ea8",
+          "operationId": "01a20a7b-a660-7410-af7b-385a284d8691",
           "grant": "g_AAAAAAAAAAAAAAAAAAAAAA",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hoi @Mila, zie je Zoë?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 4,
               "end": 9
             }
@@ -1358,16 +1403,16 @@
       "name": "post stale generation",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-70f8-887f-ca211c1793c6",
-          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "operationId": "01a20a7b-a660-759f-b2bb-d79bc6423bdd",
+          "grant": "g_flfHknoMthRA-26Afno0uQ",
           "generation": "AAAAAAAAAAAAAAAAAAAAAA",
           "text": "Hoi @Mila, zie je Zoë?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 4,
               "end": 9
             }
@@ -1387,16 +1432,16 @@
       "name": "post expired",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a15647-82e1-7d60-916c-d62ade286a01",
-          "grant": "g_0sljd32asfa3rzsbHwpCew",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a16ad6-8260-72f6-8fc1-843fb2d63122",
+          "grant": "g_flfHknoMthRA-26Afno0uQ",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hoi @Mila, zie je Zoë?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 4,
               "end": 9
             }
@@ -1415,16 +1460,16 @@
       "name": "post ahead of time",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f623-9561-7456-9b4a-a045321c1610",
-          "grant": "g_0sljd32asfa3rzsbHwpCew",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20ab2-94e0-7831-bd47-9fc98a4e93fb",
+          "grant": "g_flfHknoMthRA-26Afno0uQ",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hoi @Mila, zie je Zoë?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 4,
               "end": 9
             }
@@ -1444,16 +1489,16 @@
       "name": "post bad mentions",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-7189-82db-d490d5a073de",
-          "grant": "g_0sljd32asfa3rzsbHwpCew",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-745a-8723-e9b99c25540b",
+          "grant": "g_flfHknoMthRA-26Afno0uQ",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hoi @Mila, zie je Zoë?",
           "mentions": [
             {
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
               "start": 21,
               "end": 22
             }
@@ -1473,12 +1518,12 @@
       "name": "post archived channel",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_3EBmRVQPRvZM9H3YjqvoFg/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_JOO2o59aQac3dhYoMjW51g/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-7650-9400-eebabb84401c",
-          "grant": "g_E_r-35uYnx7RdJ0Q7V84bw",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-7b0d-950e-097dbe269266",
+          "grant": "g_M8muitVYPcLLuL3Phe0Feg",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Still here?",
           "mentions": []
         }
@@ -1496,22 +1541,22 @@
       "name": "post reply",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages",
         "auth": "mila",
         "body": {
-          "operationId": "01a1f5ec-a6e1-7909-a749-4bba7a8a4dcd",
-          "grant": "g_G6LaETROG6o4y9qQZatUYg",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-70ae-8db7-71bae991cf1f",
+          "grant": "g_cjZB-O7YXOfv5BwS4rwm4w",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Ja 👍",
           "mentions": [],
-          "root": "e_bDjzAslREfPV1_8CwZvHiA"
+          "root": "e_EAX3851hw_dY5cqozcsxcQ"
         }
       },
       "response": {
         "status": 201,
         "body": {
-          "operationId": "01a1f5ec-a6e1-7909-a749-4bba7a8a4dcd",
-          "messageId": "e_o46bttM4IB5qcZq1HqB09A",
+          "operationId": "01a20a7b-a660-70ae-8db7-71bae991cf1f",
+          "messageId": "e_7ykxGw6sP5lzgMgS9eMhqw",
           "seq": 9
         }
       }
@@ -1520,14 +1565,14 @@
       "name": "operation",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/operations/01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/operations/01a20a7b-a660-7173-b49d-0a7765f10cb8",
         "auth": "olga",
         "body": null
       },
       "response": {
         "status": 200,
         "body": {
-          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "messageId": "e_EAX3851hw_dY5cqozcsxcQ",
           "seq": 8,
           "visible": true
         }
@@ -1537,7 +1582,7 @@
       "name": "operation unknown",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/operations/01a1f5ec-a6e1-7f95-be48-d5aa8b49d865",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/operations/01a20a7b-a660-7376-9056-cc38d018730a",
         "auth": "olga",
         "body": null
       },
@@ -1553,7 +1598,7 @@
       "name": "events",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/events?after=0&limit=100",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/events?after=0&limit=100",
         "auth": "mila",
         "body": null
       },
@@ -1563,85 +1608,91 @@
           "events": [
             {
               "seq": 1,
-              "id": "e_IW5h4-2aHToLEWDBx8uVBw",
+              "id": "e_eVByT98qtiOvar5DUcgWgg",
               "kind": "channel.created",
-              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
-              "at": 1795127289087,
+              "actor": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "at": 1795472204945,
               "name": "general",
               "visibility": "workspace"
             },
             {
               "seq": 2,
-              "id": "e_azYgq9C-wwp7wSRAK83xLg",
+              "id": "e_TXwUdCN-eRP8pRDhdZWHwA",
               "kind": "member.joined",
-              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
-              "at": 1795127289087,
-              "member": "u_69xoS94rD7uZWjn-6qlEDQ"
+              "actor": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "at": 1795472204945,
+              "member": "u_9KrqVgpKtT_HyO5ApgryZg"
             },
             {
               "seq": 3,
-              "id": "e_rtAeWw8eTKGGbYaxeeZEyg",
+              "id": "e_Mr6c_6x9adXzaroqh83YzA",
               "kind": "member.joined",
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
-              "at": 1795127289154,
-              "member": "u_SeUlzGJlRl0wxLhC4YLiRg"
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
+              "at": 1795472205009,
+              "member": "u_oLOSPpUpkCvGowI8FnWpDA"
             },
             {
               "seq": 4,
-              "id": "e_auFzmCGRyAbeZubA_Dq5Lw",
+              "id": "e_ilVHL5b7wsBGaQwTLh-5wA",
               "kind": "member.joined",
-              "actor": "u_XN0js20bZkcTi7HbEZp2ow",
-              "at": 1795127289180,
-              "member": "u_XN0js20bZkcTi7HbEZp2ow"
+              "actor": "u_20S_xr4P7x6hLeDFvtGjuQ",
+              "at": 1795472205035,
+              "member": "u_20S_xr4P7x6hLeDFvtGjuQ"
             },
             {
               "seq": 5,
-              "id": "e_dPfp0daH1mc6tURwXJphfQ",
+              "id": "e_wqO_tFgc_Y1tWeiAmsVT3g",
               "kind": "member.joined",
-              "actor": "u_9kbdcfRDTeZ68TUIinuzag",
-              "at": 1795127289206,
-              "member": "u_9kbdcfRDTeZ68TUIinuzag"
+              "actor": "u_Dke2ScfDbh031qFRr-G9KQ",
+              "at": 1795472205059,
+              "member": "u_Dke2ScfDbh031qFRr-G9KQ"
             },
             {
               "seq": 6,
-              "id": "e_XWbJHsvA3qdSCwRUlCWE3Q",
+              "id": "e_vE6wByqg18x4FJ73HisWHw",
               "kind": "member.joined",
-              "actor": "u_rMxAVZVRi1IzeCJ-xoWggg",
-              "at": 1795127289233,
-              "member": "u_rMxAVZVRi1IzeCJ-xoWggg"
+              "actor": "u_7bQnv4q9edii1guIm95TkQ",
+              "at": 1795472205084,
+              "member": "u_7bQnv4q9edii1guIm95TkQ"
             },
             {
               "seq": 7,
-              "id": "e_oTun4bVyJkLteGGjR-OhTw",
+              "id": "e_GsbvGU3oXZEBFLOsUSGxvQ",
               "kind": "member.joined",
-              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
-              "at": 1795127289259,
-              "member": "u_jd4Tb1fVINms9A7XqRIGSw"
+              "actor": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "at": 1795472205109,
+              "member": "u_xAtXkuwPVSvIyImiyidgrg"
             },
             {
               "seq": 8,
-              "id": "e_bDjzAslREfPV1_8CwZvHiA",
+              "id": "e_EAX3851hw_dY5cqozcsxcQ",
               "kind": "message.posted",
-              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
-              "at": 1795127289588,
+              "actor": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "at": 1795472205426,
               "text": "Hoi @Mila, zie je Zoë?",
               "mentions": [
                 {
-                  "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+                  "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
                   "start": 4,
                   "end": 9
                 }
-              ]
+              ],
+              "attachments": [],
+              "previews": [],
+              "reactions": []
             },
             {
               "seq": 9,
-              "id": "e_o46bttM4IB5qcZq1HqB09A",
+              "id": "e_7ykxGw6sP5lzgMgS9eMhqw",
               "kind": "message.posted",
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
-              "at": 1795127289665,
-              "root": "e_bDjzAslREfPV1_8CwZvHiA",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
+              "at": 1795472205500,
+              "root": "e_EAX3851hw_dY5cqozcsxcQ",
               "text": "Ja 👍",
-              "mentions": []
+              "mentions": [],
+              "attachments": [],
+              "previews": [],
+              "reactions": []
             }
           ],
           "head": 9,
@@ -1654,7 +1705,7 @@
       "name": "events before",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/events?before=10&limit=1",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/events?before=10&limit=1",
         "auth": "mila",
         "body": null
       },
@@ -1664,13 +1715,16 @@
           "events": [
             {
               "seq": 9,
-              "id": "e_o46bttM4IB5qcZq1HqB09A",
+              "id": "e_7ykxGw6sP5lzgMgS9eMhqw",
               "kind": "message.posted",
-              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
-              "at": 1795127289665,
-              "root": "e_bDjzAslREfPV1_8CwZvHiA",
+              "actor": "u_oLOSPpUpkCvGowI8FnWpDA",
+              "at": 1795472205500,
+              "root": "e_EAX3851hw_dY5cqozcsxcQ",
               "text": "Ja 👍",
-              "mentions": []
+              "mentions": [],
+              "attachments": [],
+              "previews": [],
+              "reactions": []
             }
           ],
           "head": 9,
@@ -1683,7 +1737,7 @@
       "name": "read",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/read",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/read",
         "auth": "mila",
         "body": {
           "seq": 9
@@ -1692,7 +1746,8 @@
       "response": {
         "status": 200,
         "body": {
-          "read": 9
+          "read": 9,
+          "readMark": 0
         }
       }
     },
@@ -1700,7 +1755,7 @@
       "name": "redact as someone else",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages/e_bDjzAslREfPV1_8CwZvHiA/redact",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages/e_EAX3851hw_dY5cqozcsxcQ/redact",
         "auth": "mila",
         "body": null
       },
@@ -1708,7 +1763,7 @@
         "status": 403,
         "body": {
           "error": "forbidden",
-          "message": "Only its author or a channel manager removes a message."
+          "message": "Only its author, a channel manager or, for an agent's message, the agent's sponsor removes a message."
         }
       }
     },
@@ -1716,14 +1771,14 @@
       "name": "redact",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages/e_bDjzAslREfPV1_8CwZvHiA/redact",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages/e_EAX3851hw_dY5cqozcsxcQ/redact",
         "auth": "olga",
         "body": null
       },
       "response": {
         "status": 200,
         "body": {
-          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "messageId": "e_EAX3851hw_dY5cqozcsxcQ",
           "redacted": true
         }
       }
@@ -1732,7 +1787,7 @@
       "name": "member feed after",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes?after={cursor}",
         "auth": "mila",
         "body": null
       },
@@ -1741,22 +1796,24 @@
         "body": {
           "changes": [
             {
-              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "conversation": "c_yKtAjMjyS19TvQ72Tyb90g",
               "kind": "channel",
               "name": "general",
               "visibility": "workspace",
               "archived": false,
-              "grant": "g_G6LaETROG6o4y9qQZatUYg",
+              "grant": "g_cjZB-O7YXOfv5BwS4rwm4w",
               "role": "member",
               "members": 6,
+              "agents": 0,
               "head": 10,
               "floor": 1,
-              "lastAt": 1795127289709,
+              "lastAt": 1795472205544,
               "read": 9,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [
-                "e_bDjzAslREfPV1_8CwZvHiA"
+                "e_EAX3851hw_dY5cqozcsxcQ"
               ],
               "removedMore": false
             }
@@ -1769,7 +1826,7 @@
             "blocks": false
           },
           "more": false,
-          "next": "AdkHdyv3zkZ6l_j6lJdixlcM5YG0j9N761ORJXo9Klqnyv1H8-EfFBzojLAkoo3CXTfFV32PA7Z7NnR3HEZqbRLFjDax3aQF0QiGCRjhLRsyqVjCgN_xly_dS3hZskou2iURxLosDTyL-vNb5D79PJkNRa0wPosp"
+          "next": "AaOp6nrZ973h--IgDImu9I6S27zXweCeq-Ocsts5kfd_CCWKLuHWsCKRkCN_aG5kltPQAeU2-shLKlJqD-3rcNBgyzbzBOuT9Kgjmed9RMyij9aujartXMY_MmEqFrVmgle-keJ860k99WPdCsoVrcin1Xsn7Cj5"
         }
       }
     },
@@ -1777,7 +1834,7 @@
       "name": "bad cursor",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes?after={cursor}",
         "auth": "mila",
         "body": null
       },
@@ -1811,7 +1868,7 @@
       "name": "unknown conversation",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_AAAAAAAAAAAAAAAAAAAAAA/events?after=0&limit=50",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_AAAAAAAAAAAAAAAAAAAAAA/events?after=0&limit=50",
         "auth": "mila",
         "body": null
       },
@@ -1828,15 +1885,15 @@
       "name": "ticket",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/socket-ticket",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/socket-ticket",
         "auth": "mila",
         "body": null
       },
       "response": {
         "status": 200,
         "body": {
-          "ticket": "eyJ3Ijoid19haWg0Qkx3S1BlZXplYXVPUEdFSHZnIiwibiI6ImFaS1kzd0kwSzBVLWQ2OTM3MDFiWEEiLCJlIjoxNzk1MTI3MzE5NzQ1fQ.WHWSSm7XCuHGKCcLmhpiC7fD_XSkqX8QOEB1m1ByiJ8",
-          "expiresAt": 1795127319745,
+          "ticket": "eyJ3Ijoid19yc2w1bGtYVy1UQjZiblRDT3lJRjlBIiwibiI6IjBvMl9IdU5sOWQ5eGVjTUF1a2lpcFEiLCJlIjoxNzk1NDcyMjM1NTgyfQ.xly-_bQH7iN3r31iB4crPohkf8SA2aNLKWZytB1SIr8",
+          "expiresAt": 1795472235582,
           "protocol": "rukoo.workspace.v1"
         }
       }
@@ -1845,10 +1902,10 @@
       "name": "upgrade required",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A",
         "auth": "mila",
         "headers": {
-          "rukoo-workspace-version": "2"
+          "rukoo-workspace-version": "3"
         },
         "body": null
       },
@@ -1883,7 +1940,7 @@
       "name": "signed out workspace route",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes",
         "auth": "rex",
         "body": null
       },
@@ -1900,11 +1957,11 @@
       "name": "start dm",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "olga",
         "body": {
           "members": [
-            "u_SeUlzGJlRl0wxLhC4YLiRg"
+            "u_oLOSPpUpkCvGowI8FnWpDA"
           ]
         }
       },
@@ -1912,24 +1969,26 @@
         "status": 201,
         "body": {
           "dm": {
-            "conversation": "c_ywkAxXkwVlDkI7jloVd9Fw",
+            "conversation": "c_kD8ENKlkRU7vUyJeubi3ZQ",
             "kind": "dm",
             "name": null,
             "visibility": "dm",
             "archived": false,
             "participants": [
-              "u_69xoS94rD7uZWjn-6qlEDQ",
-              "u_SeUlzGJlRl0wxLhC4YLiRg"
+              "u_9KrqVgpKtT_HyO5ApgryZg",
+              "u_oLOSPpUpkCvGowI8FnWpDA"
             ],
-            "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "startedBy": "u_9KrqVgpKtT_HyO5ApgryZg",
             "closedReason": null,
-            "grant": "g_hfKUG2HaUyi_-lpcVHyRGg",
+            "grant": "g_yH4ESxZSAlSYLIH7gyvrdA",
             "role": "member",
             "members": 2,
+            "agents": 0,
             "head": 1,
             "floor": 1,
-            "lastAt": 1795127289771,
+            "lastAt": 1795472205606,
             "read": 1,
+            "readMark": 0,
             "unread": 0,
             "mentions": 0,
             "removed": [],
@@ -1942,11 +2001,11 @@
       "name": "start dm again",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "mila",
         "body": {
           "members": [
-            "u_69xoS94rD7uZWjn-6qlEDQ"
+            "u_9KrqVgpKtT_HyO5ApgryZg"
           ]
         }
       },
@@ -1954,24 +2013,26 @@
         "status": 200,
         "body": {
           "dm": {
-            "conversation": "c_ywkAxXkwVlDkI7jloVd9Fw",
+            "conversation": "c_kD8ENKlkRU7vUyJeubi3ZQ",
             "kind": "dm",
             "name": null,
             "visibility": "dm",
             "archived": false,
             "participants": [
-              "u_69xoS94rD7uZWjn-6qlEDQ",
-              "u_SeUlzGJlRl0wxLhC4YLiRg"
+              "u_9KrqVgpKtT_HyO5ApgryZg",
+              "u_oLOSPpUpkCvGowI8FnWpDA"
             ],
-            "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "startedBy": "u_9KrqVgpKtT_HyO5ApgryZg",
             "closedReason": null,
-            "grant": "g_WpIhddMKE7khAyNI0ZSSug",
+            "grant": "g_WLAwHu0pnXhvfzdxjVlLww",
             "role": "member",
             "members": 2,
+            "agents": 0,
             "head": 1,
             "floor": 1,
-            "lastAt": 1795127289771,
+            "lastAt": 1795472205606,
             "read": 1,
+            "readMark": 0,
             "unread": 0,
             "mentions": 0,
             "removed": [],
@@ -1984,12 +2045,12 @@
       "name": "start group dm",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "olga",
         "body": {
           "members": [
-            "u_SeUlzGJlRl0wxLhC4YLiRg",
-            "u_9kbdcfRDTeZ68TUIinuzag"
+            "u_oLOSPpUpkCvGowI8FnWpDA",
+            "u_Dke2ScfDbh031qFRr-G9KQ"
           ]
         }
       },
@@ -1997,25 +2058,27 @@
         "status": 201,
         "body": {
           "dm": {
-            "conversation": "c_eTe_MI9ecYnwJUzY-o4uyw",
+            "conversation": "c_F1wB2Ke0DTssc5E-xyNQ5g",
             "kind": "dm",
             "name": null,
             "visibility": "dm",
             "archived": false,
             "participants": [
-              "u_69xoS94rD7uZWjn-6qlEDQ",
-              "u_SeUlzGJlRl0wxLhC4YLiRg",
-              "u_9kbdcfRDTeZ68TUIinuzag"
+              "u_9KrqVgpKtT_HyO5ApgryZg",
+              "u_oLOSPpUpkCvGowI8FnWpDA",
+              "u_Dke2ScfDbh031qFRr-G9KQ"
             ],
-            "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "startedBy": "u_9KrqVgpKtT_HyO5ApgryZg",
             "closedReason": null,
-            "grant": "g_E7eA3AvTe4xgys6HVk9XQg",
+            "grant": "g_gywKEVbm8xaTmHGb1NVMbg",
             "role": "member",
             "members": 3,
+            "agents": 0,
             "head": 1,
             "floor": 1,
-            "lastAt": 1795127289786,
+            "lastAt": 1795472205621,
             "read": 1,
+            "readMark": 0,
             "unread": 0,
             "mentions": 0,
             "removed": [],
@@ -2028,11 +2091,11 @@
       "name": "start dm with guest",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "olga",
         "body": {
           "members": [
-            "u_jd4Tb1fVINms9A7XqRIGSw"
+            "u_xAtXkuwPVSvIyImiyidgrg"
           ]
         }
       },
@@ -2049,7 +2112,7 @@
       "name": "start dm without members",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "olga",
         "body": {
           "members": []
@@ -2068,12 +2131,12 @@
       "name": "post dm",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_ywkAxXkwVlDkI7jloVd9Fw/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_kD8ENKlkRU7vUyJeubi3ZQ/messages",
         "auth": "olga",
         "body": {
-          "operationId": "01a1f5ec-a6e1-705c-983e-79a1c6be17b2",
-          "grant": "g_hfKUG2HaUyi_-lpcVHyRGg",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-75d5-a5a4-54a6749579e1",
+          "grant": "g_yH4ESxZSAlSYLIH7gyvrdA",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Even bellen?",
           "mentions": []
         }
@@ -2081,8 +2144,8 @@
       "response": {
         "status": 201,
         "body": {
-          "operationId": "01a1f5ec-a6e1-705c-983e-79a1c6be17b2",
-          "messageId": "e_VrcETmFTggHxYrsamldhag",
+          "operationId": "01a20a7b-a660-75d5-a5a4-54a6749579e1",
+          "messageId": "e_u4a4MVj6GkOZfbtTo3At8g",
           "seq": 2
         }
       }
@@ -2091,7 +2154,7 @@
       "name": "dm events",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_ywkAxXkwVlDkI7jloVd9Fw/events?after=0&limit=100",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_kD8ENKlkRU7vUyJeubi3ZQ/events?after=0&limit=100",
         "auth": "mila",
         "body": null
       },
@@ -2101,23 +2164,26 @@
           "events": [
             {
               "seq": 1,
-              "id": "e_Ek2q-b5YxI-V5kFEt1dJJg",
+              "id": "e__RUGpQm7N06JPywcAdIHQg",
               "kind": "dm.started",
-              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
-              "at": 1795127289771,
+              "actor": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "at": 1795472205606,
               "members": [
-                "u_69xoS94rD7uZWjn-6qlEDQ",
-                "u_SeUlzGJlRl0wxLhC4YLiRg"
+                "u_9KrqVgpKtT_HyO5ApgryZg",
+                "u_oLOSPpUpkCvGowI8FnWpDA"
               ]
             },
             {
               "seq": 2,
-              "id": "e_VrcETmFTggHxYrsamldhag",
+              "id": "e_u4a4MVj6GkOZfbtTo3At8g",
               "kind": "message.posted",
-              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
-              "at": 1795127289804,
+              "actor": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "at": 1795472205638,
               "text": "Even bellen?",
-              "mentions": []
+              "mentions": [],
+              "attachments": [],
+              "previews": [],
+              "reactions": []
             }
           ],
           "head": 2,
@@ -2130,18 +2196,18 @@
       "name": "block",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/blocks",
         "auth": "olga",
         "body": {
-          "member": "u_XN0js20bZkcTi7HbEZp2ow"
+          "member": "u_20S_xr4P7x6hLeDFvtGjuQ"
         }
       },
       "response": {
         "status": 201,
         "body": {
           "block": {
-            "member": "u_XN0js20bZkcTi7HbEZp2ow",
-            "at": 1795127289844
+            "member": "u_20S_xr4P7x6hLeDFvtGjuQ",
+            "at": 1795472205673
           }
         }
       }
@@ -2150,18 +2216,18 @@
       "name": "block again",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/blocks",
         "auth": "olga",
         "body": {
-          "member": "u_XN0js20bZkcTi7HbEZp2ow"
+          "member": "u_20S_xr4P7x6hLeDFvtGjuQ"
         }
       },
       "response": {
         "status": 200,
         "body": {
           "block": {
-            "member": "u_XN0js20bZkcTi7HbEZp2ow",
-            "at": 1795127289844
+            "member": "u_20S_xr4P7x6hLeDFvtGjuQ",
+            "at": 1795472205673
           }
         }
       }
@@ -2170,10 +2236,10 @@
       "name": "block self",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/blocks",
         "auth": "olga",
         "body": {
-          "member": "u_69xoS94rD7uZWjn-6qlEDQ"
+          "member": "u_9KrqVgpKtT_HyO5ApgryZg"
         }
       },
       "response": {
@@ -2189,7 +2255,7 @@
       "name": "block unknown",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/blocks",
         "auth": "olga",
         "body": {
           "member": "u_AAAAAAAAAAAAAAAAAAAAAA"
@@ -2207,7 +2273,7 @@
       "name": "blocks",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/blocks",
         "auth": "olga",
         "body": null
       },
@@ -2216,8 +2282,8 @@
         "body": {
           "blocks": [
             {
-              "member": "u_XN0js20bZkcTi7HbEZp2ow",
-              "at": 1795127289844
+              "member": "u_20S_xr4P7x6hLeDFvtGjuQ",
+              "at": 1795472205673
             }
           ]
         }
@@ -2227,7 +2293,7 @@
       "name": "feed after block",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes?after={cursor}",
         "auth": "olga",
         "body": null
       },
@@ -2236,24 +2302,26 @@
         "body": {
           "changes": [
             {
-              "conversation": "c_xbrGcT2qO3WsuNxxppRWYw",
+              "conversation": "c__ZB1damTUaP-BUxB_ED1HQ",
               "kind": "dm",
               "name": null,
               "visibility": "dm",
               "archived": true,
               "participants": [
-                "u_69xoS94rD7uZWjn-6qlEDQ",
-                "u_XN0js20bZkcTi7HbEZp2ow"
+                "u_9KrqVgpKtT_HyO5ApgryZg",
+                "u_20S_xr4P7x6hLeDFvtGjuQ"
               ],
-              "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "startedBy": "u_9KrqVgpKtT_HyO5ApgryZg",
               "closedReason": "closed",
-              "grant": "g_uh6ptjgoHJNOShO1tsIZBQ",
+              "grant": "g_CHHYlV3he5oBnIvsoljsXg",
               "role": "member",
               "members": 2,
+              "agents": 0,
               "head": 2,
               "floor": 1,
-              "lastAt": 1795127289830,
+              "lastAt": 1795472205658,
               "read": 2,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
@@ -2268,7 +2336,7 @@
             "blocks": true
           },
           "more": false,
-          "next": "AWKIc_cjJb9j8kPQ8b705teXG8EQoStYueq6lnLWd_ir7piMXmz2noCDFNj_lynk9ETDSfZ4yEyzu1ZEwjKYOilj_0pPqNAv6V5YXwlMBKHvtHjddC0hzI4ss4SOh_OckEjDjTek1njKluGKmtLxCsTW4I-W47th"
+          "next": "AbkM6Pd-3yVYbyydMPjN3pBpLVCFYbuwg8iHVE4U75uPdZAVWo__3wfm5dM-XNJ5OeBF3fQgXAU5TyhRRRbtQO6cZC2nUFAOKhiAZ6vrNGy_hG5gM5sfAP5tAePtwubeD7F4DX1-byrDD5Sr-ZiryW-eeeUAn7fp"
         }
       }
     },
@@ -2276,11 +2344,11 @@
       "name": "start dm blocked",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "olga",
         "body": {
           "members": [
-            "u_XN0js20bZkcTi7HbEZp2ow"
+            "u_20S_xr4P7x6hLeDFvtGjuQ"
           ]
         }
       },
@@ -2289,7 +2357,7 @@
         "body": {
           "error": "blocked",
           "message": "You blocked someone in this conversation. Unblock them first.",
-          "member": "u_XN0js20bZkcTi7HbEZp2ow"
+          "member": "u_20S_xr4P7x6hLeDFvtGjuQ"
         }
       }
     },
@@ -2297,11 +2365,11 @@
       "name": "start dm blocked by",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "bart",
         "body": {
           "members": [
-            "u_69xoS94rD7uZWjn-6qlEDQ"
+            "u_9KrqVgpKtT_HyO5ApgryZg"
           ]
         }
       },
@@ -2318,7 +2386,7 @@
       "name": "feed with closed dm",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes",
         "auth": "bart",
         "body": null
       },
@@ -2327,60 +2395,66 @@
         "body": {
           "changes": [
             {
-              "conversation": "c_puUrLpkcJ2xzcSgAx6_RxQ",
+              "conversation": "c_8_mOTklpsh3R2rYEWCNiTg",
               "kind": "channel",
               "name": "design",
               "visibility": "private",
               "archived": false,
-              "grant": "g_FxBR6NmBKK-THEnASYZ4Vw",
+              "grant": "g_pzmPqb0lSxUfUYItfenLVg",
               "role": "manager",
               "members": 1,
+              "agents": 0,
               "head": 4,
               "floor": 1,
-              "lastAt": 1795127289506,
+              "lastAt": 1795472205342,
               "read": 3,
+              "readMark": 0,
               "unread": 0,
               "mentions": 0,
               "removed": [],
               "removedMore": false
             },
             {
-              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "conversation": "c_yKtAjMjyS19TvQ72Tyb90g",
               "kind": "channel",
               "name": "general",
               "visibility": "workspace",
               "archived": false,
-              "grant": "g_WhcpqdFTVcpZgdk2PB1Ndg",
+              "grant": "g_Wqg1Uqie_2iIfgc44vXelA",
               "role": "member",
               "members": 6,
+              "agents": 0,
               "head": 10,
               "floor": 1,
-              "lastAt": 1795127289709,
+              "lastAt": 1795472205544,
               "read": 4,
+              "readMark": 0,
               "unread": 1,
               "mentions": 0,
               "removed": [],
               "removedMore": false
             },
             {
-              "conversation": "c_xbrGcT2qO3WsuNxxppRWYw",
+              "conversation": "c__ZB1damTUaP-BUxB_ED1HQ",
               "kind": "dm",
               "name": null,
               "visibility": "dm",
               "archived": true,
               "participants": [
-                "u_69xoS94rD7uZWjn-6qlEDQ",
-                "u_XN0js20bZkcTi7HbEZp2ow"
+                "u_9KrqVgpKtT_HyO5ApgryZg",
+                "u_20S_xr4P7x6hLeDFvtGjuQ"
               ],
-              "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "startedBy": "u_9KrqVgpKtT_HyO5ApgryZg",
               "closedReason": "closed",
-              "grant": "g_Y-Gb8DNgKeSJaP2ripM_8A",
+              "grant": "g_i2LDf7dN6tnX4JNYB0NM6g",
               "role": "member",
               "members": 2,
+              "agents": 0,
               "head": 2,
               "floor": 1,
-              "lastAt": 1795127289830,
+              "lastAt": 1795472205658,
               "read": 1,
+              "readMark": 0,
               "unread": 1,
               "mentions": 0,
               "removed": [],
@@ -2395,7 +2469,7 @@
             "blocks": true
           },
           "more": false,
-          "next": "AXMzfCsrvTP9rncmJYNkMlZkUPUqeje0LB3Big9wLO8YvvmskSv9_Bp8R0XSPukjQJDYQzVeV6bgtu6Qg6mGtdK_dzx5pFlK5x9m2EvUCac44qAiT_Ycyzaf8pHsTBhem5zqAaEBoKnpd662mVI8JXtiMm9eTj7W"
+          "next": "AZ4xGJkHqFXf-lHQP_9hD4ZKMOLHMiagwFmpDX79jJvUaFBPi2pgeA8sofTC4TDTGlnchlijMcJB5GB0vNM3MF1Nfqdt8EcGquy11qBiSwxlN44ab1GJKA8AgAhMnmpBOnrkOC8buSMKeVz3UkpQy64nvw9wrDvG"
         }
       }
     },
@@ -2403,12 +2477,12 @@
       "name": "post closed dm",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_xbrGcT2qO3WsuNxxppRWYw/messages",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c__ZB1damTUaP-BUxB_ED1HQ/messages",
         "auth": "bart",
         "body": {
-          "operationId": "01a1f5ec-a6e1-7cf1-b5c0-c024b00b68aa",
-          "grant": "g_Y-Gb8DNgKeSJaP2ripM_8A",
-          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "operationId": "01a20a7b-a660-7f17-8a08-b3697594c3dd",
+          "grant": "g_i2LDf7dN6tnX4JNYB0NM6g",
+          "generation": "4nGgPhYu1XAz53lYMqTC5g",
           "text": "Hallo?",
           "mentions": []
         }
@@ -2426,7 +2500,7 @@
       "name": "unblock",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks/u_XN0js20bZkcTi7HbEZp2ow",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/blocks/u_20S_xr4P7x6hLeDFvtGjuQ",
         "auth": "olga",
         "body": null
       },
@@ -2439,7 +2513,7 @@
       "name": "leave dm",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms/c_eTe_MI9ecYnwJUzY-o4uyw/leave",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms/c_F1wB2Ke0DTssc5E-xyNQ5g/leave",
         "auth": "mila",
         "body": null
       },
@@ -2452,7 +2526,7 @@
       "name": "leave dm on a channel",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms/c_nTSJn3RWkZ7tSGre5fggrQ/leave",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms/c_yKtAjMjyS19TvQ72Tyb90g/leave",
         "auth": "mila",
         "body": null
       },
@@ -2469,7 +2543,7 @@
       "name": "channel route on a dm",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_ywkAxXkwVlDkI7jloVd9Fw/members",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_kD8ENKlkRU7vUyJeubi3ZQ/members",
         "auth": "mila",
         "body": null
       },
@@ -2486,11 +2560,11 @@
       "name": "start dm too fast",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
         "auth": "olga",
         "body": {
           "members": [
-            "u_SeUlzGJlRl0wxLhC4YLiRg"
+            "u_oLOSPpUpkCvGowI8FnWpDA"
           ]
         }
       },
@@ -2510,7 +2584,7 @@
       "name": "remove member",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/u_rMxAVZVRi1IzeCJ-xoWggg",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/u_7bQnv4q9edii1guIm95TkQ",
         "auth": "olga",
         "body": null
       },
@@ -2523,7 +2597,7 @@
       "name": "leave workspace",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/me",
         "auth": "pia",
         "body": null
       },
@@ -2533,10 +2607,632 @@
       }
     },
     {
+      "name": "agents empty",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "agents": []
+        }
+      }
+    },
+    {
+      "name": "create agent",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents",
+        "auth": "mila",
+        "body": {
+          "name": "Clark",
+          "answers": "sponsor",
+          "members": [],
+          "agents": false
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "agent": {
+            "id": "u_JYCExPNkiDEMF1bFYCYSdQ",
+            "name": "Clark",
+            "sponsor": "u_oLOSPpUpkCvGowI8FnWpDA",
+            "answers": "sponsor",
+            "members": [],
+            "agents": false,
+            "lastSeen": null,
+            "createdAt": 1795472205835
+          },
+          "key": "rka_JYCExPNkiDEMF1bFYCYSdQ.uICQPIc0rwY7b8H5eIN5KYZ7nQ6hffYdxdxeEBm9jxQ"
+        }
+      }
+    },
+    {
+      "name": "create agent bad name",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents",
+        "auth": "mila",
+        "body": {
+          "name": " ",
+          "answers": "everyone",
+          "members": [],
+          "agents": false
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "name must be one line of 1 to 80 characters.",
+          "field": "name"
+        }
+      }
+    },
+    {
+      "name": "create agent as guest",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents",
+        "auth": "gus",
+        "body": {
+          "name": "Gus bot",
+          "answers": "everyone",
+          "members": [],
+          "agents": false
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "forbidden",
+          "message": "Only full members make agents."
+        }
+      }
+    },
+    {
+      "name": "update agent",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents/u_JYCExPNkiDEMF1bFYCYSdQ",
+        "auth": "mila",
+        "body": {
+          "name": "Clark",
+          "answers": "members",
+          "members": [
+            "u_9KrqVgpKtT_HyO5ApgryZg"
+          ],
+          "agents": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "agent": {
+            "id": "u_JYCExPNkiDEMF1bFYCYSdQ",
+            "name": "Clark",
+            "sponsor": "u_oLOSPpUpkCvGowI8FnWpDA",
+            "answers": "members",
+            "members": [
+              "u_9KrqVgpKtT_HyO5ApgryZg"
+            ],
+            "agents": true,
+            "lastSeen": null,
+            "createdAt": 1795472205835
+          }
+        }
+      }
+    },
+    {
+      "name": "update agent as guest",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents/u_JYCExPNkiDEMF1bFYCYSdQ",
+        "auth": "gus",
+        "body": {
+          "name": "Gus bot",
+          "answers": "everyone",
+          "members": [],
+          "agents": false
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "forbidden",
+          "message": "Only full members manage agents."
+        }
+      }
+    },
+    {
+      "name": "admit agent",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_yKtAjMjyS19TvQ72Tyb90g/members",
+        "auth": "mila",
+        "body": {
+          "member": "u_JYCExPNkiDEMF1bFYCYSdQ"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "member": "u_JYCExPNkiDEMF1bFYCYSdQ",
+          "role": "member"
+        }
+      }
+    },
+    {
+      "name": "admit agent private without sponsor",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_8_mOTklpsh3R2rYEWCNiTg/members",
+        "auth": "bart",
+        "body": {
+          "member": "u_JYCExPNkiDEMF1bFYCYSdQ"
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "sponsor_not_in_channel",
+          "message": "An agent comes into a private channel only while its sponsor is in it. Add its sponsor first."
+        }
+      }
+    },
+    {
+      "name": "members with agent",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "members": [
+            {
+              "id": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "kind": "human",
+              "name": "Olga Owner",
+              "role": "owner",
+              "state": "active",
+              "joinedAt": 1795472204945
+            },
+            {
+              "id": "u_oLOSPpUpkCvGowI8FnWpDA",
+              "kind": "human",
+              "name": "Mila M.",
+              "role": "member",
+              "state": "active",
+              "joinedAt": 1795472205009
+            },
+            {
+              "id": "u_20S_xr4P7x6hLeDFvtGjuQ",
+              "kind": "human",
+              "name": "Bart",
+              "role": "admin",
+              "state": "active",
+              "joinedAt": 1795472205035
+            },
+            {
+              "id": "u_Dke2ScfDbh031qFRr-G9KQ",
+              "kind": "human",
+              "name": "Pia",
+              "role": "member",
+              "state": "left",
+              "joinedAt": 1795472205059
+            },
+            {
+              "id": "u_7bQnv4q9edii1guIm95TkQ",
+              "kind": "human",
+              "name": "Tom",
+              "role": "member",
+              "state": "removed",
+              "joinedAt": 1795472205084
+            },
+            {
+              "id": "u_xAtXkuwPVSvIyImiyidgrg",
+              "kind": "human",
+              "name": "Gus Guest",
+              "role": "guest",
+              "state": "active",
+              "joinedAt": 1795472205109
+            },
+            {
+              "id": "u_JYCExPNkiDEMF1bFYCYSdQ",
+              "kind": "agent",
+              "name": "Clark",
+              "role": "member",
+              "state": "active",
+              "joinedAt": 1795472205835,
+              "agent": {
+                "sponsor": "u_oLOSPpUpkCvGowI8FnWpDA",
+                "answers": "members",
+                "members": [
+                  "u_9KrqVgpKtT_HyO5ApgryZg"
+                ],
+                "agents": true
+              }
+            }
+          ],
+          "more": false
+        }
+      }
+    },
+    {
+      "name": "make agent manager",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/channels/c_yKtAjMjyS19TvQ72Tyb90g/members/u_JYCExPNkiDEMF1bFYCYSdQ",
+        "auth": "olga",
+        "body": {
+          "role": "manager"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "agent_not_manager",
+          "message": "An agent cannot manage a channel.",
+          "field": "member"
+        }
+      }
+    },
+    {
+      "name": "start dm with agent",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/dms",
+        "auth": "mila",
+        "body": {
+          "members": [
+            "u_JYCExPNkiDEMF1bFYCYSdQ"
+          ]
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "agent_in_dm",
+          "message": "Agents are not in direct messages. Mention them in a channel.",
+          "field": "members"
+        }
+      }
+    },
+    {
+      "name": "block agent",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/blocks",
+        "auth": "olga",
+        "body": {
+          "member": "u_JYCExPNkiDEMF1bFYCYSdQ"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "agent_block",
+          "message": "An agent cannot be blocked. Ask its sponsor or a channel manager to remove it.",
+          "field": "member"
+        }
+      }
+    },
+    {
+      "name": "set agent role",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/members/u_JYCExPNkiDEMF1bFYCYSdQ",
+        "auth": "olga",
+        "body": {
+          "role": "admin"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "agent_role",
+          "message": "An agent has no role to change.",
+          "field": "member"
+        }
+      }
+    },
+    {
+      "name": "events with agent reply",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/events?after=13&limit=100",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "events": [
+            {
+              "seq": 14,
+              "id": "e_aScnRahve8DaK2qpcfwiLQ",
+              "kind": "message.posted",
+              "actor": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "at": 1795472205953,
+              "text": "Hoi @Clark, wat staat er morgen?",
+              "mentions": [
+                {
+                  "actor": "u_JYCExPNkiDEMF1bFYCYSdQ",
+                  "start": 4,
+                  "end": 10
+                }
+              ],
+              "attachments": [],
+              "previews": [],
+              "reactions": []
+            },
+            {
+              "seq": 15,
+              "id": "e_9KHBOHJtABpyGKqAJdJ5lg",
+              "kind": "message.posted",
+              "actor": "u_JYCExPNkiDEMF1bFYCYSdQ",
+              "at": 1795472205969,
+              "root": "e_aScnRahve8DaK2qpcfwiLQ",
+              "text": "Morgen om 10:00 de planning.",
+              "mentions": [],
+              "attachments": [],
+              "previews": [],
+              "reactions": [],
+              "trigger": "e_aScnRahve8DaK2qpcfwiLQ",
+              "depth": 1,
+              "origin": "u_9KrqVgpKtT_HyO5ApgryZg"
+            }
+          ],
+          "head": 15,
+          "floor": 1,
+          "more": false
+        }
+      }
+    },
+    {
+      "name": "feed with agents",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/changes",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_kD8ENKlkRU7vUyJeubi3ZQ",
+              "kind": "dm",
+              "name": null,
+              "visibility": "dm",
+              "archived": false,
+              "participants": [
+                "u_9KrqVgpKtT_HyO5ApgryZg",
+                "u_oLOSPpUpkCvGowI8FnWpDA"
+              ],
+              "startedBy": "u_9KrqVgpKtT_HyO5ApgryZg",
+              "closedReason": null,
+              "grant": "g_WLAwHu0pnXhvfzdxjVlLww",
+              "role": "member",
+              "members": 2,
+              "agents": 0,
+              "head": 2,
+              "floor": 1,
+              "lastAt": 1795472205638,
+              "read": 1,
+              "readMark": 0,
+              "unread": 1,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_3qYoTEj-1sJfbJE8yIjTkA",
+              "kind": "channel",
+              "name": "Project X",
+              "visibility": "private",
+              "archived": false,
+              "grant": "g_4PAYYV24Z7xU74gOgCT4qQ",
+              "role": "manager",
+              "members": 1,
+              "agents": 0,
+              "head": 5,
+              "floor": 1,
+              "lastAt": 1795472205817,
+              "read": 2,
+              "readMark": 0,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_yKtAjMjyS19TvQ72Tyb90g",
+              "kind": "channel",
+              "name": "general",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_cjZB-O7YXOfv5BwS4rwm4w",
+              "role": "member",
+              "members": 4,
+              "agents": 1,
+              "head": 15,
+              "floor": 1,
+              "lastAt": 1795472205969,
+              "read": 9,
+              "readMark": 0,
+              "unread": 2,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            }
+          ],
+          "evictions": [
+            "c_8_mOTklpsh3R2rYEWCNiTg",
+            "c_F1wB2Ke0DTssc5E-xyNQ5g"
+          ],
+          "inlineEvents": [],
+          "directory": {
+            "members": true,
+            "channels": true,
+            "blocks": true
+          },
+          "more": false,
+          "next": "AfcGgLS573CA5iQwfAr2I_5tH5qDcyX5WFWW6oj-b-EehEYGrReLAwZo1O_hY1oleYj570Nvxlie8cKv1o5zNBXWkiyce7_K9C8-BNJn3cjBnQih03gc7bQh96XhoREVwiJ3dkoNcqZC1Ao5KEUbGza8MAMn6anp"
+        }
+      }
+    },
+    {
+      "name": "agents",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "agents": [
+            {
+              "id": "u_JYCExPNkiDEMF1bFYCYSdQ",
+              "name": "Clark",
+              "sponsor": "u_oLOSPpUpkCvGowI8FnWpDA",
+              "answers": "members",
+              "members": [
+                "u_9KrqVgpKtT_HyO5ApgryZg"
+              ],
+              "agents": true,
+              "lastSeen": 1795472205959,
+              "createdAt": 1795472205835
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "agent key as owner",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents/u_JYCExPNkiDEMF1bFYCYSdQ/key",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "forbidden",
+          "message": "Only its sponsor makes a new key for an agent."
+        }
+      }
+    },
+    {
+      "name": "agent key",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents/u_JYCExPNkiDEMF1bFYCYSdQ/key",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "agent": {
+            "id": "u_JYCExPNkiDEMF1bFYCYSdQ",
+            "name": "Clark",
+            "sponsor": "u_oLOSPpUpkCvGowI8FnWpDA",
+            "answers": "members",
+            "members": [
+              "u_9KrqVgpKtT_HyO5ApgryZg"
+            ],
+            "agents": true,
+            "lastSeen": 1795472205959,
+            "createdAt": 1795472205835
+          },
+          "key": "rka_JYCExPNkiDEMF1bFYCYSdQ.y2bLJtfJ-YXsSrN3FGyDC_1oyHrpGV5oXadSLIBsXBA"
+        }
+      }
+    },
+    {
+      "name": "redact agent reply as sponsor",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/conversations/c_yKtAjMjyS19TvQ72Tyb90g/messages/e_9KHBOHJtABpyGKqAJdJ5lg/redact",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "messageId": "e_9KHBOHJtABpyGKqAJdJ5lg",
+          "redacted": true
+        }
+      }
+    },
+    {
+      "name": "create agent over limit",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents",
+        "auth": "olga",
+        "body": {
+          "name": "Third",
+          "answers": "everyone",
+          "members": [],
+          "agents": false
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "agent_limit",
+          "message": "A workspace has at most 2 agents. Remove one first.",
+          "limit": "agents"
+        }
+      }
+    },
+    {
+      "name": "remove agent",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents/u_JYCExPNkiDEMF1bFYCYSdQ",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "remove agent again",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_rsl5lkXW-TB6bnTCOyIF9A/agents/u_JYCExPNkiDEMF1bFYCYSdQ",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no agent with this id."
+        }
+      }
+    },
+    {
       "name": "create channel over quota",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA/channels",
+        "path": "/v1/workspaces/w_Dn8QGr9Zaqfdyh9MOy1O2w/channels",
         "auth": "tina",
         "body": {
           "name": "one more",
@@ -2557,11 +3253,11 @@
       "name": "start dm over quota",
       "request": {
         "method": "POST",
-        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA/dms",
+        "path": "/v1/workspaces/w_Dn8QGr9Zaqfdyh9MOy1O2w/dms",
         "auth": "tina",
         "body": {
           "members": [
-            "u_RMHdQGQTJfs7wAATBUWKJw"
+            "u_UpG9WE4vBaVNHqqt3woFDQ"
           ]
         }
       },
@@ -2579,7 +3275,7 @@
       "name": "delete workspace members remain",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA",
+        "path": "/v1/workspaces/w_Dn8QGr9Zaqfdyh9MOy1O2w",
         "auth": "tina",
         "body": null
       },
@@ -2595,7 +3291,7 @@
       "name": "delete workspace not owner",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA",
+        "path": "/v1/workspaces/w_Dn8QGr9Zaqfdyh9MOy1O2w",
         "auth": "mila",
         "body": null
       },
@@ -2611,7 +3307,7 @@
       "name": "delete workspace",
       "request": {
         "method": "DELETE",
-        "path": "/v1/workspaces/w_DjlQ1SRasVYVhT5K1CS9pw",
+        "path": "/v1/workspaces/w_z-0gqhC_sCFQChVarO53IA",
         "auth": "olga",
         "body": null
       },
@@ -2624,7 +3320,7 @@
       "name": "deleted workspace",
       "request": {
         "method": "GET",
-        "path": "/v1/workspaces/w_DjlQ1SRasVYVhT5K1CS9pw",
+        "path": "/v1/workspaces/w_z-0gqhC_sCFQChVarO53IA",
         "auth": "olga",
         "body": null
       },
@@ -2646,8 +3342,8 @@
         "body": {
           "email": "nina@example.com",
           "workspaceInvite": {
-            "workspace": "w_aih4BLwKPeezeauOPGEHvg",
-            "invite": "N3QGM43-nkF9aBP_-ghVqw6oV0CxMLtESLyQEwsV5e4"
+            "workspace": "w_rsl5lkXW-TB6bnTCOyIF9A",
+            "invite": "TCFvhFaZYSvUDy0G9wfIhfuzkDq040qsjuW7bEfza1c"
           },
           "kdf": {
             "alg": "argon2id",
@@ -2672,7 +3368,7 @@
           "token": "nina",
           "account": {
             "email": "nina@example.com",
-            "createdAt": 1795127290254,
+            "createdAt": 1795472206293,
             "class": "full",
             "incarnation": null,
             "kdf": {
@@ -2693,11 +3389,11 @@
             },
             "devices": [
               {
-                "id": "vVJ2lL8DXyaoc7npPNtfAQ",
+                "id": "MeN6fFHkPI3jjQFcqP8F2A",
                 "name": "Phone",
                 "platform": "android",
-                "createdAt": 1795127290254,
-                "lastSeenAt": 1795127290254,
+                "createdAt": 1795472206293,
+                "lastSeenAt": 1795472206293,
                 "current": true
               }
             ]
@@ -2714,8 +3410,8 @@
         "body": {
           "email": "noor@example.com",
           "workspaceInvite": {
-            "workspace": "w_aih4BLwKPeezeauOPGEHvg",
-            "invite": "N3QGM43-nkF9aBP_-ghVqw6oV0CxMLtESLyQEwsV5e4"
+            "workspace": "w_rsl5lkXW-TB6bnTCOyIF9A",
+            "invite": "TCFvhFaZYSvUDy0G9wfIhfuzkDq040qsjuW7bEfza1c"
           },
           "kdf": {
             "alg": "argon2id",

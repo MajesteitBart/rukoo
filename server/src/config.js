@@ -110,6 +110,27 @@ export function workspaceLimits(env) {
   };
 }
 
+// Agents (WORKSPACES.md, Agents in channels): accounts a member makes in a workspace, with a key a runtime connects
+// with. WORKSPACE_AGENTS is how many active agents a workspace may have, 20 unless set, and 0 or "off" turns them off.
+// depth is the longest chain of agents answering agents, a person's message being 0 (WORKSPACE_AGENT_DEPTH), and
+// replies how many replies one agent may post in an hour (WORKSPACE_AGENT_REPLIES).
+export function agentLimits(env) {
+  const raw = String(env.WORKSPACE_AGENTS ?? '')
+    .trim()
+    .toLowerCase();
+  const off = raw === '0' || raw === 'off' || raw === 'false';
+  return {
+    agents: off ? 0 : positive(raw, 20),
+    depth: positive(env.WORKSPACE_AGENT_DEPTH, 3),
+    replies: positive(env.WORKSPACE_AGENT_REPLIES, 120)
+  };
+}
+
+// Whether agents are on: with team chat, unless WORKSPACE_AGENTS turns them off.
+export function agentsOn(env) {
+  return workspacesOn(env) && agentLimits(env).agents > 0;
+}
+
 // WORKSPACE_ORIGIN as an origin, or null: the one address workspaces on this server are known by. Without it, each
 // request's own address is.
 export function workspaceOrigin(env) {

@@ -6,6 +6,7 @@
 // From the repository root, with the server's dependencies installed (npm ci --prefix server):
 //   node android/app/src/test/workspace-fixtures/make-fixtures.js           writes vectors.json
 //   node android/app/src/test/workspace-fixtures/make-fixtures.js --check   records again and compares with it
+// --port <n> starts the server on that port instead of one the helper picks from 38800 to 38899.
 //
 // A recording is { name, request: { method, path, auth, headers?, body }, response: { status, headers?, body } }.
 // auth is the person whose session made the call, by name: tests send that name as the bearer token. Cursors in a
@@ -26,11 +27,20 @@ const ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const OUT = path.join(ROOT, 'android/app/src/test/resources/workspace/vectors.json');
 const DAY = 24 * 60 * 60 * 1000;
 
-// Small limits, so the quota answers come after a few calls: six people in a workspace, twelve conversations.
-const VARS = { WORKSPACE_MEMBERS: '6', WORKSPACE_CONVERSATIONS: '12' };
+// Small limits, so the quota answers come after a few calls: six people in a workspace, twelve conversations, two
+// agents.
+const VARS = { WORKSPACE_MEMBERS: '6', WORKSPACE_CONVERSATIONS: '12', WORKSPACE_AGENTS: '2' };
+
+function portArg() {
+  const i = process.argv.indexOf('--port');
+  if (i < 0) return null;
+  const port = Number(process.argv[i + 1]);
+  if (!Number.isInteger(port) || port <= 0 || port >= 65536) throw new Error(`Not a port: ${process.argv[i + 1]}`);
+  return port;
+}
 
 async function record() {
-  const server = await startRealServer({ vars: VARS });
+  const server = await startRealServer({ vars: VARS, port: portArg() });
   const exchanges = [];
   const ids = {};
   const names = new Map();
@@ -215,7 +225,8 @@ async function record() {
     await refused(404, 'not_found', 'not a member', mila, 'GET', ws('w_AAAAAAAAAAAAAAAAAAAAAA'));
     await refused(404, 'not_found', 'unknown conversation', mila, 'GET', ws(w, '/conversations/c_AAAAAAAAAAAAAAAAAAAAAA/events?after=0&limit=50'));
     await ok(200, 'ticket', mila, 'POST', ws(w, '/socket-ticket'));
-    await refused(426, 'upgrade_required', 'upgrade required', mila, 'GET', ws(w), { headers: { 'rukoo-workspace-version': '2' } });
+    // A version the server doesn't speak yet: it speaks 1 and the rich chat contract's 2.
+    await refused(426, 'upgrade_required', 'upgrade required', mila, 'GET', ws(w), { headers: { 'rukoo-workspace-version': '3' } });
 
     // ---- a session that ended ----
     await quiet(rex, 'POST', '/v1/logout');
@@ -268,6 +279,44 @@ async function record() {
     // ---- leaving and removing ----
     await ok(204, 'remove member', olga, 'DELETE', ws(w, `/members/${ids.tom}`));
     await ok(204, 'leave workspace', pia, 'DELETE', ws(w, '/members/me'));
+
+    // ---- agents in channels ----
+    // Bodies as WorkspaceClient writes them: a new agent always names its members and agents, and the phone's form
+    // sends every field when it saves a change.
+    await ok(200, 'agents empty', mila, 'GET', ws(w, '/agents'));
+    const clark = await ok(201, 'create agent', mila, 'POST', ws(w, '/agents'), { body: { name: 'Clark', answers: 'sponsor', members: [], agents: false } });
+    ids.clark = clark.agent.id;
+    await refused(400, 'invalid', 'create agent bad name', mila, 'POST', ws(w, '/agents'), { body: { name: ' ', answers: 'everyone', members: [], agents: false } });
+    await refused(403, 'forbidden', 'create agent as guest', gus, 'POST', ws(w, '/agents'), { body: { name: 'Gus bot', answers: 'everyone', members: [], agents: false } });
+    await ok(200, 'update agent', mila, 'PATCH', ws(w, `/agents/${ids.clark}`), { body: { name: 'Clark', answers: 'members', members: [ids.olga], agents: true } });
+    await refused(403, 'forbidden', 'update agent as guest', gus, 'PATCH', ws(w, `/agents/${ids.clark}`), { body: { name: 'Gus bot', answers: 'everyone', members: [], agents: false } });
+    // Mila doesn't manage general, but it is a channel the workspace sees and she sponsors Clark.
+    await ok(200, 'admit agent', mila, 'POST', ws(w, `/channels/${general}/members`), { body: { member: ids.clark } });
+    // Bart manages the private design, which Mila left: Clark comes in only while she is there.
+    await refused(409, 'sponsor_not_in_channel', 'admit agent private without sponsor', bart, 'POST', ws(w, `/channels/${design}/members`), { body: { member: ids.clark } });
+    await ok(200, 'members with agent', mila, 'GET', ws(w, '/members'));
+    await refused(400, 'agent_not_manager', 'make agent manager', olga, 'PATCH', ws(w, `/channels/${general}/members/${ids.clark}`), { body: { role: 'manager' } });
+    await refused(400, 'agent_in_dm', 'start dm with agent', mila, 'POST', ws(w, '/dms'), { body: { members: [ids.clark] } });
+    await refused(400, 'agent_block', 'block agent', olga, 'POST', ws(w, '/blocks'), { body: { member: ids.clark } });
+    await refused(400, 'agent_role', 'set agent role', olga, 'PATCH', ws(w, `/members/${ids.clark}`), { body: { role: 'admin' } });
+    // Olga asks Clark; Clark answers in a thread under her message with its own key, as a runner does.
+    const ask = 'Hoi @Clark, wat staat er morgen?';
+    const asked = await server.post(olga, w, general, ask, { mentions: [mention(ask, '@Clark', ids.clark)] });
+    ids.agentTrigger = asked.messageId;
+    const answered = await server.agentReply(clark.key, w, general, { trigger: asked.messageId, text: 'Morgen om 10:00 de planning.' });
+    ids.agentReply = answered.messageId;
+    await ok(200, 'events with agent reply', mila, 'GET', ws(w, `/conversations/${general}/events?after=${asked.seq - 1}&limit=100`));
+    await ok(200, 'feed with agents', mila, 'GET', ws(w, '/changes'));
+    await ok(200, 'agents', olga, 'GET', ws(w, '/agents'));
+    // Only its sponsor makes a new key: Olga, an owner, would read Clark's channels with it.
+    await refused(403, 'forbidden', 'agent key as owner', olga, 'POST', ws(w, `/agents/${ids.clark}/key`));
+    await ok(200, 'agent key', mila, 'POST', ws(w, `/agents/${ids.clark}/key`));
+    // Mila doesn't manage general, but she may remove her agent's reply.
+    await ok(200, 'redact agent reply as sponsor', mila, 'POST', ws(w, `/conversations/${general}/messages/${ids.agentReply}/redact`));
+    await server.seedAgent(bart, w, { name: 'Rex' });
+    await refused(409, 'agent_limit', 'create agent over limit', olga, 'POST', ws(w, '/agents'), { body: { name: 'Third', answers: 'everyone', members: [], agents: false } });
+    await ok(204, 'remove agent', mila, 'DELETE', ws(w, `/agents/${ids.clark}`));
+    await refused(404, 'not_found', 'remove agent again', mila, 'DELETE', ws(w, `/agents/${ids.clark}`));
 
     // ---- a workspace at its conversation limit, and deleting workspaces ----
     const tiny = await server.seedWorkspace(tina, { name: 'Tiny', displayName: 'Tina' });
@@ -326,8 +375,8 @@ async function record() {
 
 const ID = /^[wucegi]_[A-Za-z0-9_-]{22}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const RANDOM_KEYS = new Set(['next', 'generation', 'keyId', 'ticket', 'secret', 'invite', 'installation', 'id']);
-const TIME_KEYS = /(^at$|At$|^time$|^lastSeenAt$)/;
+const RANDOM_KEYS = new Set(['next', 'generation', 'keyId', 'ticket', 'secret', 'invite', 'installation', 'id', 'key']);
+const TIME_KEYS = /(^at$|At$|^time$|^lastSeenAt$|^lastSeen$)/;
 
 // What two recordings may differ in, replaced by a placeholder: IDs, secrets, tickets, cursors, generations, times.
 function canonical(value, key = '') {

@@ -125,17 +125,23 @@ import nl.bvdm.rukoo.workspaces.WorkspaceView
 /** What leaving a channel means there (desktop-ui 6.9): the last one archives it; private needs adding again. */
 enum class LeaveBody { LAST, PRIVATE, PUBLIC }
 
-/** What a room's details offer (contract §7.4 DetailsSheet). */
-enum class DetailAction { MUTE, UNMUTE, MARK_READ, MEMBERS, ADD_PEOPLE, RENAME, ARCHIVE, LEAVE_CHANNEL, LEAVE_DM, REMOVE_FROM_LIST, BLOCK, UNBLOCK }
+/**
+ * What a room's details offer (contract §7.4 DetailsSheet). ADD_AGENTS is Add people for someone who isn't a manager
+ * but may bring their own agents into a channel the whole workspace sees.
+ */
+enum class DetailAction { MUTE, UNMUTE, MARK_READ, MEMBERS, ADD_PEOPLE, ADD_AGENTS, RENAME, ARCHIVE, LEAVE_CHANNEL, LEAVE_DM, REMOVE_FROM_LIST, BLOCK, UNBLOCK }
 
-/** What a member row's menu in the workspace's members offers (desktop-ui 6.15). */
-enum class MemberAction { MESSAGE, ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER, ROLE_GUEST, BLOCK, UNBLOCK, REMOVE }
+/**
+ * What a member row's menu in the workspace's members offers (desktop-ui 6.15). EDIT_AGENT and AGENT_KEY are an
+ * agent's Edit agent and New key; REMOVE is Remove agent there.
+ */
+enum class MemberAction { MESSAGE, ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER, ROLE_GUEST, BLOCK, UNBLOCK, REMOVE, EDIT_AGENT, AGENT_KEY }
 
 /** What a member row's menu in a channel's members offers to its managers (desktop-ui 6.6). */
 enum class ChannelMemberAction { MAKE_MANAGER, MAKE_MEMBER, REMOVE }
 
 /** The workspace drawer's rows for the workspace on screen (contract §5.10, §7.4). */
-enum class WorkspaceAction { RENAME_ME, MEMBERS, INVITE, BLOCKED, LEAVE, DELETE }
+enum class WorkspaceAction { RENAME_ME, MEMBERS, INVITE, AGENTS, BLOCKED, LEAVE, DELETE }
 
 /** The sheets' rules (contract §3.3, §3.12, §3.16, §5.10, desktop-ui 6). */
 /** Why a people list is empty: a search found nobody, nobody else is in the workspace, or everyone is in already. */
@@ -187,9 +193,12 @@ object SheetRules {
         return rooms.firstOrNull { it.kind == RoomKind.DM && it.closedReason == null && !it.archived && it.participants.orEmpty().toSet() == set }
     }
 
-    /** Who a DM can be started with (§3.12): active full members, without the person and the people they blocked. */
+    /**
+     * Who a DM can be started with (§3.12): active full members, without the person and the people they blocked.
+     * Agents are never in a DM.
+     */
     fun dmCandidates(members: List<Member>, me: String?, blocked: Set<String>, compare: Comparator<String>): List<Member> =
-        members.filter { it.state == "active" && it.id != me && it.id !in blocked && ChatListModel.isFullMember(it.role) }
+        members.filter { it.state == "active" && it.id != me && it.id !in blocked && !it.isAgent && ChatListModel.isFullMember(it.role) }
             .sortedWith { a, b -> compare.compare(a.name, b.name) }
 
     /**
@@ -197,6 +206,7 @@ object SheetRules {
      * blocked, ranked by [rank] while searching. [DmPicker.blocked]: people [me] blocked, shown off with Unblock.
      * [DmPicker.guests]: shown off with the reason, while searching or when nobody else would show. [DmPicker.empty]:
      * NONE for a search that finds nobody, NOBODY when nobody else is in the workspace (a complete directory only).
+     * Agents don't show at all: they are never in a DM.
      */
     fun dmPicker(
         members: List<Member>,
@@ -207,7 +217,7 @@ object SheetRules {
         membersMore: Boolean = false,
         rank: (String, List<Member>) -> List<Member> = { q, list -> list.filter { matches(it.name, q) } },
     ): DmPicker {
-        val others = members.filter { it.state == "active" && it.id != me }.sortedWith { a, b -> compare.compare(a.name, b.name) }
+        val others = members.filter { it.state == "active" && it.id != me && !it.isAgent }.sortedWith { a, b -> compare.compare(a.name, b.name) }
         val searching = query.isNotBlank()
         val full = others.filter { ChatListModel.isFullMember(it.role) }
         val open = full.filter { it.id !in blocked }
@@ -286,8 +296,9 @@ object SheetRules {
     fun inviteCloseHeld(making: Boolean, made: Boolean, kept: Boolean, withdrawn: Boolean): Boolean =
         making || inviteCloseAsks(made, kept, withdrawn)
 
-    /** Whether [view]'s person is its only active member, as far as the directory knows. */
-    fun alone(view: WorkspaceView): Boolean = !view.membersMore && view.members.count { it.state == "active" && it.id != view.me.id } == 0
+    /** Whether [view]'s person is its only active member, as far as the directory knows. Agents don't count (§2.14). */
+    fun alone(view: WorkspaceView): Boolean =
+        !view.membersMore && view.members.count { it.state == "active" && it.id != view.me.id && !it.isAgent } == 0
 
     /** Whether Delete workspace works (§2.14): an owner who is its only member. */
     fun canDelete(view: WorkspaceView): Boolean = view.me.role == "owner" && alone(view)
@@ -298,15 +309,17 @@ object SheetRules {
     /**
      * The workspace drawer's rows for the workspace on screen (contract §5.10, §7.4), in order. While it can't take
      * writes (not [writable]: the server asks for an update, 426) only Members stays, whose sheet then offers Message
-     * and no write: the list is read-only (android.md "Upgrade required").
+     * and no write: the list is read-only (android.md "Upgrade required"). Agents is for full members while the server
+     * has [agents] on.
      */
-    fun workspaceActions(view: WorkspaceView, writable: Boolean = true): List<WorkspaceAction> {
+    fun workspaceActions(view: WorkspaceView, writable: Boolean = true, agents: Boolean = false): List<WorkspaceAction> {
         if (!writable) return listOf(WorkspaceAction.MEMBERS)
         val role = view.me.role
         return buildList {
             add(WorkspaceAction.RENAME_ME)
             add(WorkspaceAction.MEMBERS)
             if (canInvite(role)) add(WorkspaceAction.INVITE)
+            if (agents && ChatListModel.isFullMember(role)) add(WorkspaceAction.AGENTS)
             if (ChatListModel.isFullMember(role) || view.blocks.isNotEmpty()) add(WorkspaceAction.BLOCKED)
             add(WorkspaceAction.LEAVE)
             if (role == "owner") add(WorkspaceAction.DELETE)
@@ -327,9 +340,9 @@ object SheetRules {
         else -> LeaveBody.PUBLIC
     }
 
-    /** Who can take over a channel (desktop-ui 6.9): its active full members other than [me], by name. */
+    /** Who can take over a channel (desktop-ui 6.9): its active full members other than [me], by name. Never an agent. */
     fun successors(ids: List<String>, members: Map<String, Member>, me: String?, compare: Comparator<String>): List<Member> =
-        ids.distinct().mapNotNull { members[it] }.filter { it.id != me && it.state == "active" && ChatListModel.isFullMember(it.role) }
+        ids.distinct().mapNotNull { members[it] }.filter { it.id != me && it.state == "active" && !it.isAgent && ChatListModel.isFullMember(it.role) }
             .sortedWith { a, b -> compare.compare(a.name, b.name) }
 
     /** A successor list gets a search field once it holds more people than this. */
@@ -364,9 +377,14 @@ object SheetRules {
      */
     fun sharedManaged(rooms: List<Room>): List<Room> = rooms.filter { it.kind == RoomKind.CHANNEL && !it.archived && it.role == "manager" && it.members > 1 }
 
-    /** Whether [me] is the only manager among a channel's [members] while others are in it (`409 last_manager`). */
-    fun soleManager(members: List<RoomMember>, me: String?): Boolean =
-        members.any { it.member != me } && members.none { it.member != me && it.role == "manager" }
+    /**
+     * Whether [me] is the only manager among a channel's [members] while other people are in it (`409 last_manager`).
+     * The [agents] among them don't count: a channel whose last person leaves is archived, agents or not.
+     */
+    fun soleManager(members: List<RoomMember>, me: String?, agents: Set<String> = emptySet()): Boolean {
+        val people = members.filter { it.member !in agents }
+        return people.any { it.member != me } && people.none { it.member != me && it.role == "manager" }
+    }
 
     /** Whether every channel of a hand-over has a successor picked from its own people. */
     fun handOverReady(channels: List<HandOverChannel>, picks: Map<String, String>): Boolean =
@@ -384,11 +402,12 @@ object SheetRules {
     }
 
     /**
-     * Who can be added to a channel (desktop-ui 6.6): active members who aren't in it, by name. A guest needs an owner or
-     * admin ([lockedGuests] true for anyone else), so their rows are off.
+     * The people who can be added to a channel (desktop-ui 6.6): active members who aren't in it, by name. A guest needs
+     * an owner or admin ([guestLocked] true for anyone else), so their rows are off. Agents have a list of their own
+     * ([AgentRules.addable]).
      */
     fun addCandidates(members: List<Member>, inside: Set<String>, compare: Comparator<String>): List<Member> =
-        members.filter { it.state == "active" && it.id !in inside }.sortedWith { a, b -> compare.compare(a.name, b.name) }
+        members.filter { it.state == "active" && it.id !in inside && !it.isAgent }.sortedWith { a, b -> compare.compare(a.name, b.name) }
 
     fun guestLocked(member: Member, myRole: String?): Boolean = member.role == "guest" && !canInvite(myRole)
 
@@ -406,14 +425,15 @@ object SheetRules {
      * Archive for managers, owners and admins, and Leave; for a DM Mute, Mark as read, Leave conversation (Remove from
      * list once closed), and Block or Unblock in a one-to-one DM for full members. An archived channel can't be added
      * to, renamed or archived. While the workspace can't take writes (not [writable]: the server asks for an update),
-     * only what stays on the phone is offered: Mute, Mark as read and Members.
+     * only what stays on the phone is offered: Mute, Mark as read and Members. [ownAgents] says the person sponsors
+     * an agent, which they may add to a channel the workspace sees without managing it: Add agents.
      */
-    fun detailActions(room: Room, myRole: String?, me: String?, blocked: Set<String>, writable: Boolean = true): List<DetailAction> =
-        detailActionsFor(room, myRole, me, blocked).filter { writable || it in LOCAL_DETAILS }
+    fun detailActions(room: Room, myRole: String?, me: String?, blocked: Set<String>, writable: Boolean = true, ownAgents: Boolean = false): List<DetailAction> =
+        detailActionsFor(room, myRole, me, blocked, ownAgents).filter { writable || it in LOCAL_DETAILS }
 
     private val LOCAL_DETAILS = setOf(DetailAction.MUTE, DetailAction.UNMUTE, DetailAction.MARK_READ, DetailAction.MEMBERS)
 
-    private fun detailActionsFor(room: Room, myRole: String?, me: String?, blocked: Set<String>): List<DetailAction> {
+    private fun detailActionsFor(room: Room, myRole: String?, me: String?, blocked: Set<String>, ownAgents: Boolean): List<DetailAction> {
         val out = ArrayList<DetailAction>()
         out += if (room.muted) DetailAction.UNMUTE else DetailAction.MUTE
         out += DetailAction.MARK_READ
@@ -421,6 +441,7 @@ object SheetRules {
             val manager = room.role == "manager" && !room.archived
             out += DetailAction.MEMBERS
             if (manager) out += DetailAction.ADD_PEOPLE
+            if (!manager && AgentRules.sponsorAdds(room, ownAgents)) out += DetailAction.ADD_AGENTS
             if (manager) out += DetailAction.RENAME
             if (!room.archived && (manager || myRole == "owner" || myRole == "admin")) out += DetailAction.ARCHIVE
             out += DetailAction.LEAVE_CHANNEL
@@ -437,13 +458,24 @@ object SheetRules {
      * A member row's menu (desktop-ui 6.15): Message for full members to another full member they haven't blocked;
      * the roles an owner (any) or an admin (member and guest, for members and guests) may give; Block or Unblock for
      * full members; Remove for owners, and for admins over members and guests. Nothing for the person themself. While
-     * the workspace can't take writes (not [writable]), only Message, which opens the DM.
+     * the workspace can't take writes (not [writable]), only Message, which opens the DM. An agent gets no Message,
+     * Block or role: while the server has [agents] on, its sponsor, an owner or an admin who is a full member gets Edit
+     * agent and Remove agent, and its sponsor also New key, as on the desktop.
      */
-    fun memberActions(myRole: String?, me: String?, target: Member, blocked: Set<String>, writable: Boolean = true): List<MemberAction> =
-        memberActionsFor(myRole, me, target, blocked).filter { writable || it == MemberAction.MESSAGE }
+    fun memberActions(myRole: String?, me: String?, target: Member, blocked: Set<String>, writable: Boolean = true, agents: Boolean = false): List<MemberAction> =
+        memberActionsFor(myRole, me, target, blocked, agents).filter { writable || it == MemberAction.MESSAGE }
 
-    private fun memberActionsFor(myRole: String?, me: String?, target: Member, blocked: Set<String>): List<MemberAction> {
+    private fun memberActionsFor(myRole: String?, me: String?, target: Member, blocked: Set<String>, agents: Boolean): List<MemberAction> {
         if (target.id == me || target.state != "active") return emptyList()
+        if (target.isAgent) {
+            val sponsor = target.agent?.sponsor
+            if (!agents || !ChatListModel.isFullMember(myRole) || !AgentRules.canManage(sponsor, me, myRole)) return emptyList()
+            return buildList {
+                if (target.agent != null) add(MemberAction.EDIT_AGENT)
+                if (AgentRules.canNewKey(sponsor, me)) add(MemberAction.AGENT_KEY)
+                add(MemberAction.REMOVE)
+            }
+        }
         val out = ArrayList<MemberAction>()
         val full = ChatListModel.isFullMember(myRole)
         val isBlocked = target.id in blocked
@@ -483,10 +515,16 @@ object SheetRules {
 
     /**
      * A channel member row's menu for a manager of an open channel; nothing for the person themself, nor while the
-     * workspace can't take writes (not [writable]).
+     * workspace can't take writes (not [writable]). An agent ([member] from the directory) never manages a channel, so
+     * it gets only Remove, from the channel's managers and its sponsor. That Remove stays once the channel is archived:
+     * the agent keeps reading it, and the server still takes it out, as on the desktop.
      */
-    fun channelMemberActions(room: Room, me: String?, target: RoomMember, writable: Boolean = true): List<ChannelMemberAction> {
-        if (!writable || room.kind != RoomKind.CHANNEL || room.role != "manager" || room.archived || target.member == me) return emptyList()
+    fun channelMemberActions(room: Room, me: String?, target: RoomMember, writable: Boolean = true, member: Member? = null): List<ChannelMemberAction> {
+        if (!writable || room.kind != RoomKind.CHANNEL || target.member == me) return emptyList()
+        if (member?.isAgent == true) {
+            return if (room.role == "manager" || (me != null && member.agent?.sponsor == me)) listOf(ChannelMemberAction.REMOVE) else emptyList()
+        }
+        if (room.role != "manager" || room.archived) return emptyList()
         return listOf(if (target.role == "manager") ChannelMemberAction.MAKE_MEMBER else ChannelMemberAction.MAKE_MANAGER, ChannelMemberAction.REMOVE)
     }
 }
@@ -527,6 +565,7 @@ private fun SheetFor(app: AppViewModel, sheet: ChatSheet, target: String?, twoPa
             ChatSheet.ADD_PEOPLE -> if (target != null) AddPeopleSheet(app, target, twoPane, close) else LaunchedEffect(Unit) { close() }
             ChatSheet.INVITE -> InviteSheet(app, twoPane, close)
             ChatSheet.BLOCKED -> BlockedSheet(app, twoPane, close)
+            ChatSheet.AGENTS -> AgentsSheet(app, target, twoPane, close)
         }
     }
 }
@@ -567,7 +606,7 @@ fun ChatOverlays(app: AppViewModel) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SheetFrame(
+internal fun SheetFrame(
     twoPane: Boolean,
     title: String,
     onDismiss: () -> Unit,
@@ -630,30 +669,30 @@ private fun SheetFrame(
 
 /** A sheet's form: fields and notes at the sheet's side padding. */
 @Composable
-private fun Form(content: @Composable ColumnScope.() -> Unit) {
+internal fun Form(content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
 }
 
 @Composable
-private fun SheetText(text: String, modifier: Modifier = Modifier, color: Color = Rk.colors.text2) {
+internal fun SheetText(text: String, modifier: Modifier = Modifier, color: Color = Rk.colors.text2) {
     Text(text, modifier, style = Rk.type.text13.lineHeight(1.5f), color = color)
 }
 
 /** A line that says what a choice does ("You can't change this later.", what an invitation link gives): read, so text2. */
 @Composable
-private fun Help(text: String, warn: Boolean = false) {
+internal fun Help(text: String, warn: Boolean = false) {
     Text(text, style = Rk.type.text12, color = if (warn) Rk.colors.warn else Rk.colors.text2)
 }
 
 /** The primary button with a spinner beside it while the work runs. */
 @Composable
-private fun Primary(label: String, busy: Boolean, enabled: Boolean = true, danger: Boolean = false, onClick: () -> Unit) {
+internal fun Primary(label: String, busy: Boolean, enabled: Boolean = true, danger: Boolean = false, onClick: () -> Unit) {
     if (busy) Spinner(size = 14.dp)
     RkButton(label, onClick, kind = if (danger) RkButtonKind.DANGER else RkButtonKind.PRIMARY, enabled = enabled && !busy)
 }
 
 @Composable
-private fun Secondary(label: String, enabled: Boolean = true, onClick: () -> Unit) = RkButton(label, onClick, kind = RkButtonKind.SECONDARY, enabled = enabled)
+internal fun Secondary(label: String, enabled: Boolean = true, onClick: () -> Unit) = RkButton(label, onClick, kind = RkButtonKind.SECONDARY, enabled = enabled)
 
 /**
  * The host disclosure (desktop-ui 6, desktop chat.js `hostNote`): who hosts the workspace and where, how long messages
@@ -672,6 +711,8 @@ private fun HostNote(chat: ChatState) {
         add(stringResource(R.string.chat_host_line_no_location, operator, chat.host) + if (where != null) " $where." else "")
         chat.retention?.contentDays?.takeIf { it > 0 }?.let { add(pluralStringResource(R.plurals.chat_host_retention, it, it)) }
         add(stringResource(R.string.chat_host_reads))
+        // An agent passes on what it reads, to a runtime the host can't see.
+        if (chat.agents) add(stringResource(R.string.chat_host_agents))
     }
     NoteBox(lines.joinToString(" "))
 }
@@ -687,7 +728,7 @@ private fun RadioDot(selected: Boolean) {
 
 /** A choice of several, the whole row choosing it: the dot, an optional icon, the label and its hint. */
 @Composable
-private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit, hint: String? = null, icon: ImageVector? = null, leading: (@Composable () -> Unit)? = null) {
+internal fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit, hint: String? = null, icon: ImageVector? = null, leading: (@Composable () -> Unit)? = null) {
     val c = Rk.colors
     Row(
         Modifier
@@ -710,7 +751,7 @@ private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit, hint
 
 /** A check box row, the whole row toggling it; off rows say why in [note]. */
 @Composable
-private fun CheckRow(
+internal fun CheckRow(
     label: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit,
@@ -740,7 +781,7 @@ private fun CheckRow(
     }
 }
 
-/** A small tag after a name: Guest, Former member, Blocked. */
+/** A small tag after a name: Guest, Agent, Former member, Blocked. */
 @Composable
 private fun Tag(text: String, accent: Boolean = false) {
     val c = Rk.colors
@@ -790,30 +831,48 @@ private fun <T> Segmented(options: List<Pair<T, String>>, selected: T, label: St
     }
 }
 
-/** A person: avatar, name and tags, with [trailing] at the end (a menu or a button). */
+/**
+ * A person or an agent: avatar, name and tags, a quiet [note] under them (whom an agent answers), with [trailing] at
+ * the end (a menu or a button).
+ */
 @Composable
-private fun PersonRow(id: String, member: Member?, label: String, tags: List<String> = emptyList(), pill: String? = null, trailing: (@Composable () -> Unit)? = null) {
+internal fun PersonRow(
+    id: String,
+    member: Member?,
+    label: String,
+    tags: List<String> = emptyList(),
+    pill: String? = null,
+    note: String? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
     val c = Rk.colors
     Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 20.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(if (member?.state == "deleted") "?" else member?.name, id, size = 28.dp)
-        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, style = Rk.type.text13, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            for (t in tags) Tag(t)
-            if (pill != null) Tag(pill, accent = true)
+        Avatar(if (member?.state == "deleted") "?" else member?.name, id, size = 28.dp, agent = member?.isAgent == true)
+        Column(Modifier.weight(1f)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, style = Rk.type.text13, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                for (t in tags) Tag(t)
+                if (pill != null) Tag(pill, accent = true)
+            }
+            if (note != null) Text(note, style = Rk.type.text12, color = c.text3, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         trailing?.invoke()
     }
 }
 
-/** The tags after a member's name: Former member, Guest. */
+/**
+ * The tags after a member's name: Former member, Guest, Agent. The server says `left` or `removed` for a former
+ * member, as RoomPane's tag reads it; a deleted member's name is the tag.
+ */
 @Composable
-private fun memberTags(member: Member?): List<String> = buildList {
-    if (member != null && member.state == "former") add(stringResource(R.string.chat_log_former_member))
-    if (member?.role == "guest" && member.state == "active") add(stringResource(R.string.chat_roles_guest))
+internal fun memberTags(member: Member?): List<String> = buildList {
+    if (member != null && member.state != "active" && member.state != "deleted") add(stringResource(R.string.chat_log_former_member))
+    if (member?.role == "guest" && member.state == "active" && !member.isAgent) add(stringResource(R.string.chat_roles_guest))
+    if (member?.isAgent == true && member.state == "active") add(stringResource(R.string.chat_roles_agent))
 }
 
 /** # or a lock, for a channel's visibility. */
@@ -821,7 +880,7 @@ private fun channelIcon(visibility: String): ImageVector = if (visibility == "pr
 
 /** The collator of the interface language, for names. */
 @Composable
-private fun rememberCompare(): Comparator<String> {
+internal fun rememberCompare(): Comparator<String> {
     val locale = LocalConfiguration.current.locales[0]
     return remember(locale) {
         val collator = Collator.getInstance(locale).apply { strength = Collator.PRIMARY }
@@ -831,7 +890,7 @@ private fun rememberCompare(): Comparator<String> {
 
 /** The selected workspace's view while Chat shows it. */
 @Composable
-private fun selectedView(app: AppViewModel): WorkspaceView? {
+internal fun selectedView(app: AppViewModel): WorkspaceView? {
     val nav by app.state.collectAsStateWithLifecycle()
     val view by app.chatView.collectAsStateWithLifecycle()
     return view?.takeIf { it.ws.id == nav.chat.workspaceId }
@@ -839,14 +898,14 @@ private fun selectedView(app: AppViewModel): WorkspaceView? {
 
 /** Whether workspace [ws] takes writes: not while the server asks for an update (426, contract §3.15). */
 @Composable
-private fun takesWrites(app: AppViewModel, ws: String): Boolean {
+internal fun takesWrites(app: AppViewModel, ws: String): Boolean {
     val chat by app.chatState.collectAsStateWithLifecycle()
     return chat.workspaces.firstOrNull { it.id == ws }?.status != WorkspaceStatus.UPGRADE
 }
 
 /** A date and time as the settings pages write them. */
 @Composable
-private fun dateTime(ms: Long): String {
+internal fun dateTime(ms: Long): String {
     val locale = LocalConfiguration.current.locales[0]
     return "${formatDate(ms, locale)} ${formatTime(ms, locale)}"
 }
@@ -1561,11 +1620,13 @@ private fun DetailsSheet(app: AppViewModel, target: String, twoPane: Boolean, on
     val subtitle = if (room.kind == RoomKind.DM) {
         stringResource(R.string.chat_head_direct, app.chatState.value.host)
     } else {
-        val count = pluralStringResource(R.plurals.chat_head_members, room.members, room.members)
+        val people = pluralStringResource(R.plurals.chat_head_members, room.members, room.members)
+        val count = if (room.agents > 0) "$people · ${pluralStringResource(R.plurals.chat_head_agents, room.agents, room.agents)}" else people
         if (room.visibility == "private") "$count · ${stringResource(R.string.chat_head_private)}" else "$count · ${stringResource(R.string.chat_channel_public, view.ws.name)}"
     }
     val other = room.participants.orEmpty().distinct().filter { it != me }.singleOrNull()
     val otherName = other?.let { names.display(members[it]) }.orEmpty()
+    val chat by app.chatState.collectAsStateWithLifecycle()
 
     SheetFrame(twoPane, title, onDismiss, subtitle = subtitle) { close ->
         if (room.kind == RoomKind.DM) {
@@ -1578,7 +1639,8 @@ private fun DetailsSheet(app: AppViewModel, target: String, twoPane: Boolean, on
             }
             SheetDivider()
         }
-        for (action in SheetRules.detailActions(room, view.me.role, me, blocked, takesWrites(app, ws))) {
+        val ownAgents = remember(view, chat.agents) { AgentRules.ownAgents(view.members, me, chat.agents) }
+        for (action in SheetRules.detailActions(room, view.me.role, me, blocked, takesWrites(app, ws), ownAgents)) {
             when (action) {
                 // Mute silences mentions too, so the row says so before it's chosen.
                 DetailAction.MUTE -> SheetRow(stringResource(R.string.chat_head_mute), icon = RukooIcons.BellOff, hint = stringResource(R.string.chat_head_mute_hint), onClick = {
@@ -1595,6 +1657,7 @@ private fun DetailsSheet(app: AppViewModel, target: String, twoPane: Boolean, on
                 })
                 DetailAction.MEMBERS -> SheetRow(stringResource(R.string.chat_head_members_button), icon = RukooIcons.People, onClick = { app.openChatSheet(ChatSheet.MEMBERS, room.id) })
                 DetailAction.ADD_PEOPLE -> SheetRow(stringResource(R.string.chat_head_add_people), icon = RukooIcons.Plus, onClick = { app.openChatSheet(ChatSheet.ADD_PEOPLE, room.id) })
+                DetailAction.ADD_AGENTS -> SheetRow(stringResource(R.string.chat_channel_add_agents), icon = RukooIcons.Sparkle, onClick = { app.openChatSheet(ChatSheet.ADD_PEOPLE, room.id) })
                 DetailAction.RENAME -> SheetRow(stringResource(R.string.chat_head_rename), icon = RukooIcons.Edit, onClick = {
                     close()
                     ui.askRenameChannel(ws, room)
@@ -1643,20 +1706,26 @@ private fun MembersSheet(app: AppViewModel, target: String?, twoPane: Boolean, o
 
 /**
  * The workspace's active members grouped by role, found by name, each with a menu of what the person may do to them
- * ([SheetRules.memberActions]): Message, Change role, Block or Unblock, Remove from workspace.
+ * ([SheetRules.memberActions]): Message, Change role, Block or Unblock, Remove from workspace. Agents come last in a
+ * group of their own, each with who made it and whom it answers, and Edit agent and Remove agent for its sponsor,
+ * owners and admins, with New key between them for its sponsor. Edit agent and a new key open the Agents sheet, which
+ * comes back here.
  */
 @Composable
 private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Boolean, onDismiss: () -> Unit) {
     val ui = app.chatUi
     val ws = view.ws.id
+    val chat by app.chatState.collectAsStateWithLifecycle()
     val names = rememberChatNames()
     val compare = rememberCompare()
     val blocked = remember(view) { view.blocks.mapTo(HashSet()) { it.member } }
+    val byId = remember(view) { view.members.associateBy { it.id } }
     val writable = takesWrites(app, ws)
     var query by remember { mutableStateOf("") }
     val groups = remember(view, query, compare) {
         val list = view.members.filter { it.state == "active" && SheetRules.matches(it.name, query) }.sortedWith { a, b -> compare.compare(a.name, b.name) }
-        listOf("owner", "admin", "member", "guest").map { role -> role to list.filter { it.role == role } }.filter { it.second.isNotEmpty() }
+        val people = listOf("owner", "admin", "member", "guest").map { role -> role to list.filter { !it.isAgent && it.role == role } }
+        (people + (Member.KIND_AGENT to list.filter { it.isAgent })).filter { it.second.isNotEmpty() }
     }
     SheetFrame(
         twoPane,
@@ -1674,6 +1743,7 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
                             "owner" -> R.string.chat_roles_owners
                             "admin" -> R.string.chat_roles_admins
                             "member" -> R.string.chat_roles_members
+                            Member.KIND_AGENT -> R.string.chat_roles_agents
                             else -> R.string.chat_roles_guests
                         },
                     ),
@@ -1684,19 +1754,38 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
                 for (m in people) {
                     val name = names.display(m)
                     val label = if (m.id == view.me.id) stringResource(R.string.chat_members_you, name) else name
-                    val actions = SheetRules.memberActions(view.me.role, view.me.id, m, blocked, writable)
+                    val actions = SheetRules.memberActions(view.me.role, view.me.id, m, blocked, writable, agents = chat.agents)
                     PersonRow(
                         m.id,
                         m,
                         label,
                         tags = if (m.id in blocked) listOf(stringResource(R.string.chat_members_blocked)) else emptyList(),
+                        note = if (m.isAgent) agentNote(m.agent, byId) else null,
                         trailing = if (actions.isEmpty()) null else {
                             {
                                 MemberMenu(stringResource(R.string.chat_members_more, name)) { dismissMenu ->
                                     // Message, then the roles under their heading, then Block, then Remove, each group apart.
+                                    // An agent's: Edit agent and New key, then Remove agent.
                                     val roles = actions.mapNotNull { SheetRules.roleOf(it) }
                                     var first = true
                                     fun gap() = !first
+                                    if (MemberAction.EDIT_AGENT in actions) {
+                                        RkMenuItem(stringResource(R.string.chat_agents_edit), icon = RukooIcons.Edit, onClick = {
+                                            dismissMenu()
+                                            app.openChatSheet(ChatSheet.AGENTS, AgentRules.editTarget(m.id))
+                                        })
+                                        first = false
+                                    }
+                                    if (MemberAction.AGENT_KEY in actions) {
+                                        RkMenuItem(stringResource(R.string.chat_agents_new_key), icon = KeyIcon, enabled = !ui.isBusy(ui.agentKeyKey(m.id)), onClick = {
+                                            dismissMenu()
+                                            ui.askNewAgentKey(ws, m.id, name) { made ->
+                                                ui.holdAgentKey(ws, made)
+                                                app.openChatSheet(ChatSheet.AGENTS, AgentRules.keyTarget(m.id))
+                                            }
+                                        })
+                                        first = false
+                                    }
                                     if (MemberAction.MESSAGE in actions) {
                                         RkMenuItem(stringResource(R.string.chat_members_message), icon = ChatIcons.Bubble, onClick = {
                                             dismissMenu()
@@ -1733,10 +1822,17 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
                                     }
                                     if (MemberAction.REMOVE in actions) {
                                         if (gap()) MenuSeparator()
-                                        RkMenuItem(stringResource(R.string.chat_members_remove), icon = RukooIcons.Trash, danger = true, onClick = {
-                                            dismissMenu()
-                                            ui.askRemoveMember(ws, m.id, name)
-                                        })
+                                        if (m.isAgent) {
+                                            RkMenuItem(stringResource(R.string.chat_agents_remove), icon = RukooIcons.Trash, danger = true, onClick = {
+                                                dismissMenu()
+                                                ui.askRemoveAgent(ws, m.id, name)
+                                            })
+                                        } else {
+                                            RkMenuItem(stringResource(R.string.chat_members_remove), icon = RukooIcons.Trash, danger = true, onClick = {
+                                                dismissMenu()
+                                                ui.askRemoveMember(ws, m.id, name)
+                                            })
+                                        }
                                     }
                                 }
                             }
@@ -1750,7 +1846,7 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
 
 /** A More button that opens a menu next to it. */
 @Composable
-private fun MemberMenu(label: String, items: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit) {
+internal fun MemberMenu(label: String, items: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         RkIconButton(RukooIcons.More, label, onClick = { open = true }, size = RkIconButtonSize.SMALL)
@@ -1759,7 +1855,7 @@ private fun MemberMenu(label: String, items: @Composable ColumnScope.(dismiss: (
 }
 
 @Composable
-private fun MenuSeparator() {
+internal fun MenuSeparator() {
     Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).heightIn(min = 1.dp).background(Rk.colors.border))
 }
 
@@ -1769,9 +1865,11 @@ private fun MenuHeading(text: String) {
 }
 
 /**
- * A channel's members from the server, found by name, with Guest and Manager tags. Its managers get Add people and a
- * menu per person: Make manager or Make member, and Remove from the channel. Leave channel sits at the end; a DM shows
- * its people.
+ * A channel's members from the server, found by name, with Guest, Agent and Manager tags. Its managers get Add people
+ * and a menu per person: Make manager or Make member, and Remove from the channel. An agent's row says who made it
+ * and whom it answers, and offers only Remove, to the managers and its sponsor; a sponsor who doesn't manage a
+ * channel the workspace sees gets Add agents while the server has agents on. Leave channel sits at the end; a DM
+ * shows its people.
  */
 @Composable
 private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoPane: Boolean, onDismiss: () -> Unit) {
@@ -1785,7 +1883,7 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
     var list by remember { mutableStateOf<List<RoomMember>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
-    LaunchedEffect(room.id, room.members, reload) {
+    LaunchedEffect(room.id, room.members, room.agents, reload) {
         try {
             list = workspaces.roomMembers(ws, room.id)
             error = null
@@ -1797,6 +1895,8 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
     }
     val writable = takesWrites(app, ws)
     val manager = room.kind == RoomKind.CHANNEL && room.role == "manager" && !room.archived && writable
+    val chat by app.chatState.collectAsStateWithLifecycle()
+    val addAgents = writable && room.role != "manager" && AgentRules.sponsorAdds(room, AgentRules.ownAgents(view.members, view.me.id, chat.agents))
     val shown = remember(list, query, members, compare) {
         list.orEmpty().filter { SheetRules.matches(names.display(members[it.member]), query) }
             .sortedWith { a, b -> compare.compare(names.display(members[a.member]), names.display(members[b.member])) }
@@ -1822,6 +1922,9 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
                 if (manager) {
                     RkButton(stringResource(R.string.chat_head_add_people), { app.openChatSheet(ChatSheet.ADD_PEOPLE, room.id) }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.FIELD, icon = RukooIcons.Plus)
                 }
+                if (addAgents) {
+                    RkButton(stringResource(R.string.chat_channel_add_agents), { app.openChatSheet(ChatSheet.ADD_PEOPLE, room.id) }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.FIELD, icon = RukooIcons.Plus)
+                }
             }
         }
         Column {
@@ -1833,13 +1936,14 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
                 val m = members[rm.member]
                 val name = names.display(m)
                 val label = if (rm.member == view.me.id) stringResource(R.string.chat_members_you, name) else name
-                val actions = SheetRules.channelMemberActions(room, view.me.id, rm, writable)
+                val actions = SheetRules.channelMemberActions(room, view.me.id, rm, writable, m)
                 PersonRow(
                     rm.member,
                     m,
                     label,
                     tags = memberTags(m),
                     pill = if (rm.role == "manager" && room.kind == RoomKind.CHANNEL) stringResource(R.string.chat_roles_manager) else null,
+                    note = if (m?.isAgent == true) agentNote(m.agent, members) else null,
                     trailing = if (actions.isEmpty()) null else {
                         {
                             MemberMenu(stringResource(R.string.chat_members_more, name)) { dismissMenu ->
@@ -1854,7 +1958,8 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
                                             ui.changeChannelRole(ws, room.id, rm.member, name, "member") { reload++ }
                                         })
                                         ChannelMemberAction.REMOVE -> {
-                                            MenuSeparator()
+                                            // An agent's menu has only Remove, with nothing above it to set apart.
+                                            if (actions.size > 1) MenuSeparator()
                                             RkMenuItem(stringResource(R.string.chat_channel_remove_member, room.name.orEmpty()), icon = RukooIcons.Trash, danger = true, onClick = {
                                                 dismissMenu()
                                                 ui.askRemoveFromChannel(ws, room, rm.member, name)?.invokeOnCompletion { reload++ }
@@ -1878,7 +1983,11 @@ private const val KEY_ADD = "sheet:addPeople"
 
 /**
  * Members who aren't in the channel, found by name, with check boxes. A guest needs an owner or admin, so their row is
- * off for anyone else. Add adds them one by one; the ones that failed are named.
+ * off for anyone else. The agents the person may add ([AgentRules.addable]) come after them under an Agents heading
+ * and the line about what agents pass on, each saying whom it answers: any agent whose sponsor may see the channel for
+ * a manager, and their own agents for a sponsor in a channel the workspace sees, who gets only that group, worded Add
+ * agents. People get a heading of their own when both groups show. Add adds them one by one; the ones that failed are
+ * named.
  */
 @Composable
 private fun AddPeopleSheet(app: AppViewModel, target: String, twoPane: Boolean, onDismiss: () -> Unit) {
@@ -1904,8 +2013,14 @@ private fun AddPeopleSheet(app: AppViewModel, target: String, twoPane: Boolean, 
             error = ui.errorText(e)
         }
     }
-    val candidates = remember(view, inside, compare) { inside?.let { SheetRules.addCandidates(view.members, it, compare) } }
+    // A sponsor who doesn't manage the channel adds only their own agents; the server takes people from managers.
+    val manager = room.role == "manager"
+    val byId = remember(view) { view.members.associateBy { it.id } }
+    val candidates = remember(view, inside, compare, manager) { inside?.let { if (manager) SheetRules.addCandidates(view.members, it, compare) else emptyList() } }
+    val chat by app.chatState.collectAsStateWithLifecycle()
+    val agents = remember(view, inside, compare, chat.agents) { inside?.let { AgentRules.addable(view.members, it, room, view.me.id, compare, on = chat.agents) } }
     val shown = candidates.orEmpty().filter { SheetRules.matches(it.name, query) }
+    val shownAgents = agents.orEmpty().filter { SheetRules.matches(it.name, query) }
     val locked = stringResource(R.string.chat_channel_add_guest_needs_admin)
     val guest = stringResource(R.string.chat_roles_guest)
 
@@ -1939,7 +2054,7 @@ private fun AddPeopleSheet(app: AppViewModel, target: String, twoPane: Boolean, 
 
     SheetFrame(
         twoPane,
-        stringResource(R.string.chat_channel_add_title, room.name.orEmpty()),
+        stringResource(if (manager) R.string.chat_channel_add_title else R.string.chat_channel_add_agents_title, room.name.orEmpty()),
         onDismiss,
         buttons = { close ->
             Secondary(stringResource(R.string.common_actions_cancel)) { close() }
@@ -1950,10 +2065,13 @@ private fun AddPeopleSheet(app: AppViewModel, target: String, twoPane: Boolean, 
         Column {
             when {
                 candidates == null && error == null -> Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Spinner(size = 16.dp) }
-                candidates != null && shown.isEmpty() -> {
+                // Only their own agents to add: a search that finds none, or all of them in already.
+                !manager && candidates != null && shownAgents.isEmpty() ->
+                    Form { Help(if (query.isNotBlank()) stringResource(R.string.chat_new_none) else stringResource(R.string.chat_agents_all_in, room.name.orEmpty())) }
+                candidates != null && shown.isEmpty() && shownAgents.isEmpty() -> {
                     // Nobody to add: say whether the workspace has nobody else or everyone is in already, with Invite people.
-                    val others = view.members.count { it.state == "active" && it.id != view.me.id }
-                    when (SheetRules.addPeopleEmpty(shown.size, candidates.size, others, query)) {
+                    val others = view.members.count { it.state == "active" && it.id != view.me.id && !it.isAgent }
+                    when (SheetRules.addPeopleEmpty(shown.size, candidates.size + agents.orEmpty().size, others, query)) {
                         PickerEmpty.NONE -> Form { Help(stringResource(R.string.chat_new_none)) }
                         PickerEmpty.EVERYONE -> NobodyElse(stringResource(R.string.chat_channel_add_everyone, view.ws.name, room.name.orEmpty()), SheetRules.canInvite(view.me.role)) {
                             app.openChatSheet(ChatSheet.INVITE)
@@ -1965,6 +2083,8 @@ private fun AddPeopleSheet(app: AppViewModel, target: String, twoPane: Boolean, 
                     }
                 }
             }
+            // A heading over the people only when agents are listed under them.
+            if (shown.isNotEmpty() && shownAgents.isNotEmpty()) SheetHeading(stringResource(R.string.chat_channel_people_group), Modifier.padding(start = 4.dp))
             for (m in shown) {
                 val off = SheetRules.guestLocked(m, view.me.role)
                 CheckRow(
@@ -1976,6 +2096,21 @@ private fun AddPeopleSheet(app: AppViewModel, target: String, twoPane: Boolean, 
                     onChange = { now -> chosen = if (now) chosen + m.id else chosen - m.id },
                     leading = { Avatar(m.name, m.id, size = 24.dp) },
                 )
+            }
+            if (shownAgents.isNotEmpty()) {
+                // What adding one means for the channel's messages, before anyone is picked.
+                SheetHeading(stringResource(R.string.chat_roles_agents), Modifier.padding(start = 4.dp))
+                Form { Help(stringResource(R.string.chat_host_agents)) }
+                for (m in shownAgents) {
+                    CheckRow(
+                        names.display(m),
+                        checked = m.id in chosen,
+                        enabled = !busy,
+                        note = agentAnswersText(m.agent, byId),
+                        onChange = { now -> chosen = if (now) chosen + m.id else chosen - m.id },
+                        leading = { Avatar(m.name, m.id, size = 24.dp, agent = true) },
+                    )
+                }
             }
         }
         error?.let { Form { ErrorLine(it) } }
@@ -2222,7 +2357,7 @@ private fun InviteRow(invite: Invite, channelNames: List<String>, issuer: String
 }
 
 /** The clip of an invitation link, marked sensitive so Android keeps it out of previews and suggestions. */
-private fun sensitiveClip(link: String): ClipData {
+internal fun sensitiveClip(link: String): ClipData {
     val clip = ClipData.newPlainText("Rukoo", link)
     val key = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE"
     clip.description.extras = PersistableBundle().apply { putBoolean(key, true) }

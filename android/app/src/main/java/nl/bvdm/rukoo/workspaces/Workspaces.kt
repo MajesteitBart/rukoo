@@ -108,6 +108,26 @@ interface Workspaces {
     suspend fun leaveDm(ws: String, room: String)
     suspend fun block(ws: String, member: String)
     suspend fun unblock(ws: String, member: String)
+
+    // ---- agents in channels (WORKSPACES.md "Agents in channels"); adding one to a channel is addToChannel ----
+
+    /** Every active agent of the workspace, for full members. */
+    suspend fun agents(ws: String): List<Agent>
+
+    /**
+     * Makes an agent the person sponsors and returns it with its key, which only this answer has. [answers] is
+     * `everyone`, `sponsor` or `members`; [members] are the people it answers besides the sponsor, for `members`.
+     */
+    suspend fun createAgent(ws: String, name: String, answers: String, members: List<String>, agents: Boolean): MadeAgent
+
+    /** Changes an agent's name and settings: its sponsor, an owner or an admin. */
+    suspend fun updateAgent(ws: String, agent: String, name: String, answers: String, members: List<String>, agents: Boolean): Agent
+
+    /** A new key for the agent; the old one stops working at once. */
+    suspend fun newAgentKey(ws: String, agent: String): MadeAgent
+
+    /** Removes the agent: its key stops working and it leaves every channel. One that is gone already counts as removed. */
+    suspend fun removeAgent(ws: String, agent: String)
 }
 
 // ---- UI models: contract §4.6, field for field ----
@@ -130,6 +150,10 @@ data class ChatState(
     val signups: String? = null,
     /** `info.workspace.inviteSignups` (§2.12). */
     val inviteSignups: Boolean = false,
+    /** The server has agents in channels on: the `agents` capability. */
+    val agents: Boolean = false,
+    /** How many replies a chain of agents answering each other runs to (`info.workspace.agents.depth`). */
+    val agentDepth: Int = AGENT_DEPTH,
     val retention: ChatRetention? = null,
     val limits: ChatLimits? = null,
     /** Settings > Notifications > Team chat. */
@@ -150,6 +174,9 @@ data class ChatState(
     val unread: Boolean = false,
     val workspaces: List<WorkspaceSummary> = emptyList(),
 )
+
+/** The server's depth limit for agents answering agents when `GET /v1/info` doesn't say (WORKSPACE_AGENT_DEPTH). */
+const val AGENT_DEPTH = 3
 
 data class ChatOperator(val name: String, val url: String?)
 data class ChatRetention(val contentDays: Int, val feedDays: Int)
@@ -223,6 +250,14 @@ data class Room(
     val hasCache: Boolean,
     /** Android only (§7.4): the newest cached message, for a DM row's preview. */
     val preview: Event? = null,
+    /** How many agents are in the room; [members] counts only people. */
+    val agents: Int = 0,
+    /**
+     * The room's roster revision: the seq of the newest join or leave (`member.joined`, `member.left`) in its cache,
+     * 0 without one. Every person or agent coming or going is such an event in the room's own order, so this moves
+     * also when [members] and [agents] stay, as when one agent leaves and another comes in.
+     */
+    val roster: Long = 0,
 )
 
 /** A room's main timeline. [replies] maps a root's ID to its summary, for the roots on screen. */
@@ -274,7 +309,11 @@ data class Event(
     val isMessage: Boolean get() = kind == WireEvent.MESSAGE_POSTED
 }
 
-/** The fields of event kinds other than a message. */
+/**
+ * The fields of event kinds other than a message, and of an agent's reply: the message it answers ([trigger]), its
+ * [depth] in a chain of agents and the person who started that chain ([origin], a member ID). A person's message has
+ * none of the three.
+ */
 @kotlinx.serialization.Serializable
 data class EventData(
     val name: String? = null,
@@ -284,6 +323,9 @@ data class EventData(
     val role: String? = null,
     val target: String? = null,
     val targetSeq: Long? = null,
+    val trigger: String? = null,
+    val depth: Int? = null,
+    val origin: String? = null,
 )
 
 enum class PendingState {

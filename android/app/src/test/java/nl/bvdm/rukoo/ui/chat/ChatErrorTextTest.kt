@@ -57,6 +57,12 @@ class ChatErrorTextTest {
             "other_server" to s(R.string.chat_join_other_host, "chat.elsewhere.example", "rukoo.example"),
             "not_saved" to s(R.string.chat_errors_not_saved),
             "paused" to s(R.string.chat_errors_paused, "Acme"),
+            "agent_limit" to s(R.string.chat_errors_agent_limit, "Acme"),
+            "agent_in_dm" to s(R.string.chat_errors_agent_in_dm),
+            "agent_not_manager" to s(R.string.chat_errors_agent_not_manager),
+            "agent_block" to s(R.string.chat_errors_agent_block),
+            "agent_role" to s(R.string.chat_errors_agent_role),
+            "sponsor_not_in_channel" to s(R.string.chat_errors_agent_sponsor_not_in_channel),
             "server" to failed,
         )
         // The table covers every code the UI shows, and nothing else.
