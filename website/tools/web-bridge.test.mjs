@@ -552,7 +552,7 @@ test('every method the chat, account, ui, i18n, diag and web shell modules call 
     'agentRunStart',
     'agentRunStop',
     'agentRunForget',
-    'agentRunHeldKey',
+    'agentRunExport',
     'agentRunRelease'
   ]);
   const page = openPage();

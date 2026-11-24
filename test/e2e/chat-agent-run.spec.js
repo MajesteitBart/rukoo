@@ -211,8 +211,10 @@ test('Run on this computer: main asks first, the agent answers a mention with no
   expect(stored).not.toMatch(ANY_KEY);
   expect(JSON.parse(stored).runs[0].key).toMatch(/^enc:/);
   expect(JSON.parse(stored).runs[0].approved).toEqual({ use: echoId, kind: 'custom', type: 'openai', address: echo.url });
-  // No config file: the runner got its config with the key in its first message.
-  const files = fs.readdirSync(path.join(dataDir, 'data', 'agent-runs'));
+  // No config file: the runner got its config with the key in its first message. The folder holds only its state file,
+  // once it wrote one.
+  const runsDir = path.join(dataDir, 'data', 'agent-runs');
+  const files = fs.existsSync(runsDir) ? fs.readdirSync(runsDir) : [];
   expect(files.filter((f) => !f.endsWith('.state.json'))).toEqual([]);
   for (const f of files) expect(fs.readFileSync(path.join(dataDir, 'data', 'agent-runs', f), 'utf8')).not.toMatch(ANY_KEY);
   // Done: no question, and Helper joins general, which is on screen.

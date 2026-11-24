@@ -2611,10 +2611,14 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     field.value = runnerText(cfg);
     field.scrollTop = 0;
     if (!copy.hasAttribute('aria-busy')) copy.disabled = desktop && !mainHolds;
-    const why = !desktop ? '' : mainHolds ? t('chat.agents.keyHidden') : stored && !gone ? t('chat.agents.keyKeptHere', { name: agent.name }) : t('chat.agents.keyGone', { name: agent.name });
+    const keptHere = stored && !gone;
+    const why = !desktop ? '' : mainHolds ? t('chat.agents.keyHidden') : keptHere ? t('chat.agents.keyKeptHere', { name: agent.name }) : t('chat.agents.keyGone', { name: agent.name });
     note.hidden = !why;
     note.textContent = why;
-    note.classList.toggle('ch-warn', desktop && !mainHolds);
+    // Only a key that went for good is a warning; one kept here is where it should be.
+    note.classList.toggle('ch-warn', desktop && !mainHolds && !keptHere);
+    // "It holds the key" is true only while Copy config can still give it.
+    body.querySelector('.ch-agent-once').hidden = desktop && !mainHolds;
     const env = runnerEnv(cfg);
     const help = body.querySelector(canRun ? '[data-key-help]' : '[data-use-help]');
     // Where Run on this computer leads, the line that none of the agents can answer is under Answers with (drawRun).
