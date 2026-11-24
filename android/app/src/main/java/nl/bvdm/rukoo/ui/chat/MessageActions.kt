@@ -128,9 +128,13 @@ object MessageRules {
         return message.actor == me || (room.kind == RoomKind.CHANNEL && room.role == "manager")
     }
 
-    /** Whether the message menu offers Reply in thread: outside a thread, for a message whose thread can be read. */
+    /**
+     * Whether the message menu offers Reply in thread: outside a thread, for a message whose thread can be read, also a
+     * removed one under which a reply of the person's waits or was refused (issue #376), so its Discard stays in reach.
+     */
     fun canReply(message: ChatTimeline.Message, inThread: Boolean): Boolean =
-        !inThread && message.pending == null && message.id != null && (!message.removed || message.root != null || (message.replies?.count ?: 0) > 0)
+        !inThread && message.pending == null && message.id != null &&
+            (!message.removed || message.root != null || (message.replies?.count ?: 0) > 0 || (message.replies?.unsent ?: 0) > 0)
 
     /** Whether the menu offers Copy text. */
     fun canCopy(message: ChatTimeline.Message): Boolean = !message.removed && !message.text.isNullOrEmpty()

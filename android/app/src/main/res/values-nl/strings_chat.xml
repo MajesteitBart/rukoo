@@ -164,6 +164,12 @@
         <item quantity="one">%d nieuw antwoord in een thread</item>
         <item quantity="other">%d nieuwe antwoorden in een thread</item>
     </plurals>
+    <plurals name="chat_log_replies_unsent">
+        <item quantity="one">%d antwoord niet verstuurd</item>
+        <item quantity="other">%d antwoorden niet verstuurd</item>
+    </plurals>
+    <string name="chat_log_root_gone">Dit bericht wordt niet meer bewaard</string>
+    <string name="chat_log_root_earlier">Antwoord op een eerder bericht</string>
     <plurals name="chat_log_threads_new">
         <item quantity="one">%1$d nieuw antwoord in %2$d threads</item>
         <item quantity="other">%1$d nieuwe antwoorden in %2$d threads</item>

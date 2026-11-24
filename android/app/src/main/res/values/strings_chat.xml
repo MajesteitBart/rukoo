@@ -181,6 +181,13 @@
         <item quantity="one">%d new reply in a thread</item>
         <item quantity="other">%d new replies in a thread</item>
     </plurals>
+    <!-- Part of the reply line under a thread's first message while replies of yours wait to go out or were refused; a tap opens the thread, where they show with Retry and Discard. -->
+    <plurals name="chat_log_replies_unsent">
+        <item quantity="one">%d reply not sent</item>
+        <item quantity="other">%d replies not sent</item>
+    </plurals>
+    <string name="chat_log_root_gone">This message is no longer kept</string><!-- Row where a thread's first message was, after retention took it while its replies are kept; the reply line under it opens the thread. -->
+    <string name="chat_log_root_earlier">Reply to an earlier message</string><!-- Row for unsent replies of yours to a message further up that isn't loaded; the reply line under it opens the thread. -->
     <!-- The same pill for two or more threads; a tap opens the one with the oldest new reply. %1$d: the new replies; %2$d: the threads. -->
     <plurals name="chat_log_threads_new">
         <item quantity="one">%1$d new reply in %2$d threads</item>

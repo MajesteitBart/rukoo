@@ -55,6 +55,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.Instant
@@ -491,10 +492,19 @@ private fun RoomLog(
         }
         val newIndex = items.indexOfFirst { it is ChatTimeline.New }
         val lastVisible by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 } }
-        // New replies in threads whose first message is out of view (issue #376): the pill opens the thread with the
-        // oldest of them, and goes once every such thread showed its replies.
-        val visibleKeys by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.mapNotNullTo(HashSet()) { it.key as? String } } }
-        val pillThreads = newThreads.filter { it.root !in visibleKeys }
+        // New replies in threads whose reply line, with its dot, is out of view (issue #376): the pill opens the thread
+        // with the oldest of them, and goes once every such thread showed its replies. A first message in view only in
+        // part, its line below the view, counts as out of view.
+        val linePx = with(LocalDensity.current) { REPLY_LINE.roundToPx() }
+        val linesShown by remember(linePx) {
+            derivedStateOf {
+                val info = listState.layoutInfo
+                info.visibleItemsInfo
+                    .filter { ChatTimeline.replyLineShown(it.offset, it.size, info.viewportStartOffset, info.viewportEndOffset, linePx) }
+                    .mapNotNullTo(HashSet()) { (it.key as? String)?.let(ChatTimeline::replyLineRoot) }
+            }
+        }
+        val pillThreads = newThreads.filter { it.root !in linesShown }
         if (pillThreads.isNotEmpty()) {
             val replies = pillThreads.sumOf { it.count }
             val label = if (pillThreads.size == 1) {
@@ -664,8 +674,10 @@ private fun RoomLog(
     // Reading (§3.9): the newest message fully in view, 1 second after the last change, when higher than the last
     // report, while the room may report, once this opening placed its New divider, and not while a saved position
     // waits for its row (the list then shows rows at a clamped index that nobody scrolled to). It reads on over the
-    // replies after that message, which show only in their thread (ChatTimeline.readableSeq).
-    val newestEvent = t.events.maxOfOrNull { it.seq }
+    // replies after that message, which show only in their thread (ChatTimeline.readableSeq). The newest event loaded
+    // is read as state of its own: a reply to a first message outside the loaded range adds an event but leaves the
+    // rows as they were, and the read must still follow it.
+    val newestEvent by rememberUpdatedState(t.events.maxOfOrNull { it.seq })
     val holding = anchor.holding
     val currentRead by rememberUpdatedState(t.room.read)
     LaunchedEffect(listState, rows, canRead, positioned, holding) {
@@ -674,9 +686,9 @@ private fun RoomLog(
             val info = listState.layoutInfo
             info.visibleItemsInfo
                 .filter { it.offset >= info.viewportStartOffset && it.offset + it.size <= info.viewportEndOffset }
-                .mapNotNull { it.key as? String }
-        }.collectLatest { keys ->
-            val seq = ChatTimeline.readableSeq(rows, keys, newestEvent) ?: return@collectLatest
+                .mapNotNull { it.key as? String } to newestEvent
+        }.collectLatest { (keys, newest) ->
+            val seq = ChatTimeline.readableSeq(rows, keys, newest) ?: return@collectLatest
             seen = RoomReading.seen(seen, seq, anchor)
             delay(READ_REPORT_DELAY_MS)
             RoomReading.report(seq, currentRead, anchor, reports)?.let { workspaces.markRead(ws, room, it) }
@@ -764,6 +776,32 @@ internal fun TimelineRowView(row: ChatTimeline.Row, ctx: RowContext) {
         is ChatTimeline.Count -> DayDivider(pluralStringResource(R.plurals.chat_log_replies, row.count, row.count))
         is ChatTimeline.Sys -> CenterNote(sysText(row, ctx))
         is ChatTimeline.Message -> MessageRow(row, ctx)
+        is ChatTimeline.Orphan -> OrphanRow(row, ctx)
+    }
+}
+
+/**
+ * A thread whose first message has no row (issue #376): where retention took it, "This message is no longer kept",
+ * or unsent replies to one further up; its summary opens the thread.
+ */
+@Composable
+private fun OrphanRow(row: ChatTimeline.Orphan, ctx: RowContext) {
+    val c = Rk.colors
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 1.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.width(32.dp).heightIn(min = 20.dp), contentAlignment = Alignment.Center) {
+            RkIcon(if (row.gone) RukooIcons.Info else RukooIcons.Reply, null, size = 16.dp, tint = c.text3)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                stringResource(if (row.gone) R.string.chat_log_root_gone else R.string.chat_log_root_earlier),
+                style = Rk.type.text13_5.copy(fontStyle = FontStyle.Italic),
+                color = c.text2,
+            )
+            ctx.onOpenThread?.let { open -> ReplySummaryRow(row.replies, ctx) { open(row.root) } }
+        }
     }
 }
 
@@ -950,7 +988,14 @@ private fun Tag(text: String) {
 @Composable
 private fun ReplySummaryRow(r: ChatTimeline.Replies, ctx: RowContext, onClick: () -> Unit) {
     val c = Rk.colors
-    val label = if (r.hasNew) pluralStringResource(R.plurals.chat_log_replies_unread, r.count, r.count) else pluralStringResource(R.plurals.chat_log_replies, r.count, r.count)
+    val counted = when {
+        r.count == 0 -> null
+        r.hasNew -> pluralStringResource(R.plurals.chat_log_replies_unread, r.count, r.count)
+        else -> pluralStringResource(R.plurals.chat_log_replies, r.count, r.count)
+    }
+    // Replies of the person's that wait or were refused (issue #376): they show in the thread, with Retry and Discard.
+    val unsent = if (r.unsent > 0) pluralStringResource(R.plurals.chat_log_replies_unsent, r.unsent, r.unsent) else null
+    val label = listOfNotNull(counted, unsent).joinToString(", ")
     Row(
         Modifier
             .padding(top = 4.dp)
@@ -969,7 +1014,11 @@ private fun ReplySummaryRow(r: ChatTimeline.Replies, ctx: RowContext, onClick: (
             }
         }
         if (r.hasNew) Box(Modifier.size(6.dp).background(c.accent, CircleShape))
-        Text(pluralStringResource(R.plurals.chat_log_replies, r.count, r.count), style = Rk.type.text12_5.medium, color = c.link, maxLines = 1)
+        if (r.count > 0) Text(pluralStringResource(R.plurals.chat_log_replies, r.count, r.count), style = Rk.type.text12_5.medium, color = c.link, maxLines = 1)
+        if (unsent != null) {
+            if (r.failed) RkIcon(RukooIcons.Info, null, size = 12.dp, tint = c.danger)
+            Text(unsent, style = if (r.failed) Rk.type.text12_5.medium else Rk.type.text12_5, color = if (r.failed) c.danger else c.text2, maxLines = 1)
+        }
         r.lastAt?.let { at ->
             Text(stringResource(R.string.chat_log_last_reply, ctx.dates.listTime(at, ctx.now)), style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -1053,6 +1102,9 @@ private const val ANCHOR_WAIT_MS = 5_000L
 
 // A quick send shows nothing, so it doesn't flicker (desktop-ui 5.3).
 private const val SENDING_QUIET_MS = 1_000L
+
+// The reply line at the bottom of a message row: its 32dp row and the 1dp under it, and 1dp of the space above it.
+private val REPLY_LINE = 34.dp
 
 // The server's default retention, while the workspace's own isn't known yet.
 internal const val DEFAULT_RETENTION_DAYS = 90

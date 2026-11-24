@@ -357,6 +357,87 @@ class ChatTimelineTest {
         assertFalse(kept.atBottom)
     }
 
+    // Review of #376, finding 1: a refused reply holds the sends after it, so it always keeps a way into its thread.
+    @Test
+    fun `an unsent reply keeps a way into its thread, on its removed first message or in a row of its own`() {
+        val failed = pending("l_1", t0 + 2 * minute, PendingState.FAILED, reason = "invalid", root = "e_1")
+        val next = pending("l_2", t0 + 3 * minute, PendingState.WAITING)
+        // The reviewer's case: the first message was removed while the reply waited, and the server refused it.
+        val r = rows(listOf(msg(1, sanne, t0, null, redacted = true), msg(2, sanne, t0 + minute, "later")), pending = listOf(failed, next), hasOlder = true)
+        assertEquals(listOf("day:2026-11-19", "e_1", "e_2", "local:l_2"), r.map { it.key })
+        val top = r.messages().first { it.id == "e_1" }
+        assertTrue(top.removed)
+        assertEquals(ChatTimeline.Replies(count = 0, lastAt = null, actors = emptyList(), hasNew = false, unsent = 1, failed = true), top.replies)
+        assertTrue("the menu offers the thread", MessageRules.canReply(top, inThread = false))
+        // ... where the refused reply shows with its state, so Discard is there.
+        val thread = rows(listOf(msg(1, sanne, t0, null, redacted = true)), pending = listOf(failed, next), root = "e_1")
+        assertEquals(PendingState.FAILED, thread.messages().single { it.local == "l_1" }.pending)
+        // Sending, it says so without the failed look.
+        val queued = rows(listOf(msg(1, sanne, t0, "a")), pending = listOf(failed.copy(state = PendingState.QUEUED)), hasOlder = true)
+        assertEquals(1 to false, queued.messages().single().replies!!.let { it.unsent to it.failed })
+        // The first message further up, not loaded: a row of its own after the sent rows, before the unsent messages.
+        val away = rows(listOf(msg(2, sanne, t0 + minute, "later")), pending = listOf(failed, next), hasOlder = true)
+        assertEquals(listOf("day:2026-11-19", "e_2", "thread:e_1", "local:l_2"), away.map { it.key })
+        val orphan = away[2] as ChatTimeline.Orphan
+        assertEquals(false, orphan.gone)
+        assertEquals(1 to true, orphan.replies.unsent to orphan.replies.failed)
+        assertTrue("nothing waits: no row", rows(listOf(msg(2, sanne, t0, "later")), hasOlder = true).none { it is ChatTimeline.Orphan })
+    }
+
+    // Review of #376, finding 3: replies whose first message retention took keep a row where it was.
+    @Test
+    fun `replies whose first message aged out keep a row where it was, with their summary and its dot`() {
+        val events = listOf(msg(11, sanne, t0, "kept"), msg(12, mila, t0 + minute, "still on", root = "e_9"), msg(13, sanne, t0 + 2 * minute, "yes", root = "e_9"))
+        val r = rows(events, floor = 11, readAtOpen = 12)
+        assertEquals(listOf("floor", "thread:e_9", "day:2026-11-19", "e_11"), r.map { it.key })
+        val orphan = r[1] as ChatTimeline.Orphan
+        assertTrue(orphan.gone)
+        assertEquals(2, orphan.replies.count)
+        assertTrue(orphan.replies.hasNew)
+        assertFalse(rows(events, floor = 11, readAtOpen = 12, seen = mapOf("e_9" to 13L)).filterIsInstance<ChatTimeline.Orphan>().single().replies.hasNew)
+        assertTrue("older messages can still load: the pill says it", rows(events, hasOlder = true).none { it is ChatTimeline.Orphan })
+        assertTrue("a thread has none", rows(events, root = "e_9").none { it is ChatTimeline.Orphan })
+    }
+
+    // Review of #376, finding 4: the pill goes by the reply line at the bottom of the row, not by the row.
+    @Test
+    fun `a reply line shows only whole in the view, bottom up as the room lays out`() {
+        // A 400px row whose bottom 20px show above the view's bottom edge: its 34px line doesn't show whole.
+        assertFalse(ChatTimeline.replyLineShown(offset = -14, size = 400, viewportStart = 0, viewportEnd = 1000, linePx = 34))
+        assertTrue(ChatTimeline.replyLineShown(offset = 0, size = 400, viewportStart = 0, viewportEnd = 1000, linePx = 34))
+        // Its top past the view's top edge, its line in view.
+        assertTrue(ChatTimeline.replyLineShown(offset = 900, size = 400, viewportStart = 0, viewportEnd = 1000, linePx = 34))
+        assertFalse(ChatTimeline.replyLineShown(offset = 980, size = 400, viewportStart = 0, viewportEnd = 1000, linePx = 34))
+        // Top down, the line is the row's last pixels.
+        assertFalse(ChatTimeline.replyLineShown(offset = 900, size = 400, viewportStart = 0, viewportEnd = 1000, linePx = 34, bottomUp = false))
+        assertEquals("e_1", ChatTimeline.replyLineRoot("e_1"))
+        assertEquals("e_9", ChatTimeline.replyLineRoot("thread:e_9"))
+    }
+
+    // Review of #376, finding 5: the visit's seen position follows the replies the thread showed in view.
+    @Test
+    fun `a thread marks as seen only the replies in view`() {
+        val events = listOf(msg(1, me, t0, "q"), msg(2, sanne, t0 + minute, "a1", root = "e_1"), msg(3, mila, t0 + 2 * minute, "a2", root = "e_1"), msg(4, sanne, t0 + 3 * minute, "a3", root = "e_1"))
+        val r = rows(events, root = "e_1")
+        fun at(key: String, offset: Int) = ChatTimeline.InView(key, offset, 100)
+        // Bottom up: e_4 below the view, e_3 half in view, e_2 and the root above it.
+        assertEquals(3L, ChatTimeline.seenInThread(r, "e_1", listOf(at("e_4", -80), at("e_3", -50), at("e_2", 60), at("e_1", 160)), 0, 500))
+        assertEquals("none in view", null, ChatTimeline.seenInThread(r, "e_1", listOf(at("e_1", 0)), 0, 500))
+        assertEquals("a tall reply that fills the view counts", 2L, ChatTimeline.seenInThread(r, "e_1", listOf(ChatTimeline.InView("e_2", -200, 1000)), 0, 500))
+    }
+
+    // Review of #376, finding 6: a reply to a first message outside the loaded range adds an event and no row.
+    @Test
+    fun `an append that leaves the rows as they were still moves what reading the newest row reports`() {
+        val events = listOf(msg(1, sanne, t0, "a"), msg(2, mila, t0 + minute, "b"))
+        val appended = events + msg(3, mila, t0 + 2 * minute, "reply further up", root = "e_0")
+        val before = rows(events, hasOlder = true)
+        val after = rows(appended, hasOlder = true)
+        assertEquals("the same rows: an effect keyed on them doesn't run again", before, after)
+        assertEquals(2L, ChatTimeline.readableSeq(before, listOf("e_2"), newest = 2))
+        assertEquals("the newest event, read as its own state, takes the read past the reply", 3L, ChatTimeline.readableSeq(after, listOf("e_2"), newest = 3))
+    }
+
     // ---- helpers ----
 
     private fun u(name: String) = "u_" + name.padEnd(22, 'x')
