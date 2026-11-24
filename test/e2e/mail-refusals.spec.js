@@ -47,20 +47,21 @@ const readOnly = (folder, on) =>
 // The subjects in a view as the engine has them.
 const inView = (view) => win.evaluate(async (view) => (await window.mail.call('list', { scope: 'all', view })).map((m) => m.subject), view);
 // The demo server's method ('move' or 'deleteForever') fails for the email with this subject, with the error ImapAccount
-// gives under key: kind 'refused' (nothing changed) or 'unknown' (nobody knows what the server did).
-const failFor = (method, subject, key, kind) =>
+// gives under key: kind 'refused' (nothing changed), 'unknown' (nobody knows what the server did) or 'unsent' (not
+// sent), with the fields of extra, such as code 'UIDVALIDITY' for a folder rebuilt on the server.
+const failFor = (method, subject, key, kind, extra = {}) =>
   app.evaluate(
-    (_, [method, subject, key, kind]) => {
+    (_, [method, subject, key, kind, extra]) => {
       const engine = global.__semEngine;
       const s = engine.session(engine.accounts[0]);
       const { t } = process.mainModule.require(process.mainModule.require('path').join(process.cwd(), 'src', 'i18n'));
       const run = s[method].bind(s);
       s[method] = async (p, uid, ...rest) => {
-        if (s.find(p, uid).subject === subject) throw Object.assign(new Error(t(key)), { [kind]: true });
+        if (s.find(p, uid).subject === subject) throw Object.assign(new Error(t(key)), { [kind]: true, ...extra });
         return run(p, uid, ...rest);
       };
     },
-    [method, subject, key, kind]
+    [method, subject, key, kind, extra]
   );
 
 test('a delete or archive the server refuses puts the email back at once and says why', async ({}, testInfo) => {
@@ -175,6 +176,27 @@ test('an Undo the server refuses leaves the email archived and offers Undo again
   await expect(notice()).toContainText('Restored');
   await expect(bencompare).toBeVisible();
   await expect.poll(() => inView('archive')).not.toContain('Sign in to Bencompare');
+});
+
+// #308 follow-up: an Undo whose folder was rebuilt on the server can't say where the email is by its old uid. It counts
+// as not confirmed, the notice gives the reason, and it isn't offered again.
+test('an Undo whose folder was rebuilt counts as not confirmed and says why, next to one that went', async ({}, testInfo) => {
+  await row('Sign in to Bencompare').click();
+  await row('Call on Thursday').click({ modifiers: ['ControlOrMeta'] });
+  await expect(win.locator('.list-tools.selecting .sel-count')).toHaveText('2 selected');
+  await win.click('.list-tools [data-bulk="archive"]');
+  await expect(notice()).toContainText('2 emails moved to Archive');
+  await failFor('move', 'Sign in to Bencompare', 'errors.folder.rebuilt', 'unsent', { code: 'UIDVALIDITY' });
+
+  await notice().locator('button').click();
+  await expect(notice()).toContainText(
+    "1 email restored. Rukoo couldn't confirm what happened to 1 email. Check where it is before trying again. This action can no longer be undone: the folder was rebuilt on the server."
+  );
+  await expect(notice().locator('button')).toHaveCount(0);
+  await expect(row('Call on Thursday')).toBeVisible();
+  await expect(row('Sign in to Bencompare')).toHaveCount(0);
+  await expect.poll(() => inView('archive')).toContain('Sign in to Bencompare');
+  await win.screenshot({ path: testInfo.outputPath('rebuilt-undo.png'), animations: 'disabled' });
 });
 
 test('Empty Trash reports a refused delete and leaves the email visible', async ({}, testInfo) => {
