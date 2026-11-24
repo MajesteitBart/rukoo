@@ -1097,7 +1097,7 @@ test('over a real connection without UIDPLUS, Rukoo deletes nothing for good, co
         await assert.rejects(s.move('INBOX', a.uid, 'Archive'), (err) => err.message === t('errors.move.noUidExpunge') && err.unsent === true, label);
         assert.equal(box.folders.get('Archive').messages.length, 0, label);
       }
-      assert.ok(!box.commands.some((c) => /^(UID )?(STORE|EXPUNGE|COPY)/i.test(c)), `${label}: ${box.commands.join(' | ')}`);
+      assert.ok(!box.commands.some((c) => /^(UID )?(STORE|EXPUNGE|COPY)\b/i.test(c)), `${label}: ${box.commands.join(' | ')}`);
       assert.ok(inbox.messages.some((m) => m.subject === 'Marked by another app'), label);
     });
   }

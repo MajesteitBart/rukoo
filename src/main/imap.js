@@ -151,8 +151,9 @@ const failedAs = (client, err) => (client.usable !== false && err && err.respons
 // UNCHANGEDSINCE after the flags, where the RFC has it before them. It runs under a mailbox lock, which keeps imapflow
 // from starting IDLE in between. Answers { status, modseq }: 'ok' with the MODSEQ the server gave the change,
 // 'modified' when the condition left the email alone, or failedAs(). modseq is null unless exactly one FETCH can be
-// of this email: another session's change to it while the STORE runs comes as a FETCH of the same UID, and a FETCH
-// without a UID may be of it too, so with more than one Rukoo can't tell which MODSEQ is its own.
+// of this email and that one names its UID, as the answer to a UID STORE must (RFC 9051 section 6.4.9): another
+// session's change to it while the STORE runs comes as a FETCH of the same UID, and a FETCH without a UID may be of it
+// too, so with more than one, or with one that names no UID, Rukoo can't tell which MODSEQ is its own.
 async function storeDeleted(client, uid, op, since = null) {
   if (op === '+' && !canUseFlag(client.mailbox, '\\Deleted')) return { status: 'no' };
   const attributes = [{ type: 'SEQUENCE', value: String(uid) }];
@@ -160,6 +161,7 @@ async function storeDeleted(client, uid, op, since = null) {
   attributes.push({ type: 'ATOM', value: `${op}FLAGS` }, [{ type: 'ATOM', value: '\\Deleted' }]);
   let modseq = null;
   let lines = 0;
+  let named = 0;
   try {
     const response = await client.exec('UID STORE', attributes, {
       untagged: {
@@ -167,13 +169,15 @@ async function storeDeleted(client, uid, op, since = null) {
           const line = fetchLine(untagged);
           if (line.uid !== Number(uid) && Number.isInteger(line.uid)) return;
           lines++;
+          if (line.uid !== Number(uid)) return;
+          named++;
           modseq = line.modseq;
         }
       }
     });
     const code = answerCode(response.response);
     response.next();
-    return code === 'MODIFIED' ? { status: 'modified' } : { status: 'ok', modseq: lines === 1 ? modseq : null };
+    return code === 'MODIFIED' ? { status: 'modified' } : { status: 'ok', modseq: lines === 1 && named === 1 ? modseq : null };
   } catch (err) {
     return { status: failedAs(client, err) };
   }
