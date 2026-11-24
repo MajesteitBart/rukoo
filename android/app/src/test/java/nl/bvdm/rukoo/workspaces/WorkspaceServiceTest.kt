@@ -125,6 +125,7 @@ class WorkspaceServiceTest {
         lateinit var service: WorkspaceService
         /** The app's GET /v1/info while signed out too (WorkspaceService autoInfo). */
         var autoInfo = false
+        var timing = ChatTiming()
 
         /** What GET /v1/workspaces lists: IDs, with the names and roles below. */
         @Volatile var listing: List<String> = emptyList()
@@ -153,7 +154,7 @@ class WorkspaceServiceTest {
                 sink = sink,
                 words = { ChatAlertRulesTest.Words },
                 clock = clock,
-                timing = ChatTiming(),
+                timing = timing,
                 io = Dispatchers.Unconfined,
                 random = { 0.5 },
                 autoInfo = autoInfo,
@@ -1211,6 +1212,189 @@ class WorkspaceServiceTest {
         advanceTimeBy(1_000)
         assertTrue("the foreground runs it", h.http.calls("GET", h.route(ws, "/changes")).size > feeds)
         s.paused()
+    }
+
+    // ---- Phone tools' window (stayConnected) ----
+
+    private fun FakeSocket.ws() = url.substringAfter("/workspaces/").substringBefore("/")
+
+    private fun Harness.feeds(w: String = Ids.WS) = http.calls("GET", route(w, "/changes")).size
+
+    @Test
+    fun `while Phone tools runs, every workspace keeps a socket in the background and runs every five minutes`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs(); syncedWs(Ids.WS2, "Other") }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        advanceTimeBy(ChatTiming.HOUR)
+        assertTrue("no socket in the background without the window", h.sockets.opened.isEmpty())
+        assertEquals(0, h.feeds())
+
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        assertTrue(s.windowOpen)
+        assertEquals(setOf(ws, Ids.WS2), h.sockets.opened.map { it.ws() }.toSet())
+        assertTrue(h.sockets.opened.all { it.state.value == SocketState.OPEN })
+        val first = h.feeds()
+        assertTrue("the window runs every workspace when it opens", first >= 1 && h.feeds(Ids.WS2) >= 1)
+
+        advanceTimeBy(ChatTiming.MINUTE)
+        assertEquals("no minute runs in the background", first, h.feeds())
+        advanceTimeBy(4 * ChatTiming.MINUTE + 1_000)
+        assertEquals("a run five minutes on", first + 1, h.feeds())
+
+        // A wake runs that workspace's feed at once, as in the foreground.
+        h.sockets.opened.single { it.ws() == ws }.listener.wake()
+        advanceTimeBy(1_000)
+        assertEquals(first + 2, h.feeds())
+
+        s.stayConnected(false)
+        advanceTimeBy(1_000)
+        assertFalse(s.windowOpen)
+        assertTrue("closing the window closes its sockets", h.sockets.opened.all { it.stops == 1 && it.state.value == SocketState.OFF })
+        val closed = h.feeds()
+        advanceTimeBy(ChatTiming.HOUR)
+        assertEquals("no runs after the window closed", closed, h.feeds())
+        // A wake that comes in late on a socket that closed does nothing.
+        h.sockets.opened.first().listener.wake()
+        advanceTimeBy(1_000)
+        assertEquals(closed, h.feeds())
+    }
+
+    @Test
+    fun `the window needs team chat notifications on`() = runTest {
+        val h = Harness(this, db)
+        h.settings.value = AppSettings(notifyChat = false)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.stayConnected(true)
+        advanceTimeBy(10 * ChatTiming.MINUTE)
+        assertFalse(s.windowOpen)
+        assertTrue(h.sockets.opened.isEmpty())
+        assertEquals(0, h.feeds())
+
+        h.settings.value = AppSettings(notifyChat = true)
+        advanceTimeBy(1_000)
+        assertTrue(s.windowOpen)
+        assertEquals(listOf(ws), h.sockets.opened.map { it.ws() })
+
+        h.settings.value = AppSettings(notifyChat = false)
+        advanceTimeBy(1_000)
+        assertFalse(s.windowOpen)
+        assertEquals(1, h.sockets.opened.single().stops)
+    }
+
+    @Test
+    fun `the window keeps sockets for the most recently active workspaces only`() = runTest {
+        val h = Harness(this, db)
+        h.timing = ChatTiming(windowSockets = 1)
+        h.seed {
+            syncedWs()
+            syncedWs(Ids.WS2, "Other")
+            updateWs(Ids.WS2, mapOf("activeAt" to TestDb.NOW))
+        }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        assertEquals(listOf(Ids.WS2), h.sockets.opened.map { it.ws() })
+        assertTrue("the one without a socket still runs", h.feeds(ws) >= 1)
+
+        // In the foreground the workspace on screen gets its socket as well.
+        s.onScreen(ws, null, null)
+        s.resumed()
+        advanceTimeBy(1_000)
+        assertEquals(setOf(ws, Ids.WS2), h.sockets.opened.filter { it.state.value == SocketState.OPEN }.map { it.ws() }.toSet())
+        // Back in the background, the window's own choice is left.
+        s.paused()
+        advanceTimeBy(1_000)
+        assertEquals(listOf(Ids.WS2), h.sockets.opened.filter { it.state.value == SocketState.OPEN }.map { it.ws() })
+    }
+
+    @Test
+    fun `signing out in the window closes its sockets and stops its runs`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        val socket = h.sockets.opened.single()
+
+        h.account.signOut()
+        s.state.until { !it.signedIn }
+        advanceTimeBy(1_000)
+        assertEquals(1, socket.stops)
+        val feeds = h.feeds()
+        advanceTimeBy(ChatTiming.HOUR)
+        assertEquals("no runs signed out", feeds, h.feeds())
+        assertEquals("no new socket signed out", 1, h.sockets.opened.size)
+    }
+
+    @Test
+    fun `in the window a message notifies from the background, also in the room that was on screen`() = runTest {
+        val h = Harness(this, db)
+        h.seed {
+            syncedWs()
+            replaceMembers(ws, listOf(Member(Ids.ME, name = "Me", role = "member", state = "active"), Member(Ids.OLGA, name = "Olga", role = "member", state = "active")))
+            upsertRoom(ws, room(Ids.DM, dm = true, head = 1))
+            appendEvents(ws, Ids.DM, listOf(msg(1, room = 4)))
+        }
+        h.list(ws)
+        h.http.on("GET", h.route(ws)) { ok(WorkspaceDetails.serializer(), details()) }
+        h.http.on("GET", h.route(ws, "/changes")) {
+            ok(FeedPage.serializer(), feed(room(Ids.DM, dm = true, head = 2, unread = 1), inline = emptyList(), next = "c1"))
+        }
+        h.http.on("GET", h.route(ws, "/conversations/${Ids.DM}/events")) {
+            ok(EventPage.serializer(), EventPage(listOf(msg(1, room = 4), msg(2, text = "still there?", room = 4)), head = 2, floor = 1))
+        }
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        // The DM was on screen when the app went to the background; in the background it isn't on screen any more.
+        s.onScreen(ws, Ids.DM, null)
+        advanceTimeBy(ChatTiming.HOUR)
+        assertTrue("nothing runs before the window", h.sink.shown.isEmpty())
+
+        s.stayConnected(true)
+        withTimeout(10_000) { while (h.sink.shown.isEmpty()) delay(100) }
+        assertEquals("Olga: still there?", h.sink.shown.single().lines.last().let { "${it.author}: ${it.text}" })
+    }
+
+    @Test
+    fun `the window's runs come five minutes apart, give or take 30 seconds`() {
+        val t = ChatTiming()
+        assertEquals(5 * ChatTiming.MINUTE - 30_000, WorkspaceService.windowCatchUpDelay(t, 0.0))
+        assertEquals(5 * ChatTiming.MINUTE, WorkspaceService.windowCatchUpDelay(t, 0.5))
+        assertEquals(5 * ChatTiming.MINUTE + 30_000, WorkspaceService.windowCatchUpDelay(t, 1.0))
+        assertEquals(5 * ChatTiming.MINUTE + 30_000, WorkspaceService.windowCatchUpDelay(t, 7.0))
+    }
+
+    @Test
+    fun `sockets go to the workspace on screen, then the most recently active, up to the cap`() {
+        val c = listOf(SocketCandidate("a", 10), SocketCandidate("b", 30), SocketCandidate("c", null), SocketCandidate("d", 20))
+        assertEquals(emptySet<String>(), WorkspaceService.socketsFor(c, null, 0))
+        assertEquals(setOf("c"), WorkspaceService.socketsFor(c, "c", 0))
+        assertEquals(listOf("b", "d"), WorkspaceService.socketsFor(c, null, 2).toList())
+        assertEquals(listOf("c", "b", "d"), WorkspaceService.socketsFor(c, "c", 2).toList())
+        assertEquals(listOf("b", "d", "a", "c"), WorkspaceService.socketsFor(c, null, 9).toList())
+        assertEquals("a workspace not in a good state gets none", emptySet<String>(), WorkspaceService.socketsFor(c, "gone", 0))
+        assertEquals(emptySet<String>(), WorkspaceService.socketsFor(c, null, -1))
     }
 
     @Test

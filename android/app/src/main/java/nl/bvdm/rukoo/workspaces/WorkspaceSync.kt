@@ -105,11 +105,11 @@ interface SyncEvents {
  * schedules nothing: the service's timers and the socket ask for the next.
  *
  * A run nobody waits for (a request, a retry after a failure, the next batch, the run after `again`) starts only while
- * [automatic] says so: while the app is in the foreground or a background worker's window is open (§3.11, android.md
- * "Foreground, background and resume"). Outside them it is dropped, its backoff kept; the next resume or worker asks
- * again. A [now] caller always gets its run, and one that stops waiting takes its wait back. The same holds between
- * requests ([wanted]): once the foreground or the worker's window ends, a run nobody waits for any more stops before its
- * next request, and the next run continues from its committed cursor.
+ * [automatic] says so: while the app is in the foreground or a background window is open, the worker's or Phone
+ * tools' (§3.11, android.md "Foreground, background and resume"). Outside them it is dropped, its backoff kept; the
+ * next resume, worker or window asks again. A [now] caller always gets its run, and one that stops waiting takes its
+ * wait back. The same holds between requests ([wanted]): once the foreground or the background window ends, a run
+ * nobody waits for any more stops before its next request, and the next run continues from its committed cursor.
  */
 class FeedRunner(
     private val scope: CoroutineScope,

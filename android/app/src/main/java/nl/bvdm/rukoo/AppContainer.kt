@@ -234,8 +234,9 @@ class AppContainer(context: Context) : AppServices {
             appScope.launch(Dispatchers.IO) { categories }
             AccountBackground(appScope, { account }, { mail }).start()
         }
-        // Team chat follows the account and runs while the app is in the foreground; ChatSyncWorker in the background.
-        ChatBackground(appContext, appScope) { workspaces }.start()
+        // Team chat follows the account and runs while the app is in the foreground or Phone tools' foreground service
+        // runs; ChatSyncWorker in the background.
+        ChatBackground(appContext, appScope, { workspaces }, mcp.status.map { it.running }).start()
         // The language the user picks in Rukoo; LocaleManager keeps it, so only changes are applied.
         appScope.launch {
             settings.flow.map { it.language }.distinctUntilChanged().drop(1).collect { Locales.apply(appContext, it) }

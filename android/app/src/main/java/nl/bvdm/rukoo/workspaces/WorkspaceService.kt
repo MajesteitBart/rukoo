@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -139,6 +140,15 @@ data class ChatTiming(
     /** ChatBackground's runs in the foreground: every 60 s ± 10 s. */
     val catchUpEvery: Long = MINUTE,
     val catchUpJitter: Long = 10 * SECOND,
+    /**
+     * The runs while Phone tools keeps the app running in the background ([WorkspaceService.stayConnected]): every
+     * 5 minutes ± 30 s. The sockets bring new messages; these catch dropped wakes and renew the sockets' 15-minute
+     * lease, which the server renews on a request once half of it has gone.
+     */
+    val windowCatchUpEvery: Long = 5 * MINUTE,
+    val windowCatchUpJitter: Long = 30 * SECOND,
+    /** In that window, the most recently active workspaces that keep a wake socket; the others wait for the runs. */
+    val windowSockets: Int = 5,
     /** Writes that meet a 429 try again after `Retry-After`, this many times in all within [writeRetryWindow]. */
     val writeRetries: Int = 3,
     val writeRetryWindow: Long = 30 * SECOND,
@@ -177,6 +187,11 @@ data class ChatTiming(
  * workspace on screen keeps a wake socket. [ChatBackground] runs every workspace every 60 s in the foreground and
  * [ChatSyncWorker] every 15 minutes in the background. Every write that changes shared state asks for a run, so the
  * feed confirms what changed; the writes whose result the UI opens next wait for that run.
+ *
+ * **The Phone tools window.** While Phone tools' foreground service runs with a network ([stayConnected]) and team
+ * chat notifications are on, the app counts as awake for team chat in the background too: the most recently active
+ * workspaces ([ChatTiming.windowSockets]) keep a wake socket each, runs and the outbox go on, and every workspace runs
+ * every 5 minutes. The alert rules don't change: [isOnScreen] still needs the app in the foreground.
  *
  * **Alerts.** After each run, [ChatAlertEngine] alerts due rooms and takes back what was read or removed.
  */
@@ -236,6 +251,11 @@ class WorkspaceService internal constructor(
 
     // ChatSyncWorker's catch-ups under way: while one is, runs nobody waits for may start in the background too.
     private val workerWindows = AtomicInteger()
+
+    // What ChatBackground asks (Phone tools runs, with a network), and whether the window is open: that, with team
+    // chat notifications on.
+    private val stayWanted = MutableStateFlow(false)
+    @Volatile private var window = false
     @Volatile private var onScreenNow = OnScreen()
     @Volatile private var started = false
 
@@ -265,7 +285,12 @@ class WorkspaceService internal constructor(
 
     private data class OnScreen(val ws: String? = null, val room: String? = null, val thread: String? = null)
 
-    private class LiveSocket(val ws: String, val socket: ChatSocket, val watch: Job)
+    private class LiveSocket(val ws: String, val socket: ChatSocket, val watch: Job, val listener: WorkspaceSocket.Listener) {
+        fun close() {
+            socket.stop()
+            watch.cancel()
+        }
+    }
 
     /** Starts following the account and the timers. Returns this. */
     fun start(): WorkspaceService {
@@ -289,6 +314,23 @@ class WorkspaceService internal constructor(
         scope.launch { account.status.collect { follow() } }
         scope.launch { account.sessionEnded.collect { follow() } }
         scope.launch { settings.map { it.notifyChat }.distinctUntilChanged().collect { stateChanged() } }
+        // The Phone tools window: sockets for the workspaces and a run of each every 5 minutes, while it is open. A
+        // change cancels the loop, so closing it stops the runs at once.
+        scope.launch {
+            combine(stayWanted, settings.map { it.notifyChat }) { wanted, notify -> wanted && notify }
+                .distinctUntilChanged()
+                .collectLatest { open ->
+                    if (window != open) AppLog.i(TAG, if (open) "Phone tools window open: team chat stays connected" else "Phone tools window closed")
+                    window = open
+                    updateSockets()
+                    if (!open) return@collectLatest
+                    while (true) {
+                        // In the foreground, ChatBackground's minute runs already cover this.
+                        if (!foreground) catchUp()
+                        delay(windowCatchUpDelay(timing, random()))
+                    }
+                }
+        }
         scope.launch {
             while (true) {
                 delay(timing.listEvery)
@@ -334,10 +376,11 @@ class WorkspaceService internal constructor(
 
     /**
      * Whether requests nobody waits for may go out: feed runs and their retries, the timed listing. Only while the app
-     * is in the foreground or ChatSyncWorker's window is open (§3.11, android.md "Foreground, background and resume"),
-     * so a process started in the background for something else doesn't sync and retry outside WorkManager's budget.
+     * is in the foreground, ChatSyncWorker's window is open or Phone tools' window is (§3.11, android.md "Foreground,
+     * background and resume"), so a process started in the background for something else doesn't sync and retry
+     * outside WorkManager's budget.
      */
-    private fun automatic(): Boolean = foreground || workerWindows.get() > 0
+    private fun automatic(): Boolean = foreground || workerWindows.get() > 0 || window
 
     // The account said something: a sign-in, a sign-out, another server, new server info. Only the signature of
     // signed in, server and session tag changes the cache; availability starts or stops the network.
@@ -631,7 +674,10 @@ class WorkspaceService internal constructor(
         val outbox = Outbox(store, client, scope, OutboxHooks(this), timing.outbox, clock::now, automatic = ::automatic)
 
         @Volatile var selected: String? = null
-        @Volatile var socket: LiveSocket? = null
+
+        // The open wake sockets by workspace: the one on screen in the foreground, and in Phone tools' window those of
+        // the most recently active workspaces. Added under socketLock; the end of a session or a workspace removes too.
+        val liveSockets = ConcurrentHashMap<String, LiveSocket>()
         val socketLock = Mutex()
         val listLock = Any()
         @Volatile var listing: Deferred<List<WorkspaceRef>?>? = null
@@ -649,11 +695,7 @@ class WorkspaceService internal constructor(
         }
 
         fun stopSyncs() {
-            socket?.let {
-                it.socket.stop()
-                it.watch.cancel()
-            }
-            socket = null
+            for (ws in liveSockets.keys.toList()) liveSockets.remove(ws)?.close()
             val all = syncs.values.toList()
             syncs.clear()
             for (s in all) s.close()
@@ -765,11 +807,7 @@ class WorkspaceService internal constructor(
         l.nudgedAt.remove(ws)
         l.outbox.forget(ws)
         alerts.onWorkspaceGone(ws)
-        l.socket?.takeIf { it.ws == ws }?.let {
-            it.socket.stop()
-            it.watch.cancel()
-            l.socket = null
-        }
+        l.liveSockets.remove(ws)?.close()
         syncVersion.update { it + 1 }
         l.scope.launch {
             if (l.selected == ws) quietly { pickSelected(l) }
@@ -866,38 +904,49 @@ class WorkspaceService internal constructor(
         quietly { l.store.tx { if (getWs(ws) != null) updateWs(ws, mapOf("activeAt" to clock.now())) } }
     }
 
-    // ---- sockets (§3.11): one, for the workspace on screen, while the app is in the foreground ----
+    // ---- sockets (§3.11): the workspace on screen in the foreground, and more in Phone tools' window ----
 
     private fun updateSockets(l: Live? = live) {
         if (l == null || l.closed) return
-        l.scope.launch { l.socketLock.withLock { reconcileSocket(l) } }
+        l.scope.launch { l.socketLock.withLock { reconcileSockets(l) } }
     }
 
-    private suspend fun reconcileSocket(l: Live) {
-        val ws = onScreenNow.ws
-        val ok = ws != null && quietly { l.store.read { getWs(ws)?.state } } == FeedApplier.STATE_OK
-        val wanted = if (foreground && ok && isLive() && sockets != null && !l.closed) ws else null
-        val current = l.socket
-        if (current != null && current.ws != wanted) {
-            current.socket.stop()
-            current.watch.cancel()
-            l.socket = null
-            stateChanged()
+    // The workspaces that should have a socket now: in the foreground the one on screen, and while Phone tools' window
+    // is open the most recently active ones too. Only workspaces in a good state.
+    private suspend fun wantedSockets(l: Live): Set<String> {
+        if (sockets == null || l.closed || !isLive() || !(foreground || window)) return emptySet()
+        val rows = quietly { l.store.read { listWs() } }.orEmpty().filter { it.state == FeedApplier.STATE_OK }
+        return socketsFor(rows.map { SocketCandidate(it.id, it.activeAt) }, onScreenNow.ws.takeIf { foreground }, if (window) timing.windowSockets else 0)
+    }
+
+    private suspend fun reconcileSockets(l: Live) {
+        val wanted = wantedSockets(l)
+        var changed = false
+        for ((ws, current) in l.liveSockets.entries.toList()) {
+            if (ws in wanted) continue
+            l.liveSockets.remove(ws)
+            current.close()
+            changed = true
         }
-        if (wanted == null || l.socket != null || sockets == null) return
-        val url = try {
-            WorkspaceSocket.socketUrl(l.server, wanted)
-        } catch (e: IllegalArgumentException) {
-            return
+        if (changed) stateChanged()
+        val sockets = sockets ?: return
+        for (ws in wanted) {
+            if (l.liveSockets.containsKey(ws) || l.closed) continue
+            val url = try {
+                WorkspaceSocket.socketUrl(l.server, ws)
+            } catch (e: IllegalArgumentException) {
+                continue
+            }
+            val listener = SocketListener(l, ws)
+            val socket = sockets.open(url, { l.client.socketTicket(ws) }, listener, l.scope)
+            val watch = l.scope.launch { socket.state.collect { stateChanged() } }
+            l.liveSockets[ws] = LiveSocket(ws, socket, watch, listener)
+            socket.start()
         }
-        val socket = sockets.open(url, { l.client.socketTicket(wanted) }, SocketListener(l, wanted), l.scope)
-        val watch = l.scope.launch { socket.state.collect { stateChanged() } }
-        l.socket = LiveSocket(wanted, socket, watch)
-        socket.start()
     }
 
     private inner class SocketListener(private val l: Live, private val ws: String) : WorkspaceSocket.Listener {
-        private fun mine() = !l.closed && l.socket?.ws == ws
+        private fun mine() = !l.closed && l.liveSockets[ws]?.listener === this
 
         override fun opened() {
             if (!mine()) return
@@ -938,11 +987,11 @@ class WorkspaceService internal constructor(
             } catch (e: WorkspaceError) {
                 if (restart && e.code in RECHECKED) {
                     delay(e.retryAfterS?.times(1000) ?: timing.socketRecheck)
-                    if (mine()) l.socket?.socket?.start()
+                    if (mine()) l.liveSockets[ws]?.socket?.start()
                 }
                 return
             }
-            if (restart && mine() && quietly { l.store.read { getWs(ws)?.state } } == FeedApplier.STATE_OK) l.socket?.socket?.start()
+            if (restart && mine() && quietly { l.store.read { getWs(ws)?.state } } == FeedApplier.STATE_OK) l.liveSockets[ws]?.socket?.start()
         }
     }
 
@@ -957,14 +1006,27 @@ class WorkspaceService internal constructor(
 
     /**
      * The app left the foreground: the socket closes, and no run, retry or timed listing starts on its own until the
-     * next resume or ChatSyncWorker's window. Read reports already under way go on, and so does a run someone waits
-     * for; a run nobody waits for ends its request in flight and stops before the next ([FeedRunner.wanted]), and the
-     * next run continues from its committed cursor.
+     * next resume or ChatSyncWorker's window, unless Phone tools' window is open ([stayConnected]). Read reports
+     * already under way go on, and so does a run someone waits for; a run nobody waits for ends its request in flight
+     * and stops before the next ([FeedRunner.wanted]), and the next run continues from its committed cursor.
      */
     fun paused() {
         foreground = false
         updateSockets()
     }
+
+    /**
+     * Phone tools' foreground service runs and the phone has a network ([ChatBackground]): with team chat notifications
+     * on, the window opens. Its sockets open, runs and the outbox may go on by themselves, and every workspace runs at
+     * once and then every [ChatTiming.windowCatchUpEvery] while the app is in the background. False closes it: the
+     * sockets the foreground doesn't need close and the runs stop, as after [paused].
+     */
+    fun stayConnected(on: Boolean) {
+        stayWanted.value = on
+    }
+
+    /** Whether Phone tools' window is open, for tests. */
+    internal val windowOpen: Boolean get() = window
 
     /**
      * Focus, resume or a network that came back (§3.11): list again at most once a minute, run the selected workspace
@@ -996,7 +1058,7 @@ class WorkspaceService internal constructor(
                     }
                 }
             }
-            l.socket?.socket?.let { if (it.state.value == SocketState.OFF) it.start() else it.nudge() }
+            for (open in l.liveSockets.values) open.socket.let { if (it.state.value == SocketState.OFF) it.start() else it.nudge() }
             updateSockets(l)
             l.outbox.kick(retryNow = true)
         }
@@ -1154,7 +1216,7 @@ class WorkspaceService internal constructor(
                 else -> WorkspaceStatus.OK
             },
             syncing = runner?.running == true,
-            socket = l.socket?.takeIf { it.ws == row.id }?.socket?.state?.value ?: SocketState.OFF,
+            socket = l.liveSockets[row.id]?.socket?.state?.value ?: SocketState.OFF,
             error = runner?.error,
             attention = totals?.attention ?: 0,
             unread = totals?.unread ?: false,
@@ -1952,6 +2014,24 @@ class WorkspaceService internal constructor(
         // Failures a socket's recheck after a 4003 waits out before it connects again.
         private val RECHECKED = setOf("network", "server", "rate_limited")
 
+        /** The wait before the next run in Phone tools' window: [ChatTiming.windowCatchUpEvery] ± its jitter. */
+        fun windowCatchUpDelay(timing: ChatTiming, random: Double): Long =
+            timing.windowCatchUpEvery + Math.round((random.coerceIn(0.0, 1.0) * 2 - 1) * timing.windowCatchUpJitter)
+
+        /**
+         * The workspaces that get a socket: [onScreen] (the foreground's, or null) when it is a candidate, then up to
+         * [extra] more, the most recently active first. A workspace never active comes last, by ID so the choice holds.
+         */
+        internal fun socketsFor(candidates: List<SocketCandidate>, onScreen: String?, extra: Int): Set<String> {
+            val out = LinkedHashSet<String>()
+            if (onScreen != null && candidates.any { it.id == onScreen }) out += onScreen
+            candidates
+                .sortedWith(compareByDescending<SocketCandidate> { it.activeAt ?: Long.MIN_VALUE }.thenBy { it.id })
+                .take(extra.coerceAtLeast(0))
+                .mapTo(out) { it.id }
+            return out
+        }
+
         /** The host of a credential URL, with its port when it has one, for text. */
         fun hostOf(server: String): String = try {
             val uri = URI(server)
@@ -1967,6 +2047,9 @@ class WorkspaceService internal constructor(
  * A DM row's preview (§7.4): the newest cached message, or the newer one an alert's fetch loaded while the cache
  * doesn't hold it yet. At the same seq the cache's wins, as it knows of a removal.
  */
+/** A workspace that may get a wake socket, with when it was last active on this phone ([WorkspaceService.socketsFor]). */
+internal data class SocketCandidate(val id: String, val activeAt: Long?)
+
 internal fun newestOf(cached: Event?, fetched: Event?): Event? = when {
     fetched == null -> cached
     cached == null -> fetched
