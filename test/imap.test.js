@@ -1103,6 +1103,27 @@ test('over a real connection without UIDPLUS, Rukoo deletes nothing for good, co
   }
 });
 
+// #308 round 4, finding 3: the MODSEQ by which Rukoo takes its mark off again has to be the STORE's own. Here another
+// session takes the mark off and sets it again while Rukoo's STORE runs, and the server reports that as a second FETCH
+// of the same UID. Rukoo can't tell which MODSEQ is its own, so the mark stays and the notice says so.
+test('over a real connection with CONDSTORE, two FETCHes of the email during the STORE leave the deletion mark', () =>
+  overTcp(['MOVE', 'UIDPLUS', 'CONDSTORE'], async (box, s, inbox) => {
+    const a = box.put('INBOX', { subject: 'Marked twice' });
+    box.refuse((command) => /^UID EXPUNGE /i.test(command));
+    box.before((command, folder, write, later) => {
+      if (!/^UID STORE .*\+FLAGS/i.test(command)) return;
+      later((send) => {
+        box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
+        const m = box.touch('INBOX', a.uid, (x) => x.flags.add('\\Deleted'));
+        send(`* 1 FETCH (UID ${a.uid} MODSEQ (${m.modseq}))\r\n`);
+      });
+    });
+    const from = box.commands.length;
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true, stage: 'expunge' });
+    assert.ok(deleted(inbox.messages[0]), "the other session's mark stays");
+    assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
+  }));
+
 // #308 follow-up, finding 6: the checks must not cost a round trip per email. Counted over TCP for 500 emails; the
 // commands of the move or delete itself are one MOVE, or one STORE and one EXPUNGE, per email, as before #308.
 test('a batch of 500 moves asks one STATUS, and 500 deletes read flags once per 100 emails', () =>

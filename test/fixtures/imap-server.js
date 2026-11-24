@@ -215,8 +215,10 @@ function tokens(s) {
 // With CONDSTORE among the capabilities (ENABLE comes with it), every email has a MODSEQ that each change of its flags
 // moves on, a client that enables it gets MODSEQ in FETCH answers, and a STORE takes UNCHANGEDSINCE, answering
 // [MODIFIED] for the emails it left alone. Without UIDPLUS, COPY and MOVE give no COPYUID. UID EXPUNGE removes only
-// the uids it names. before(fn) runs fn(command, selected folder, write) ahead of each command: another app's change
-// (touch()), or write() for a line the server sends of its own accord, such as a FETCH of another email.
+// the uids it names. before(fn) runs fn(command, selected folder, write, later) ahead of each command: another app's
+// change (touch()), or write() for a line the server sends of its own accord, such as a FETCH of another email.
+// later(fn) runs fn(write) after the command's own untagged lines, just before its tagged answer: another session's
+// change while the command runs, such as an EXPUNGE during a FETCH.
 function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'], rev = 'IMAP4rev1' }) {
   const condstore = capabilities.includes('CONDSTORE');
   const uidplus = capabilities.includes('UIDPLUS');
@@ -294,7 +296,7 @@ function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'], rev = 'IMAP4re
     let selected = null;
     let idleTag = null;
     let modseqs = false;
-    const w = (s) => socket.write(s);
+    const send = (s) => socket.write(s);
     const pick = (byUid, set) => {
       const msgs = selected ? selected.messages : [];
       const ids = inSet(set, byUid ? msgs.map((m) => m.uid) : msgs.map((_, i) => i + 1));
@@ -303,7 +305,7 @@ function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'], rev = 'IMAP4re
     const handle = (line) => {
       if (idleTag) {
         if (line.trim().toUpperCase() === 'DONE') {
-          w(`${idleTag} OK IDLE terminated\r\n`);
+          send(`${idleTag} OK IDLE terminated\r\n`);
           idleTag = null;
         }
         return;
@@ -311,6 +313,16 @@ function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'], rev = 'IMAP4re
       const sp = line.indexOf(' ');
       if (sp < 0) return;
       const tag = line.slice(0, sp);
+      // What before()'s later(fn) queued runs just ahead of this command's tagged answer, after its own untagged lines.
+      const late = [];
+      const w = (s) => {
+        let at = s.startsWith(`${tag} `) ? 0 : s.indexOf(`\r\n${tag} `);
+        if (at > 0) at += 2;
+        if (at < 0 || !late.length) return send(s);
+        send(s.slice(0, at));
+        for (const fn of late.splice(0)) fn(send);
+        return send(s.slice(at));
+      };
       const all = line.slice(sp + 1);
       let [cmd, ...rest] = all.split(' ');
       let args = rest.join(' ');
@@ -321,7 +333,7 @@ function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'], rev = 'IMAP4re
       }
       const C = cmd.toUpperCase();
       if (C !== 'LOGIN') commands.push(all);
-      if (beforeEach) beforeEach(all, selected && selected.path, w);
+      if (beforeEach) beforeEach(all, selected && selected.path, send, (fn) => late.push(fn));
       const refusal = refusing && refusing(all, selected && selected.path);
       if (refusal === 'drop' && C !== 'MOVE') return socket.destroy();
       if (refusal && !(C === 'MOVE' && (refusal === 'copied' || refusal === 'drop'))) return w(`${tag} NO Not allowed\r\n`);
