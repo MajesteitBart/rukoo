@@ -94,6 +94,12 @@ export function sendTarget({ shown, conv = null, draft }) {
   return { agent, conv: conv ? conv.id : null };
 }
 
+// The longest message text main takes (AGENT_TEXT_MAX in main.js, which cuts anything longer; test/agent-draft.test.js
+// checks they agree). The renderer has no way to load main's files, so the number is in both.
+export const TEXT_MAX = 20000;
+// How many characters text is over that, 0 when it fits: Send then sends nothing and keeps the input as it is.
+export const overLimit = (text) => Math.max(0, String(text || '').length - TEXT_MAX);
+
 // ---------- Set up ----------
 
 // What Set up {name} puts the keyboard in on the agent's card in Settings, for the state the panel showed:

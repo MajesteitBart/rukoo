@@ -1722,6 +1722,9 @@ const api = {
 // ---- agents ----
 // The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
 const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The longest message text a chat takes; anything longer is cut. The chat panel refuses longer text before Send clears
+// the input (TEXT_MAX in src/renderer/agent/pick.js, the same number).
+const AGENT_TEXT_MAX = 20000;
 const agentId = (v) => {
   if (typeof v !== 'string' || !v || v.length > 200) throw new Error('invalid');
   return v;
@@ -1823,9 +1826,9 @@ Object.assign(api, {
   agentSend: (id, input) => {
     const i = agentPlain(input);
     return agentHub().send(agentId(id), {
-      text: agentText(i.text, 20000),
+      text: agentText(i.text, AGENT_TEXT_MAX),
       action: agentText(i.action, 40) || null,
-      display: agentText(i.display, 20000) || null,
+      display: agentText(i.display, AGENT_TEXT_MAX) || null,
       skill: agentText(i.skill, 64) || null,
       // Tokens of staged files (agentPickFiles, agentAddFile) and Rukoo ids of emails.
       files: agentList(i.files).map(agentId),

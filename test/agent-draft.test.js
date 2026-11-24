@@ -127,6 +127,17 @@ test('Send takes the agent the input shows, with its chat, or nothing when they 
   assert.equal(sendTarget({ shown: null, draft }), null);
 });
 
+// main cut a longer message without a word, after Send had cleared the input.
+test('Send refuses text longer than main takes, by the same number main cuts at', async () => {
+  const { TEXT_MAX, overLimit } = await pick;
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+  assert.equal(Number(/const AGENT_TEXT_MAX = (\d+);/.exec(main)?.[1]), TEXT_MAX);
+  assert.match(main, /text: agentText\(i\.text, AGENT_TEXT_MAX\)/);
+  assert.equal(overLimit('x'.repeat(TEXT_MAX)), 0);
+  assert.equal(overLimit('x'.repeat(TEXT_MAX + 1002)), 1002);
+  assert.equal(overLimit(''), 0);
+});
+
 test('Set up focuses the control for the state the agent is in', async () => {
   const { setupTarget } = await pick;
   const full = { url: { empty: false }, exe: { empty: true } };

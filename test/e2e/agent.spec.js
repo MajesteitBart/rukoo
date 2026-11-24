@@ -1195,6 +1195,43 @@ test('text typed while an email is looked up keeps the agent it was typed under 
   await expect.poll(agentsOfChats).toEqual(['codex', 'codex']);
 });
 
+// Main holds the first new chat until the test lets it fail; the chats after it are made as usual. The names of the
+// agents asked for are in global.__asked.
+const failFirstChat = () =>
+  app.evaluate(() => {
+    const hub = global.__semAgents;
+    const create = hub.create.bind(hub);
+    global.__asked = [];
+    global.__create = new Promise((resolve) => (global.__failCreate = resolve));
+    hub.create = (req) => {
+      global.__asked.push(req.agent);
+      if (global.__asked.length > 1) return create(req);
+      return global.__create.then(() => {
+        throw new Error('offline');
+      });
+    };
+  });
+
+// A long message whose send fails comes back above the one written meanwhile, and the two together are longer than main
+// takes. Send used to clear the input and main cut the text, so the end of the newer message was lost.
+test('a message longer than main takes is not sent, stays whole in the input and says how much too long it is', async () => {
+  await openChat('Call on Thursday');
+  await failFirstChat();
+  const first = 'A'.repeat(19000);
+  const second = 'B'.repeat(2000);
+  await say(first);
+  await expect.poll(inputValue).toBe('');
+  await input().fill(second);
+  await app.evaluate(() => global.__failCreate());
+  const both = `${first}\n\n${second}`;
+  await expect.poll(inputValue).toBe(both);
+  await input().press('Enter');
+  await expect(win.locator('#toast')).toContainText('This message is 1,002 characters too long. Shorten it or send it in parts.');
+  expect(await inputValue()).toBe(both);
+  expect(await app.evaluate(() => global.__asked)).toEqual(['clark']);
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
+});
+
 test('a wide chat panel gives way, so the reader keeps its 420 px', async () => {
   await openChat('Call on Thursday');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1300, 900));

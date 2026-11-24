@@ -975,6 +975,13 @@
     "message": "Chat with an agent (Ctrl+J)",
     "description": "Title bar button tooltip that opens or closes the chat panel."
   },
+  "agent.panel.tooLong": {
+    "message": {
+      "one": "This message is {shown} character too long. Shorten it or send it in parts.",
+      "other": "This message is {shown} characters too long. Shorten it or send it in parts."
+    },
+    "description": "Chat panel notice when you press Send on a message longer than a chat takes (20,000 characters). Nothing is sent and the text stays in the input. count: how many characters too many; shown: that number, formatted (send in agent/panel.js)."
+  },
   "agent.panel.transcript": {
     "message": "Conversation",
     "description": "Chat panel: accessible name of the list of messages in the conversation."

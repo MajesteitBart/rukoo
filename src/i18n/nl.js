@@ -249,6 +249,10 @@
   "agent.queue.editFull": "Dit bericht blijft wachten: in het bericht dat je schrijft is geen ruimte voor de bijlagen ervan. Een bericht neemt maximaal {files} bestanden en {emails} e-mails mee.",
   "agent.queue.remove": "Verwijderen",
   "agent.panel.toggle": "Chatten met een agent (Ctrl+J)",
+  "agent.panel.tooLong": {
+    "one": "Dit bericht is {shown} teken te lang. Maak het korter of verstuur het in delen.",
+    "other": "Dit bericht is {shown} tekens te lang. Maak het korter of verstuur het in delen."
+  },
   "agent.panel.transcript": "Gesprek",
   "agent.panel.waitFiles": "Wacht tot de bestanden zijn toegevoegd en verstuur dan.",
   "agent.permission.title": "Toestemmingsniveau",

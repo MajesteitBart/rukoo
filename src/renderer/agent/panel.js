@@ -10,7 +10,7 @@ import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
 // BLOCKED: the states that keep an agent from taking a message until they are fixed in Settings. The draft's agent
 // and its hold: see the notes above startDraft() in pick.js. What Send goes to: sendTarget().
-import { BLOCKED, readyAgents, startDraft, followDraft, keepDraft, pickDraft, sendTarget } from './pick.js';
+import { BLOCKED, readyAgents, startDraft, followDraft, keepDraft, pickDraft, sendTarget, overLimit } from './pick.js';
 
 const AGENTS = ['clark', 'claude', 'codex', 'openclaw'];
 // Product names, not translated.
@@ -1270,6 +1270,12 @@ export function mountAgentPanel(ctx) {
   function send(text, action = null, skill = null, mode = null) {
     const body = String(text || '').trim();
     if (sending || holding() || (!body && !action && !skill && !hasAttachments())) return false;
+    // Main cuts a longer text, so nothing goes and the input keeps all of it to shorten.
+    const over = action || skill ? 0 : overLimit(body);
+    if (over) {
+      toast(t('agent.panel.tooLong', { count: over, shown: over.toLocaleString(getLocale()) }), 6000);
+      return false;
+    }
     const sent = capture();
     if (!sent) {
       redrawAgents();
