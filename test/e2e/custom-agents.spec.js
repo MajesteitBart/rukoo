@@ -299,6 +299,41 @@ test('a follow-up written in a chat whose agent is then removed comes along when
   await expect.poll(async () => (await userMessages()).sort()).toEqual([['claude', ['A follow-up for Booper']], [id, ['Hello Booper']]]);
 });
 
+// The input of a chat whose agent was removed used to be hidden with the text in it: out of sight until another agent
+// was picked, which needs a second agent set up.
+test('a chat whose agent was removed keeps its unsent text readable and copyable, and cannot send it', async () => {
+  await launch();
+  const id = await win.evaluate(() => window.mail.call('agentAddCustom', 'booper').then((r) => r.id));
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  await win.keyboard.press('Control+j');
+  await pickAgentRow('Booper');
+  await input().fill('Hello Booper');
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Booper']);
+  await input().fill('A follow-up for Booper');
+  await win.evaluate((x) => window.mail.call('agentRemoveCustom', x), id);
+  await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText('Booper was removed in Settings.');
+  await expect(input()).toBeVisible();
+  await expect(input()).toHaveText('A follow-up for Booper');
+  await expect(input()).not.toBeEditable();
+  // It can be selected, and a copy gives the text; a cut copies too and leaves the text where it is.
+  await input().selectText();
+  expect(await win.evaluate(() => document.getSelection().toString())).toBe('A follow-up for Booper');
+  const clip = (type) =>
+    input().evaluate((ta, type) => {
+      const dt = new DataTransfer();
+      ta.dispatchEvent(new ClipboardEvent(type, { clipboardData: dt, bubbles: true, cancelable: true }));
+      return dt.getData('text/plain');
+    }, type);
+  expect(await clip('copy')).toBe('A follow-up for Booper');
+  expect(await clip('cut')).toBe('A follow-up for Booper');
+  await expect(input()).toHaveText('A follow-up for Booper');
+  // Nothing sends it.
+  await expect(win.locator('.agentpane .bui-pb__send')).toBeDisabled();
+  await win.keyboard.press('Enter');
+  expect(await userMessages()).toEqual([[id, ['Hello Booper']]]);
+});
+
 test('an OpenAI-compatible agent: its own toggles, and the setup most MCP clients take', async () => {
   await launch();
   await openAgents();

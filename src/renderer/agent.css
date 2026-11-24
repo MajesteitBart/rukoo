@@ -1989,6 +1989,14 @@
 .bui-pb.is-disabled .bui-pb__box {
   background: var(--inset);
 }
+/* An input that is off but keeps its text readable (setDisabled's readable): shown only while it holds text, and
+   selectable to copy, which the page's text otherwise isn't. */
+.bui-pb.is-disabled .bui-pb__ta {
+  user-select: text;
+}
+.bui-pb.is-disabled .bui-pb__ta.is-empty {
+  display: none;
+}
 .bui-pb__files {
   display: flex;
   flex-wrap: wrap;

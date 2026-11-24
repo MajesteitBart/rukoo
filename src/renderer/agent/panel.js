@@ -728,7 +728,8 @@ export function mountAgentPanel(ctx) {
     chat.setPlaceholder(placeholder());
     const state = stateOf(id);
     const blocked = P.unavailable || BLOCKED.has(state);
-    chat.setDisabled(blocked, blocked ? setupNote(id, state) : null);
+    // A removed agent has nothing to set up, so its chat's or draft's text stays readable to copy.
+    chat.setDisabled(blocked, blocked ? setupNote(id, state) : null, !P.unavailable && state === 'removed');
     refreshPickers();
     // Whether the agent can steer decides what a waiting message offers.
     showQueue();

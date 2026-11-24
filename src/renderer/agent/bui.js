@@ -1990,7 +1990,8 @@ export function chatComposer(opts = {}, handlers = {}) {
     const pasted = data ? [...data.files] : [];
     const types = data ? [...data.types] : [];
     e.preventDefault();
-    if (pasted.length && handlers.onFiles && !state.disabled && !types.includes('text/plain')) {
+    if (state.disabled) return;
+    if (pasted.length && handlers.onFiles && !types.includes('text/plain')) {
       handlers.onFiles(pasted.map((file) => ({ file, folder: false })));
       return;
     }
@@ -2007,7 +2008,8 @@ export function chatComposer(opts = {}, handlers = {}) {
     if (cut) insert('', 'cut');
   }
   ta.addEventListener('copy', (e) => copy(e, false));
-  ta.addEventListener('cut', (e) => copy(e, true));
+  // An input that is off only copies.
+  ta.addEventListener('cut', (e) => copy(e, !state.disabled));
 
   ta.addEventListener('compositionstart', () => {
     composing = true;
@@ -2165,10 +2167,14 @@ export function chatComposer(opts = {}, handlers = {}) {
       else if (was && document.activeElement === ta) refreshMenu();
       updateSend();
     },
-    setDisabled(disabled, reason) {
+    // readable: while off, the text stays on screen to select and copy, and can't be changed or sent.
+    setDisabled(disabled, reason, readable = false) {
       state.disabled = Boolean(disabled);
       el.classList.toggle('is-disabled', state.disabled);
-      ta.hidden = state.disabled;
+      ta.hidden = state.disabled && !readable;
+      const editable = state.disabled ? 'false' : 'plaintext-only';
+      if (ta.getAttribute('contenteditable') !== editable) ta.setAttribute('contenteditable', editable);
+      ta.setAttribute('aria-readonly', String(state.disabled));
       disabledRow.hidden = !state.disabled;
       disabledRow.replaceChildren();
       if (state.disabled && reason != null) disabledRow.append(reason instanceof Node ? reason : String(reason));
