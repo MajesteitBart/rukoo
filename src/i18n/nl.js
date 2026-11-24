@@ -3144,6 +3144,8 @@
   "chat.agents.runTitle": "De runner starten",
   "chat.agents.getRunner": "Runner ophalen op GitHub",
   "chat.agents.joinChannel": "{name} toevoegen aan #{channel}",
+  "chat.agents.noneUsable": "Geen van je agents in Instellingen → Agents kan antwoorden: ze staan uit, zijn niet ingesteld of niet geïnstalleerd.",
+  "chat.agents.joinRetry": "Kies Klaar om het opnieuw te proberen, of zet het vinkje uit en voeg {name} later toe met Agents toevoegen in het menu van het kanaal.",
   "chat.agents.notConnectedSent": "{name} is nog niet verbonden en antwoordt pas als de runner draait.",
   "chat.new.title": "Nieuw bericht",
   "chat.new.to": "Aan",

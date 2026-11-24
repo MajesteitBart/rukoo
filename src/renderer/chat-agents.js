@@ -138,6 +138,23 @@ export function runnerChoices(config, { status = null, names = {} } = {}) {
     .map(([a]) => a);
 }
 
+// How long the key step waits for one agent's status check.
+export const STATUS_WAIT = 3000;
+
+// "Answers with" on desktop: runnerChoices of agentConfig's answer, with a status check of each agent (statusOf(id),
+// agentStatus for that agent) that gets wait ms of its own, so a slow agent stays unknown without holding up the
+// others. Only what Settings has: an empty list when no agent there can answer, or config is null.
+export async function askedRunnerChoices(config, statusOf, { wait = STATUS_WAIT } = {}) {
+  if (!config) return [];
+  const ids = runnerChoices(config).map((a) => a.id);
+  const entries = await Promise.all(
+    ids.map((id) =>
+      Promise.race([Promise.resolve().then(() => statusOf(id)).catch(() => null), new Promise((resolve) => setTimeout(() => resolve(null), wait))]).then((s) => [id, s])
+    )
+  );
+  return runnerChoices(config, { status: Object.fromEntries(entries.filter(([, s]) => s && typeof s === 'object')) });
+}
+
 // How to start the runner with the config saved as agent.json next to runner.js.
 export const RUNNER_COMMAND = 'node runner.js --config agent.json';
 

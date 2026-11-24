@@ -136,6 +136,36 @@ test('Answers with offers the agents a status check passed first, the default ag
   assert.deepEqual(runnerChoices(config, { status: { claude: { state: 'starting' } } }).find((a) => a.id === 'claude').ready, false);
 });
 
+test("on desktop Answers with asks each agent's status on its own, so a slow one doesn't hide the others, and offers only what Settings has", async () => {
+  const { askedRunnerChoices } = await loading;
+  const ids = (list) => list.map((a) => a.id);
+  const asked = [];
+  // Hermes never answers; Claude Code is ready; Booper is offline; the other custom agent's check fails.
+  const statusOf = (id) => {
+    asked.push(id);
+    if (id === 'clark') return new Promise(() => {});
+    if (id === 'claude') return Promise.resolve({ state: 'ready' });
+    if (id === 'openclaw') return Promise.resolve({ state: 'unconfigured' });
+    if (id === 'cx_abcdefghij') return Promise.resolve({ state: 'offline' });
+    return Promise.reject(new Error('no'));
+  };
+  const started = Date.now();
+  const list = await askedRunnerChoices({ ...config, defaultAgent: 'clark' }, statusOf, { wait: 200 });
+  assert.ok(Date.now() - started < 2000);
+  assert.deepEqual(asked.sort(), ['clark', 'claude', 'cx_abcdefghij', 'cx_klmnopqrst', 'openclaw']);
+  // The ready one first, though Hermes is the default; OpenClaw, which isn't set up, is left out; Hermes, which didn't
+  // answer in time, and the agents whose check failed or that are offline stay, in Settings' order.
+  assert.deepEqual(ids(list), ['claude', 'clark', 'cx_abcdefghij', 'cx_klmnopqrst']);
+  assert.deepEqual(list.map((a) => a.ready), [true, false, false, false]);
+
+  // Every agent off, not set up or not installed: nothing, and never the browser's Claude Code and Codex.
+  const none = await askedRunnerChoices(config, (id) => Promise.resolve({ state: id === 'clark' || id === 'openclaw' ? 'unconfigured' : 'missing' }), { wait: 200 });
+  assert.deepEqual(none, []);
+  const off = { clark: { enabled: false }, claude: { enabled: false }, codex: { enabled: false }, openclaw: { enabled: false }, custom: [] };
+  assert.deepEqual(await askedRunnerChoices(off, () => Promise.resolve({ state: 'ready' })), []);
+  assert.deepEqual(await askedRunnerChoices(null, () => Promise.resolve({ state: 'ready' })), []);
+});
+
 test('without Settings, as in the browser and on the phone, Answers with offers Claude Code and Codex, which need no settings', async () => {
   const { runnerChoices, PLAIN_AGENTS, OWN_PROGRAM } = await loading;
   const list = runnerChoices(null);

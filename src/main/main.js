@@ -1760,7 +1760,8 @@ Object.assign(api, {
   agentUpdateConfig: (patch) => agentHub().updateConfig(agentPlain(patch)),
   agentSetSecret: (agent, value) => agentHub().setSecret(agentId(agent), agentText(value, 4000)),
   agentTest: (agent) => agentHub().test(agentId(agent)),
-  agentStatus: () => agentHub().status(),
+  // Every agent's status, or with an id that agent's alone (team chat's key step asks each on its own).
+  agentStatus: (id) => (id == null ? agentHub().status() : agentHub().agentStatus(agentId(id))),
   agentCopyHermesSetup: () => agentHub().copyHermesSetup(),
   agentCopyOpenClawSetup: () => agentHub().copyOpenClawSetup(),
   agentAddCustom: (preset) => agentHub().addCustomAgent(agentText(preset, 20)),

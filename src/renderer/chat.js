@@ -4,6 +4,7 @@ import { api, esc, $, hue, initials, toast, showMenu, fileSize } from './ui.js';
 import { sortRooms, dmTitle, displayName, roomBadge, modeBadge as badgeFor } from './chat-model.js';
 import { mountView } from './chat-view.js';
 import * as D from './chat-dialogs.js';
+import { forgetSeen } from './chat-agent-seen.js';
 
 // Team chat: a fourth mode next to Mail, Calendar and Meet (Ctrl+4), shown while the server of the person's Rukoo
 // account has team chat (contract 3.1, 5.2). Main holds the workspaces, their cache and the network
@@ -774,6 +775,8 @@ function applyState(state, { openFirst = true } = {}) {
   CH.known = true;
   trackConnection();
   if (!state.signedIn || !state.available) {
+    // When agents were last active is for the person signed in: the next one asks again (chat-agent-seen.js).
+    if (!state.signedIn) forgetSeen();
     if (CH.ws) switchTo(null);
     CH.gone = null;
     CH.wasOnline = false;

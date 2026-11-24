@@ -25,8 +25,8 @@ import {
   canManageAgent,
   canRenewAgentKey
 } from './chat-model.js';
-import { runnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL } from './chat-agents.js';
-import { seenOf, loadSeen, rememberAgents } from './chat-agent-seen.js';
+import { runnerChoices, askedRunnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL } from './chat-agents.js';
+import { seenOf, loadSeen, rememberAgents, forgetSeen } from './chat-agent-seen.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -84,10 +84,15 @@ const agentTag = () => `<span class="ch-tag ch-agent-tag">${esc(t('chat.roles.ag
 const byName = (a, b) => collator().compare(displayName(a, t), displayName(b, t));
 // "Made by Olga · Answers only Olga" under an agent's name, as a channel's members and Workspace members show it.
 const agentLine = (m) => agentNote(m, { members: K.CH.members, t, listFormat: listFormat() });
-// "Not connected yet" or "Last active 5 minutes ago", when the app knows (chat-agent-seen.js).
-const seenLine = (id, lastSeen = seenOf(K.CH.ws, id)) => agentSeenText(lastSeen, { t, locale: getLocale() });
-// Whether this person can read when the workspace's agents were last active (GET /agents is for full members).
-const seesAgents = () => agentsOn() && !K.isGuest();
+// Whether this person can read when the workspace's agents were last active (GET /agents is for full members). A
+// person who became a guest sees nothing of it, and what the app had is dropped.
+const seesAgents = () => {
+  if (agentsOn() && !K.isGuest()) return true;
+  forgetSeen(K.CH.ws);
+  return false;
+};
+// "Not connected yet" or "Last active 5 minutes ago", when the app knows (chat-agent-seen.js) and the person may know.
+const seenLine = (id, lastSeen = seenOf(K.CH.ws, id)) => (seesAgents() ? agentSeenText(lastSeen, { t, locale: getLocale() }) : '');
 // A member's name in a list row; an agent's with its line under it: who made it, whom it answers, whether it connected.
 const personName = (m, label) => {
   const note = isAgent(m) ? [agentLine(m), seenLine(m.id)].filter(Boolean).join(' · ') : null;
@@ -187,7 +192,8 @@ function focusKey(el) {
 
 // A dialog about the workspace on screen: it closes when that workspace changes or goes (desktop-ui 7.11).
 // opts.redraw(body): draws the dialog's lists again when the directory changes, keeping what was typed, picked or
-// checked; the focus stays on the same control.
+// checked; the focus stays on the same control. opts.stay: the dialog holds what it is about itself, such as a key
+// that shows only once, and stays when the workspace on screen changes.
 function wsDialog(opts) {
   const gen = K.CH.generation;
   let timer = null;
@@ -195,9 +201,11 @@ function wsDialog(opts) {
   return dialog({
     ...opts,
     render(body, done) {
-      timer = setInterval(() => {
-        if (K.CH.generation !== gen || !body.isConnected) done(null);
-      }, 250);
+      if (!opts.stay) {
+        timer = setInterval(() => {
+          if (K.CH.generation !== gen || !body.isConnected) done(null);
+        }, 250);
+      }
       chatDialog(body);
       if (opts.quietClose) body.closest('.dialog').classList.add('ch-quiet-close');
       if (opts.cls) body.closest('.dialog').classList.add(...opts.cls.split(' '));
@@ -2163,21 +2171,21 @@ export async function agentsDialog() {
   });
 }
 
-// The choices of "Answers with" in the key step (chat-agents.js runnerChoices): on desktop the person's agents of
-// Settings, Agents, ready ones first. A status check can take seconds (an offline server), so it gets 3 s and is asked
-// as early as possible; without an answer the agents keep Settings' order. Without Settings, as in the browser, or
-// when none of them can answer, the agents the runner finds on its computer by itself.
+// The choices of "Answers with" in the key step (chat-agents.js askedRunnerChoices): on desktop only the person's
+// agents of Settings, Agents that can answer, ready ones first, each with a status check of its own that gets 3 s, so
+// a slow one doesn't hold up the others; it is asked as early as possible. An empty list leaves A program of my own,
+// and the step says why. In the browser, without Settings, the agents the runner finds on its computer by itself.
 function askRunnerChoices() {
   if (WEB) return Promise.resolve(runnerChoices(null));
-  const status = Promise.race([api('agentStatus').catch(() => null), sleep(3000).then(() => null)]);
-  return Promise.all([api('agentConfig').catch(() => null), status]).then(([config, st]) => {
-    const list = config ? runnerChoices(config, { status: st }) : [];
-    return list.length ? list : runnerChoices(null);
-  });
+  return api('agentConfig')
+    .catch(() => null)
+    .then((config) => askedRunnerChoices(config, (id) => api('agentStatus', id)));
 }
 
-// The channel on screen, when a new agent of the person's may join it there and then (canAddAgent).
-function channelToJoin(agent) {
+// The channel on screen, when a new agent of the person's may join it there and then (canAddAgent), and the agent's
+// workspace (ws) is the one on screen.
+function channelToJoin(agent, ws) {
+  if (!agent || ws !== K.CH.ws) return null;
   const room = K.CH.openId ? K.CH.rooms.get(K.CH.openId) : null;
   const candidate = { id: agent.id, kind: 'agent', state: 'active', agent: { sponsor: K.me() } };
   // The person sees the channel, so they are in it: a private one takes their agent from its managers.
@@ -2185,11 +2193,13 @@ function channelToJoin(agent) {
 }
 
 // Add an agent: the form, then its key once, in a config for the runner, with the offer to add it to the channel on
-// screen.
+// screen. The key step gets the workspace and server the agent was made in, whatever is on screen by then.
 export async function addAgent() {
+  const ws = K.CH.ws;
+  const server = K.CH.state?.server || '';
   const choices = askRunnerChoices();
   const made = await agentForm(null);
-  if (made && made.key) await showAgentKey(made, { choices: await choices, room: channelToJoin(made.agent) });
+  if (made && made.key) await showAgentKey(made, { ws, server, choices: await choices, room: channelToJoin(made.agent, ws) });
   return made ? made.agent : null;
 }
 
@@ -2203,13 +2213,15 @@ export async function editAgent(agent) {
 export async function newAgentKey(agent) {
   const ws = K.CH.ws;
   if (!ws || !agent) return null;
+  const server = K.CH.state?.server || '';
   // Asked while the question is open, so the key step needn't wait for a slow status check after the key is made.
   const choices = askRunnerChoices();
   const ok = await confirmDialog(t('chat.agents.newKeyTitle', { name: agent.name }), t('chat.agents.newKeyBody', { name: agent.name }), t('chat.agents.newKeyConfirm'));
   if (!ok || ws !== K.CH.ws) return null;
   try {
     const made = await api('chatNewAgentKey', ws, agent.id);
-    if (made && made.key && ws === K.CH.ws) await showAgentKey(made, { choices: await choices });
+    // The old key stopped: the new one shows, for this workspace, whatever is on screen by now.
+    if (made && made.key) await showAgentKey(made, { ws, server, choices: await choices });
     return made ? made.agent : null;
   } catch (err) {
     toast(K.errorText(err), 5000);
@@ -2247,6 +2259,9 @@ async function agentForm(agent = null) {
   const chosen = new Set(editing && agent.answers === 'members' ? agent.members || [] : []);
   let finish = null;
   let busy = false;
+  // The request Make or Save sent: an agent made after the dialog closed (the workspace on screen changed, or Escape)
+  // still comes back, so its key is never dropped without a word.
+  let inFlight = null;
   // The people it may answer besides its sponsor: active people, never an agent.
   const people = () => activeMembers().filter((m) => isPerson(m) && m.id !== sponsor).sort(byName);
   const sponsorName = () => nameOf(sponsor);
@@ -2308,9 +2323,14 @@ async function agentForm(agent = null) {
     busy = true;
     setBusy(scrim, true);
     try {
-      const res = editing
-        ? await api('chatUpdateAgent', ws, agent.id, { name, answers, agents, ...(answers === 'members' ? { members } : {}) })
-        : await api('chatCreateAgent', ws, { name, answers, agents, ...(answers === 'members' ? { members } : {}) });
+      const call = editing
+        ? api('chatUpdateAgent', ws, agent.id, { name, answers, agents, ...(answers === 'members' ? { members } : {}) })
+        : api('chatCreateAgent', ws, { name, answers, agents, ...(answers === 'members' ? { members } : {}) });
+      inFlight = call.then(
+        (res) => res || null,
+        () => null
+      );
+      const res = await call;
       finish(res || null);
     } catch (err) {
       busy = false;
@@ -2377,24 +2397,29 @@ async function agentForm(agent = null) {
       drawPeople(body);
       setTimeout(() => body.querySelector('[name="name"]')?.[editing ? 'select' : 'focus'](), 0);
     }
-  });
+  }).then((value) => value || (inFlight ? inFlight : null));
 }
 
 // The key step after Add an agent and New key: what to do, in three steps. 1, Answers with: the agent the runner hands
 // mentions to, preselected (askRunnerChoices), with A program of my own last. 2, the runner's config, with the key in
 // it, which shows only once: Copy config is the filled button until something was copied. 3, how to start the runner
-// with Node.js 22 or newer. A new agent of the person's can join the channel on screen when the step closes (room).
-// Closing before anything was copied asks first, as the invitation link does.
+// with Node.js 22 or newer. A new agent of the person's can join the channel on screen (room): Done with the box
+// checked adds it there, and a refusal keeps the step open, says why and offers Done again. Closing before anything was
+// copied asks first, as the invitation link does. ws and server: the workspace the key is for, which the step keeps
+// when the workspace on screen changes. An empty choices (desktop, where no agent of Settings can answer) leaves A
+// program of my own, and the line under it says why.
 //
 // Starting the runner from Rukoo itself ("Run on this computer", #373) would go at the head of step 3, as Copy config
 // heads step 2.
-async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) {
-  const ws = K.CH.ws;
+async function showAgentKey({ agent, key }, { ws = K.CH.ws, server = K.CH.state?.server || '', choices = [], room = null } = {}) {
   if (!ws || !agent || !key) return null;
-  const server = K.CH.state?.server || '';
   let pick = choices.length ? choices[0].id : OWN_PROGRAM;
+  const noneUsable = !choices.length;
   let kept = false;
   let join = Boolean(room);
+  // Done was pressed and the close question answered; a join that the server refused waits for Done again.
+  let leaving = false;
+  let busy = false;
   const backend = () => choices.find((c) => c.id === pick)?.backend || PLACEHOLDER_BACKEND;
   const config = () => runnerConfig({ server, workspace: ws, key, backend: backend() });
 
@@ -2407,7 +2432,8 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
     field.scrollTop = 0;
     const env = runnerEnv(cfg);
     const help = body.querySelector('[data-use-help]');
-    const text = pick === OWN_PROGRAM ? t('chat.agents.ownHelp', { command: PLACEHOLDER_BACKEND.command }) : env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
+    const own = [noneUsable ? t('chat.agents.noneUsable') : '', t('chat.agents.ownHelp', { command: PLACEHOLDER_BACKEND.command })].filter(Boolean).join(' ');
+    const text = pick === OWN_PROGRAM ? own : env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
     help.hidden = !text;
     help.textContent = text;
     help.classList.toggle('ch-warn', env.length > 0 && pick !== OWN_PROGRAM);
@@ -2436,13 +2462,44 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
     });
   };
 
+  // Done: the close question when nothing was copied, then, with the box checked, the agent joins the channel the box
+  // names. A refusal keeps the step open with the reason, and Done tries again; clearing the box closes it.
+  let close = null;
+  const finish = async (scrim) => {
+    if (busy) return;
+    busy = true;
+    try {
+      if (!leaving && !(await leaveOk())) return;
+      leaving = true;
+      if (room && join) {
+        const body = scrim.querySelector('.dialog-body');
+        clearErrors(body);
+        setBusy(scrim, true);
+        try {
+          await api('chatAddToChannel', ws, room.id, agent.id);
+        } catch (err) {
+          setBusy(scrim, false);
+          showError(body, 'join', `${t('chat.channel.addFailed', { names: agent.name })} ${K.errorText(err)} ${t('chat.agents.joinRetry', { name: agent.name })}`);
+          return;
+        }
+      }
+      close(true);
+    } finally {
+      busy = false;
+    }
+  };
+
   const option = (value, label) => `<option value="${esc(value)}"${value === pick ? ' selected' : ''}>${esc(label)}</option>`;
   await wsDialog({
     title: t('chat.agents.keyTitle', { name: agent.name }),
     wide: true,
-    buttons: [{ get label() { return t('chat.invite.done'); }, value: true }],
-    beforeClose: () => leaveOk(),
-    render(body) {
+    // The key is for ws, whatever is on screen: the step stays until it is closed.
+    stay: true,
+    buttons: [{ get label() { return t('chat.invite.done'); }, value: (scrim) => (finish(scrim), KEEP_OPEN) }],
+    // Escape and a click outside: the close question, and the agent joins nothing.
+    beforeClose: () => !busy && leaveOk(),
+    render(body, done) {
+      close = done;
       const scrim = body.closest('.scrim');
       body.innerHTML = `<div class="form ch-form ch-agent-key">
         <ol class="ch-agent-steps">
@@ -2468,7 +2525,8 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
           room
             ? `<label class="ch-check-row ch-agent-join"><input type="checkbox" name="join" checked/><span class="ch-radio-text"><span class="ch-check-label">${esc(
                 t('chat.agents.joinChannel', { name: agent.name, channel: room.name || '' })
-              )}</span><span class="field-help">${esc(t('chat.host.agents'))}</span></span></label>`
+              )}</span><span class="field-help">${esc(t('chat.host.agents'))}</span></span></label>
+              <p class="error" data-error="join" hidden></p>`
             : ''
         }
       </div>`;
@@ -2492,6 +2550,7 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
       body.querySelector('[data-get-runner]').addEventListener('click', () => api('openExternal', RUNNER_URL).catch(() => {}));
       body.querySelector('[name="join"]')?.addEventListener('change', (e) => {
         join = e.target.checked;
+        if (!join) clearErrors(body);
       });
       // The config shows from its top, where the server, the workspace and the key are, and Copy config takes the
       // focus once dialog() gave it to the first field.
@@ -2501,15 +2560,6 @@ async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) 
       setTimeout(() => body.querySelector('[data-copy-config]')?.focus(), 0);
     }
   });
-  // However the step closed, the agent joins the channel when the box stayed checked: the channel shows "Bart added
-  // Clark", and a refusal says why.
-  if (room && join && ws === K.CH.ws) {
-    try {
-      await api('chatAddToChannel', ws, room.id, agent.id);
-    } catch (err) {
-      toast(`${t('chat.channel.addFailed', { names: agent.name })} ${K.errorText(err)}`, 5000);
-    }
-  }
   return null;
 }
 
