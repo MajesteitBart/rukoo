@@ -1198,8 +1198,8 @@ export function mountAgentPanel(ctx) {
   function pickAgent(id) {
     if (!agentIds().includes(id)) return;
     // The open chat's own agent: nothing changes, and the next new draft still starts on the rule.
+    if (P.conv && P.conv.agent === id) return;
     const next = pickDraft(P.next, id, P.conv ? P.conv.agent : null);
-    if (P.conv && next === P.next) return;
     // A model or effort picked for one agent means nothing to another; the permission level does.
     if (id !== currentAgent()) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
     setDraft(next);

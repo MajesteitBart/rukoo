@@ -1137,6 +1137,33 @@ test('choosing the agent an open chat already has changes nothing, and the next 
   await expect(headAgent()).toHaveText('Hermes');
 });
 
+const agentsOfChats = () => app.evaluate(() => global.__semAgents.list().map((c) => c.agent).sort());
+
+// A new draft held on Codex, then a Hermes chat opened from the list: picking Codex in that chat did nothing, because
+// the draft already held Codex.
+test('picking another agent in an open chat starts a new chat on it, also when the held draft has that agent', async () => {
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Hermes');
+  await say('Hello Hermes');
+  await expect.poll(agentsOfChats).toEqual(['clark']);
+  await expect.poll(chatStatus, { timeout: 15000 }).toBe('idle');
+  await win.click('.agentpane [data-ap="new"]');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  // The Hermes chat from the list.
+  await win.click('.agentpane [data-ap="history"]');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Call on Thursday' }).click();
+  await expect(headAgent()).toHaveText('Hermes');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Hermes']);
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await say('Hello Codex');
+  await expect.poll(agentsOfChats).toEqual(['clark', 'codex']);
+});
+
 test('a wide chat panel gives way, so the reader keeps its 420 px', async () => {
   await openChat('Call on Thursday');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1300, 900));
