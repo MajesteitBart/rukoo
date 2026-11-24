@@ -361,7 +361,7 @@ async function gate(target, method) {
   };
 }
 
-test('Calendar going off reaches an open compose window at once and closes calendar controls that are open, writing nothing', async () => {
+test('Calendar going off reaches an open compose window at once and closes calendar controls that are open, writing nothing', async ({}, testInfo) => {
   test.setTimeout(120000);
   await start();
   const at = Date.now() + 3 * 86400000;
@@ -402,6 +402,8 @@ test('Calendar going off reaches an open compose window at once and closes calen
   await expect(popped.locator('.composer [data-c="calendar"]')).toBeHidden();
   await expect(timesDialog).toHaveCount(0);
   await expect(popped.locator('.editor')).not.toContainText("I'm free at these times");
+  await popped.screenshot({ path: testInfo.outputPath('compose-window-calendar-off.png') });
+  await win.screenshot({ path: testInfo.outputPath('invite-picker-closed-calendar-off.png') });
 
   // An .ics file's dialog that is open when Calendar goes closes too.
   await setHidden([]);
@@ -628,7 +630,8 @@ test('with Mail off an email source and a draft card in the chat panel say so, a
   await win.waitForTimeout(500);
   expect(await unreadOf(sourceTitle)).toBe(true);
   await setHidden([]);
-  await expect(tab('mail')).toBeVisible();
+  await tab('mail').click();
+  await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
 
   await win.locator('.agentpane .bui-pb__ta').fill('Draft a reply');
   await win.locator('.agentpane .bui-pb__ta').press('Enter');
@@ -680,13 +683,14 @@ test('with Mail off an email source and a draft card in the chat panel say so, a
   await notice().locator('button').click();
   await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
   await expect(win.locator('.composer .editor')).toContainText('See you then.');
+  await win.screenshot({ path: testInfo.outputPath('draft-card-newer-draft.png') });
   await expect(win.locator('.composer .editor')).toContainText('Thursday at 10:00 works for me.');
   expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual([]);
 });
 
 // ---------- the sorting panel, new mail and Mail off ----------
 
-test('with Mail off an email from the sorting panel opens after Turn on as the email it was, and says so when it is gone', async () => {
+test('with Mail off an email from the sorting panel opens after Turn on as the email it was, and says so when it is gone', async ({}, testInfo) => {
   test.setTimeout(120000);
   await start();
   const engineInbox = () =>
@@ -738,6 +742,7 @@ test('with Mail off an email from the sorting panel opens after Turn on as the e
   await notice().locator('button').click();
   await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
   await expect(win.locator('.reader-subject')).toHaveText(target.subject);
+  await win.screenshot({ path: testInfo.outputPath('sorted-email-after-renumbering.png') });
 
   // Clicked while Mail is off, then deleted before Turn on: the notice says it is gone, and nothing opens.
   const now = (await engineInbox()).find((m) => m.subject === other.subject);
@@ -756,6 +761,7 @@ test('with Mail off an email from the sorting panel opens after Turn on as the e
   }, now.uid);
   await notice().locator('button').click();
   await expect(notice()).toContainText('That email is no longer in Rukoo, so there is nothing to open.');
+  await win.screenshot({ path: testInfo.outputPath('sorted-email-gone.png') });
   expect(await selected()).toBe(shown);
 });
 

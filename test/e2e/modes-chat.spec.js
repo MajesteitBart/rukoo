@@ -118,7 +118,7 @@ test('Chat turned off has no tab, alerts or badge, and turned on again brings no
   await expect.poll(async () => (await notices(app)).map((n) => n.body)).toEqual(['Olga Owner: En nu?']);
 });
 
-test('with only a Rukoo account, Use Chat only lands in Chat, survives a restart, and Chat cannot be turned off', async () => {
+test('with only a Rukoo account, Use Chat only lands in Chat, survives a restart, and Chat cannot be turned off', async ({}, testInfo) => {
   const { bart } = await twoPeople(server);
   await startWithoutMail();
   await signIn(win, bart);
@@ -184,6 +184,7 @@ test('with only a Rukoo account, Use Chat only lands in Chat, survives a restart
   await expect(modeSwitch('calendar')).toHaveAttribute('aria-checked', 'true');
   expect(await hiddenModes()).toEqual(['mail', 'meeting']);
   await expect(modeSwitch('meeting')).toBeEnabled();
+  await win.screenshot({ path: testInfo.outputPath('tabs-stored-chat-off-calendar-free.png') });
   await closeSettings();
   await expect(tabs()).toHaveText(['Calendar', 'Chat']);
 
