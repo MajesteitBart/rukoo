@@ -2078,9 +2078,11 @@ class Engine extends EventEmitter {
   // The emails of ids as the cache has them now, each looked up once: [{ id, acc, folder, uid, msg, uidValidity }],
   // uidValidity being the generation of the folder its uid belongs to. What a move or delete does later goes by these,
   // never by the id again: by then a sync may have given the uid to another email. An id the cache can't find gets its
-  // error in out.
-  resolve(ids, out) {
+  // error in out. An email named twice is in the list once: same gets the later id → the first, whose answer it shares
+  // (shareAnswers()). Twice in one batch, its second hold would wait for the first, which waits for the batch.
+  resolve(ids, out, same = new Map()) {
     const entries = [];
+    const first = new Map();
     for (const id of ids) {
       let at;
       try {
@@ -2089,9 +2091,20 @@ class Engine extends EventEmitter {
         out.set(id, new Error(friendlyError(err)));
         continue;
       }
+      const key = this.pendingKey(at.acc.id, at.folder, at.uid);
+      if (first.has(key)) {
+        if (first.get(key) !== id) same.set(id, first.get(key));
+        continue;
+      }
+      first.set(key, id);
       entries.push({ id, acc: at.acc, folder: at.folder, uid: at.uid, msg: at.msg, uidValidity: at.box ? at.box.uidValidity : null });
     }
     return entries;
+  }
+
+  // Gives each id resolve() found named twice the answer of the first.
+  shareAnswers(out, same) {
+    for (const [id, first] of same) out.set(id, out.get(first));
   }
 
   // Entries of resolve() by account, folder and generation, as [{ acc, folder, uidValidity, items }].
@@ -2143,7 +2156,9 @@ class Engine extends EventEmitter {
   // error (notMoved()), or null for an email that moved or was already there.
   async moveAll(ids, destination) {
     const out = new Map();
-    await this.moveEntries(this.resolve(ids, out), destination, out);
+    const same = new Map();
+    await this.moveEntries(this.resolve(ids, out, same), destination, out);
+    this.shareAnswers(out, same);
     return out;
   }
 
@@ -2252,7 +2267,8 @@ class Engine extends EventEmitter {
   async undoAll(ids) {
     const out = new Map();
     const groups = new Map();
-    for (const id of ids) {
+    // An id given twice goes once, and both get its answer.
+    for (const id of new Set(ids)) {
       const rec = this.undoable.get(id);
       this.undoable.delete(id);
       if (!rec || Date.now() - rec.at > UNDO_MS) {
@@ -2381,7 +2397,8 @@ class Engine extends EventEmitter {
         out.set(id, 'deleted');
       }
     }
-    for (const e of this.resolve(mail, out)) {
+    const same = new Map();
+    for (const e of this.resolve(mail, out, same)) {
       const trash = this.folderByRole(e.acc.id, 'trash');
       if (trash && trash.path !== e.folder) {
         const key = `${e.acc.id}\n${trash.path}`;
@@ -2396,13 +2413,16 @@ class Engine extends EventEmitter {
       for (const [id, err] of moved) out.set(id, err || 'trash');
     }
     await this.deleteEntries(forGood, out);
+    this.shareAnswers(out, same);
     return out;
   }
 
   // Deletes the emails of ids for good, in one batch per folder (ImapAccount.deleteMany()), and puts 'deleted' or the
   // window's error in out for each.
-  deleteForGood(ids, out) {
-    return this.deleteEntries(this.resolve(ids, out), out);
+  async deleteForGood(ids, out) {
+    const same = new Map();
+    await this.deleteEntries(this.resolve(ids, out, same), out);
+    this.shareAnswers(out, same);
   }
 
   // deleteForGood() for entries of resolve().

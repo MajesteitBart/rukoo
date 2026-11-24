@@ -642,3 +642,31 @@ test('sending a draft discards that draft only, also when Drafts is rebuilt whil
   assert.ok(demo.box('Drafts').messages.some((m) => m.subject === 'Another draft'), 'the other draft stays');
   await engine.close();
 });
+
+// #308 round 4, finding 6: an email given twice in one batch goes to the server once, and both get its result.
+test('an email given twice in one batch is acted on once, and both get its result', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const [a, b] = inbox(engine, acc);
+  const calls = [];
+  for (const name of ['move', 'deleteForever']) {
+    const real = demo[name].bind(demo);
+    demo[name] = async (p, uid, ...rest) => {
+      calls.push(`${name} ${p} ${uid}`);
+      return real(p, uid, ...rest);
+    };
+  }
+  const removed = await within(engine.removeMany([a.id, b.id, a.id]));
+  assert.deepEqual(removed, [{ id: a.id, where: 'trash' }, { id: b.id, where: 'trash' }, { id: a.id, where: 'trash' }]);
+  assert.equal(calls.length, 2);
+
+  const undone = await within(engine.undoMany([a.id, a.id]));
+  assert.ok(undone[0].restored && undone[0].restored === undone[1].restored, JSON.stringify(undone));
+
+  calls.length = 0;
+  const trashed = view(engine, acc, 'trash')[0];
+  const gone = await within(engine.removeMany([trashed.id, trashed.id]));
+  assert.deepEqual(gone, [{ id: trashed.id, where: 'deleted' }, { id: trashed.id, where: 'deleted' }]);
+  assert.equal(calls.length, 1);
+  await engine.close();
+});
