@@ -258,18 +258,49 @@ test('a refused delete for good keeps the email in Trash, and a refused draft di
   await engine.close();
 });
 
-test('emptying a folder says how many emails the server deleted and why the rest stayed', async () => {
+test('emptying a folder counts the emails deleted, moved to Trash, kept and unknown apart', async () => {
   const { engine, acc } = await freshEngine();
   const demo = engine.session(engine.account(acc.id));
   const trash = engine.folderByRole(acc.id, 'trash');
   const total = view(engine, acc, 'trash').length;
   assert.ok(total > 0);
+  const none = { stayed: null, unsure: null };
   demo.box(trash.path).readOnly = true;
-  assert.deepEqual(await engine.emptyFolder(acc.id, trash.path), { count: 0, total, error: t('errors.delete.refused') });
+  assert.deepEqual(await engine.emptyFolder(acc.id, trash.path), {
+    total,
+    trashed: 0,
+    deleted: 0,
+    stayed: total,
+    unsure: 0,
+    reasons: { ...none, stayed: t('errors.delete.refused') }
+  });
   assert.equal(view(engine, acc, 'trash').length, total);
   demo.box(trash.path).readOnly = false;
-  assert.deepEqual(await engine.emptyFolder(acc.id, trash.path), { count: total, total, error: null });
+  assert.deepEqual(await engine.emptyFolder(acc.id, trash.path), { total, trashed: 0, deleted: total, stayed: 0, unsure: 0, reasons: none });
   assert.equal(view(engine, acc, 'trash').length, 0);
+
+  // Emptying any other folder moves to Trash: here one email goes, one is refused, and one's result isn't known.
+  const archive = engine.folderByRole(acc.id, 'archive') || { path: 'Archive' };
+  for (const m of inbox(engine, acc).slice(0, 3)) await engine.archive(m.id);
+  await engine.syncAccount(acc.id);
+  const archived = engine.listMessages({ scope: acc.id, view: 'folder', folder: archive.path });
+  assert.ok(archived.length >= 3);
+  const [b, c] = archived;
+  const uidOf = (m) => Number(decodeURIComponent(m.id.split(':')[2]));
+  const move = demo.move.bind(demo);
+  demo.move = async (p, uid, ...rest) => {
+    if (uid === uidOf(b)) throw Object.assign(new Error(t('errors.move.refused')), { refused: true });
+    if (uid === uidOf(c)) throw Object.assign(new Error(t('errors.move.unknown')), { unknown: true });
+    return move(p, uid, ...rest);
+  };
+  assert.deepEqual(await engine.emptyFolder(acc.id, archive.path), {
+    total: archived.length,
+    trashed: archived.length - 2,
+    deleted: 0,
+    stayed: 1,
+    unsure: 1,
+    reasons: { stayed: t('errors.move.refused'), unsure: t('errors.move.unknown') }
+  });
   await engine.close();
 });
 

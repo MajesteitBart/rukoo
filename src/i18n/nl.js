@@ -925,14 +925,12 @@
     "one": "{count} e-mail verwijderd",
     "other": "{count} e-mails verwijderd"
   },
-  "mailbox.delete.deletedSome": "{count} van {total} e-mails verwijderd. {error}",
   "mailbox.delete.deletedOne": "Verwijderd",
   "mailbox.delete.movedCount": {
     "one": "{count} e-mail verplaatst naar Prullenbak",
     "other": "{count} e-mails verplaatst naar Prullenbak"
   },
   "mailbox.delete.movedOne": "Verplaatst naar Prullenbak",
-  "mailbox.delete.movedSome": "{count} van {total} e-mails verplaatst naar Prullenbak. {error}",
   "mailbox.delete.noTrash": "Dit account heeft geen Prullenbak. De e-mail wordt definitief van de server verwijderd.",
   "mailbox.delete.noTrashCount": {
     "one": "Dit account heeft geen Prullenbak. {count} e-mail wordt definitief van de server verwijderd.",
@@ -1030,7 +1028,6 @@
   },
   "mailbox.move.noArchive": "Er is geen archiefmap",
   "mailbox.move.one": "Verplaatst naar {folder}",
-  "mailbox.move.some": "{count} van {total} e-mails verplaatst naar {folder}. {error}",
   "mailbox.move.title": "Verplaatsen naar",
   "mailbox.older.available": "nog {count} op de server",
   "mailbox.older.failed": "Rukoo kon oudere mail op de server niet doorzoeken. {error}",
@@ -1047,6 +1044,30 @@
   },
   "mailbox.older.none": "Geen oudere mail op de server gevonden",
   "mailbox.older.searching": "Oudere mail op de server doorzoeken…",
+  "mailbox.outcome.deleted": {
+    "one": "{count} e-mail definitief verwijderd.",
+    "other": "{count} e-mails definitief verwijderd."
+  },
+  "mailbox.outcome.moved": {
+    "one": "{count} e-mail verplaatst naar {folder}.",
+    "other": "{count} e-mails verplaatst naar {folder}."
+  },
+  "mailbox.outcome.restored": {
+    "one": "{count} e-mail teruggezet.",
+    "other": "{count} e-mails teruggezet."
+  },
+  "mailbox.outcome.stayed": {
+    "one": "{count} e-mail staat nog waar die stond.",
+    "other": "{count} e-mails staan nog waar ze stonden."
+  },
+  "mailbox.outcome.trashed": {
+    "one": "{count} e-mail verplaatst naar Prullenbak.",
+    "other": "{count} e-mails verplaatst naar Prullenbak."
+  },
+  "mailbox.outcome.unsure": {
+    "one": "Rukoo kon niet controleren wat er met {count} e-mail is gebeurd. Kijk waar die is voordat je het opnieuw probeert.",
+    "other": "Rukoo kon niet controleren wat er met {count} e-mails is gebeurd. Kijk waar ze zijn voordat je het opnieuw probeert."
+  },
   "mailbox.saved.save": "Opslaan in Opgeslagen e-mails",
   "mailbox.saved.saved": "Opgeslagen in Opgeslagen e-mails",
   "mailbox.search.account": "Dit account",
@@ -1104,7 +1125,6 @@
     "one": "{count} e-mail teruggezet",
     "other": "{count} e-mails teruggezet"
   },
-  "mailbox.undo.restoredSome": "{count} van {total} e-mails teruggezet. {error}",
   "mailbox.vip.add": "Toevoegen aan VIP's",
   "mailbox.vip.added": "Toegevoegd aan VIP's",
   "mailbox.vip.addedSender": "{sender} toegevoegd aan VIP's",

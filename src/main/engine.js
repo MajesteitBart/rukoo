@@ -2237,19 +2237,22 @@ class Engine extends EventEmitter {
     return 'deleted';
   }
 
+  // Empty Trash, or Empty Spam, which moves to Trash when there is one. What happened to the emails, counted apart:
+  // trashed (moved to Trash), deleted (for good), stayed (the server turned it down), unsure (nobody knows yet; the
+  // folders sync), and the first reason for each of the last two.
   async emptyFolder(accountId, folderPath) {
     const ids = this.listMessages({ scope: accountId, view: 'folder', folder: folderPath }).map((m) => m.id);
-    let count = 0;
-    let error = null;
+    const out = { total: ids.length, trashed: 0, deleted: 0, stayed: 0, unsure: 0, reasons: { stayed: null, unsure: null } };
     for (const id of ids) {
       try {
-        await this.remove(id, { force: true });
-        count++;
+        out[(await this.remove(id, { force: true })) === 'trash' ? 'trashed' : 'deleted']++;
       } catch (err) {
-        error ||= err.message;
+        const kind = err.code === 'uncertain' ? 'unsure' : 'stayed';
+        out[kind]++;
+        out.reasons[kind] ||= err.message;
       }
     }
-    return { count, total: ids.length, error };
+    return out;
   }
 
   toggleVip(address) {

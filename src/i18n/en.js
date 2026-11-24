@@ -3652,10 +3652,6 @@
     },
     "description": "mailbox > delete. src/renderer/app.js (emptyCurrent); src/renderer/app.js (removeMessages)"
   },
-  "mailbox.delete.deletedSome": {
-    "message": "Deleted {count} of {total} emails. {error}",
-    "description": "Message list: notice after deleting selected emails for good when the mail server refused some of them, which stay in the list. {count}: emails deleted, {total}: emails selected, {error}: the server's first refusal, a full sentence. Also shown after Empty Trash or Empty Spam, where {total} is the emails in the folder. src/renderer/app.js (removeMessages, emptyCurrent)"
-  },
   "mailbox.delete.deletedOne": {
     "message": "Deleted",
     "description": "mailbox > delete. src/renderer/app.js (removeMessages)"
@@ -3670,10 +3666,6 @@
   "mailbox.delete.movedOne": {
     "message": "Moved to Trash",
     "description": "mailbox > delete. src/renderer/app.js (removeMessages)"
-  },
-  "mailbox.delete.movedSome": {
-    "message": "Moved {count} of {total} emails to Trash. {error}",
-    "description": "Message list: notice after deleting selected emails when the mail server refused to move some of them to Trash, which stay in the list. Its Undo button (and Ctrl+Z) moves the {count} emails back. {count}: emails moved, {total}: emails selected, {error}: the server's first refusal, a full sentence. src/renderer/app.js (removeMessages)"
   },
   "mailbox.delete.noTrash": {
     "message": "This account has no Trash folder. The email will be permanently deleted from the server.",
@@ -3982,10 +3974,6 @@
     "message": "Moved to {folder}",
     "description": "mailbox > move. src/renderer/app.js (moveMessages)"
   },
-  "mailbox.move.some": {
-    "message": "Moved {count} of {total} emails to {folder}. {error}",
-    "description": "Message list: notice after moving or archiving selected emails when the mail server refused some of them, which stay in the list. Its Undo button (and Ctrl+Z) moves the {count} emails back. {count}: emails moved, {total}: emails selected, {folder}: the folder's name, {error}: the server's first refusal, a full sentence. src/renderer/app.js (moveMessages)"
-  },
   "mailbox.move.title": {
     "message": "Move to",
     "description": "mailbox > move. src/renderer/app.js (pickFolder)"
@@ -4031,6 +4019,48 @@
   "mailbox.older.searching": {
     "message": "Searching older mail on the server…",
     "description": "Message list, under search results or in place of an empty result: Rukoo is searching the server for older mail than it keeps. src/renderer/app.js (olderHtml, listHtml)"
+  },
+  "mailbox.outcome.deleted": {
+    "message": {
+      "one": "{count} email deleted for good.",
+      "other": "{count} emails deleted for good."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails deleted for good, from Trash, from an account without Trash, or by Empty Trash. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.moved": {
+    "message": {
+      "one": "{count} email moved to {folder}.",
+      "other": "{count} emails moved to {folder}."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails moved or archived, {folder}: the folder's name. Its Undo button (and Ctrl+Z) moves them back. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.restored": {
+    "message": {
+      "one": "{count} email restored.",
+      "other": "{count} emails restored."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. After Undo. {count}: emails moved back to where they were. The notice's Undo button (and Ctrl+Z) tries the others again. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.stayed": {
+    "message": {
+      "one": "{count} email stayed where it was.",
+      "other": "{count} emails stayed where they were."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails the mail server turned down, which are back in the list. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.trashed": {
+    "message": {
+      "one": "{count} email moved to Trash.",
+      "other": "{count} emails moved to Trash."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails moved to Trash by Delete or Empty Spam. After Delete, its Undo button (and Ctrl+Z) moves them back. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.unsure": {
+    "message": {
+      "one": "Rukoo couldn't confirm what happened to {count} email. Check where it is before trying again.",
+      "other": "Rukoo couldn't confirm what happened to {count} emails. Check where they are before trying again."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails whose result the mail server didn't confirm, for example because the connection closed. Rukoo syncs the folders involved, which shows where they are, and offers no Undo for them. The notice gives no reason for these: this sentence is it. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
   },
   "mailbox.saved.save": {
     "message": "Save to Saved emails",
@@ -4223,10 +4253,6 @@
       "other": "{count} emails restored"
     },
     "description": "mailbox > undo. src/renderer/app.js (undoMoves)"
-  },
-  "mailbox.undo.restoredSome": {
-    "message": "Restored {count} of {total} emails. {error}",
-    "description": "Message list: notice after Undo of a move or delete when the mail server refused to move some of the emails back. They stay where they were moved, and the notice's Undo button (and Ctrl+Z) tries those again. {count}: emails restored, {total}: emails Undo was for, {error}: the server's first refusal, a full sentence. src/renderer/app.js (undoMoves)"
   },
   "mailbox.vip.add": {
     "message": "Add to VIPs",
