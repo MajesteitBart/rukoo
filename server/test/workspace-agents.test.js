@@ -228,6 +228,27 @@ describe('changing and removing an agent', () => {
     expect(seen.map((m) => m.id)).not.toContain(mila.me.id);
   });
 
+  it("gives a guest an agent's sponsor only when the guest shares a channel with them", async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila');
+    expect((await api('PATCH', route(ws.id, `/members/${mila.me.id}`), { token: ws.person.token, body: { role: 'admin' } })).status).toBe(200);
+    // Mila makes project and manages it; Olga isn't in it. Mila lets Olga's agent in, and invites a guest into it.
+    const project = (await api('POST', route(ws.id, '/channels'), { token: mila.person.token, body: { name: 'project', visibility: 'workspace' } })).body.channel;
+    const clark = await newAgent(ws.person, ws.id, { answers: 'members', members: [mila.me.id] });
+    expect((await addToChannel(mila.person, ws.id, project.id, clark.agent.id)).status).toBe(200);
+    const gita = await guest({ person: mila.person, id: ws.id }, 'Gita', [project.id]);
+
+    const seen = (await api('GET', route(ws.id, '/members'), { token: gita.person.token })).body.members;
+    expect(seen.map((m) => m.id)).not.toContain(ws.me.id);
+    expect(seen.find((m) => m.id === clark.agent.id).agent).toEqual({ sponsor: null, answers: 'members', members: [mila.me.id], agents: false });
+    // A full member still gets the sponsor, and so does the guest once they share a channel with Olga.
+    const full = (await api('GET', route(ws.id, '/members'), { token: mila.person.token })).body.members;
+    expect(full.find((m) => m.id === clark.agent.id).agent.sponsor).toBe(ws.me.id);
+    expect((await api('POST', route(ws.id, `/channels/${project.id}/join`), { token: ws.person.token })).status).toBe(200);
+    const later = (await api('GET', route(ws.id, '/members'), { token: gita.person.token })).body.members;
+    expect(later.find((m) => m.id === clark.agent.id).agent.sponsor).toBe(ws.me.id);
+  });
+
   it('takes a chosen member off the list when they leave', async () => {
     const ws = await newWorkspace('Acme', 'Olga');
     const mila = await newMember(ws, 'Mila');

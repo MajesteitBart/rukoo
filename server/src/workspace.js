@@ -1480,8 +1480,8 @@ export class Workspace extends DurableObject {
   }
 
   // Full members see everyone who is active, and the most recent of those who left, so old messages keep their
-  // author's name. A guest sees the people in the channels they were let into, and so does an agent. An agent's chosen
-  // members are left out of what a guest or an agent sees when they aren't among those people.
+  // author's name. A guest sees the people in the channels they were let into, and so does an agent. An agent's sponsor
+  // and chosen members are left out of what a guest or an agent sees when they aren't among those people.
   #members(me) {
     if (!FULL.has(me.role)) {
       const rows = this.sql
@@ -1505,13 +1505,17 @@ export class Workspace extends DurableObject {
   }
 
   // A member for the directory, with an agent's settings: { sponsor, answers, members, agents }. Its key and lastSeen
-  // are never in the directory. visible: the member ids the viewer may know of, or null for all of them.
+  // are never in the directory. visible: the member ids the viewer may know of, or null for all of them. The sponsor
+  // and the chosen members the viewer may not know of are left out: sponsor is null then, which apps already take for
+  // a sponsor they can't name.
   #memberOut(row, visible = null) {
     if (row.kind !== 'agent') return memberOut(row);
     const settings = this.sql.exec('SELECT answers, members, agents FROM agent WHERE member = ?', row.n).toArray()[0];
     if (!settings) return memberOut(row);
-    const chosen = this.#idsOf(JSON.parse(settings.members)).filter((id) => !visible || visible.has(id));
-    return memberOut(row, { sponsor: this.#idOf(row.sponsor), answers: settings.answers, members: chosen, agents: settings.agents === 1 });
+    const known = (id) => !visible || visible.has(id);
+    const chosen = this.#idsOf(JSON.parse(settings.members)).filter(known);
+    const sponsor = this.#idOf(row.sponsor);
+    return memberOut(row, { sponsor: sponsor && known(sponsor) ? sponsor : null, answers: settings.answers, members: chosen, agents: settings.agents === 1 });
   }
 
   // The ids of the active members among the keys ns, in the order of their keys.

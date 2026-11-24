@@ -648,6 +648,17 @@ class ChatSheetRulesTest {
     }
 
     @Test
+    fun `a sponsor the server leaves out of a guest's directory names nobody and manages nothing`() {
+        val hidden = AgentSettings(null, AgentRules.MEMBERS, listOf(me))
+        assertEquals(listOf(me), AgentRules.answered(hidden))
+        assertEquals(emptyList<String>(), AgentRules.answered(AgentSettings(null, AgentRules.SPONSOR)))
+        assertTrue(AgentRules.answers(hidden, me))
+        assertFalse(AgentRules.answers(AgentSettings(null, AgentRules.SPONSOR), me))
+        assertNull("no form for an agent without a sponsor", AgentRules.agentOf(Member(clark, Member.KIND_AGENT, "Clark", "member", "active", agent = hidden)))
+        assertFalse(AgentRules.sponsors(listOf(Member(clark, Member.KIND_AGENT, "Clark", "member", "active", agent = hidden)), me))
+    }
+
+    @Test
     fun `Workspace members opens the Agents sheet on an agent's form or its new key`() {
         assertEquals(AgentRules.Opened(clark, key = false), AgentRules.opened(AgentRules.editTarget(clark)))
         assertEquals(AgentRules.Opened(clark, key = true), AgentRules.opened(AgentRules.keyTarget(clark)))
