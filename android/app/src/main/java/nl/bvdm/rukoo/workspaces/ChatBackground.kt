@@ -3,6 +3,7 @@ package nl.bvdm.rukoo.workspaces
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -18,6 +19,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -32,10 +37,12 @@ import nl.bvdm.rukoo.core.AppLog
  *   catches dropped wakes and renews the socket's lease. On stop the socket closes ([WorkspaceService.paused]).
  * - **Network.** A network that comes back while the app is in the foreground counts as a resume
  *   ([WorkspaceService.nudge]): runs, the socket and the outbox try at once.
- * - **Phone tools.** While Phone tools' foreground service runs ([phoneTools]) and the phone has a network, the
- *   service keeps team chat connected in the background as well ([WorkspaceService.stayConnected]). Android keeps a
- *   process with a foreground service running, so the sockets can stay open; without a network they close, and they
- *   open again when one comes up.
+ * - **Phone tools.** While Phone tools' foreground service runs ([phoneTools]) and Android says the default network
+ *   is usable ([DefaultNetwork]), the service keeps team chat connected in the background as well
+ *   ([WorkspaceService.stayConnected]). The window closes at once when the network goes, is blocked or can't be
+ *   watched, and opens again only after the network has been usable for [NETWORK_SETTLE], so a network that comes
+ *   and goes doesn't open and close it each time. A default network that moves to another usable one runs the
+ *   service's catch-up once ([WorkspaceService.networkMoved]).
  * - **Background.** [ChatSyncWorker] runs every 15 minutes with a network, as unique periodic work, scheduled only
  *   while a workspace is cached and cancelled when the account, followed at least once, has none: signed out, team
  *   chat off, no cache or no workspace. It keeps running in Phone tools' window too, for when the service stops.
@@ -49,8 +56,7 @@ class ChatBackground(
 ) {
     @Volatile private var started = false
 
-    // Whether the phone has a default network; true until the callback says otherwise, or when it can't be watched.
-    private val online = MutableStateFlow(true)
+    private val network = DefaultNetwork<Network>()
 
     fun start() {
         if (started) return
@@ -76,7 +82,7 @@ class ChatBackground(
         }
         watchNetwork()
         scope.launch(Dispatchers.Default) {
-            combine(phoneTools, online) { tools, net -> stayConnected(tools, net) }.distinctUntilChanged().collect { service().stayConnected(it) }
+            windowWanted(phoneTools, network.usable, NETWORK_SETTLE).collect { service().stayConnected(it) }
         }
     }
 
@@ -99,59 +105,132 @@ class ChatBackground(
     }
 
     private fun watchNetwork() {
-        val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return
-        val tracker = DefaultNetwork<Network>()
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        if (connectivity == null) {
+            network.unwatched()
+            AppLog.w(TAG, "No connectivity service: Phone tools' window stays closed")
+            return
+        }
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                online.value = tracker.available(network)
+                this@ChatBackground.network.available(network)
                 if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) service().nudge()
             }
 
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val ok = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+                if (this@ChatBackground.network.capabilities(network, ok)) service().networkMoved()
+            }
+
+            override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
+                if (this@ChatBackground.network.blocked(network, blocked)) service().networkMoved()
+            }
+
             override fun onLost(network: Network) {
-                online.value = tracker.lost(network)
+                this@ChatBackground.network.lost(network)
             }
         }
         try {
-            // Before the callback, so a phone without a network starts offline; the callback's first onAvailable follows.
-            online.value = connectivity.activeNetwork != null
             connectivity.registerDefaultNetworkCallback(callback)
         } catch (e: RuntimeException) {
-            // Too many callbacks or no permission: the 60 s runs still catch up, and the window counts as online.
-            online.value = true
-            AppLog.w(TAG, "No network callback", e)
+            // Too many callbacks or no permission: the foreground's 60 s runs still catch up; the window stays closed.
+            network.unwatched()
+            AppLog.w(TAG, "No network callback: Phone tools' window stays closed", e)
         }
     }
 
     /**
-     * The default network as its callback reports it. When the default moves from one network to another, the new
-     * one's onAvailable can come before or after the old one's onLost; only losing the current one is going offline.
+     * The phone's default network as its callback reports it (ConnectivityManager.NetworkCallback), and whether
+     * Android says it is usable: a default network whose capabilities include internet and not suspended, and whose
+     * access isn't blocked. Until the callback says so, and for good when it can't be watched, it isn't.
+     *
+     * Since Android 8, onAvailable is followed at once by onCapabilitiesChanged and onBlockedStatusChanged, so a new
+     * default is judged on those. When the default moves to another network, the default callback sends the new one's
+     * onAvailable and no onLost for the old one; an onLost for a network that isn't the current one is ignored. A move
+     * from one usable network to another without a gap is a handoff, which [capabilities] and [blocked] return.
      */
     internal class DefaultNetwork<N : Any> {
-        private var current: N? = null
+        private val _usable = MutableStateFlow(false)
+        val usable: StateFlow<Boolean> = _usable.asStateFlow()
 
-        /** [network] is the default now: online. */
+        private var watched = true
+        private var current: N? = null
+        private var capable = false
+        private var blocked = false
+
+        // The network last reported usable, or null when none was.
+        private var usableOn: N? = null
+
+        /** [network] is the default now; it counts once its capabilities come. */
         @Synchronized
-        fun available(network: N): Boolean {
+        fun available(network: N) {
+            if (!watched || network == current) return
             current = network
-            return true
+            capable = false
+            blocked = false
         }
 
-        /** [network] went: offline only when it was the current default. Returns whether the phone is online. */
+        /** The default's capabilities: [ok] when it has internet and isn't suspended. Returns whether it's a handoff. */
         @Synchronized
-        fun lost(network: N): Boolean {
-            if (current == network) current = null
-            return current != null
+        fun capabilities(network: N, ok: Boolean): Boolean {
+            if (!watched || network != current) return false
+            capable = ok
+            return report()
+        }
+
+        /** Android blocked or unblocked the default's access, as in Data Saver or a firewall. Returns whether it's a handoff. */
+        @Synchronized
+        fun blocked(network: N, blocked: Boolean): Boolean {
+            if (!watched || network != current) return false
+            this.blocked = blocked
+            return report()
+        }
+
+        /** No default network any more, when [network] was it. */
+        @Synchronized
+        fun lost(network: N) {
+            if (!watched || network != current) return
+            current = null
+            report()
+        }
+
+        /** The network can't be watched: not usable, from now on. */
+        @Synchronized
+        fun unwatched() {
+            watched = false
+            current = null
+            report()
+        }
+
+        private fun report(): Boolean {
+            val now = current?.takeIf { watched && capable && !blocked }
+            val handoff = usableOn != null && now != null && usableOn != now
+            usableOn = now
+            _usable.value = now != null
+            return handoff
         }
     }
 
     companion object {
         private const val TAG = "ChatBackground"
 
+        /** How long the default network must stay usable before Phone tools' window opens again. */
+        const val NETWORK_SETTLE = 5_000L
+
         /** The wait before the next foreground run: [ChatTiming.catchUpEvery] ± [ChatTiming.catchUpJitter]. */
         fun catchUpDelay(timing: ChatTiming, random: Double = ThreadLocalRandom.current().nextDouble()): Long =
             timing.catchUpEvery + Math.round((random * 2 - 1) * timing.catchUpJitter)
 
-        /** Team chat stays connected in the background while Phone tools runs and the phone has a network. */
-        fun stayConnected(phoneTools: Boolean, online: Boolean): Boolean = phoneTools && online
+        /**
+         * Whether Phone tools' window should be open: while Phone tools runs and the network is usable. It closes at
+         * once and opens only once both have held for [settle], so changes within that time come to nothing.
+         */
+        fun windowWanted(phoneTools: Flow<Boolean>, usable: Flow<Boolean>, settle: Long): Flow<Boolean> = channelFlow {
+            combine(phoneTools, usable) { tools, net -> tools && net }.distinctUntilChanged().collectLatest { open ->
+                if (open) delay(settle)
+                send(open)
+            }
+        }.distinctUntilChanged()
     }
 }
