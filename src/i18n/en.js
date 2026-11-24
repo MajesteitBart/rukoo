@@ -3157,15 +3157,15 @@
   },
   "errors.delete.refused": {
     "message": "The mail server didn't delete the email.",
-    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft. The email stays and its row comes back. Shown in a notice, also when the editor closes after Delete draft, and as the {error} of mailbox.delete.deletedSome. src/main/imap.js (deleteForever); src/main/demo.js (refuse); src/renderer/composer.js (dropDraft)"
+    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft. The email stays and its row comes back. Shown in a notice, also when the editor closes after Delete draft, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteForever); src/main/demo.js (refuse); src/renderer/composer.js (dropDraft)"
   },
   "errors.delete.stillMarked": {
     "message": "The mail server didn't finish deleting the email. It's still marked for deletion.",
-    "description": "errors > delete. The IMAP server didn't finish deleting an email for good, and Rukoo couldn't take the \\Deleted flag off it again, so another mail app may still expunge it. The email's row comes back and the folder syncs. Shown in a notice. src/main/imap.js (deleteForever)"
+    "description": "errors > delete. The IMAP server didn't finish deleting an email for good, and Rukoo couldn't take the \\Deleted flag off it again, so another mail app may still expunge it, or another mail app had marked it before. The email's row comes back. Shown in a notice. src/main/imap.js (deleteForever)"
   },
   "errors.delete.unknown": {
     "message": "Rukoo couldn't confirm whether the mail server deleted the email.",
-    "description": "errors > delete. The IMAP server didn't confirm deleting an email for good, and Rukoo couldn't read the email back to see whether it is gone. The email's row comes back and the folder syncs, which shows what happened. Shown in a notice. src/main/imap.js (deleteForever)"
+    "description": "errors > delete. The IMAP server didn't confirm deleting an email for good, and Rukoo couldn't read the email back to see whether it is gone, for example because the connection closed. The email's row comes back and the folder syncs, which shows what happened. Shown in a notice. src/main/imap.js (deleteForever)"
   },
   "errors.flags.refused": {
     "message": "The mail server didn't save the change.",
@@ -3529,7 +3529,11 @@
   },
   "errors.move.refused": {
     "message": "The mail server didn't move the email.",
-    "description": "errors > move. The IMAP server turned down moving an email to another folder: Move, Archive, Delete to Trash, Mark as spam, or Undo of one of those. The email stays where it was and its row comes back; after a refused Undo the notice offers Undo again. Shown in a notice, and as the {error} of mailbox.move.some, mailbox.delete.movedSome and mailbox.undo.restoredSome. src/main/imap.js (move); src/main/demo.js (refuse)"
+    "description": "errors > move. The IMAP server turned down moving an email to another folder: Move, Archive, Delete to Trash, Mark as spam, or Undo of one of those. The email stays where it was and its row comes back; after a refused Undo the notice offers Undo again. Shown in a notice, and after mailbox.outcome.stayed when several emails were moved. src/main/imap.js (move, moveOutcome); src/main/demo.js (refuse)"
+  },
+  "errors.move.unknown": {
+    "message": "Rukoo couldn't confirm whether the mail server moved the email. Check both folders before trying again.",
+    "description": "errors > move. The IMAP server didn't confirm moving an email, and Rukoo can't tell whether it did: the connection closed before the answer, or the server answered NO after it may have copied the email. The email's row comes back while both folders sync, which shows where it is, and Undo isn't offered. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (move, moveOutcome)"
   },
   "errors.network.privateHost": {
     "message": "{hostname} is not a public address",

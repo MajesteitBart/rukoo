@@ -888,6 +888,7 @@
   "errors.message.serverMissing": "Bericht niet gevonden op de server.",
   "errors.move.copied": "De mailserver heeft de e-mail gekopieerd en niet bevestigd dat het origineel is verwijderd. Controleer beide mappen voordat je het opnieuw probeert.",
   "errors.move.refused": "De mailserver heeft de e-mail niet verplaatst.",
+  "errors.move.unknown": "Rukoo kon niet controleren of de mailserver de e-mail heeft verplaatst. Controleer beide mappen voordat je het opnieuw probeert.",
   "errors.network.privateHost": "{hostname} is geen openbaar adres",
   "errors.search.refused": "De mailserver heeft de zoekopdracht niet uitgevoerd.",
   "errors.send.identity": "Je kunt niet verzenden als {address} vanaf dit account.",

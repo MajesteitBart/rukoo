@@ -207,10 +207,12 @@ function tokens(s) {
 // enough of IMAP for a sync, opening an email, flags, moves, a search of unread mail and IDLE. put() files an email
 // in a folder, also while the app runs, and the next sync finds it. An email: { subject, from: [name, address], date
 // (ms, also its INTERNALDATE), dateHeader (the Date header as sent, which may be text no parser reads), flags, text }.
-// capabilities: what it offers besides IMAP4rev1. refuse(fn) turns down with NO each command for which fn(command,
-// selected folder's path) holds, until refuse(null).
-function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'] }) {
-  const caps = ['IMAP4rev1', ...capabilities].join(' ');
+// capabilities: what it offers besides its version, rev ('IMAP4rev1', or 'IMAP4rev2' for a server of RFC 9051 only).
+// refuse(fn) turns down with NO each command for which fn(command, selected folder's path) is true, until
+// refuse(null). For a MOVE, fn can also answer 'copied': the server copies the email, says so in an untagged COPYUID
+// and then answers NO, keeping the original; or 'drop': it moves the email and closes the connection before answering.
+function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'], rev = 'IMAP4rev1' }) {
+  const caps = [rev, ...capabilities].join(' ');
   let refusing = null;
   const folders = new Map();
   for (const [p, use] of [['INBOX', null], ['Archive', '\\Archive'], ['Trash', '\\Trash'], ['Sent', '\\Sent'], ['Drafts', '\\Drafts']]) {
@@ -297,10 +299,14 @@ function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'] }) {
       }
       const C = cmd.toUpperCase();
       if (C !== 'LOGIN') commands.push(all);
-      if (refusing && refusing(all, selected && selected.path)) return w(`${tag} NO Not allowed\r\n`);
+      const refusal = refusing && refusing(all, selected && selected.path);
+      if (refusal && !(C === 'MOVE' && (refusal === 'copied' || refusal === 'drop'))) return w(`${tag} NO Not allowed\r\n`);
       switch (C) {
         case 'CAPABILITY':
           return w(`* CAPABILITY ${caps}\r\n${tag} OK CAPABILITY completed\r\n`);
+        // Part of IMAP4rev2, so imapflow asks a server of that version.
+        case 'NAMESPACE':
+          return w(`* NAMESPACE (("" "/")) NIL NIL\r\n${tag} OK NAMESPACE completed\r\n`);
         case 'LOGOUT':
           return socket.end(`* BYE Logging out\r\n${tag} OK LOGOUT completed\r\n`);
         case 'LIST':
@@ -365,10 +371,12 @@ function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'] }) {
           const code = `COPYUID ${dest.uidValidity} ${src.join(',')} ${dst.join(',')}`;
           if (C === 'COPY') return w(`${tag} OK [${code}] COPY completed\r\n`);
           w(`* OK [${code}] Moved\r\n`);
+          if (refusal === 'copied') return w(`${tag} NO Couldn't remove the original\r\n`);
           for (const seq of msgs.map((m) => selected.messages.indexOf(m) + 1).sort((a, b) => b - a)) {
             selected.messages.splice(seq - 1, 1);
             w(`* ${seq} EXPUNGE\r\n`);
           }
+          if (refusal === 'drop') return socket.destroy();
           return w(`${tag} OK MOVE completed\r\n`);
         }
         case 'EXPUNGE': {
