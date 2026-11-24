@@ -20,6 +20,10 @@ The quick actions are the same with every agent. Settings → Agents → Shortcu
 
 Rukoo keeps the list in `agents.json`. It holds at most 40 shortcuts, with a name of up to 60 characters and instructions of up to 4,000.
 
+A new chat starts on the default agent from Settings → Agents. While that agent can't take a message, because it isn't set up, is turned off, isn't installed or didn't accept its key, a new chat starts on the first agent that is ready, in this order: Claude Code, Codex, OpenClaw, your own agents in their Settings order, Hermes. So on a fresh install without a Hermes server, the panel opens on Claude Code or Codex when either is installed. The default in Settings stays as it was, and the Default agent row shows its status, such as "Hermes · Not set up". An agent you pick in the menu under the input stays until you choose another default.
+
+When the agent on screen isn't set up, the panel shows "Set up {agent}", which opens Settings → Agents at that agent's card with its first empty field ready to type in, and "Chat with" buttons for up to two agents that are ready. When Rukoo couldn't reach the agent the last time it checked, the panel says so instead of offering the shortcuts, with Try again, Check settings and a ready agent to chat with. You can still type a message to it.
+
 A new chat is about the open email. The email shows as a chip above the input and goes to the agent with your first message. To ask something without it, click the × on the chip. An "Add this email" chip takes its place; click it to put the email back. Once a chat has started it keeps its email, so the chip has no ×. Start a new chat to leave the email out.
 
 ### Hand it off

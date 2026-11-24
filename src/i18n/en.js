@@ -403,11 +403,35 @@
   },
   "agent.empty.setupBody": {
     "message": "Rukoo needs a few details before it can reach {name}.",
-    "description": "Chat panel empty state line when the agent is not set up; the setup link is below."
+    "description": "Chat panel empty state line when the agent is not set up; Set up {name} and Chat with buttons for ready agents are below it (renderEmpty in agent/panel.js)."
   },
   "agent.empty.setupTitle": {
     "message": "Set up {name} to start",
     "description": "Chat panel empty state heading when the agent is not set up or installed."
+  },
+  "agent.empty.chatWith": {
+    "message": "Chat with {name}",
+    "description": "Chat panel empty state: button on the card of an agent that isn't set up or can't be reached; it switches this new chat to another agent that is ready, as the agent menu under the input does. name: that agent's name, e.g. Claude (emptyActions in agent/panel.js)."
+  },
+  "agent.empty.offlineTitle": {
+    "message": "{name} can't be reached",
+    "description": "Chat panel empty state heading when Rukoo couldn't reach the agent's server or program the last time it checked. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.offlineBody": {
+    "message": "Rukoo couldn't reach {name} the last time it checked. The shortcuts come back once it answers.",
+    "description": "Chat panel empty state line under agent.empty.offlineTitle; the quick action chips are hidden while the agent can't be reached. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.tryAgain": {
+    "message": "Try again",
+    "description": "Chat panel empty state: primary button on the card of an agent that can't be reached; Rukoo tests the connection again (checkAgain in agent/panel.js)."
+  },
+  "agent.empty.checking": {
+    "message": "Checking...",
+    "description": "Chat panel empty state: the Try again button while Rukoo tests the agent's connection (emptyActions in agent/panel.js)."
+  },
+  "agent.empty.checkSettings": {
+    "message": "Check settings",
+    "description": "Chat panel empty state: button on the card of an agent that can't be reached; it opens Settings > Agents at that agent's card (emptyActions in agent/panel.js)."
   },
   "agent.empty.title": {
     "message": "What should {name} do with this email?",
@@ -861,7 +885,7 @@
   },
   "agent.panel.setUp": {
     "message": "Set up {name}",
-    "description": "Chat panel: link-style button that opens Settings, Agents; name is the agent name."
+    "description": "Chat panel: link-style button above the disabled input and primary button on the empty state's card; it opens Settings, Agents at that agent's card. name is the agent name."
   },
   "agent.panel.show": {
     "message": "Show",
@@ -4908,7 +4932,11 @@
   },
   "settings.agents.default": {
     "message": "Default agent",
-    "description": "Settings, Agents page: which agent a new chat goes to."
+    "description": "Settings, Agents page: which agent a new chat goes to. While it can't take a message, a new chat starts on the first agent that is ready."
+  },
+  "settings.agents.defaultValue": {
+    "message": "{name} · {status}",
+    "description": "Settings, Agents page: value of the Default agent row, the agent and its status, e.g. \"Hermes · Not set up\", so you see why a new chat starts on another agent. status is one of the agent.status texts (defaultAgentText in settings.js)."
   },
   "settings.agents.enabled": {
     "message": "Use {name}",

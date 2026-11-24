@@ -1155,6 +1155,7 @@ export function recommendationCard({ eyebrow, title, body, actions = [], icon: e
         label: a.label,
         kind: a.kind === 'primary' ? 'primary' : a.kind === 'danger' ? 'danger' : 'secondary',
         size: 'sm',
+        disabled: Boolean(a.disabled),
         onClick: () => onAction && onAction(a.id)
       })
     )

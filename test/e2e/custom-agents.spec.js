@@ -105,7 +105,7 @@ test('add Booper, set it up, chat with it, and remove it', async () => {
   // The default agent can be the custom one.
   await settings().locator('[data-a="agent-default"]').click();
   await win.locator('.dialog .radio-row', { hasText: 'Clark' }).click();
-  await expect(settings().locator('[data-agent-default]')).toHaveText('Clark');
+  await expect(settings().locator('[data-agent-default]')).toHaveText('Clark · Ready');
   await win.click('.page.settings [data-a="back"]');
   await win.click('.page.settings [data-a="back"]');
 
@@ -132,7 +132,7 @@ test('add Booper, set it up, chat with it, and remove it', async () => {
   await shot('04-remove-confirm');
   await win.locator('.dialog button', { hasText: /^Remove$/ }).click();
   await expect(settings().locator('[data-custom-card]')).toHaveCount(0);
-  await expect(settings().locator('[data-agent-default]')).toHaveText('Hermes');
+  await expect(settings().locator('[data-agent-default]')).toHaveText('Hermes · Ready');
   expect(await app.evaluate((_e, t) => global.__semAgents.identify(t), token)).toBe(null);
   expect((await app.evaluate(() => global.__semAgents.list())).some((c) => c.agent === id)).toBe(true);
 });

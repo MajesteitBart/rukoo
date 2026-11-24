@@ -15,8 +15,9 @@ let app;
 let win;
 let dataDir;
 
-async function launch() {
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5' };
+// extra: more environment, such as SEM_AGENT_FAKE_STATUS for agents that aren't ready (fake.js).
+async function launch(extra = {}) {
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5', ...extra };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
@@ -35,6 +36,18 @@ test.afterEach(async () => {
   await closeApp(app);
   removeDir(dataDir);
 });
+
+// Starts again on a fresh profile with the demo account, where the agents have these states (SEM_AGENT_FAKE_STATUS
+// in fake.js, such as 'clark=unconfigured'), as main reports them from the first status on.
+async function freshProfile(states) {
+  await closeApp(app);
+  removeDir(dataDir);
+  dataDir = tempDir('rukoo-agent-e2e-');
+  await launch({ SEM_AGENT_FAKE_STATUS: states });
+  await win.waitForSelector('.provider-grid');
+  await win.click('[data-s="demo"]');
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+}
 
 const item = (text) => win.locator('.item', { hasText: text }).first();
 const pane = () => win.locator('.agentpane');
@@ -810,13 +823,91 @@ test('a new default agent applies at once, and Ctrl+J still closes a panel whose
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
   await expect(input()).toHaveAttribute('data-placeholder', 'Ask Claude about this email...');
   await win.evaluate(() => window.mail.call('agentUpdateConfig', { claude: { enabled: false } }));
+  // A default that is turned off gives way to the first ready agent; Settings keeps Claude as the default.
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Codex');
+  expect(await win.evaluate(() => window.mail.call('agentConfig').then((c) => c.defaultAgent))).toBe('claude');
+  // Picked in the agent menu, the agent that is off stays, with the way to turn it on.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: /^Claude$/ }) }).click();
   await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText('Claude is turned off.');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('Set up Claude to start');
   await win.keyboard.press('Control+j');
   await expect(pane()).toBeHidden();
   await win.keyboard.press('Control+j');
   await expect(pane()).toBeVisible();
   await win.keyboard.press('Control+j');
   await expect(pane()).toBeHidden();
+});
+
+// The menu row of an agent under the chat input, by its name alone.
+const agentRow = (name) => win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: new RegExp(`^${name}$`) }) });
+const recButton = (label) => win.locator('.agentpane .bui-rec__foot .bui-btn', { hasText: label });
+
+test('a fresh profile without Hermes starts a new chat on Claude Code; Settings keeps Hermes as the default and says why', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('What should Claude do with this email?');
+  await expect(chip('Draft a reply')).toBeVisible();
+  await expect(input()).toHaveAttribute('data-placeholder', 'Ask Claude about this email...');
+  await say('Hello there');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['claude']);
+  // Rukoo didn't change the default; Settings shows it with its status.
+  expect(await win.evaluate(() => window.mail.call('agentConfig').then((c) => c.defaultAgent))).toBe('clark');
+  await win.click('[data-action="settings"]');
+  await win.locator('.page.settings .row', { hasText: 'Claude Code, Codex and OpenClaw' }).click();
+  await expect(win.locator('[data-agent-default]')).toHaveText('Hermes · Not set up');
+});
+
+test('the setup card offers the ready agents, and Set up opens the agent\'s card in Settings', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
+  // Hermes picked in the agent menu stays, with its setup card: Set up Hermes, and Chat with for two ready agents.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Hermes').click();
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('Set up Hermes to start');
+  await expect(win.locator('.agentpane .bui-rec__foot .bui-btn')).toHaveText(['Chat with Claude', 'Chat with Codex', 'Set up Hermes']);
+  await expect(chip('Draft a reply')).toHaveCount(0);
+  // Chat with Codex switches this chat, as the agent menu does.
+  await recButton('Chat with Codex').click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Codex');
+  await expect(input()).toBeFocused();
+  await expect(chip('Draft a reply')).toBeVisible();
+  // A status update keeps the agent the user picked.
+  await win.evaluate(() => window.mail.call('agentTest', 'claude'));
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Codex');
+
+  // Set up Hermes lands on the Hermes card, with the address field in focus.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Hermes').click();
+  await recButton('Set up Hermes').click();
+  await expect(win.locator('.page.settings h1')).toHaveText('Agents');
+  await expect(win.locator('[data-agent-field="clark.url"]')).toBeFocused();
+  await expect(win.locator('[data-agent-status="clark"]')).toBeInViewport();
+  await win.keyboard.press('Escape');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.page.settings')).toHaveCount(0);
+  // The link above the disabled input goes there too.
+  await win.click('.agentpane [data-ap="setup"]');
+  await expect(win.locator('[data-agent-field="clark.url"]')).toBeFocused();
+});
+
+test('an agent that can\'t be reached gets Try again instead of the shortcuts', async () => {
+  await freshProfile('clark=offline');
+  await openChat('Call on Thursday');
+  // Offline isn't blocked: the default stays and the input takes a message.
+  await expect(win.locator('.agentpane .ap-title')).toHaveText("Can't be reached");
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Hermes');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText("Hermes can't be reached");
+  await expect(win.locator('.agentpane .bui-rec__foot .bui-btn')).toHaveText(['Chat with Claude', 'Check settings', 'Try again']);
+  await expect(chip('Draft a reply')).toHaveCount(0);
+  await expect(input()).toBeEditable();
+  // Back up: Try again brings the shortcuts.
+  await app.evaluate(() => (process.env.SEM_AGENT_FAKE_STATUS = ''));
+  await recButton('Try again').click();
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('What should Hermes do with this email?');
+  await expect(chip('Draft a reply')).toBeVisible();
 });
 
 test('a wide chat panel gives way, so the reader keeps its 420 px', async () => {
@@ -1386,8 +1477,8 @@ test('Settings has an Agents page with status and a way back', async () => {
   await win.locator('[data-agent-field="clark.name"]').fill('Clark');
   await win.locator('[data-agent-field="clark.name"]').press('Enter');
   await expect(win.locator('[data-agent-name="clark"]').first()).toHaveText('Clark');
-  // Clark is the default agent, so that row follows the new name too.
-  await expect(win.locator('[data-agent-default]')).toHaveText('Clark');
+  // Clark is the default agent, so that row follows the new name too, with its status.
+  await expect(win.locator('[data-agent-default]')).toHaveText('Clark · Ready');
   // Copy Hermes setup starts with the download of the bridge from this Rukoo's own release, so the two speak the
   // same bridge protocol. Recorded in main rather than put on the desktop's own clipboard.
   await app.evaluate(() => {

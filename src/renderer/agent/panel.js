@@ -8,13 +8,13 @@ import * as B from './bui.js';
 import { shortcutList, shortcutByKey, actionsFor, commandsFor, skillCommands, MEETING_ACTIONS, meetingActionByKey } from './actions.js';
 import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
+// BLOCKED: the states that keep an agent from taking a message until they are fixed in Settings.
+import { BLOCKED, startingAgent, readyAgents } from './pick.js';
 
 const AGENTS = ['clark', 'claude', 'codex', 'openclaw'];
 // Product names, not translated.
 const PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex', openclaw: 'OpenClaw' };
 const STATES = ['starting', 'ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'unknown'];
-// Until these are fixed in Settings the agent cannot take a message.
-const BLOCKED = new Set(['unconfigured', 'disabled', 'missing', 'unauthorized']);
 const CODES = new Set(['offline', 'unauthorized', 'not-configured', 'not-installed', 'disabled', 'spawn-failed', 'busy', 'window', 'timeout', 'protocol', 'rate-limited', 'stopped', 'unknown']);
 // Rukoo's own tools: their kind picks the chip icon and their label is ours to translate.
 const RUKOO_TOOLS = {
@@ -164,8 +164,13 @@ export function mountAgentPanel(ctx) {
     config: null,
     status: null,
     unavailable: false,
-    // The agent a new conversation goes to.
+    // The agent a new conversation goes to: the default in Settings, or the first ready agent while the default
+    // can't take a message (followStart()), or the one picked in the agent menu.
     agentId: 'clark',
+    // The user picked agentId in the agent menu or on the setup card: it stays until the default changes in Settings.
+    picked: false,
+    // The agent whose connection the empty state's Try again is checking.
+    checking: null,
     conv: null,
     // The email the panel last followed, and whether it had fully loaded.
     emailId: null,
@@ -272,10 +277,11 @@ export function mountAgentPanel(ctx) {
       P.unavailable = false;
       // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
       if (agentIds().includes(config.defaultAgent) && config.defaultAgent !== before) {
-        // What was picked for the chat that has not started belongs to the agent before.
-        if (!P.conv && P.agentId !== config.defaultAgent) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
-        P.agentId = config.defaultAgent;
+        setAgent(config.defaultAgent);
+        // The default the user just chose in Settings counts over an agent picked in the menu before.
+        P.picked = false;
       }
+      followStart();
     } catch (err) {
       // No agent support in main (yet): show the panel, but say so instead of failing quietly.
       if (!P.config) P.unavailable = true;
@@ -289,7 +295,24 @@ export function mountAgentPanel(ctx) {
     } catch (_) {
       // The status lines keep their last known state.
     }
+    followStart();
     redrawAgents();
+  }
+
+  // The agent for the next new chat. What was picked for the chat that has not started belongs to the agent before;
+  // the permission level stays.
+  function setAgent(id) {
+    if (!P.conv && P.agentId !== id) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
+    P.agentId = id;
+  }
+
+  // A new chat starts on the default agent, or on the first ready one while the default isn't set up, is turned off,
+  // isn't installed or has its key refused (pick.js), so a fresh profile without Hermes starts on Claude Code or Codex
+  // when they are there. An agent the user picked stays, and the default in Settings is not changed.
+  function followStart() {
+    if (P.picked || P.unavailable || !P.config || !P.status) return;
+    const id = startingAgent({ defaultAgent: P.config.defaultAgent, agents: agentIds(), status: P.status });
+    if (agentIds().includes(id)) setAgent(id);
   }
 
   function redrawAgents() {
@@ -1138,11 +1161,13 @@ export function mountAgentPanel(ctx) {
     chat.focus();
   }
 
+  // From the agent menu under the input, and Chat with on the setup card.
   function pickAgent(id) {
     if (!agentIds().includes(id)) return;
     // A model or effort picked for one agent means nothing to another; the permission level does.
     if (id !== currentAgent()) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
     P.agentId = id;
+    P.picked = true;
     // A conversation stays with its agent; another agent starts a new one about the same email.
     if (P.conv && P.conv.agent !== id) return showEmpty();
     renderHead();
@@ -1802,6 +1827,52 @@ export function mountAgentPanel(ctx) {
 
   // ---------- empty state ----------
 
+  // The setup card's buttons. An agent that isn't set up gets Set up (its card in Settings) and Chat with for up to two
+  // ready agents, which switch this chat the way the agent menu does. One that can't be reached gets Try again, Check
+  // settings and Chat with for one ready agent. Primary last, so it sits on the right.
+  function emptyActions(id, { blocked, offline }) {
+    if (P.unavailable || (!blocked && !offline)) return [];
+    const name = agentName(id);
+    const others = readyAgents({ agents: agentIds(), status: P.status, except: id, limit: blocked ? 2 : 1 });
+    const actions = others.map((other) => ({ id: `chat:${other}`, label: t('agent.empty.chatWith', { name: agentName(other) }) }));
+    if (blocked) return [...actions, { id: 'setup', label: t('agent.panel.setUp', { name }), kind: 'primary' }];
+    const checking = P.checking === id;
+    return [
+      ...actions,
+      { id: 'setup', label: t('agent.empty.checkSettings') },
+      { id: 'retry', label: checking ? t('agent.empty.checking') : t('agent.empty.tryAgain'), kind: 'primary', disabled: checking }
+    ];
+  }
+
+  function onEmptyAction(id, action) {
+    if (action === 'setup') return setUp(id);
+    if (action === 'retry') return checkAgain(id);
+    if (action.startsWith('chat:')) {
+      pickAgent(action.slice(5));
+      chat.focus();
+    }
+  }
+
+  // Settings > Agents, scrolled to the agent's card with its first empty field in focus (settings.js revealAgent).
+  function setUp(id) {
+    return ctx.openSettings('agents', { id });
+  }
+
+  // Try again on the card of an agent that can't be reached: main tests it and sends every agent's status, which
+  // draws the panel again.
+  async function checkAgain(id) {
+    if (P.checking) return;
+    P.checking = id;
+    if (!P.conv) renderEmpty();
+    try {
+      await api('agentTest', id);
+    } catch (_) {
+      // The card stays as it was.
+    }
+    P.checking = null;
+    if (!P.conv) renderEmpty();
+  }
+
   function renderEmpty() {
     if (P.conv) return;
     views.clear();
@@ -1825,13 +1896,18 @@ export function mountAgentPanel(ctx) {
     const box = document.createElement('div');
     box.className = 'ap-empty';
     const blocked = P.unavailable || BLOCKED.has(state);
+    // Rukoo couldn't reach the agent when it last looked: the card says so instead of offering quick actions that would
+    // fail. The input stays, since the agent may be back by now.
+    const offline = !blocked && state === 'offline';
     // The user turned agents' access to meetings off (Settings > Meetings): the agent gets nothing from the meeting.
     const meetingsOff = Boolean(S.data && S.data.settings && S.data.settings.meetingAgentsCanRead === false);
-    const titleKey = blocked ? 'setupTitle' : meeting ? 'titleMeeting' : teamChat ? 'titleChat' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
+    const titleKey = blocked ? 'setupTitle' : offline ? 'offlineTitle' : meeting ? 'titleMeeting' : teamChat ? 'titleChat' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
     const title = t(`agent.empty.${titleKey}`, { name });
     const body = blocked
       ? t('agent.empty.setupBody', { name })
-      : meeting
+      : offline
+        ? t('agent.empty.offlineBody', { name })
+        : meeting
         ? meetingsOff
           ? t('agent.empty.bodyMeetingOff')
           : t('agent.empty.bodyMeeting')
@@ -1844,13 +1920,15 @@ export function mountAgentPanel(ctx) {
               : leftOut
                 ? t('agent.empty.bodyLeftOut')
                 : t('agent.empty.bodyNoEmail', { name });
-    const card = B.recommendationCard({ eyebrow: name, title, body, actions: [], icon: B.icon('sparkle', 11) }, () => {});
+    const card = B.recommendationCard({ eyebrow: name, title, body, actions: emptyActions(id, { blocked, offline }), icon: B.icon('sparkle', 11) }, (action) => onEmptyAction(id, action));
     box.append(elOf(card));
-    if (!blocked && meeting) {
+    // No quick actions while the agent can't take them; the card offers the way out.
+    const usable = !blocked && !offline;
+    if (usable && meeting) {
       const chips = elOf(B.suggestionChips(MEETING_ACTIONS.map((a) => ({ id: a.key, label: a.label, icon: a.icon })), (key) => runAction(key)));
       chips.classList.add('ap-actions');
       box.append(chips);
-    } else if (!blocked) {
+    } else if (usable) {
       const list = actionsFor(m, P.shortcuts);
       const chips = B.suggestionChips(
         list.map((a) => ({ id: a.key, label: a.label, icon: a.icon })),
@@ -2186,7 +2264,7 @@ export function mountAgentPanel(ctx) {
         jump.hidden = true;
         return;
       case 'setup':
-        return ctx.openSettings('agents');
+        return setUp(currentAgent());
     }
   });
 
