@@ -775,7 +775,7 @@ test('a refused reply under a removed first message keeps its way into the threa
   const refused = message(threadLog(), 'I will');
   await expect(refused).toHaveAttribute('data-state', 'failed', { timeout: 15000 });
   // The line says why: the message it answers was removed.
-  await expect(refused.locator('.ch-state-text')).toHaveText('Not sent: The message you replied to was removed.');
+  await expect(refused.locator('.ch-state-text')).toHaveText('Not sent: The message you replied to is no longer available.');
   await win.keyboard.press('Escape');
   await expect(threadPane()).toBeHidden();
   // A message after it waits its turn.

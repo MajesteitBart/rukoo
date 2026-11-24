@@ -12648,7 +12648,7 @@
     "description": "Team chat error, shown under an unsent message: the server refused it because someone it mentions left the conversation. src/renderer/chat.js (chatErrorText)"
   },
   "chat.errors.rootRemoved": {
-    "message": "The message you replied to was removed.",
+    "message": "The message you replied to is no longer available.",
     "description": "Team chat error, shown under an unsent reply in a thread: the server refused it because the thread's first message was removed meanwhile. src/renderer/chat-view.js (reasonText)"
   },
   "chat.errors.reactionLimit": {

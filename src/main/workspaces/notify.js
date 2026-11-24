@@ -203,9 +203,10 @@ class Notifier {
         this.mark(ws, id, room.head);
         continue;
       }
-      // A channel looked at since it was last read loads no second page.
+      // A channel looked at since it was last read loads no second page. The one open in the window, which lost the
+      // focus, is loading its own history: it stays due, and a run after that reads what came from the cache.
       if (messages === null && only && looked(room)) {
-        this.mark(ws, id, room.head);
+        if (!this.open(ws, id)) this.mark(ws, id, room.head);
         continue;
       }
       if (slots <= 0) {
@@ -263,6 +264,12 @@ class Notifier {
       slots -= 1;
     }
     if (rest.length) this.summarize(ws, rest, ctx);
+  }
+
+  // Whether the room is the one open in the window, focused or not: its history is being loaded for it.
+  open(ws, room) {
+    const active = this.svc.active;
+    return Boolean(active && active.ws === ws && active.room === room);
   }
 
   // This device read the room further: its alert goes once the read reaches what the alert covered.

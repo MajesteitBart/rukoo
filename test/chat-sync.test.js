@@ -812,8 +812,8 @@ test('a restore takes read and alert positions from the restored feed, and keeps
   await svc.sync(ws.id);
   const before = svc.store.getRoom(ws.id, ws.general);
   assert.ok(before.unread >= 2);
-  // As if this device had read and been alerted through the head in a generation the server then discarded.
-  const ahead = before.head;
+  // As if this device had read and been alerted well past this head, in a generation the server then discarded.
+  const ahead = before.head + 5;
   svc.store.setRoomFields(ws.id, ws.general, { read: ahead, readLocal: ahead, readSent: ahead, notified: ahead, unread: 0, muted: 1 });
   svc.store.putDraft(ws.id, ws.general, null, { text: 'kept draft', mentions: [] });
   svc.store.updateWs(ws.id, { generation: 'OldGenerationXXXXXXXXX' });
@@ -823,7 +823,9 @@ test('a restore takes read and alert positions from the restored feed, and keeps
   assert.equal(after.read, before.read, 'the restored feed\'s read position');
   assert.equal(after.readLocal, after.read);
   assert.equal(after.readSent, after.read);
-  assert.ok(after.notified <= after.read, `notified ${after.notified} counts from the restored read ${after.read}`);
+  // The alert position starts again at the restored read position. The pass after the restore then finds this muted
+  // channel with unread messages and counts it as looked at, through the restored head and no further.
+  assert.ok(after.notified <= before.head, `notified ${after.notified} stays within the restored head ${before.head}`);
   assert.equal(after.unread, before.unread, 'the unread messages show again');
   assert.equal(after.muted, 1);
   assert.equal(svc.store.getDraft(ws.id, ws.general, null).text, 'kept draft');

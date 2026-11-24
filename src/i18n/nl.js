@@ -3245,7 +3245,7 @@
   "chat.errors.webNotSaved": "Rukoo kon dit bericht niet in de browser bewaren, dus het is niet verstuurd. Kopieer de tekst, laad de pagina opnieuw en verstuur het nog eens.",
   "chat.errors.paused": "{workspace} is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.",
   "chat.errors.mentions": "Iemand die je noemde, zit niet meer in dit gesprek.",
-  "chat.errors.rootRemoved": "Het bericht waarop je antwoordde, is verwijderd.",
+  "chat.errors.rootRemoved": "Het bericht waarop je antwoordde, is niet meer beschikbaar.",
   "chat.errors.reactionLimit": "Dit bericht heeft al 20 verschillende reacties, het maximum.",
   "chat.errors.filesOff": "{host} neemt geen bestanden aan.",
   "chat.errors.fileTooLargeSize": "Dit bestand is groter dan {size}, het maximum van deze server.",

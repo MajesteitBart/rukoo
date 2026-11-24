@@ -680,6 +680,42 @@ test('a reply for you alerts as a message for you would: not while its conversat
   assert.equal(svc.notices.length, 1);
 });
 
+// The channel open in the window counted as looked at while the window had the focus. A reply that comes once the
+// focus is gone, before the channel's history has it, must not be counted as looked at too: it alerts once the cache
+// has caught up.
+test('a reply that comes after the window lost the focus alerts once the open channel has caught up', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, svc } = await scene(t);
+  const api = chatApi(() => svc);
+  const question = await server.post(bart, ws.id, ws.general, 'Anyone?');
+  await svc.sync(ws.id);
+  // On screen in the focused window, with its history still to load: a message there counts as looked at.
+  svc.setFocused(true);
+  svc.setActive({ ws: ws.id, room: ws.general });
+  await server.post(olga, ws.id, ws.general, 'Morning');
+  await svc.sync(ws.id);
+  const general = () => svc.store.getRoom(ws.id, ws.general);
+  assert.equal(general().notified, general().head);
+  assert.deepEqual(svc.notices, []);
+
+  // The window loses the focus and a reply for Bart comes, which the cache doesn't hold yet: the channel stays due.
+  svc.setFocused(false);
+  const answer = await server.post(olga, ws.id, ws.general, 'After the focus went', { root: question.messageId });
+  await svc.sync(ws.id);
+  assert.deepEqual(svc.notices, []);
+  assert.ok(general().notified < general().head, 'still due');
+
+  // Its history arrives: the next run alerts, once.
+  await api.chatOpen(ws.id, ws.general, {});
+  await until(() => svc.store.eventById(ws.id, answer.messageId), 10000, 'the reply in the cache');
+  await svc.sync(ws.id);
+  await svc.sync(ws.id);
+  assert.deepEqual(
+    svc.notices.map((n) => n.body),
+    ['Olga replied: After the focus went']
+  );
+});
+
 test('an agent\'s answer in the thread of your message alerts you; asked in someone else\'s thread, it does not', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, bart, ws, svc } = await scene(t);
