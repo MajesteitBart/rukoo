@@ -448,6 +448,34 @@ class WorkspaceSocketTest {
         await("the ticket once the wait is over") { tickets() == 2 }
     }
 
+    // The review's interleaving: the retry timer's delay ends while another call holds the socket's lock, and a newer
+    // Retry-After arrives under that lock. Cancelling the timer then can't stop it; it must look again.
+    @Test
+    fun `a retry timer that fired while the lock was held doesn't connect past a newer Retry-After`() {
+        server.answerWith(MockResponse().setResponseCode(503))
+        val pacing = SocketPacing()
+        val hold = AtomicBoolean(false)
+        val clock = {
+            if (hold.compareAndSet(true, false)) {
+                // Called under the socket's lock by the nudge below: wait until the timer is past its delay.
+                Thread.sleep(600)
+                pacing.limit(System.currentTimeMillis() + 60_000)
+            }
+            System.currentTimeMillis()
+        }
+        val s = WorkspaceSocket(
+            okhttp, WorkspaceSocket.socketUrl(server.url, w), { client.socketTicket(w) }, listener, scope,
+            timing = quick.copy(backoff = listOf(200L)), now = clock, random = { 1.0 }, pacing = pacing,
+        ).also { sockets += it }
+        s.start()
+        await("the backoff") { s.state.value == SocketState.DOWN }
+        hold.set(true)
+        s.nudge()
+        Thread.sleep(600)
+        assertEquals("no ticket before the newer Retry-After", 1, tickets())
+        assertEquals(SocketState.DOWN, s.state.value)
+    }
+
     @Test
     fun `closing for good drops the connection at once, also when the peer never answers the close`() {
         val side = ServerSide(answerClose = false)

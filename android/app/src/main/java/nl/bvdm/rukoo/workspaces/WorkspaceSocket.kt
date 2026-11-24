@@ -462,9 +462,14 @@ class WorkspaceSocket(
         _state.value = SocketState.DOWN
         retryJob = own.launch {
             delay(delayMs)
+            val me = coroutineContext[Job]
             synchronized(lock) {
+                // Cancelling a timer that is past its delay and waiting for the lock doesn't stop it: one that was
+                // replaced meanwhile is no longer the socket's, and a Retry-After that came meanwhile still holds.
+                if (retryJob !== me || !wanted || closed || _state.value != SocketState.DOWN) return@synchronized
                 retryJob = null
-                if (wanted && !closed && _state.value == SocketState.DOWN) connectLocked()
+                val limited = pacing.limitLeft(now())
+                if (limited > 0) laterLocked(limited) else connectLocked()
             }
         }
     }
@@ -578,6 +583,10 @@ class SocketPacing {
     /** Whether `Retry-After` still holds at [now]. */
     @Synchronized
     fun limited(now: Long): Boolean = now < limitedUntil
+
+    /** How long `Retry-After` still holds at [now], or 0. */
+    @Synchronized
+    fun limitLeft(now: Long): Long = if (now < limitedUntil) limitedUntil - now else 0
 
     /** An attempt failed or was cut short at [now]: the next backoff step. Returns its wait. */
     @Synchronized
