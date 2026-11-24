@@ -1740,6 +1740,37 @@ test('an editor in the reading pane whose email the server took late keeps a cor
   expect(kept()).toEqual([]);
 });
 
+// Last check of #309 (P1): the snapshot of what went shared its recipient lists with the editor, so a recipient added
+// after the email went compared as nothing changed, and the editor closed with the correction in it. The snapshot is
+// its own copy now, and an address still being typed counts as a change too.
+test('an editor in the reading pane whose email the server took late keeps a recipient added since', async () => {
+  test.setTimeout(120000);
+  await refusedInPane('Taken late, one more reader', 'One copy only.');
+  await holdSendsWithoutUndo();
+  await app.evaluate(() => (global.__semHeldMail.wait = 1000));
+  await composer().locator('[data-c="send"]').click();
+  await expect(win.locator('.scrim .dialog')).toContainText("didn't say whether it took this email");
+  await win.locator('.scrim .dialog .buttons button').click();
+  await app.evaluate(() => global.__sends[0].resolve(true));
+  await expect.poll(kept).toEqual([]);
+  await app.evaluate(() => (global.__allowSaves = true));
+  // Only a recipient changes.
+  const to = composer().locator('[data-rinput="to"]');
+  await to.click();
+  await to.fill('late@example.com');
+  await win.keyboard.press('Enter');
+  await expect(composer()).toContainText('late@example.com');
+  // Send, confirmed: nothing goes, and the editor stays with the added recipient.
+  await composer().locator('[data-c="send"]').click();
+  await win.click('.scrim .buttons button:text-is("Send anyway")');
+  await expect(win.locator('.scrim .dialog')).toContainText('This email went as it was when you pressed Send');
+  await win.locator('.scrim .dialog .buttons button').click();
+  await expect(composer().locator('.compose-sent')).toContainText("What you changed after that is still here and wasn't sent.");
+  await expect(composer()).toContainText('late@example.com');
+  await expect(composer().locator('[data-c="send"]')).toBeDisabled();
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+});
+
 // Final review of #309 (P2): an editor whose email the server took late, and that held nothing new, couldn't be left by
 // moving to another message: moving on saves first, and main refused every save of that email. It now closes, saying
 // the email went or is in Drafts.

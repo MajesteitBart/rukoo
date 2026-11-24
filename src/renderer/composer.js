@@ -1458,9 +1458,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       state: {
         accountId: st.accountId,
         from: st.from,
-        to: st.to,
-        cc: st.cc,
-        bcc: st.bcc,
+        // Copies: the editor changes its own lists in place, and a snapshot must stay what it was (changedSince()).
+        to: st.to.map((a) => ({ ...a })),
+        cc: st.cc.map((a) => ({ ...a })),
+        bcc: st.bcc.map((a) => ({ ...a })),
         showCc: st.showCc,
         showBcc: st.showBcc,
         subject: st.subject,
@@ -1477,8 +1478,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   // Whether this editor holds something other than the try that may have gone (submitted). Without such a try to
-  // compare with, it counts as changed, so nothing typed here is lost on a guess.
-  const changedSince = () => !submitted || !sameEmail(submitted, undoState());
+  // compare with, it counts as changed, so nothing typed here is lost on a guess. An address still being typed in a
+  // recipient field counts too: it is in no list yet.
+  const typing = () => ['to', 'cc', 'bcc'].some((field) => ($(`[data-rinput="${field}"]`, page)?.value || '').trim());
+  const changedSince = () => !submitted || typing() || !sameEmail(submitted, undoState());
 
   // The notice above Send: what became of the email, with the actions that go with it.
   function drawSentNote(key, actions) {
