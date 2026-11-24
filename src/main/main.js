@@ -2008,6 +2008,12 @@ const windowApi = {
   openRefused: (sender, id) => fromMainWindow(sender) && refused.release(String(id || '')),
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
+    // Test mode only: SEM_COMPOSE_HOLD=1 keeps every compose window from getting its editor, so a test can end Rukoo
+    // while the window is there and its editor isn't (global.__semComposeHeld counts the windows that wait).
+    if (process.env.SEM_HIDDEN && process.env.SEM_COMPOSE_HOLD === '1') {
+      global.__semComposeHeld = (global.__semComposeHeld || 0) + 1;
+      return new Promise(() => {});
+    }
     return c ? c.opts : null;
   },
   // A compose window's editor saved a draft: the window claims it, so the draft cannot open twice.

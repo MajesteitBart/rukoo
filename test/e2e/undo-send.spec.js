@@ -1295,10 +1295,12 @@ test('a refused email open in the reading pane survives a page crash and a kill,
   await nothingReopens();
 });
 
-// #309: what a quit left used to be read and deleted at the next start before the compose windows it opened had
-// loaded. Now the file keeps each email until its editor answers for it, so a kill at that start, while the windows
-// still load, brings them back once each at the one after.
-test('emails a quit left open again once each after a kill while their compose windows still load', async () => {
+// #309: what a quit left used to be read and deleted at the next start before the compose windows it opened had their
+// editors. Now the file keeps each email until its editor answers for it, so a kill at that start, while the windows
+// are there and their editors are not, brings them back once each at the one after. The test holds every compose
+// window before it gets its editor (SEM_COMPOSE_HOLD, main.js composeInit), checks that both are in that state, and
+// kills Rukoo then.
+test('emails a quit left open again once each after a kill while their compose windows wait for their editors', async () => {
   test.setTimeout(120000);
   await app.evaluate(() => {
     const engine = global.__semEngine;
@@ -1317,19 +1319,22 @@ test('emails a quit left open again once each after a kill while their compose w
   await closeApp(app);
   expect(kept().sort()).toEqual(['Also left by the quit', 'Left by the quit']);
 
-  // The next start: killed as soon as it makes its first compose window, before that window has its editor.
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_UNDO_SEND: '1' };
+  // The next start, with both compose windows held before their editors.
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_UNDO_SEND: '1', SEM_COMPOSE_HOLD: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
-  if (app.windows().length < 2) await app.waitForEvent('window');
-  const loading = await app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows()
-      .filter((w) => !w.webContents.getURL().endsWith('index.html'))
-      .map((w) => w.webContents.isLoading())
-  );
+  await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(3);
+  // Both windows have loaded their page and wait for their email from main; neither has an editor.
+  await expect.poll(() => app.evaluate(() => global.__semComposeHeld || 0), { timeout: 15000 }).toBe(2);
+  const waitingWindows = app.windows().filter((w) => w !== win);
+  for (const w of waitingWindows) {
+    await expect(w.locator('#app')).toBeAttached();
+    await expect(w.locator('.composer')).toHaveCount(0);
+    await expect(w.locator('.editor')).toHaveCount(0);
+  }
+  expect(await app.evaluate(() => global.__semComposeHeld)).toBe(2);
   await crash();
-  test.info().annotations.push({ type: 'compose windows still loading at the kill', description: JSON.stringify(loading) });
   expect(kept().sort()).toEqual(['Also left by the quit', 'Left by the quit']);
 
   await launch();

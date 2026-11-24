@@ -34,7 +34,7 @@ npm run test:e2e  # Playwright drives the real Electron app; chat tests use scri
 
 The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.email) and skip themselves when it's unreachable.
 
-In the Electron tests (`SEM_HIDDEN=1`) Send goes out at once, so the suites don't wait out the Undo send notice. `SEM_UNDO_SEND=1` turns the wait back on; `test/e2e/undo-send.spec.js` does that.
+In the Electron tests (`SEM_HIDDEN=1`) Send goes out at once, so the suites don't wait out the Undo send notice. `SEM_UNDO_SEND=1` turns the wait back on; `test/e2e/undo-send.spec.js` does that. `SEM_COMPOSE_HOLD=1` keeps every compose window from getting its editor, so a test can end Rukoo while the window is there and its editor isn't.
 
 Headless Electron tests on Linux need an X display and a window manager, so minimize and restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04, Windows and macOS. On macOS it runs the unit tests and only the Mac-specific Electron tests in `test/e2e/macos.spec.js`, on both Intel and Apple Silicon, from source and again against the built app. On Windows and Ubuntu it splits the Electron tests over three runners with `--shard=N/3 --fully-parallel`, so a run takes about a third of the time and a failed shard can be rerun on its own. When you run the whole Electron suite on a Mac yourself, the cases written for Windows or Linux behavior skip themselves, and `macos.spec.js` checks the Mac side. The demo suite doesn't verify real mail synchronization, native tray availability or live agent authentication on every Linux desktop.
 
