@@ -1,9 +1,9 @@
 import { t, setLanguage, localize, shortcutLabel, getLocale } from './i18n.js';
 import { visibleModes, modeFor, withMode } from './modes.js';
+import { modeShownNow } from './mode-check.js';
 import { icons } from './icons.js';
 import {
   api,
-  modeShownNow,
   esc,
   $,
   $$,

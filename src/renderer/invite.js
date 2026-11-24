@@ -2,7 +2,8 @@
 // opened with Rukoo. Main finds the event in the user's calendars and sends the answer (calendar/invitations.js).
 import { t } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, toast, showMenu, dialog, menuCount, closeMenuNumber, modeShownNow } from './ui.js';
+import { api, esc, toast, showMenu, dialog, menuCount, closeMenuNumber } from './ui.js';
+import { modeShownNow } from './mode-check.js';
 import { whenText, titleOf } from './calendar-shared.js';
 
 const RESPONSES = ['accepted', 'tentative', 'declined'];
