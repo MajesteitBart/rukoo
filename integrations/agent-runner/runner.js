@@ -27,6 +27,9 @@ const CONTEXT_PAGES = 10;
 const LOOKBACK_PAGES = 50;
 // A post that fails with no answer or a server error is sent again this often, with the same operation ID.
 const POST_TRIES = 5;
+// How long stop() lets a turn in flight end before run() returns: a program the backend started is ended with what it
+// started, and a run of the Runs API gets its stop request.
+const STOP_GRACE = 4000;
 
 const sleep = (ms, signal) =>
   new Promise((resolve) => {
@@ -145,8 +148,8 @@ class Runner {
   // config: normalizeConfig()'s result. backend: a stand-in for tests. log(level, message). retryMs: the first wait
   // before a post is sent again, doubled each time. report(event): what a program that started the runner shows of
   // its state, such as Rukoo's desktop app (src/main/agent-runs.js): { type: 'connected' | 'problems' | 'pass' |
-  // 'unreachable' | 'answered' | 'failed' | 'refused', … }. Events carry ids and the runner's own messages, never a
-  // message's text.
+  // 'unreachable' | 'answered' | 'failed' | 'refused', … }. Events carry ids, counts, codes the runner defines and at
+  // most an HTTP status (failureOf), never text that a server, a backend or a message wrote.
   constructor(config, { log = defaultLog, backend, retryMs = 1000, report = () => {} } = {}) {
     this.config = config;
     this.log = log;
@@ -199,8 +202,8 @@ class Runner {
   async connect() {
     const info = await this.api.info();
     const w = info && info.workspace;
-    if (!w) throw new Error('This server has no team chat');
-    if (!Array.isArray(w.capabilities) || !w.capabilities.includes('agents')) throw new Error('This server has agents turned off');
+    if (!w) throw Object.assign(new Error('This server has no team chat'), { code: 'server' });
+    if (!Array.isArray(w.capabilities) || !w.capabilities.includes('agents')) throw Object.assign(new Error('This server has agents turned off'), { code: 'server' });
     if (w.agents && Number.isSafeInteger(w.agents.depth)) this.depthLimit = w.agents.depth;
     await this.loadWorkspace();
     await this.loadSettings();
@@ -262,7 +265,7 @@ class Runner {
           this.passError = err;
           if (!this.stopped) {
             this.log('warn', `Could not read the workspace: ${err.message}; trying again later`);
-            this.report({ type: 'unreachable', message: err.message });
+            this.report({ type: 'unreachable', ...failureOf(err) });
           }
           return;
         }
@@ -528,14 +531,14 @@ class Runner {
       if (this.stopped) throw new Error('Stopped');
       this.stats.failed++;
       this.log('warn', `The backend failed on ${ev.id} in ${c}, so nothing was posted: ${err.message}`);
-      this.report({ type: 'failed', message: err.message });
+      this.report({ type: 'failed', ...failureOf(err) });
       return;
     }
     const text = cleanAnswer(answer);
     if (!text) {
       this.stats.failed++;
       this.log('warn', `The backend gave no answer to ${ev.id} in ${c}, so nothing was posted`);
-      this.report({ type: 'failed', message: 'The backend gave no answer' });
+      this.report({ type: 'failed', code: 'empty' });
       return;
     }
     const converted = convertMentions(text, (id) => {
@@ -548,7 +551,7 @@ class Runner {
     if (!parts.length) {
       this.stats.failed++;
       this.log('warn', `The backend gave no answer to ${ev.id} in ${c}, so nothing was posted`);
-      this.report({ type: 'failed', message: 'The backend gave no answer' });
+      this.report({ type: 'failed', code: 'empty' });
       return;
     }
     const at = Date.now() + this.clockOffset;
@@ -765,7 +768,7 @@ class Runner {
         const passing = err instanceof RukooError && !(err instanceof KeyRefused) && (err.network || err.status >= 500 || err.status === 429);
         if (!passing || this.stopped) throw err;
         this.log('warn', `Could not reach the server: ${err.message}; trying again in ${wait / 1000} s`);
-        this.report({ type: 'unreachable', message: err.message });
+        this.report({ type: 'unreachable', ...failureOf(err) });
         await sleep(wait, this.abort.signal);
         if (this.stopped) return;
       }
@@ -773,7 +776,7 @@ class Runner {
     // What would keep every answer from going out, said at the start rather than at the first mention.
     const errors = (await this.backendProblems()).filter((p) => p.level === 'error');
     for (const p of errors) this.log('warn', p.message);
-    this.report({ type: 'problems', problems: errors.map((p) => ({ code: p.code || null, message: p.message })) });
+    this.report({ type: 'problems', problems: errors.map((p) => ({ code: p.code || 'other' })) });
     this.timer = setInterval(() => this.pump(), this.config.pollSeconds * 1000);
     this.socketLoop().catch((err) => this.log('warn', `The wake socket stopped: ${err.message}`));
     await this.pump();
@@ -781,7 +784,16 @@ class Runner {
       this.log('warn', "The agent is in no channel yet. In Rukoo, open a channel's menu and choose Add agents; the runner picks it up at once.");
     }
     await this.finished;
+    await this.settle();
     if (this.fatal) throw this.fatal;
+  }
+
+  // After stop(): the pass in flight ends what it does, a turn included, within STOP_GRACE.
+  async settle() {
+    if (!this.pumping) return;
+    let timer;
+    await Promise.race([this.pumping.catch(() => {}), new Promise((resolve) => (timer = setTimeout(resolve, STOP_GRACE)))]);
+    clearTimeout(timer);
   }
 
   async socketLoop() {
@@ -883,6 +895,16 @@ class Runner {
   }
 }
 
+// What a failure was, for report(): { code, status? }. For the account server offline, or http with its status; for a
+// backend the code its BackendError carries (backends.js): timeout, http, exit, missing, empty, offline, failed,
+// protocol, too_large and the like. Never its message, which can quote what a server or a backend said.
+function failureOf(err) {
+  const status = err && Number.isSafeInteger(err.status) && err.status >= 100 && err.status <= 599 ? err.status : null;
+  if (err instanceof RukooError) return { code: err.network ? 'offline' : err.tooLarge ? 'too_large' : 'http', ...(status ? { status } : {}) };
+  const code = err && typeof err.code === 'string' && /^[a-z_]{2,20}$/.test(err.code) ? err.code : 'backend';
+  return { code, ...(status ? { status } : {}) };
+}
+
 // ---- Command line ----
 
 function usage() {
@@ -944,4 +966,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { Runner, loadConfig, normalizeConfig, readState, writeState, main, DEFAULT_KEY_ENV };
+module.exports = { Runner, loadConfig, normalizeConfig, readState, writeState, main, failureOf, DEFAULT_KEY_ENV, STOP_GRACE };

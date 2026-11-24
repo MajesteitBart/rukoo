@@ -3007,6 +3007,8 @@ class AgentHub extends EventEmitter {
   }
 
   configChanged() {
+    // Team chat's agents that run on this computer (agent-runs.js) check what they answer with again.
+    this.emit('settings');
     // A new model in Settings, program or server: the lists are loaded again when the panel asks.
     this.modelLists.clear();
     this.skillLists.clear();

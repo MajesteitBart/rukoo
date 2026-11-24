@@ -4248,6 +4248,42 @@
     "message": "Save...",
     "description": "Save action in native attachment file dialogs in src/main/main.js. This action is separate from the composer draft-saving progress status."
   },
+  "native.agentRuns.thisAgent": {
+    "message": "this agent",
+    "description": "Native question about running a team chat agent on this computer: the agent's name when Rukoo doesn't know it yet. src/main/agent-runs.js"
+  },
+  "native.agentRuns.runTitle": {
+    "message": "Run {name} on this computer with {use}?",
+    "description": "Native question before Rukoo runs a team chat agent on this computer, or runs it again after its agent in Settings > Agents changed: the question. {name}: the team chat agent; {use}: the agent of Settings > Agents that answers for it (Claude Code, Codex, Hermes, OpenClaw or a custom agent). src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.runProgram": {
+    "message": "Rukoo starts this program for every mention {name} answers, and gives it what was written:\n{program}\n\nIt runs under your own {use} login on this computer, with its settings in {folder}.",
+    "description": "Native question before running a team chat agent with Claude Code or Codex: the detail. {name}: the team chat agent; {use}: Claude Code or Codex; {program}: the full path of the program; {folder}: the folder of its login and settings. src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.runServer": {
+    "message": "Rukoo sends every mention {name} answers, with what came before it in the channel, to this address:\n{address}\n\nThe key or token of {use} in Settings > Agents goes along. {use} keeps its own tools and can use them for anyone {name} answers.",
+    "description": "Native question before running a team chat agent with Hermes, OpenClaw or a custom agent on a server: the detail. {name}: the team chat agent; {use}: the agent of Settings > Agents; {address}: the address Rukoo sends to. src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.run": {
+    "message": "Run on this computer",
+    "description": "Native question before running a team chat agent on this computer: the button that runs it. src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.exportTitle": {
+    "message": "Copy the config with {name}'s key?",
+    "description": "Native question before Rukoo puts a team chat agent's runner config, with its key, on the clipboard or in a file, to run it on another computer: the question. {name}: the agent. src/main/agent-runs.js (exportConfig)"
+  },
+  "native.agentRuns.exportBody": {
+    "message": "The config holds {name}'s key, which reads and posts in every channel {name} is in. Put it only on a computer you trust, and keep the file to yourself.",
+    "description": "Native question before exporting a team chat agent's runner config: the detail. {name}: the agent. src/main/agent-runs.js (exportConfig)"
+  },
+  "native.agentRuns.copy": {
+    "message": "Copy config",
+    "description": "Native question before exporting a team chat agent's runner config: the button that puts it on the clipboard. src/main/agent-runs.js (exportConfig)"
+  },
+  "native.agentRuns.save": {
+    "message": "Save to a file…",
+    "description": "Native question before exporting a team chat agent's runner config: the button that opens a save dialog for it. src/main/agent-runs.js (exportConfig)"
+  },
   "native.export.defaultName": {
     "message": "message",
     "description": "Default filename stem for exporting an email without a subject."

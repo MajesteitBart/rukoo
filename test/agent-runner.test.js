@@ -1156,6 +1156,72 @@ test('the openai backend sends a system and a user message with a user per trigg
   }
 });
 
+test('a backend answer is read only up to its limit, and its failures carry a code and a status apart from their text', async () => {
+  const big = 'x'.repeat(5 * 1024 * 1024);
+  const fake = await fakeHttp((req, body, res) => {
+    if (req.url === '/huge/v1/chat/completions') return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content: big } }] }));
+    if (req.url === '/stream/v1/chat/completions') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      // A line that never ends.
+      res.write(`data: ${'y'.repeat(1024 * 1024 + 10)}`);
+      return setTimeout(() => res.end(), 50);
+    }
+    if (req.url === '/error/v1/chat/completions') return res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: `upstream said secret-value ${'z'.repeat(200000)}` } }));
+    res.writeHead(404).end();
+  });
+  try {
+    const run = (route) => backends.makeBackend({ type: 'openai', url: `${fake.url}/${route}`, timeout: 10 }).run({ instructions: 'I', input: 'Q', text: 'I\n\nQ' }, { id: 'e_t' });
+    await assert.rejects(run('huge'), (err) => err instanceof backends.BackendError && err.code === 'too_large');
+    await assert.rejects(run('stream'), (err) => err instanceof backends.BackendError && err.code === 'too_large');
+    await assert.rejects(run('error'), (err) => err.code === 'http' && err.status === 502 && err.message.length < 300);
+    const { failureOf } = require('../integrations/agent-runner/runner.js');
+    assert.deepEqual(failureOf(new backends.BackendError('HTTP 502: secret-value', 'http', 502)), { code: 'http', status: 502 });
+    assert.deepEqual(failureOf(new Error('anything at all')), { code: 'backend' });
+    assert.deepEqual(failureOf(Object.assign(new RukooError(0, null, 'No answer from host: secret'), { network: true })), { code: 'offline' });
+    assert.deepEqual(failureOf(new RukooError(503, { message: 'secret' })), { code: 'http', status: 503 });
+  } finally {
+    await fake.close();
+  }
+});
+
+test("the runner reports a backend's failure with its code, never its text, and stop waits for the turn in flight", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { bart, ws, agent, key } = await setup();
+  const events = [];
+  let release = null;
+  let stopped = false;
+  const { runner } = makeRunner(key, ws, {
+    options: {
+      report: (e) => events.push(e),
+      backend: {
+        run: (p, { signal }) =>
+          new Promise((resolve, reject) => {
+            release = resolve;
+            signal.addEventListener('abort', () => setTimeout(() => ((stopped = true), reject(new backends.BackendError('Stopped', 'stopped'))), 300), { once: true });
+          })
+      }
+    }
+  });
+  const running = runner.run();
+  await until(() => events.some((e) => e.type === 'pass'), 15000, 'a pass');
+  await ask(bart, ws, ws.general, '@Clark hello', agent);
+  await until(() => release, 15000, 'the turn');
+  const at = Date.now();
+  runner.stop();
+  await running;
+  // run() returned only after the turn ended, which took 300 ms after the stop.
+  assert.equal(stopped, true);
+  assert.ok(Date.now() - at >= 250, `${Date.now() - at} ms`);
+  const failing = makeRunner(key, ws, { options: { report: (e) => events.push(e), backend: { run: async () => Promise.reject(new backends.BackendError('HTTP 500: {"error":"secret-value"}', 'http', 500)) } } });
+  const going = failing.runner.run();
+  await ask(bart, ws, ws.general, '@Clark again', agent);
+  await until(() => events.some((e) => e.type === 'failed'), 15000, 'the failure');
+  failing.runner.stop();
+  await going;
+  assert.deepEqual(events.find((e) => e.type === 'failed'), { type: 'failed', code: 'http', status: 500 });
+  assert.ok(!JSON.stringify(events).includes('secret-value'));
+});
+
 test('a runner that can not reach the server at the start keeps trying until it is stopped', async () => {
   const key = `rka_${'A'.repeat(22)}.${'b'.repeat(43)}`;
   // A port nothing listens on: one the system gave out and took back.

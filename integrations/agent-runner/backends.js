@@ -20,8 +20,23 @@ const DEFAULT_TIMEOUT = 600;
 // What a process may write before the runner stops reading: far more than five messages.
 const STDOUT_MAX = 1024 * 1024;
 const STDERR_MAX = 16 * 1024;
+// The most of a server's answer the runner reads: a JSON answer, a streamed answer's text and an SSE line, and the body
+// of an error, of which the runner keeps the start.
+const JSON_MAX = 4 * 1024 * 1024;
+const ANSWER_MAX = STDOUT_MAX;
+const SSE_LINE_MAX = 1024 * 1024;
+const ERROR_MAX = 64 * 1024;
 
-class BackendError extends Error {}
+// A backend that couldn't answer. code says what kind of failure it was, in words the runner defines, for a program
+// that shows it in its own words (Rukoo's desktop app): config, offline, timeout, http (with status), protocol,
+// too_large, failed (the backend said so), missing, start, exit, empty or stopped. message can quote the backend.
+class BackendError extends Error {
+  constructor(message, code = 'backend', status = null) {
+    super(message);
+    this.code = code;
+    if (Number.isSafeInteger(status)) this.status = status;
+  }
+}
 
 const clip = (text, max = 300) => {
   const s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
@@ -52,11 +67,11 @@ function endpoint(base, route) {
   try {
     url = new URL(String(base || '').trim());
   } catch {
-    throw new BackendError(`The backend's "url" is not an address: ${base}`);
+    throw new BackendError(`The backend's "url" is not an address: ${base}`, 'config');
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BackendError('The backend\'s "url" must start with http:// or https://');
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BackendError('The backend\'s "url" must start with http:// or https://', 'config');
   const out = new URL(url.pathname.replace(/\/+$/, '') + route, url.origin);
-  if (out.origin !== url.origin) throw new BackendError('Refusing a request outside the backend server');
+  if (out.origin !== url.origin) throw new BackendError('Refusing a request outside the backend server', 'config');
   return out;
 }
 
@@ -76,7 +91,10 @@ class SseParser {
     this.buffer += typeof chunk === 'string' ? chunk : this.decoder.decode(chunk, { stream: true });
     const lines = this.buffer.split(/\r\n|\r|\n/);
     this.buffer = lines.pop();
+    // A line or a frame that never ends is no answer.
+    if (this.buffer.length > SSE_LINE_MAX) throw new BackendError('The stream sent a line that is too long', 'too_large');
     for (const line of lines) this.line(line);
+    if (this.data.reduce((n, d) => n + d.length, 0) > SSE_LINE_MAX) throw new BackendError('The stream sent an event that is too large', 'too_large');
   }
 
   line(text) {
@@ -112,17 +130,52 @@ async function readStream(body, parser, signal) {
   }
 }
 
+// An answer's body as text, at most max bytes: { text, over }. over: there was more, which isn't read.
+async function readText(res, max) {
+  if (!res.body) return { text: '', over: false };
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (size + value.length > max) {
+        chunks.push(Buffer.from(value).subarray(0, max - size));
+        reader.cancel().catch(() => {});
+        return { text: Buffer.concat(chunks).toString('utf8'), over: true };
+      }
+      size += value.length;
+      chunks.push(Buffer.from(value));
+    }
+  } catch (err) {
+    throw new BackendError(`The answer broke off: ${clip(err.message, 200)}`, 'offline');
+  }
+  return { text: Buffer.concat(chunks).toString('utf8'), over: false };
+}
+
+// An answer's JSON body, or null when it isn't JSON; past JSON_MAX a BackendError (too_large).
+async function readJson(res) {
+  const { text, over } = await readText(res, JSON_MAX);
+  if (over) throw new BackendError('The answer was too large', 'too_large');
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function errorOf(res) {
   let text = '';
   try {
-    text = await res.text();
+    text = (await readText(res, ERROR_MAX)).text;
   } catch {}
   let detail = text;
   try {
     const data = JSON.parse(text);
     detail = (data && data.error && (data.error.message || data.error)) || (data && data.message) || text;
   } catch {}
-  return new BackendError(`HTTP ${res.status}${detail ? `: ${clip(typeof detail === 'string' ? detail : JSON.stringify(detail), 200)}` : ''}`);
+  return new BackendError(`HTTP ${res.status}${detail ? `: ${clip(typeof detail === 'string' ? detail : JSON.stringify(detail), 200)}` : ''}`, 'http', res.status);
 }
 
 // ---- runs: Hermes Agent and Booper ----
@@ -133,7 +186,7 @@ async function errorOf(res) {
 class RunsBackend {
   constructor(config) {
     this.config = config;
-    if (!config.url) throw new BackendError('The runs backend needs "url"');
+    if (!config.url) throw new BackendError('The runs backend needs "url"', 'config');
   }
 
   headers(extra = {}) {
@@ -171,18 +224,18 @@ class RunsBackend {
     try {
       res = await this.call('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-agent-${id}-${digest}` }, signal: deadline });
     } catch (err) {
-      throw new BackendError(`Could not start a run: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`);
+      throw new BackendError(`Could not start a run: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
     }
     if (res.status !== 200 && res.status !== 202) throw await errorOf(res);
-    const started = await res.json().catch(() => null);
+    const started = await readJson(res);
     const runId = started && started.run_id;
-    if (!runId) throw new BackendError('The server did not return a run id');
+    if (!runId) throw new BackendError('The server did not return a run id', 'protocol');
     try {
       return await this.follow(runId, deadline);
     } catch (err) {
-      // Stopped or out of time: the run must not go on where nobody follows it.
-      await this.call('POST', `/v1/runs/${encodeURIComponent(runId)}/stop`, { timeout: 5000 }).catch(() => {});
-      throw err instanceof BackendError ? err : new BackendError(deadline.aborted ? 'The run took longer than the timeout and was stopped' : clip(err.message, 200));
+      // Stopped or out of time: the run must not go on where nobody follows it. Within the runner's STOP_GRACE.
+      await this.call('POST', `/v1/runs/${encodeURIComponent(runId)}/stop`, { timeout: 3000 }).catch(() => {});
+      throw err instanceof BackendError ? err : new BackendError(deadline.aborted ? 'The run took longer than the timeout and was stopped' : clip(err.message, 200), deadline.aborted ? 'timeout' : 'failed');
     }
   }
 
@@ -197,7 +250,10 @@ class RunsBackend {
         return;
       }
       const kind = (d && d.event) || event;
-      if (kind === 'message.delta' || kind === 'assistant.delta') state.text += typeof d.delta === 'string' ? d.delta : '';
+      if (kind === 'message.delta' || kind === 'assistant.delta') {
+        state.text += typeof d.delta === 'string' ? d.delta : '';
+        if (state.text.length > ANSWER_MAX) throw new BackendError('The answer was too large', 'too_large');
+      }
       else if (kind === 'run.completed') state.end = { ok: true, output: typeof d.output === 'string' ? d.output : '' };
       else if (kind === 'run.failed' || kind === 'run.interrupted' || kind === 'error') state.end = { ok: false, detail: d.error || d.message || 'The run failed' };
       else if (kind === 'run.cancelled') state.end = { ok: false, detail: 'The run was cancelled' };
@@ -208,19 +264,19 @@ class RunsBackend {
       if (res.ok && res.body) await readStream(res.body, new SseParser(onEvent), signal);
       else res.body?.cancel().catch(() => {});
     } catch (err) {
-      if (signal.aborted) throw err;
+      if (signal.aborted || (err instanceof BackendError && err.code === 'too_large')) throw err;
     }
     while (!state.end) {
-      if (signal.aborted) throw new BackendError('The run took longer than the timeout and was stopped');
+      if (signal.aborted) throw new BackendError('The run took longer than the timeout and was stopped', 'timeout');
       const res = await this.call('GET', `/v1/runs/${encodeURIComponent(runId)}`, { signal }).catch(() => null);
-      const d = res && res.ok ? await res.json().catch(() => null) : null;
+      const d = res && res.ok ? await readJson(res).catch(() => null) : null;
       if (d && d.status === 'completed') state.end = { ok: true, output: d.output || '' };
       else if (d && (d.status === 'failed' || d.status === 'interrupted')) state.end = { ok: false, detail: d.error || d.message || 'The run failed' };
       else if (d && d.status === 'cancelled') state.end = { ok: false, detail: 'The run was cancelled' };
       else if (d && d.status === 'waiting_for_approval') this.deny(runId, null);
       if (!state.end) await sleep(3000, signal);
     }
-    if (!state.end.ok) throw new BackendError(clip(typeof state.end.detail === 'string' ? state.end.detail : JSON.stringify(state.end.detail), 200));
+    if (!state.end.ok) throw new BackendError(clip(typeof state.end.detail === 'string' ? state.end.detail : JSON.stringify(state.end.detail), 200), 'failed');
     return state.end.output || state.text;
   }
 
@@ -237,7 +293,7 @@ class RunsBackend {
 class OpenAiBackend {
   constructor(config) {
     this.config = config;
-    if (!config.url) throw new BackendError('The openai backend needs "url"');
+    if (!config.url) throw new BackendError('The openai backend needs "url"', 'config');
   }
 
   async run(prompt, { id, signal } = {}) {
@@ -264,14 +320,14 @@ class OpenAiBackend {
         signal: deadline
       });
     } catch (err) {
-      throw new BackendError(deadline.aborted ? 'No answer within the timeout' : `No answer from the server: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`);
+      throw new BackendError(deadline.aborted ? 'No answer within the timeout' : `No answer from the server: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
     }
     if (!res.ok) throw await errorOf(res);
     // A server that ignores stream answers one completion as JSON.
     if (!/text\/event-stream/i.test(res.headers.get('content-type') || '')) {
-      const data = await res.json().catch(() => null);
+      const data = await readJson(res);
       const content = data && Array.isArray(data.choices) && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      if (typeof content !== 'string') throw new BackendError('The server answered without a message');
+      if (typeof content !== 'string') throw new BackendError('The server answered without a message', 'protocol');
       return content;
     }
     const state = { text: '', error: null, done: false };
@@ -287,15 +343,17 @@ class OpenAiBackend {
       if (d && d.error) state.error = d.error.message || JSON.stringify(d.error);
       const choice = d && Array.isArray(d.choices) ? d.choices[0] : null;
       if (choice && choice.delta && typeof choice.delta.content === 'string') state.text += choice.delta.content;
+      if (state.text.length > ANSWER_MAX) throw new BackendError('The answer was too large', 'too_large');
       if (choice && choice.finish_reason) state.done = true;
     });
     try {
       await readStream(res.body, parser, deadline);
     } catch (err) {
-      throw new BackendError(deadline.aborted ? 'The answer took longer than the timeout' : `The connection broke off: ${clip(err.message, 200)}`);
+      if (err instanceof BackendError) throw err;
+      throw new BackendError(deadline.aborted ? 'The answer took longer than the timeout' : `The connection broke off: ${clip(err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
     }
-    if (state.error) throw new BackendError(clip(state.error, 200));
-    if (!state.done) throw new BackendError('The connection closed before the answer was complete');
+    if (state.error) throw new BackendError(clip(state.error, 200), 'failed');
+    if (!state.done) throw new BackendError('The connection closed before the answer was complete', 'protocol');
     return state.text;
   }
 }
@@ -385,7 +443,7 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
     try {
       child = spawn(exe, args, { cwd, env, shell: false, windowsHide: true, detached: !WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
-      reject(new BackendError(`Could not start ${path.basename(exe)}: ${clip(err.message, 200)}`));
+      reject(new BackendError(`Could not start ${path.basename(exe)}: ${clip(err.message, 200)}`, 'start'));
       return;
     }
     const out = [];
@@ -431,7 +489,7 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
       clearTimeout(timer);
       clearTimeout(grace);
       if (signal) signal.removeEventListener('abort', onAbort);
-      reject(new BackendError(e.code === 'ENOENT' ? `${path.basename(exe)} is not installed or not on PATH` : `Could not start ${path.basename(exe)}: ${clip(e.message, 200)}`));
+      reject(new BackendError(e.code === 'ENOENT' ? `${path.basename(exe)} is not installed or not on PATH` : `Could not start ${path.basename(exe)}: ${clip(e.message, 200)}`, e.code === 'ENOENT' ? 'missing' : 'start'));
     });
     let settled = false;
     const finish = (code, sig) => {
@@ -440,8 +498,8 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
       clearTimeout(timer);
       clearTimeout(grace);
       if (signal) signal.removeEventListener('abort', onAbort);
-      if (ended === 'timeout') return reject(new BackendError(`${path.basename(exe)} took longer than ${Math.round(timeout / 1000)} s and was stopped`));
-      if (ended === 'stopped') return reject(new BackendError('Stopped'));
+      if (ended === 'timeout') return reject(new BackendError(`${path.basename(exe)} took longer than ${Math.round(timeout / 1000)} s and was stopped`, 'timeout'));
+      if (ended === 'stopped') return reject(new BackendError('Stopped', 'stopped'));
       resolve({ code: code === null ? -1 : code, signal: sig, stdout: Buffer.concat(out).toString('utf8'), stderr: err });
     };
     child.on('exit', letGo);
@@ -499,7 +557,7 @@ class ClaudeBackend {
     const configured = String(this.config.exe || '').trim();
     const home = os.homedir();
     const found = configured ? (executable(configured) ? configured : null) : findExe([path.join(home, '.local', 'bin', WINDOWS ? 'claude.exe' : 'claude')], 'claude');
-    if (!found) throw new BackendError(configured ? `"exe" is not a program: ${configured}` : 'Claude Code is not installed: no claude on PATH or in ~/.local/bin. Set "exe".');
+    if (!found) throw new BackendError(configured ? `"exe" is not a program: ${configured}` : 'Claude Code is not installed: no claude on PATH or in ~/.local/bin. Set "exe".', 'missing');
     return found;
   }
 
@@ -517,8 +575,8 @@ class ClaudeBackend {
           break;
         } catch {}
       }
-      if (!data || typeof data !== 'object') throw new BackendError(`Claude Code answered no result (exit code ${res.code})${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`);
-      if (data.is_error || (data.subtype && data.subtype !== 'success')) throw new BackendError(`Claude Code failed: ${clip(data.result || data.subtype || 'error', 200)}`);
+      if (!data || typeof data !== 'object') throw new BackendError(`Claude Code answered no result (exit code ${res.code})${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`, 'exit');
+      if (data.is_error || (data.subtype && data.subtype !== 'success')) throw new BackendError(`Claude Code failed: ${clip(data.result || data.subtype || 'error', 200)}`, 'failed');
       return typeof data.result === 'string' ? data.result : '';
     } finally {
       removeDir(dir);
@@ -578,7 +636,7 @@ class CodexBackend {
   exe() {
     const configured = String(this.config.exe || '').trim();
     if (configured) {
-      if (!executable(configured)) throw new BackendError(`"exe" is not a program: ${configured}`);
+      if (!executable(configured)) throw new BackendError(`"exe" is not a program: ${configured}`, 'missing');
       return configured;
     }
     const candidates = [];
@@ -592,7 +650,7 @@ class CodexBackend {
       candidates.push(path.join(os.homedir(), '.local', 'bin', 'codex'));
     }
     const found = findExe(candidates, 'codex');
-    if (!found) throw new BackendError('Codex is not installed: no codex found. Set "exe".');
+    if (!found) throw new BackendError('Codex is not installed: no codex found. Set "exe".', 'missing');
     return found;
   }
 
@@ -604,12 +662,12 @@ class CodexBackend {
     try {
       const env = childEnv({}, this.hide);
       const res = await runProcess(exe, codexArgs(this.config, { dir, last }), { input: prompt.text, cwd: dir, env, timeout: timeoutMs(this.config), signal });
-      if (res.code !== 0) throw new BackendError(`Codex stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr.split(/\r?\n/).filter(Boolean).slice(-3).join(' '), 200)}` : ''}`);
+      if (res.code !== 0) throw new BackendError(`Codex stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr.split(/\r?\n/).filter(Boolean).slice(-3).join(' '), 200)}` : ''}`, 'exit');
       let text = '';
       try {
         text = fs.readFileSync(last, 'utf8');
       } catch {
-        throw new BackendError('Codex wrote no answer');
+        throw new BackendError('Codex wrote no answer', 'empty');
       }
       return text;
     } finally {
@@ -625,7 +683,7 @@ class CommandBackend {
     this.config = config;
     this.hide = hide || {};
     const list = Array.isArray(config.command) ? config.command.map(String) : config.command ? [String(config.command)] : [];
-    if (!list.length || !list[0]) throw new BackendError('The command backend needs "command"');
+    if (!list.length || !list[0]) throw new BackendError('The command backend needs "command"', 'config');
     this.argv = [...list, ...(Array.isArray(config.args) ? config.args.map(String) : [])];
   }
 
@@ -634,7 +692,7 @@ class CommandBackend {
     const env = childEnv(this.config.env, this.hide);
     const cwd = this.config.cwd ? String(this.config.cwd) : undefined;
     const res = await runProcess(exe, args, { input: prompt.text, cwd, env, timeout: timeoutMs(this.config), signal });
-    if (res.code !== 0) throw new BackendError(`${path.basename(exe)} stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`);
+    if (res.code !== 0) throw new BackendError(`${path.basename(exe)} stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`, 'exit');
     return res.stdout;
   }
 }
@@ -769,7 +827,7 @@ const TYPES = { runs: RunsBackend, openai: OpenAiBackend, claude: ClaudeBackend,
 function makeBackend(config, { hide } = {}) {
   const c = config && typeof config === 'object' ? config : {};
   const Type = TYPES[c.type];
-  if (!Type) throw new BackendError(`"backend.type" must be one of ${Object.keys(TYPES).join(', ')}`);
+  if (!Type) throw new BackendError(`"backend.type" must be one of ${Object.keys(TYPES).join(', ')}`, 'config');
   return new Type(c, { hide });
 }
 
@@ -782,6 +840,8 @@ module.exports = {
   CodexBackend,
   CommandBackend,
   SseParser,
+  readText,
+  readJson,
   childEnv,
   claudeArgs,
   codexArgs,
