@@ -158,12 +158,13 @@ object ChatTimeline {
     }
 
     // The replies of a thread new on this visit (issue #376): by someone else, not removed, after the read position the
-    // room had when it opened ([readAtOpen], as for the New divider) and after the newest reply its thread showed while
-    // it was open ([seen]). Nothing of this is stored or synced. Desktop's chat-model.js newIn does the same.
-    private fun newIn(c: Counts?, root: String, readAtOpen: Long?, seen: Map<String, Long>): List<Long> {
+    // room had when it opened ([readAtOpen], as for the New divider) and not among the replies its thread showed in view
+    // ([seen], [seenInThread]). A reply that was never in view stays new, also when a newer one was. Nothing of this is
+    // stored or synced. Desktop's chat-model.js newIn does the same.
+    private fun newIn(c: Counts?, root: String, readAtOpen: Long?, seen: Map<String, Set<Long>>): List<Long> {
         if (readAtOpen == null || c == null) return emptyList()
-        val from = maxOf(readAtOpen, seen[root] ?: 0L)
-        return c.others.filter { it > from }
+        val shown = seen[root].orEmpty()
+        return c.others.filter { it > readAtOpen && it !in shown }
     }
 
     /**
@@ -171,7 +172,7 @@ object ChatTimeline {
      * newReplies). A reply whose first message isn't loaded counts too: its thread finds it when it opens. The room's
      * pill says how many there are and opens the first.
      */
-    fun newReplies(events: List<Event>, me: String?, readAtOpen: Long?, seen: Map<String, Long> = emptyMap()): List<NewReplies> {
+    fun newReplies(events: List<Event>, me: String?, readAtOpen: Long?, seen: Map<String, Set<Long>> = emptyMap()): List<NewReplies> {
         if (readAtOpen == null) return emptyList()
         val list = events.sortedBy { it.seq }.distinctBy { it.seq }
         return counts(list, me).mapNotNull { (root, c) ->
@@ -190,8 +191,8 @@ object ChatTimeline {
      * The rows of a room's main timeline, or of the thread of [root]. A reply shows only in its thread (issue #376):
      * the main timeline leaves replies and replies on their way out, and their root carries the summary. [readAtOpen]
      * places the New divider; [replies] is the engine's summary per root, which counts replies outside [events] too;
-     * [blocked] holds the people the person blocked, whose mentions don't count; [seen] maps a root to the newest
-     * reply its thread showed on this visit, which its summary no longer calls new. [zone] decides the days.
+     * [blocked] holds the people the person blocked, whose mentions don't count; [seen] maps a root to the replies its
+     * thread showed in view on this visit, which its summary no longer calls new. [zone] decides the days.
      */
     fun rows(
         events: List<Event>,
@@ -205,7 +206,7 @@ object ChatTimeline {
         replies: Map<String, ReplySummary> = emptyMap(),
         zone: ZoneId = ZoneId.systemDefault(),
         groupMs: Long = GROUP_MS,
-        seen: Map<String, Long> = emptyMap(),
+        seen: Map<String, Set<Long>> = emptyMap(),
     ): List<Row> {
         // One row per seq, in seq order: a page loaded twice must not show a message twice.
         val list = events.sortedBy { it.seq }.distinctBy { it.seq }
@@ -226,8 +227,8 @@ object ChatTimeline {
             val count = maxOf(c?.count ?: 0, s?.count ?: 0)
             if (count == 0 && u == null) return null
             // Like the New divider, your own replies are never new to you, and neither are those its thread showed.
-            val from = if (readAtOpen == null) null else maxOf(readAtOpen, seen[id] ?: 0L)
-            val hasNew = newIn(c, id, readAtOpen, seen).isNotEmpty() || (sNewer && from != null && s!!.lastSeq > from)
+            val hasNew = newIn(c, id, readAtOpen, seen).isNotEmpty() ||
+                (sNewer && readAtOpen != null && s!!.lastSeq > readAtOpen && s.lastSeq !in seen[id].orEmpty())
             return Replies(
                 count = count,
                 lastAt = if (count == 0) null else if (s != null && s.lastSeq >= (c?.newest ?: 0)) s.lastAt else c?.lastAt,
@@ -321,9 +322,11 @@ object ChatTimeline {
         for (e in shown) {
             if (e.isMessage) {
                 addMessage(e.id, e.seq, e.id, null, e.actor, e.at, e.root, e.text, e.mentions, e.redacted || e.text == null, null, null, null)
-                // A thread's first message, then how many replies follow; the first reply starts a group of its own.
+                // A thread's first message, then how many replies follow; the first reply starts a group of its own. With
+                // no reply sent and one of the person's on its way, the divider would say "0 replies" over it: none then.
                 if (root != null && e.id == root) {
-                    rows += Count(shown.count { it.root == root })
+                    val sent = shown.count { it.root == root }
+                    if (sent > 0 || waiting.isEmpty()) rows += Count(sent)
                     prev = null
                 }
             } else {
@@ -378,19 +381,28 @@ object ChatTimeline {
     data class InView(val key: String, val offset: Int, val size: Int)
 
     /**
-     * The newest reply of the thread of [root] that its view shows (issue #376): of the sent replies among [rows] whose
-     * items are in view by at least half of themselves, or of the view, the highest seq. The visit's seen position goes
-     * up to it, so the replies below or above the view, such as an answer that came while the thread was scrolled up,
-     * stay new. Null when none shows. Desktop's chat-view.js threadShown.
+     * The replies of the thread of [root] that its view shows (issue #376): the seqs of the sent replies among [rows]
+     * whose items are in view by at least half of themselves, or of the view. Only those are no longer new on this
+     * visit: the replies below or above the view, such as an answer that came while the thread was scrolled up, stay new.
+     * Empty while the thread hasn't [settled] at the reply it opened at, so what passes by on the way, or a first layout
+     * at the newest replies, counts for nothing. Desktop's chat-model.js repliesInView.
      */
-    fun seenInThread(rows: List<Row>, root: String, items: List<InView>, viewportStart: Int, viewportEnd: Int): Long? {
+    fun seenInThread(rows: List<Row>, root: String, items: List<InView>, viewportStart: Int, viewportEnd: Int, settled: Boolean = true): Set<Long> {
+        if (!settled) return emptySet()
         val view = viewportEnd - viewportStart
         val shown = items.filter { i ->
             val part = minOf(i.offset + i.size, viewportEnd) - maxOf(i.offset, viewportStart)
             i.size > 0 && part * 2 >= minOf(i.size, view)
         }.mapTo(HashSet()) { it.key }
-        return rows.filterIsInstance<Message>().filter { it.root == root && it.pending == null && it.seq != null && it.key in shown }.maxOfOrNull { it.seq!! }
+        return rows.filterIsInstance<Message>().filter { it.root == root && it.pending == null && it.seq != null && it.key in shown }.mapTo(HashSet()) { it.seq!! }
     }
+
+    /**
+     * How far a thread opened at a reply scrolls once that reply's item is laid out, bottom up ([offset] and [size] count
+     * from the list's bottom edge): its top comes [margin] below the view's top ([viewportEnd]), so its first line
+     * shows, also for a reply taller than the view. A negative value scrolls towards newer rows; it goes to scrollBy.
+     */
+    fun openingScroll(offset: Int, size: Int, viewportEnd: Int, margin: Int): Float = -((viewportEnd - margin) - (offset + size)).toFloat()
 
     /** The root whose reply line a row of the main timeline carries, by its key: a sent message's own, an [Orphan]'s. */
     fun replyLineRoot(key: String): String = key.removePrefix("thread:")
@@ -427,20 +439,21 @@ object ChatTimeline {
 }
 
 /**
- * The newest reply each thread of one room showed on this visit (issue #376), by root: their root's summary stops
+ * The replies each thread of one room showed in view on this visit (issue #376), by root: their root's summary stops
  * calling them new, and the room's pill stops counting them. A visit is one opening of the room ([opening], the
  * opening's count): another room, or the same one opened again, starts afresh. View state only: nothing is stored or
  * synced, and the room's read position doesn't depend on it.
  */
-data class ThreadsSeen(val ws: String? = null, val room: String? = null, val opening: Long? = null, val seen: Map<String, Long> = emptyMap()) {
-    fun of(ws: String, room: String, opening: Long?): Map<String, Long> =
+data class ThreadsSeen(val ws: String? = null, val room: String? = null, val opening: Long? = null, val seen: Map<String, Set<Long>> = emptyMap()) {
+    fun of(ws: String, room: String, opening: Long?): Map<String, Set<Long>> =
         if (this.ws == ws && this.room == room && this.opening == opening) seen else emptyMap()
 
-    /** With the thread of [root] having shown its replies up to [seq]; the same object when it had already. */
-    fun with(ws: String, room: String, opening: Long?, root: String, seq: Long): ThreadsSeen {
+    /** With the thread of [root] having shown the replies [seqs] in view; the same object when it had shown them all. */
+    fun with(ws: String, room: String, opening: Long?, root: String, seqs: Set<Long>): ThreadsSeen {
         val here = of(ws, room, opening)
-        if ((here[root] ?: 0L) >= seq) return this
-        return ThreadsSeen(ws, room, opening, here + (root to seq))
+        val had = here[root].orEmpty()
+        if (had.containsAll(seqs)) return this
+        return ThreadsSeen(ws, room, opening, here + (root to had + seqs))
     }
 }
 

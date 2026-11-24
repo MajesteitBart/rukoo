@@ -111,7 +111,7 @@ object MessageRules {
         PendingState.FAILED -> when (reason) {
             "quota" -> listOf(PendingAction.RETRY, PendingAction.DISCARD)
             "mentions" -> listOf(PendingAction.SEND_WITHOUT_MENTIONS, PendingAction.DISCARD)
-            "conflict", "archived" -> listOf(PendingAction.COPY, PendingAction.DISCARD)
+            "conflict", "archived", "root_removed" -> listOf(PendingAction.COPY, PendingAction.DISCARD)
             else -> listOf(PendingAction.DISCARD)
         }
         PendingState.QUEUED, PendingState.SENDING, PendingState.WAITING -> emptyList()

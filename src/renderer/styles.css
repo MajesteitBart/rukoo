@@ -11442,6 +11442,12 @@ button.ch-replies:hover {
 button.ch-replies .ch-replies-n {
   color: var(--link);
 }
+/* The middle dot between the line's parts; the line's gap spaces it. */
+.ch-replies-sep {
+  flex: none;
+  margin: 0 -2px;
+  color: var(--text-3);
+}
 .ch-replies-at {
   min-width: 0;
   color: var(--text-3);

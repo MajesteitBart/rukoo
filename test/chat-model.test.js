@@ -150,10 +150,11 @@ test('a root carries the summary of its cached replies, with newest against the 
   assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 5 }).find((r) => r.seq === 1).replies.hasNew, false, 'your own reply after the read position is not new to you');
   assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 6 }).find((r) => r.seq === 1).replies.hasNew, false);
   assert.equal(timeline([root, ...replies], { ...base, readAtOpen: null }).find((r) => r.seq === 1).replies.hasNew, false, 'no read position, nothing new');
-  // The thread showed its replies up to 5 on this visit: the dot goes, and comes back with a newer one.
-  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 3, seen: new Map([[root.id, 5]]) }).find((r) => r.seq === 1).replies.hasNew, false);
-  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 3, seen: new Map([[root.id, 4]]) }).find((r) => r.seq === 1).replies.hasNew, true, 'reply 5 came after');
-  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 3, seen: new Map([[id('e', 'other'), 9]]) }).find((r) => r.seq === 1).replies.hasNew, true, 'another thread showed');
+  // The thread showed its new replies, 4 and 5, in view on this visit: the dot goes, and stays for one not in view.
+  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 3, seen: new Map([[root.id, new Set([4, 5])]]) }).find((r) => r.seq === 1).replies.hasNew, false);
+  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 3, seen: new Map([[root.id, new Set([4])]]) }).find((r) => r.seq === 1).replies.hasNew, true, 'reply 5 was not in view');
+  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 3, seen: new Map([[root.id, new Set([5])]]) }).find((r) => r.seq === 1).replies.hasNew, true, 'the newest in view leaves reply 4 new');
+  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 3, seen: new Map([[id('e', 'other'), new Set([4, 5])]]) }).find((r) => r.seq === 1).replies.hasNew, true, 'another thread showed');
   const gone = timeline([root, ...replies.slice(0, 3), { ...replies[3], redacted: true, text: null }], { ...base, readAtOpen: 4 }).find((r) => r.seq === 1);
   assert.equal(gone.replies.hasNew, false, 'a removed reply is not new');
   assert.equal(timeline([root], base).find((r) => r.seq === 1).replies, null, 'no replies, no summary');
@@ -227,7 +228,7 @@ test('replies whose first message aged out keep a row where it was, with their r
   assert.deepEqual([row.key, row.root, row.gone], [`thread:${expired}`, expired, true]);
   assert.deepEqual([row.replies.count, row.replies.hasNew, row.replies.unsent, row.replies.actors], [2, true, 0, [SANNE, ROB]]);
   assert.equal(timeline([kept, r1, r2], { ...opts, readAtOpen: 13 })[1].replies.hasNew, false, 'read when the room opened');
-  assert.equal(timeline([kept, r1, r2], { ...opts, readAtOpen: 12, seen: new Map([[expired, 13]]) })[1].replies.hasNew, false, 'its thread showed them');
+  assert.equal(timeline([kept, r1, r2], { ...opts, readAtOpen: 12, seen: new Map([[expired, new Set([13])]]) })[1].replies.hasNew, false, 'its thread showed them');
   // Two such threads stand in the order of their first replies.
   const other = id('e', 'expired2');
   const early = msg(PIM, T0 + MIN, { root: other, seq: 10 });
@@ -259,10 +260,38 @@ test('newReplies lists the threads with replies new on this visit, the oldest ne
     { root: a.id, count: 1, oldest: 6 },
     { root: id('e', 'uncached'), count: 1, oldest: 7 }
   ]);
-  assert.deepEqual(newReplies(events, { me: ME, readAtOpen: 3, seen: new Map([[b.id, 4], [a.id, 6]]) }), [{ root: id('e', 'uncached'), count: 1, oldest: 7 }], 'a thread that showed them is done');
+  assert.deepEqual(newReplies(events, { me: ME, readAtOpen: 3, seen: new Map([[b.id, new Set([4])], [a.id, new Set([6])]]) }), [{ root: id('e', 'uncached'), count: 1, oldest: 7 }], 'a thread that showed them is done');
   assert.deepEqual(newReplies(events, { me: ME, readAtOpen: 8 }), [], 'all read when the room opened');
   assert.deepEqual(newReplies(events, { me: ME, readAtOpen: null }), [], 'no read position');
   assert.deepEqual(newReplies(events, { me: ME, readAtOpen: 0 })[0], { root: a.id, count: 2, oldest: 3 });
+  // Only the newest of a's new replies was in view: the older one stays new, and the pill opens at it.
+  assert.deepEqual(newReplies(events, { me: ME, readAtOpen: 0, seen: new Map([[a.id, new Set([6])]]) })[0], { root: a.id, count: 1, oldest: 3 });
+});
+
+// Emulator run and review of #376, finding 3: a visit sees the replies that were in view, each by its own seq, and
+// nothing while the thread still moves to the reply it opened at.
+test('repliesInView gives the replies at least half in view, and nothing before the opening settled', async () => {
+  const { repliesInView, newReplies } = await loading;
+  const R = 'e_root';
+  const view = { top: 100, bottom: 500 };
+  const items = [
+    { root: R, seq: 2, top: 0, bottom: 90 }, // above the view
+    { root: R, seq: 3, top: 60, bottom: 160 }, // 60 of 100 in view
+    { root: R, seq: 4, top: 160, bottom: 260 },
+    { root: R, seq: 5, top: 450, bottom: 560 }, // 50 of 110: less than half
+    { root: R, seq: 6, top: 520, bottom: 600 }, // below
+    { root: 'e_other', seq: 7, top: 200, bottom: 300 },
+    { root: R, seq: null, top: 300, bottom: 400 } // a reply on its way
+  ];
+  assert.deepEqual(repliesInView(items, R, view), [3, 4]);
+  // A reply taller than the view counts once half of the view shows it.
+  assert.deepEqual(repliesInView([{ root: R, seq: 8, top: 0, bottom: 2000 }], R, view), [8]);
+  assert.deepEqual(repliesInView(items, R, view, { settled: false }), [], 'an opening that has not settled reports nothing');
+  // The newest reply in view does not clear the older ones that weren't.
+  seqs = 0;
+  const root = msg(SANNE, T0);
+  const events = [root, ...[1, 2, 3, 4].map((n) => msg(MILA, T0 + n * MIN, { root: root.id }))];
+  assert.deepEqual(newReplies(events, { me: ME, readAtOpen: 1, seen: new Map([[root.id, new Set([5])]]) }), [{ root: root.id, count: 3, oldest: 2 }]);
 });
 
 test('a thread holds its root and its replies, the root as a group head', async () => {

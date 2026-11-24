@@ -93,13 +93,30 @@ export function replyCounts(events, { me = null } = {}) {
 }
 
 // The replies of a thread that are new to the person on this visit (issue #376): by someone else, not removed, after
-// the read position the room had when it opened (readAtOpen, as for the New divider), and after the newest reply the
-// thread showed while it was open on this visit (seen: Map rootId -> seq). Nothing of this is stored or synced.
+// the read position the room had when it opened (readAtOpen, as for the New divider), and not among the replies the
+// thread showed in view on this visit (seen: Map rootId -> Set of seqs, repliesInView). A reply that was never in view
+// stays new, also when a newer one was. Nothing of this is stored or synced.
 const newIn = (s, root, readAtOpen, seen) => {
   if (readAtOpen == null || !s) return [];
-  const from = Math.max(readAtOpen, (seen && seen.get(root)) || 0);
-  return s.others.filter((seq) => seq > from);
+  const shown = seen && seen.get(root);
+  return s.others.filter((seq) => seq > readAtOpen && !(shown && shown.has(seq)));
 };
+
+// The replies of the thread of root that its view shows (issue #376): the seqs of the items, { root, seq, top, bottom },
+// in view by at least half of themselves or of the view ({ top, bottom }). settled false while the thread still moves
+// to the reply it opened at: what passes by on the way isn't seen, so nothing is.
+export function repliesInView(items, root, view, { settled = true } = {}) {
+  if (!settled || !view) return [];
+  const height = view.bottom - view.top;
+  const out = [];
+  for (const i of items || []) {
+    if (!i || i.root !== root || !Number.isSafeInteger(i.seq)) continue;
+    const size = i.bottom - i.top;
+    const part = Math.min(i.bottom, view.bottom) - Math.max(i.top, view.top);
+    if (size > 0 && part >= Math.min(size, height) / 2) out.push(i.seq);
+  }
+  return out;
+}
 
 // The threads with new replies (newIn), the one with the oldest new reply first: [{ root, count, oldest }], count the
 // new replies and oldest the seq of the first of them. A reply whose root isn't loaded counts too: the thread finds its
@@ -136,7 +153,7 @@ export function newReplies(events, { me = null, readAtOpen = null, seen = null }
 // member IDs you blocked), intro (passed through to the intro row: { actor, at, people }, where actor made the
 // conversation and people are the member IDs it names besides), groupMs, now, sentLocal (Map messageId -> local ID
 // of sends that committed while the view was open, so the row keeps its key and its DOM node), and seen (Map rootId
-// -> the newest reply seq its thread showed on this visit, for newReplies).
+// -> Set of the reply seqs its thread showed in view on this visit, for newReplies).
 export function timeline(events, opts = {}) {
   const {
     me = null,

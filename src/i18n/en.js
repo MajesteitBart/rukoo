@@ -12647,6 +12647,10 @@
     "message": "Someone you mentioned isn't in this conversation any more.",
     "description": "Team chat error, shown under an unsent message: the server refused it because someone it mentions left the conversation. src/renderer/chat.js (chatErrorText)"
   },
+  "chat.errors.rootRemoved": {
+    "message": "The message you replied to was removed.",
+    "description": "Team chat error, shown under an unsent reply in a thread: the server refused it because the thread's first message was removed meanwhile. src/renderer/chat-view.js (reasonText)"
+  },
   "chat.errors.reactionLimit": {
     "message": "This message has 20 different reactions, the most it can hold.",
     "description": "Team chat error, in a toast: a 21st different emoji on a message (409 reaction_limit). src/renderer/chat.js (chatErrorText)"

@@ -1014,13 +1014,21 @@ private fun ReplySummaryRow(r: ChatTimeline.Replies, ctx: RowContext, onClick: (
             }
         }
         if (r.hasNew) Box(Modifier.size(6.dp).background(c.accent, CircleShape))
-        if (r.count > 0) Text(pluralStringResource(R.plurals.chat_log_replies, r.count, r.count), style = Rk.type.text12_5.medium, color = c.link, maxLines = 1)
+        // The parts of the line, with a middle dot between them, as on the computer (chat-view.js repliesEl).
+        val parts = ArrayList<@Composable () -> Unit>()
+        if (r.count > 0) parts += { Text(pluralStringResource(R.plurals.chat_log_replies, r.count, r.count), style = Rk.type.text12_5.medium, color = c.link, maxLines = 1) }
         if (unsent != null) {
-            if (r.failed) RkIcon(RukooIcons.Info, null, size = 12.dp, tint = c.danger)
-            Text(unsent, style = if (r.failed) Rk.type.text12_5.medium else Rk.type.text12_5, color = if (r.failed) c.danger else c.text2, maxLines = 1)
+            parts += {
+                if (r.failed) RkIcon(RukooIcons.Info, null, size = 12.dp, tint = c.danger)
+                Text(unsent, style = if (r.failed) Rk.type.text12_5.medium else Rk.type.text12_5, color = if (r.failed) c.danger else c.text2, maxLines = 1)
+            }
         }
         r.lastAt?.let { at ->
-            Text(stringResource(R.string.chat_log_last_reply, ctx.dates.listTime(at, ctx.now)), style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            parts += { Text(stringResource(R.string.chat_log_last_reply, ctx.dates.listTime(at, ctx.now)), style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
+        parts.forEachIndexed { i, part ->
+            if (i > 0) Text("·", style = Rk.type.text12, color = c.text3, maxLines = 1)
+            part()
         }
     }
 }

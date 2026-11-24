@@ -133,6 +133,7 @@ object ChatErrors {
         "archived" -> s.get(R.string.chat_errors_archived)
         "quota" -> s.get(R.string.chat_errors_quota, ctx.workspace)
         "mentions" -> s.get(R.string.chat_errors_mentions)
+        "root_removed" -> s.get(R.string.chat_errors_root_removed)
         "invalid" -> s.get(R.string.chat_errors_invalid)
         "no_access" -> s.get(R.string.chat_errors_gone_conversation)
         else -> s.get(R.string.chat_errors_failed)

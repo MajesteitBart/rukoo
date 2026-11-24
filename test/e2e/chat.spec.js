@@ -905,6 +905,9 @@ test('replies whose first message aged out show under a row saying it is no long
   await expect(threadLog().locator(`li.ch-msg[data-seq="${last.seq}"]`)).toBeVisible({ timeout: 15000 });
   await expect(threadLog().locator(`li.ch-msg[data-seq="${first.seq}"]`)).toBeVisible();
   await expect(win.locator('section.chat .ch-thread .ch-thread-note')).toBeVisible();
+  // Closing it gives the keyboard focus back to the row it opened from (review finding 6).
+  await win.locator('section.chat .ch-thread [data-ch="thread-close"]').click();
+  await expect.poll(() => win.evaluate(() => Boolean(document.activeElement && document.activeElement.matches('section.chat .ch-log li.is-thread-row')))).toBe(true);
 });
 
 // Review of #376, finding 4: the pill goes by the reply line with the dot, not by the first message's row.
@@ -987,9 +990,11 @@ test('a thread opened at its oldest new reply keeps the dot for the replies belo
   await expect(line).not.toHaveClass(/has-new/);
 });
 
-// Review of #376, finding 7: the toast of a reply that came while its conversation was on screen opens the thread.
-test('the toast for a reply in the conversation on screen opens its thread at the reply', async () => {
-  const { olga, bart, ws } = await twoPeople(server);
+// Issue #376: a reply for you alerts as a message for you would. With its conversation on screen in the focused window
+// nothing alerts, and the dot is the cue; from another conversation it shows a toast, whose Open opens the thread.
+test('a reply for you shows no toast while its conversation is on screen, and from another one a toast whose Open opens its thread', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
   const mine = await server.post(bart, ws.id, ws.general, 'Lunch on Friday?');
   ({ app, win } = await launch(server, { dataDir }));
   await signIn(win, bart);
@@ -1000,12 +1005,58 @@ test('the toast for a reply in the conversation on screen opens its thread at th
     BrowserWindow.getAllWindows()[0].isFocused = () => true;
     global.__semChat.setFocused(true);
   });
-  const answer = await server.post(olga, ws.id, ws.general, 'Yes, at noon', { root: mine.messageId });
   const toast = win.locator('#toast');
-  await expect(toast).toContainText('Olga Owner replied: Yes, at noon', { timeout: 20000 });
-  await expect(threadLog()).toBeHidden();
+  const first = await server.post(olga, ws.id, ws.general, 'Yes, at noon', { root: mine.messageId });
+  const line = message('Lunch on Friday?').locator('.ch-replies');
+  await expect(line.locator('.ch-replies-n')).toHaveText('1 reply', { timeout: 15000 });
+  await expect(line).toHaveClass(/has-new/);
+  await win.waitForTimeout(1500);
+  await expect(toast).not.toContainText('Yes, at noon');
+  expect((await notices(app)).filter((n) => String(n.body).includes('Yes, at noon'))).toEqual([]);
+
+  // Bart read general and moved to review: the next reply shows a toast with Open.
+  await expect.poll(() => serverRead(server, bart, ws.id, ws.general), { timeout: 15000 }).toBeGreaterThanOrEqual(first.seq);
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  const answer = await server.post(olga, ws.id, ws.general, 'Half past twelve works too', { root: mine.messageId });
+  await expect(toast).toContainText('Olga Owner replied: Half past twelve works too', { timeout: 20000 });
   await toast.locator('button', { hasText: 'Open' }).click();
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
   await expect(threadLog().locator(`li.ch-msg[data-seq="${answer.seq}"]`)).toBeVisible({ timeout: 15000 });
-  await expect(pane().locator('.ch-title')).toHaveText('general');
-  await expect(message('Yes, at noon')).toHaveCount(0);
+  await expect(message('Half past twelve works too')).toHaveCount(0);
+});
+
+// Review of #376, finding 3: a thread opened at its newest replies leaves the older new replies above the view new.
+test('a thread opened at its newest replies keeps the dot for the new replies above the view, until they were in view', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  const question = await server.post(bart, ws.id, ws.general, 'Lunch on Friday?');
+  const lines = Array.from({ length: 6 }, (_, i) => `point ${i + 1}`).join('\n');
+  const replies = [];
+  for (let i = 1; i <= 12; i++) replies.push(await server.post(olga, ws.id, ws.general, `Answer ${i}\n${lines}`, { root: question.messageId }));
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  const line = message('Lunch on Friday?').locator('.ch-replies');
+  await expect(line).toHaveClass(/has-new/, { timeout: 15000 });
+  // The reply line opens the thread at its newest replies; the oldest are above the view.
+  await line.click();
+  const newest = threadLog().locator(`li.ch-msg[data-seq="${replies[11].seq}"]`);
+  const oldest = threadLog().locator(`li.ch-msg[data-seq="${replies[0].seq}"]`);
+  await expect(newest).toBeInViewport({ timeout: 15000 });
+  await expect(oldest).not.toBeInViewport();
+  await win.locator('section.chat .ch-thread [data-ch="thread-close"]').click();
+  await expect(line).toHaveClass(/has-new/);
+  // Scrolled to the top of the thread, every new reply was in view: the dot goes.
+  await line.click();
+  await expect(newest).toBeInViewport({ timeout: 15000 });
+  await win.evaluate(async () => {
+    const scroll = document.querySelector('section.chat .ch-thread .ch-thread-scroll');
+    for (let top = scroll.scrollTop; top > 0; top -= scroll.clientHeight / 3) {
+      scroll.scrollTop = top;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    scroll.scrollTop = 0;
+  });
+  await expect(oldest).toBeInViewport();
+  await expect(line).not.toHaveClass(/has-new/);
 });

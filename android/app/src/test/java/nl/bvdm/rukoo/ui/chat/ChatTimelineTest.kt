@@ -33,7 +33,7 @@ class ChatTimelineTest {
     private val t0 = ZonedDateTime.of(2026, 11, 19, 10, 0, 0, 0, zone).toInstant().toEpochMilli()
     private val minute = 60_000L
 
-    private fun rows(events: List<Event>, pending: List<Pending> = emptyList(), readAtOpen: Long? = null, root: String? = null, floor: Long = 1, hasOlder: Boolean = false, replies: Map<String, ReplySummary> = emptyMap(), blocked: Set<String> = emptySet(), seen: Map<String, Long> = emptyMap()) =
+    private fun rows(events: List<Event>, pending: List<Pending> = emptyList(), readAtOpen: Long? = null, root: String? = null, floor: Long = 1, hasOlder: Boolean = false, replies: Map<String, ReplySummary> = emptyMap(), blocked: Set<String> = emptySet(), seen: Map<String, Set<Long>> = emptyMap()) =
         ChatTimeline.rows(events, pending, me, readAtOpen, root, floor, hasOlder, blocked, replies, zone, seen = seen)
 
     private fun List<Row>.messages() = filterIsInstance<Message>()
@@ -105,18 +105,19 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun `a summary's dot goes once its thread showed the replies, and comes back with a newer one`() {
+    fun `a summary's dot goes once its thread showed each new reply in view`() {
         val events = listOf(
             msg(1, sanne, t0, "root"),
             msg(2, mila, t0 + minute, "r1", root = "e_1"),
             msg(3, mila, t0 + 2 * minute, "r2", root = "e_1"),
             msg(4, mila, t0 + 3 * minute, null, root = "e_1", redacted = true),
         )
-        fun dot(seen: Map<String, Long>, readAt: Long = 1) = rows(events, readAtOpen = readAt, seen = seen).messages().first().replies!!.hasNew
+        fun dot(seen: Map<String, Set<Long>>, readAt: Long = 1) = rows(events, readAtOpen = readAt, seen = seen).messages().first().replies!!.hasNew
         assertTrue(dot(emptyMap()))
-        assertFalse(dot(mapOf("e_1" to 3L)))
-        assertTrue("reply 3 came after", dot(mapOf("e_1" to 2L)))
-        assertTrue("another thread showed", dot(mapOf("e_9" to 9L)))
+        assertFalse(dot(mapOf("e_1" to setOf(2L, 3L))))
+        assertTrue("reply 3 was not in view", dot(mapOf("e_1" to setOf(2L))))
+        assertTrue("the newest in view leaves reply 2 new", dot(mapOf("e_1" to setOf(3L))))
+        assertTrue("another thread showed", dot(mapOf("e_9" to setOf(2L, 3L))))
         assertFalse("a removed reply is not new", dot(emptyMap(), readAt = 3))
     }
 
@@ -135,7 +136,9 @@ class ChatTimelineTest {
             listOf(ChatTimeline.NewReplies("e_2", 1, 4), ChatTimeline.NewReplies("e_1", 1, 6), ChatTimeline.NewReplies("e_0", 1, 7)),
             ChatTimeline.newReplies(events, me, readAtOpen = 3),
         )
-        assertEquals(listOf(ChatTimeline.NewReplies("e_0", 1, 7)), ChatTimeline.newReplies(events, me, 3, mapOf("e_2" to 4L, "e_1" to 6L)))
+        assertEquals(listOf(ChatTimeline.NewReplies("e_0", 1, 7)), ChatTimeline.newReplies(events, me, 3, mapOf("e_2" to setOf(4L), "e_1" to setOf(6L))))
+        // Only the newest of e_1's new replies was in view: the older one stays new, and the pill opens at it.
+        assertEquals(ChatTimeline.NewReplies("e_1", 1, 3), ChatTimeline.newReplies(events, me, 0, mapOf("e_1" to setOf(6L))).first())
         assertTrue(ChatTimeline.newReplies(events, me, readAtOpen = 7).isEmpty())
         assertTrue(ChatTimeline.newReplies(events, me, readAtOpen = null).isEmpty())
         assertEquals(ChatTimeline.NewReplies("e_1", 2, 3), ChatTimeline.newReplies(events, me, readAtOpen = 0).first())
@@ -143,13 +146,17 @@ class ChatTimelineTest {
 
     @Test
     fun `what a thread showed counts for one opening of one room`() {
-        val seen = ThreadsSeen().with("w", "c", 1, "e_1", 5)
-        assertEquals(mapOf("e_1" to 5L), seen.of("w", "c", 1))
+        val seen = ThreadsSeen().with("w", "c", 1, "e_1", setOf(5L))
+        assertEquals(mapOf("e_1" to setOf(5L)), seen.of("w", "c", 1))
         assertTrue(seen.of("w", "c", 2).isEmpty())
         assertTrue(seen.of("w", "d", 1).isEmpty())
-        assertTrue("an older reply changes nothing", seen.with("w", "c", 1, "e_1", 4) === seen)
-        assertEquals(mapOf("e_1" to 6L, "e_2" to 3L), seen.with("w", "c", 1, "e_1", 6).with("w", "c", 1, "e_2", 3).of("w", "c", 1))
-        assertEquals("another opening starts afresh", mapOf("e_2" to 3L), seen.with("w", "c", 2, "e_2", 3).of("w", "c", 2))
+        assertTrue("a reply seen already changes nothing", seen.with("w", "c", 1, "e_1", setOf(5L)) === seen)
+        // Each reply counts by itself: seeing 6 doesn't take in 4.
+        assertEquals(
+            mapOf("e_1" to setOf(5L, 6L), "e_2" to setOf(3L)),
+            seen.with("w", "c", 1, "e_1", setOf(6L)).with("w", "c", 1, "e_2", setOf(3L)).of("w", "c", 1),
+        )
+        assertEquals("another opening starts afresh", mapOf("e_2" to setOf(3L)), seen.with("w", "c", 2, "e_2", setOf(3L)).of("w", "c", 2))
     }
 
     @Test
@@ -394,7 +401,7 @@ class ChatTimelineTest {
         assertTrue(orphan.gone)
         assertEquals(2, orphan.replies.count)
         assertTrue(orphan.replies.hasNew)
-        assertFalse(rows(events, floor = 11, readAtOpen = 12, seen = mapOf("e_9" to 13L)).filterIsInstance<ChatTimeline.Orphan>().single().replies.hasNew)
+        assertFalse(rows(events, floor = 11, readAtOpen = 12, seen = mapOf("e_9" to setOf(12L, 13L))).filterIsInstance<ChatTimeline.Orphan>().single().replies.hasNew)
         assertTrue("older messages can still load: the pill says it", rows(events, hasOlder = true).none { it is ChatTimeline.Orphan })
         assertTrue("a thread has none", rows(events, root = "e_9").none { it is ChatTimeline.Orphan })
     }
@@ -414,16 +421,27 @@ class ChatTimelineTest {
         assertEquals("e_9", ChatTimeline.replyLineRoot("thread:e_9"))
     }
 
-    // Review of #376, finding 5: the visit's seen position follows the replies the thread showed in view.
+    // Review of #376, finding 5 and follow-up finding 3: a visit sees each reply the thread showed in view, by itself.
     @Test
     fun `a thread marks as seen only the replies in view`() {
         val events = listOf(msg(1, me, t0, "q"), msg(2, sanne, t0 + minute, "a1", root = "e_1"), msg(3, mila, t0 + 2 * minute, "a2", root = "e_1"), msg(4, sanne, t0 + 3 * minute, "a3", root = "e_1"))
         val r = rows(events, root = "e_1")
         fun at(key: String, offset: Int) = ChatTimeline.InView(key, offset, 100)
         // Bottom up: e_4 below the view, e_3 half in view, e_2 and the root above it.
-        assertEquals(3L, ChatTimeline.seenInThread(r, "e_1", listOf(at("e_4", -80), at("e_3", -50), at("e_2", 60), at("e_1", 160)), 0, 500))
-        assertEquals("none in view", null, ChatTimeline.seenInThread(r, "e_1", listOf(at("e_1", 0)), 0, 500))
-        assertEquals("a tall reply that fills the view counts", 2L, ChatTimeline.seenInThread(r, "e_1", listOf(ChatTimeline.InView("e_2", -200, 1000)), 0, 500))
+        assertEquals(setOf(2L, 3L), ChatTimeline.seenInThread(r, "e_1", listOf(at("e_4", -80), at("e_3", -50), at("e_2", 60), at("e_1", 160)), 0, 500))
+        assertEquals("none in view", emptySet<Long>(), ChatTimeline.seenInThread(r, "e_1", listOf(at("e_1", 0)), 0, 500))
+        assertEquals("a tall reply that fills the view counts", setOf(2L), ChatTimeline.seenInThread(r, "e_1", listOf(ChatTimeline.InView("e_2", -200, 1000)), 0, 500))
+        // Emulator run of #376: a thread opened at a reply first lays out at its newest replies. Until it reached that
+        // reply, nothing it shows counts.
+        assertEquals(
+            "an opening that has not settled reports nothing",
+            emptySet<Long>(),
+            ChatTimeline.seenInThread(r, "e_1", listOf(at("e_4", 0), at("e_3", 100)), 0, 500, settled = false),
+        )
+        // Opened at a reply, its top goes 8px under the view's top: back towards newer rows for a short one, on towards
+        // older rows for one taller than the view, so its first line shows.
+        assertEquals(-292f, ChatTimeline.openingScroll(offset = 100, size = 100, viewportEnd = 500, margin = 8), 0f)
+        assertEquals(308f, ChatTimeline.openingScroll(offset = 0, size = 800, viewportEnd = 500, margin = 8), 0f)
     }
 
     // Review of #376, finding 6: a reply to a first message outside the loaded range adds an event and no row.
@@ -439,6 +457,19 @@ class ChatTimelineTest {
     }
 
     // ---- helpers ----
+
+    // Emulator run of #376: the divider said "0 replies" over the person's first reply while it waited to go.
+    @Test
+    fun `a thread whose only reply waits to go has no reply count over it`() {
+        val root = msg(1, sanne, t0, "Lunch?")
+        val waiting = listOf(pending("l1", t0 + minute, PendingState.QUEUED, root = "e_1"))
+        assertTrue(rows(listOf(root), pending = waiting, root = "e_1").none { it is ChatTimeline.Count })
+        assertEquals(listOf("e_1", "local:l1"), rows(listOf(root), pending = waiting, root = "e_1").map { it.key }.filter { !it.startsWith("day:") })
+        // Once one went, the count shows it; with nothing waiting, "0 replies" stays as before.
+        val sent = msg(2, me, t0 + 2 * minute, "I'm in", root = "e_1")
+        assertEquals(1, rows(listOf(root, sent), pending = waiting, root = "e_1").filterIsInstance<ChatTimeline.Count>().single().count)
+        assertEquals(0, rows(listOf(root), root = "e_1").filterIsInstance<ChatTimeline.Count>().single().count)
+    }
 
     private fun u(name: String) = "u_" + name.padEnd(22, 'x')
 

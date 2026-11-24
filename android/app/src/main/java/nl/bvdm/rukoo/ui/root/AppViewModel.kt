@@ -863,16 +863,17 @@ class AppViewModel(
 
     private val _threadsSeen = MutableStateFlow(ThreadsSeen())
 
-    /** The newest reply each thread of the open room showed on this opening (issue #376), for its summaries and pill. */
+    /** The replies each thread of the open room showed in view on this opening (issue #376), for its summaries and pill. */
     val threadsSeen: StateFlow<ThreadsSeen> = _threadsSeen.asStateFlow()
 
     /**
-     * The thread of [root] in [room] showed its replies up to [seq]: the dot under its first message and its part of the
-     * room's pill go, for the room's current opening. View state only; the read position doesn't change.
+     * The thread of [root] in [room] showed the replies [seqs] in view: they are no longer new under its first message
+     * or in the room's pill, for the room's current opening. View state only; the read position doesn't change.
      */
-    fun threadShown(ws: String, room: String, root: String, seq: Long) {
+    fun threadShown(ws: String, room: String, root: String, seqs: Set<Long>) {
+        if (seqs.isEmpty()) return
         val opening = _roomOpening.value?.takeIf { it.ws == ws && it.room == room }?.count ?: return
-        _threadsSeen.update { it.with(ws, room, opening, root, seq) }
+        _threadsSeen.update { it.with(ws, room, opening, root, seqs) }
     }
 
     /** Opens the thread of [root] at the reply [at]: the room's pill for new replies in threads out of view. */
