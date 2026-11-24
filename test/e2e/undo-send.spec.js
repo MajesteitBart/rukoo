@@ -53,13 +53,17 @@ const held = () => app.evaluate(() => global.__semRefused.size);
 // What held.json in the profile lists (main.js heldMail): the emails in the outbox and the kept ones, by subject.
 const heldFile = () => path.join(dataDir, 'data', 'held.json');
 // The emails in it, without the ids it took from an older Rukoo's unsent.json. Read once: Rukoo removes the file when
-// the last email goes, also between a check that it exists and the read.
+// the last email goes, also between a check that it exists and the read. Rukoo replaces the file by moving a new one
+// over it, and on Windows a read at that moment is refused: read again, for half a second at most.
 const readHeld = (file) => {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
+  for (let tries = 0; ; tries++) {
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+      if (err.code === 'ENOENT') return [];
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(err.code) || tries >= 20) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
   }
 };
 const onDisk = () => readHeld(heldFile()).filter((e) => e.restore);
