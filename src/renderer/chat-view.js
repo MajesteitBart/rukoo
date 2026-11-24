@@ -6,6 +6,8 @@ import { timeline, displayName, memberTag, canRemove, closedBar, applyReaction, 
 import { toParts, appendToDraft } from './chat-text.js';
 import { plainText } from './chat-markdown.js';
 import { mountChatInput } from './chat-input.js';
+import { agentSeenText } from './chat-agents.js';
+import { seenOf, loadSeen } from './chat-agent-seen.js';
 import { draftSlotKey, draftWritten } from './chat-drafts.js';
 import { textEl as richText, filesEl, cardsEl, reactionsEl, openViewer, closeViewer, openEmojiPicker, closeEmojiPicker, busyCard, dragHasFiles } from './chat-rich.js';
 
@@ -594,16 +596,18 @@ export function mountView(section, H) {
       );
       memberCache = entry;
     }
-    return memberCache.promise.then((ids) => {
+    const ws = V.ws;
+    // Whether each agent's runner ever connected (chat-agent-seen.js), which only full members can read.
+    const seen = H.myRole() !== 'guest' && [...members().values()].some(isAgent) ? loadSeen(ws) : null;
+    return Promise.all([memberCache.promise, seen]).then(([ids]) => {
       const dir = members();
       const me = H.me();
       const list = ids ? ids.map((id) => dir.get(id)).filter(Boolean) : [...dir.values()];
-      // An agent that won't answer you says so ("Answers only Olga"); the mention still goes in (server/WORKSPACES.md
-      // "Agents").
+      // An agent that won't answer you says so ("Answers only Olga"), and one whose runner never connected says that;
+      // the mention still goes in (server/WORKSPACES.md "Agents").
       const listFormat = new Intl.ListFormat(getLocale(), { type: 'conjunction' });
-      return list
-        .filter((m) => m.id !== me && (!m.state || m.state === 'active'))
-        .map((m) => (isAgent(m) ? { ...m, note: agentMentionNote(m, me, { members: dir, t, listFormat }) } : m));
+      const note = (m) => [agentMentionNote(m, me, { members: dir, t, listFormat }), agentSeenText(seenOf(ws, m.id), { t, locale: getLocale() })].filter(Boolean).join(' · ') || null;
+      return list.filter((m) => m.id !== me && (!m.state || m.state === 'active')).map((m) => (isAgent(m) ? { ...m, note: note(m) } : m));
     });
   }
 
@@ -711,6 +715,7 @@ export function mountView(section, H) {
     return api('chatSend', ws, c, body).then(
       (res) => {
         const p = res && res.pending;
+        noteSilentAgents(ws, wire.mentions);
         if (!p || V.ws !== ws || V.c !== c || V.pending.some((x) => x.local === p.local)) return true;
         V.pending = [...V.pending, p];
         if (V.loaded) render({ position: root ? 'keep' : 'bottom' });
@@ -723,6 +728,19 @@ export function mountView(section, H) {
         throw err;
       }
     );
+  }
+
+  // A mention of an agent whose runner never connected gets no answer: once the message went, a toast says so, rather
+  // than leave the person waiting for a reply.
+  function noteSilentAgents(ws, mentions) {
+    if (H.myRole() === 'guest') return;
+    const dir = members();
+    const agents = [...new Set((mentions || []).map((m) => m && m.actor))].filter((id) => isAgent(dir.get(id)));
+    if (!agents.length) return;
+    loadSeen(ws, { maxAge: 15000 }).then(() => {
+      const silent = agents.find((id) => seenOf(ws, id) === null);
+      if (silent && V.ws === ws) toast(t('chat.agents.notConnectedSent', { name: displayName(dir.get(silent), t) }), 6000);
+    });
   }
 
   function focusLog() {

@@ -3,7 +3,8 @@
 // its key, adds it to a channel through Add people and mentions it with the picker; a reply posted with the agent's key
 // (the fixture's agentReply, as a runner sends it) shows with the Agent tag. Olga's own agent answers only her, which
 // Bart's lists say. Agents never show where only people may go: New message, Message, Block and roles. No real agent
-// runs: the reply comes from the test, and "Use one of my agents" only reads Settings.
+// runs: the reply comes from the test, and "Answers with" only reads Settings, with the scripted agents
+// (SEM_AGENT_FAKE=1) as the agents whose status check passed.
 const { test, expect } = require('@playwright/test');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
@@ -48,8 +49,9 @@ async function olgasAgent(olga, ws) {
   return revy;
 }
 
-async function ready(person) {
-  ({ app, win } = await launch(server, { dataDir }));
+// fake: the scripted agents stand in for Settings, Agents, each with a status check that passes.
+async function ready(person, { fake = false } = {}) {
+  ({ app, win } = await launch(server, { dataDir, env: fake ? { SEM_AGENT_FAKE: '1' } : {} }));
   await signIn(win, person);
   await openChat(win);
   await expect(roomRow(win, 'general')).toBeVisible({ timeout: 15000 });
@@ -103,7 +105,9 @@ async function expectReadable(locator, what) {
 test('an agent made in the Agents dialog joins general through Add people, is mentioned with the picker and answers with the Agent tag', async () => {
   const { olga, bart, ws } = await twoPeople(server);
   const revy = await olgasAgent(olga, ws);
-  await ready(bart);
+  await ready(bart, { fake: true });
+  // Claude Code is Bart's default agent in Settings, Agents.
+  await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'claude' }));
 
   // The Agents dialog lists Olga's agent, which Bart can't change.
   await workspaceMenu(win, 'Agents');
@@ -141,43 +145,55 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   await form.locator('[name="name"]').fill('Clark');
   await form.locator('.buttons button').last().click();
 
-  // The key shows once, with the server, the workspace and a ready runner config.
+  // Connect Clark: who answers, the config with the key in it, and how to start the runner. No field repeats the key,
+  // the server or the workspace.
   const step = dialogBox(win);
-  await expect(step.locator('h2')).toHaveText('Key for Clark', { timeout: 15000 });
-  const key = await step.locator('[name="key"]').inputValue();
-  expect(key).toMatch(KEY);
-  await expect(step.locator('[name="server"]')).toHaveValue(server.url);
-  await expect(step.locator('[name="workspace"]')).toHaveValue(ws.id);
+  await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
+  await expect(step.locator('[name="key"], [name="server"], [name="workspace"]')).toHaveCount(0);
+  // The config shows from its top, with the server, the workspace and the key, and Copy config has the focus.
+  await expect(step.locator('[data-copy-config]')).toBeFocused();
+  expect(await step.locator('[name="config"]').evaluate((el) => el.scrollTop)).toBe(0);
   const config = async () => JSON.parse(await step.locator('[name="config"]').inputValue());
+  const key = (await config()).key;
+  expect(key).toMatch(KEY);
+  // Answers with starts on Bart's default agent, which is ready; the other ready ones follow in Settings' order, and a
+  // program of his own comes last. Hermes has no address, so it isn't offered.
+  const use = step.locator('[name="use"]');
+  await expect(use.locator('option')).toHaveText(['Claude Code', 'OpenClaw', 'Codex', 'A program of my own']);
+  await expect(use).toHaveValue('claude');
   expect(await config()).toEqual({
     server: server.url,
     workspace: ws.id,
     key,
-    backend: { type: 'command', command: 'my-agent' },
+    backend: { type: 'claude' },
     context: { threadMessages: 50, channelMessages: 20, maxChars: 30000 },
     instructions: ''
   });
-  await expect(step.locator('[data-placeholder]')).toBeVisible();
-  // On desktop the config can take one of Bart's agents from Settings, Agents.
-  const use = step.locator('[name="use"]');
-  await expect(use).toBeVisible({ timeout: 15000 });
-  await use.selectOption({ label: 'Claude Code' });
-  expect((await config()).backend).toEqual({ type: 'claude' });
-  await expect(step.locator('[data-placeholder]')).toBeHidden();
+  await expect(step.locator('[data-use-help]')).toBeHidden();
   await use.selectOption({ label: 'OpenClaw' });
   expect((await config()).backend).toEqual({ type: 'openai', url: 'http://127.0.0.1:18789', model: 'openclaw/default' });
-  await use.selectOption({ index: 0 });
+  await use.selectOption({ label: 'A program of my own' });
   expect((await config()).backend).toEqual({ type: 'command', command: 'my-agent' });
-  // Closing before copying asks first; Copy key copies it, and then Done is the filled button.
-  await expect(step.locator('[data-copy-key]')).toHaveClass(/\bprimary\b/);
+  await expect(step.locator('[data-use-help]')).toHaveText('Put your program in place of my-agent in the config. It gets the question on stdin and answers on stdout.');
+  await use.selectOption({ label: 'Claude Code' });
+  // Step 3: the runner comes from GitHub and starts from its own folder.
+  await expect(step.locator('.ch-agent-cmd')).toHaveText('node runner.js --config agent.json');
+  await expect(step.locator('.ch-agent-step').nth(2)).toContainText('with Node.js 22 or newer');
+  await expect(step.locator('[data-get-runner]')).toHaveText('Get the runner on GitHub');
+  // general is on screen: the step offers to add Clark there. Here Bart adds it through Add agents instead.
+  await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Clark to #general');
+  await expect(step.locator('[name="join"]')).toBeChecked();
+  await step.locator('[name="join"]').uncheck();
+  // Closing before copying asks first; Copy config copies it, and then Done is the filled button.
+  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bprimary\b/);
   await win.keyboard.press('Escape');
   const ask = win.locator('.scrim').last().locator('.dialog');
-  await expect(ask.locator('h2')).toHaveText('Close without copying the key?');
+  await expect(ask.locator('h2')).toHaveText('Close without copying the config?');
   await ask.locator('.buttons button', { hasText: 'Go back' }).click();
-  await step.locator('[data-copy-key]').click();
-  await expect(toast()).toHaveText('Key copied');
-  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(key);
-  await expect(step.locator('[data-copy-key]')).toHaveClass(/\bsecondary\b/);
+  await step.locator('[data-copy-config]').click();
+  await expect(toast()).toHaveText('Config copied');
+  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(await step.locator('[name="config"]').inputValue());
+  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
   await step.locator('.buttons button').last().click();
 
   // The list has it, with a menu for Bart; the key works for the agent's own routes.
@@ -209,8 +225,9 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   await expect(people).toHaveCount(4, { timeout: 15000 });
   await expect(people.filter({ hasText: 'Clark' }).locator('.ch-agent-tag')).toHaveText('Agent');
   await expect(people.filter({ hasText: 'Revy' }).locator('.ch-agent-tag')).toHaveText('Agent');
-  await expect(people.filter({ hasText: 'Clark' }).locator('.ch-agent-meta')).toHaveText('Made by Bart · Answers everyone');
-  await expect(people.filter({ hasText: 'Revy' }).locator('.ch-agent-meta')).toHaveText('Made by Olga Owner · Answers only Olga Owner');
+  // Clark's key reached the server above; Revy's runner never connected.
+  await expect(people.filter({ hasText: 'Clark' }).locator('.ch-agent-meta')).toHaveText(/^Made by Bart · Answers everyone · Last active \d+ minutes? ago$/);
+  await expect(people.filter({ hasText: 'Revy' }).locator('.ch-agent-meta')).toHaveText('Made by Olga Owner · Answers only Olga Owner · Not connected yet');
   await expect(people.filter({ hasNot: win.locator('.ch-agent-tag') }).locator('.ch-agent-meta')).toHaveCount(0);
   // All of Bart's agents are in: the list's Add agents button hides.
   await expect(members.locator('[data-add]')).toBeHidden();
@@ -235,9 +252,9 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   await win.keyboard.type('@');
   const option = (name) => picker().locator('[role="option"]', { has: win.locator('.mention-name', { hasText: name }) });
   await expect(option('Revy').locator('.mention-tag')).toHaveText('Agent', { timeout: 15000 });
-  await expect(option('Revy').locator('.mention-note')).toHaveText('Answers only Olga Owner');
+  await expect(option('Revy').locator('.mention-note')).toHaveText('Answers only Olga Owner · Not connected yet');
   await expect(option('Clark').locator('.mention-tag')).toHaveText('Agent');
-  await expect(option('Clark').locator('.mention-note')).toHaveCount(0);
+  await expect(option('Clark').locator('.mention-note')).toHaveText(/^Last active \d+ minutes? ago$/);
   await expect(option('Olga Owner').locator('.mention-tag')).toHaveCount(0);
   await win.keyboard.type('Cla');
   await expect(picker().locator('[role="option"] .mention-name')).toHaveText(['Clark']);
@@ -277,6 +294,8 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   await win.keyboard.type('hello');
   await win.keyboard.press('Enter');
   await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, '@Revy hello')).length, { timeout: 15000 }).toBe(1);
+  // Revy's runner never connected, so nothing will answer: a toast says so, where the mention of Clark said nothing.
+  await expect(toast()).toHaveText("Revy isn't connected yet, so it won't answer until its runner starts.", { timeout: 15000 });
   const toRevy = (await serverMessages(server, olga, ws.id, ws.general, '@Revy hello'))[0];
   await expect(server.agentReply(revy.key, ws.id, ws.general, { trigger: toRevy.id, text: 'Not for you' })).rejects.toThrow(/403.*not_answered/);
 
@@ -304,7 +323,7 @@ test('workspace members show the agents in a group of their own, with no Message
   await expect(agents.locator('.ch-person-name')).toHaveText(['Clark', 'Revy']);
   // The group heading says what they are: no tag on the rows. Each says who made it and whom it answers.
   await expect(agents.locator('.ch-tag')).toHaveCount(0);
-  await expect(agents.locator('.ch-agent-meta')).toHaveText(['Made by Bart · Answers everyone', 'Made by Olga Owner · Answers only Olga Owner']);
+  await expect(agents.locator('.ch-agent-meta')).toHaveText(['Made by Bart · Answers everyone · Not connected yet', 'Made by Olga Owner · Answers only Olga Owner · Not connected yet']);
   // Olga's agent: Bart, a member, has nothing to do with it.
   await expect(agents.filter({ hasText: 'Revy' }).locator('[data-person]')).toHaveCount(0);
   // His own: Edit, New key and Remove, and never Message, Block or a role.
@@ -327,10 +346,12 @@ test('workspace members show the agents in a group of their own, with no Message
   await expect(confirm.locator('h2')).toHaveText('Make a new key for Clark?');
   await confirm.locator('.buttons button').last().click();
   const step = dialogBox(win);
-  await expect(step.locator('h2')).toHaveText('Key for Clark', { timeout: 15000 });
-  const key = await step.locator('[name="key"]').inputValue();
+  await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
+  const key = JSON.parse(await step.locator('[name="config"]').inputValue()).key;
   expect(key).toMatch(KEY);
   expect(key).not.toBe(mine.key);
+  // A new key doesn't offer to add the agent to a channel: it is in its channels already.
+  await expect(step.locator('[name="join"]')).toHaveCount(0);
   expect((await server.agentCall(mine.key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(401);
   expect((await server.agentCall(key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(200);
   await step.locator('[data-copy-config]').click();
@@ -467,6 +488,50 @@ test("an archived channel keeps an agent's Remove for its managers and the agent
   expect(await inside(ops)).not.toContain(clark.agent.id);
 });
 
+test('the key step starts on the ready default agent and adds the new agent to the channel on screen, where it shows as not connected until its runner reaches the server', async () => {
+  const { bart, ws } = await twoPeople(server);
+  await ready(bart, { fake: true });
+  await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'codex' }));
+
+  await workspaceMenu(win, 'Agents');
+  const list = dialogBox(win);
+  await expect(list.locator('[data-agents] .ch-agents-none')).toHaveText('No agents yet.', { timeout: 15000 });
+  await list.locator('[data-add-agent]').click();
+  const form = dialogBox(win);
+  await form.locator('[name="name"]').fill('Helper');
+  await form.locator('[name="answers"][value="everyone"]').check();
+  await form.locator('.buttons button').last().click();
+
+  const step = dialogBox(win);
+  await expect(step.locator('h2')).toHaveText('Connect Helper', { timeout: 15000 });
+  // The default agent comes first among the ready ones.
+  await expect(step.locator('[name="use"] option')).toHaveText(['Codex', 'OpenClaw', 'Claude Code', 'A program of my own']);
+  expect(JSON.parse(await step.locator('[name="config"]').inputValue()).backend).toEqual({ type: 'codex' });
+  await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Helper to #general');
+  await expect(step.locator('[name="join"]')).toBeChecked();
+  await step.locator('[data-copy-config]').click();
+  const key = JSON.parse(await step.locator('[name="config"]').inputValue()).key;
+  await step.locator('.buttons button').last().click();
+  await expect(list.locator('[data-agent-row]', { hasText: 'Helper' }).locator('.ch-agent-meta')).toHaveText('Made by Bart · Answers everyone · Not connected yet', { timeout: 15000 });
+  await list.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // Done added Helper to general, as the channel says.
+  await expect(pane().locator('.ch-main .ch-meta')).toHaveText('2 members · 1 agent', { timeout: 15000 });
+  await expect(pane().locator('.ch-main')).toContainText('Bart added Helper');
+  // The mention list says its runner never connected.
+  await composer(win).click();
+  await win.keyboard.type('@Hel');
+  await expect(picker().locator('[role="option"] .mention-note')).toHaveText(['Not connected yet'], { timeout: 15000 });
+  await win.keyboard.press('Escape');
+  await win.keyboard.press('Control+A');
+  await win.keyboard.press('Backspace');
+  // Its runner reaches the server with the key: the channel's Members says when.
+  expect((await server.agentCall(key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(200);
+  await roomMenu(win, 'Members');
+  await expect(dialogBox(win).locator('[data-people] .ch-agent-meta')).toHaveText('Made by Bart · Answers everyone · Last active 1 minute ago', { timeout: 15000 });
+});
+
 // An agent's captions (who made it, whom it answers, when it last connected) are 12px, so they take chat's caption
 // grey: at least 4.5:1 on the dialogs and the mention list, which open outside the chat view, in dark and light.
 test("an agent's captions pass 4.5:1 in the Agents and Members dialogs, Add agents and the mention list, in dark and light", async () => {
@@ -493,7 +558,7 @@ test("an agent's captions pass 4.5:1 in the Agents and Members dialogs, Add agen
     await expect(win.locator('.scrim')).toHaveCount(0);
 
     await roomMenu(win, 'Members');
-    await expect(dialogBox(win).locator('[data-people] .ch-agent-meta')).toHaveText('Made by Olga Owner · Answers only Olga Owner', { timeout: 15000 });
+    await expect(dialogBox(win).locator('[data-people] .ch-agent-meta')).toHaveText('Made by Olga Owner · Answers only Olga Owner · Not connected yet', { timeout: 15000 });
     await expectReadable(dialogBox(win).locator('[data-people] .ch-agent-meta'), `${theme}, #general's members`);
     await win.keyboard.press('Escape');
     await expect(win.locator('.scrim')).toHaveCount(0);
@@ -507,11 +572,11 @@ test("an agent's captions pass 4.5:1 in the Agents and Members dialogs, Add agen
     // The mention list, and its row Enter picks, which has the selected-row grey under the note.
     await composer(win).click();
     await win.keyboard.type('@');
-    await expect(picker().locator('.mention-note')).toHaveText(['Answers only Olga Owner'], { timeout: 15000 });
+    await expect(picker().locator('.mention-note')).toHaveText(['Answers only Olga Owner · Not connected yet'], { timeout: 15000 });
     await expectReadable(picker().locator('.mention-note'), `${theme}, mentions`);
     await win.keyboard.type('Rev');
     await expect(picker().locator('[role="option"] .mention-name')).toHaveText(['Revy']);
-    await expect(picker().locator('[role="option"].active .mention-note')).toHaveText('Answers only Olga Owner');
+    await expect(picker().locator('[role="option"].active .mention-note')).toHaveText('Answers only Olga Owner · Not connected yet');
     await expectReadable(picker().locator('[role="option"].active .mention-note'), `${theme}, the mention Enter picks`);
     await win.keyboard.press('Escape');
     await expect(picker()).toHaveCount(0);

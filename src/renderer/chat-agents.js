@@ -1,10 +1,12 @@
-// The config of the reference runner (integrations/agent-runner) for an agent in team chat: what the Agents dialog
-// shows with Copy after Add an agent and New key. Pure: no DOM and no window.mail, so the node tests can load it
-// (test/chat-agents.test.js). The format is the runner's (its README, and server/WORKSPACES.md "Agents").
+// The config of the reference runner (integrations/agent-runner) for an agent in team chat: what the key step shows
+// with Copy config after Add an agent and New key, and the line under an agent that says whether its runner
+// connected. Pure: no DOM and no window.mail, so the node tests can load it (test/chat-agents.test.js). The format is
+// the runner's (its README, and server/WORKSPACES.md "Agents").
 //
-// On desktop the dialog also offers "Use one of my agents": an agent of Settings, Agents (src/main/agents/config.js,
-// as agentConfig answers it: never a key) becomes the runner's backend. A backend that needs a secret names an
-// environment variable for it (keyEnv); the secret itself never goes into the config.
+// The key step's "Answers with" picks the runner's backend: on desktop an agent of Settings, Agents
+// (src/main/agents/config.js, as agentConfig answers it: never a key), in the browser Claude Code or Codex, or a
+// program of the person's own. A backend that needs a secret names an environment variable for it (keyEnv); the
+// secret itself never goes into the config.
 
 // What the runner reads of a conversation for each mention, unless the config says otherwise.
 export const RUNNER_CONTEXT = Object.freeze({ threadMessages: 50, channelMessages: 20, maxChars: 30000 });
@@ -104,5 +106,60 @@ export const runnerText = (config) => `${JSON.stringify(config, null, 2)}\n`;
 // The environment variables a config's backend needs before the runner starts, for the line under it.
 export const runnerEnv = (config) => (config && config.backend && config.backend.keyEnv ? [config.backend.keyEnv] : []);
 
-// How to start the runner with the config saved as agent.json.
-export const RUNNER_COMMAND = 'node integrations/agent-runner/runner.js --config agent.json';
+// The choice of "Answers with" that keeps PLACEHOLDER_BACKEND: always the last one.
+export const OWN_PROGRAM = 'own';
+
+// What the browser app and the phone offer, which can't read Settings, Agents: the agents the runner finds on the
+// computer it runs on without any settings. Android's AgentRules.BACKENDS has the same.
+export const PLAIN_AGENTS = Object.freeze([
+  Object.freeze({ id: 'claude', name: 'Claude Code', kind: 'claude', backend: Object.freeze({ type: 'claude' }) }),
+  Object.freeze({ id: 'codex', name: 'Codex', kind: 'codex', backend: Object.freeze({ type: 'codex' }) })
+]);
+
+// What a status check of Settings, Agents says of an agent that can't answer here as it is set up: turned off, not set
+// up, or its program not installed (agentStatus, src/main/agents/hub.js).
+const UNFIT = new Set(['disabled', 'unconfigured', 'missing']);
+
+// The agents "Answers with" offers, in order, each with ready: whether its status check passed. config: agentConfig's
+// answer on desktop, or null in the browser and on the phone (PLAIN_AGENTS). status: agentStatus's answer, or null
+// while it is unknown. Agents a status check says can't answer are left out; the ready ones come first, Settings'
+// default agent first among them, and otherwise Settings' order holds. A program of one's own isn't in the list: it
+// is always the last choice (OWN_PROGRAM).
+export function runnerChoices(config, { status = null, names = {} } = {}) {
+  const stateOf = (id) => (status && status[id] && typeof status[id].state === 'string' ? status[id].state : null);
+  const list = (config ? runnerAgents(config, names) : PLAIN_AGENTS.map((a) => ({ ...a, backend: { ...a.backend } })))
+    .filter((a) => !UNFIT.has(stateOf(a.id)))
+    .map((a) => ({ ...a, ready: stateOf(a.id) === 'ready' }));
+  const preferred = config && typeof config.defaultAgent === 'string' ? config.defaultAgent : null;
+  const rank = (a) => (a.ready ? 0 : 2) + (a.id === preferred ? 0 : 1);
+  return list
+    .map((a, i) => [a, i])
+    .sort((x, y) => rank(x[0]) - rank(y[0]) || x[1] - y[1])
+    .map(([a]) => a);
+}
+
+// How to start the runner with the config saved as agent.json next to runner.js.
+export const RUNNER_COMMAND = 'node runner.js --config agent.json';
+
+// Where to get the runner: its README on GitHub, whose "Get the runner" says how to download it.
+export const RUNNER_URL = 'https://github.com/MajesteitBart/rukoo/blob/main/integrations/agent-runner/README.md#get-the-runner';
+
+// When an agent's runner last reached the server, as its rows say it: "Not connected yet" for an agent whose runner
+// never did (lastSeen null), "Last active 5 minutes ago", "Last active yesterday", or after a week the date. '' while
+// it is unknown (undefined): a guest can't read it, or it hasn't loaded yet.
+export function agentSeenText(lastSeen, { t, locale, now = Date.now() }) {
+  if (lastSeen === undefined) return '';
+  if (lastSeen === null || !Number.isFinite(lastSeen)) return t('chat.agents.neverActive');
+  return t('chat.agents.lastActive', { date: sinceText(lastSeen, now, locale) });
+}
+
+function sinceText(at, now, locale) {
+  const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  const minutes = Math.max(1, Math.floor((now - at) / 60000));
+  if (minutes < 60) return rtf.format(-minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return rtf.format(-hours, 'hour');
+  const days = Math.floor(hours / 24);
+  if (days < 7) return rtf.format(-days, 'day');
+  return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', ...(new Date(at).getFullYear() !== new Date(now).getFullYear() ? { year: 'numeric' } : {}) }).format(at);
+}

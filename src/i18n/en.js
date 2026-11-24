@@ -12049,11 +12049,11 @@
   },
   "chat.agents.lastActive": {
     "message": "Last active {date}",
-    "description": "Agents dialog: part of an agent's second line, when its runner last reached the server. {date}: day, month and time. src/renderer/chat-dialogs.js (agentsDialog)"
+    "description": "Part of an agent's line in the Agents dialog, a channel's Members, Workspace members and the mention list: when its runner last reached the server. {date}: how long ago, from the browser's relative time format (\"5 minutes ago\", \"yesterday\"), or after a week a day and month (\"12 Nov\"). src/renderer/chat-agents.js (agentSeenText)"
   },
   "chat.agents.neverActive": {
     "message": "Not connected yet",
-    "description": "Agents dialog: part of an agent's second line when its runner never reached the server. src/renderer/chat-dialogs.js (agentsDialog)"
+    "description": "Part of an agent's line in the Agents dialog, a channel's Members, Workspace members and the mention list, when its runner never reached the server: a mention gets no answer yet. src/renderer/chat-agents.js (agentSeenText)"
   },
   "chat.agents.edit": {
     "message": "Edit agent",
@@ -12180,84 +12180,72 @@
     "description": "Add an agent and Edit agent: help under Answers other agents, when the server doesn't say its depth limit. src/renderer/chat-dialogs.js (agentForm)"
   },
   "chat.agents.runsNote": {
-    "message": "Next you get its key and a config for the runner, the program that connects it to your own agent.",
+    "message": "Next you choose who answers for it and copy a config for the runner, the program that connects the two.",
     "description": "Add an agent: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
   },
   "chat.agents.keyTitle": {
-    "message": "Key for {name}",
+    "message": "Connect {name}",
     "description": "Key step after Add an agent and New key: title. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.keyOnce": {
-    "message": "Copy the key now. You'll see it only once.",
-    "description": "Key step: first line. {name}: the agent (not used in English). src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.key": {
-    "message": "Key",
-    "description": "Key step: label of the field with the agent's key. src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.copyKey": {
-    "message": "Copy key",
-    "description": "Key step: button that copies the key. src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.keyCopied": {
-    "message": "Key copied",
-    "description": "Toast after Copy key. src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.server": {
-    "message": "Server",
-    "description": "Key step: label of the field with the server's address, which the runner connects to. src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.workspaceId": {
-    "message": "Workspace ID",
-    "description": "Key step: label of the field with the workspace's ID (w_…). src/renderer/chat-dialogs.js (showAgentKey)"
+    "message": "It holds {name}'s key, which you'll see only once. Keep it private, like a password.",
+    "description": "Key step: line under the runner config. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.useMine": {
-    "message": "Use one of my agents",
-    "description": "Key step, desktop only: label of the list of the user's agents from Settings → Agents (Hermes, OpenClaw, Claude Code, Codex, a custom agent); the one picked goes into the runner config. src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.useNone": {
-    "message": "None: a command of my own",
-    "description": "Key step, desktop only: first choice of Use one of my agents, which leaves a placeholder command in the config. src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.useMineHelp": {
-    "message": "Its settings from Settings → Agents go into the config. Its key or token doesn't.",
-    "description": "Key step, desktop only: help under Use one of my agents. src/renderer/chat-dialogs.js (showAgentKey)"
+    "message": "Answers with",
+    "description": "Key step, step 1: label of the list of agents the runner can hand mentions to. On desktop the user's agents from Settings → Agents (Hermes, OpenClaw, Claude Code, Codex, a custom agent), ready ones first; in the browser Claude Code and Codex. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.config": {
     "message": "Runner config",
-    "description": "Key step: label of the read-only JSON config for the reference runner (integrations/agent-runner). src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.configBackend": {
-    "message": "Change backend to how your agent runs: runs, openai, claude, codex or command. The runner's README describes each.",
-    "description": "Key step: line under the config while its backend is the placeholder command. Keep runs, openai, claude, codex and command as they are: they are values in the file. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Key step, step 2: label of the read-only JSON config for the reference runner (integrations/agent-runner), with Copy config beside it. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.keyEnv": {
     "message": "Set {name} to that agent's key or token before you start the runner.",
-    "description": "Key step: line under the config when its backend needs a secret, which the config names as an environment variable. {name}: the variable, such as HERMES_API_KEY. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Key step: line under Answers with when the agent picked needs a secret, which the config names as an environment variable. {name}: the variable, such as HERMES_API_KEY. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.copyConfig": {
     "message": "Copy config",
-    "description": "Key step: button that copies the runner config. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Key step: the filled button that copies the runner config, until something was copied. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.configCopied": {
     "message": "Config copied",
     "description": "Toast after Copy config. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.configRun": {
-    "message": "Save it as agent.json and start the runner from the Rukoo repository:",
-    "description": "Key step: line before the command that starts the runner. Keep agent.json. src/renderer/chat-dialogs.js (showAgentKey)"
-  },
-  "chat.agents.configPrivate": {
-    "message": "The config holds the agent's key. Keep it private, as you would a password.",
-    "description": "Key step: note at the end. src/renderer/chat-dialogs.js (showAgentKey)"
+    "message": "On the computer that should answer, with Node.js 22 or newer: get the runner, save the config next to runner.js as agent.json, and run:",
+    "description": "Key step, step 3: line before the command that starts the runner. Keep Node.js 22, runner.js and agent.json. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.closeTitle": {
-    "message": "Close without copying the key?",
-    "description": "Question when the key step closes before the key or the config was copied: title. src/renderer/chat-dialogs.js (showAgentKey)"
+    "message": "Close without copying the config?",
+    "description": "Question when the key step closes before the config was copied: title. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.closeBody": {
     "message": "You won't see this key again. Without it the agent can't connect, and you'd need a new key.",
-    "description": "Question when the key step closes before anything was copied: body. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Question when the key step closes before the config was copied: body. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.useOwn": {
+    "message": "A program of my own",
+    "description": "Key step: the last choice of Answers with, which leaves a placeholder command in the config for the user's own program. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.ownHelp": {
+    "message": "Put your program in place of {command} in the config. It gets the question on stdin and answers on stdout.",
+    "description": "Key step: line under Answers with while A program of my own is picked. {command}: the placeholder in the config, my-agent. Keep stdin and stdout. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.runTitle": {
+    "message": "Start the runner",
+    "description": "Key step, step 3: heading over how to start the runner. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.getRunner": {
+    "message": "Get the runner on GitHub",
+    "description": "Key step, step 3: link that opens the runner's README on GitHub, which says how to download it. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.joinChannel": {
+    "message": "Add {name} to #{channel}",
+    "description": "Key step after Add an agent: checkbox, on by default, that adds the new agent to the channel on screen when the step closes. {name}: the agent; {channel}: the channel name, after #. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.notConnectedSent": {
+    "message": "{name} isn't connected yet, so it won't answer until its runner starts.",
+    "description": "Toast after sending a message that mentions an agent whose runner never reached the server. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
   },
   "chat.new.title": {
     "message": "New message",

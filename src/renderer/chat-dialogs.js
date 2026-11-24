@@ -25,7 +25,8 @@ import {
   canManageAgent,
   canRenewAgentKey
 } from './chat-model.js';
-import { runnerAgents, runnerConfig, runnerText, runnerEnv, PLACEHOLDER_BACKEND, RUNNER_COMMAND } from './chat-agents.js';
+import { runnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL } from './chat-agents.js';
+import { seenOf, loadSeen, rememberAgents } from './chat-agent-seen.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -83,9 +84,13 @@ const agentTag = () => `<span class="ch-tag ch-agent-tag">${esc(t('chat.roles.ag
 const byName = (a, b) => collator().compare(displayName(a, t), displayName(b, t));
 // "Made by Olga · Answers only Olga" under an agent's name, as a channel's members and Workspace members show it.
 const agentLine = (m) => agentNote(m, { members: K.CH.members, t, listFormat: listFormat() });
-// A member's name in a list row; an agent's with its line under it.
+// "Not connected yet" or "Last active 5 minutes ago", when the app knows (chat-agent-seen.js).
+const seenLine = (id, lastSeen = seenOf(K.CH.ws, id)) => agentSeenText(lastSeen, { t, locale: getLocale() });
+// Whether this person can read when the workspace's agents were last active (GET /agents is for full members).
+const seesAgents = () => agentsOn() && !K.isGuest();
+// A member's name in a list row; an agent's with its line under it: who made it, whom it answers, whether it connected.
 const personName = (m, label) => {
-  const note = isAgent(m) ? agentLine(m) : null;
+  const note = isAgent(m) ? [agentLine(m), seenLine(m.id)].filter(Boolean).join(' · ') : null;
   return note
     ? `<span class="ch-agent-text"><span class="ch-person-name">${esc(label)}</span><span class="ch-agent-meta">${esc(note)}</span></span>`
     : `<span class="ch-person-name">${esc(label)}</span>`;
@@ -924,6 +929,8 @@ export async function channelMembers(room, { add = false } = {}) {
     ul.innerHTML = '<li class="ch-invites-wait"><span class="spinner"></span></li>';
     try {
       list = ((await api('chatRoomMembers', ws, room.id)).members || []).slice();
+      // Whether its agents ever connected, under each (chat-agent-seen.js); the list doesn't wait long for it.
+      if (seesAgents() && list.some((m) => isAgent(K.CH.members.get(m.member)))) await loadSeen(ws, { maxAge: 0 });
     } catch (err) {
       ul.removeAttribute('aria-busy');
       ul.innerHTML = `<li class="error">${esc(K.errorText(err))}</li>`;
@@ -1869,6 +1876,8 @@ export async function workspaceMembers() {
         if (m) menuInDialog(btn, menuFor(m));
       });
       draw();
+      // Whether each agent ever connected, under its name, once the app knows (chat-agent-seen.js).
+      if (seesAgents() && activeMembers().some(isAgent)) loadSeen(ws, { maxAge: 0 }).then(() => draw());
     }
   });
 }
@@ -2086,6 +2095,7 @@ export async function agentsDialog() {
     try {
       const res = await api('chatAgents', ws);
       list = (res && res.agents) || [];
+      rememberAgents(ws, list);
       failed = null;
     } catch (err) {
       failed = err;
@@ -2093,7 +2103,7 @@ export async function agentsDialog() {
     draw();
   };
   // Who made it, whom it answers and whether it answers agents, as in Workspace members, and when it was last active.
-  const meta = (a) => [agentLine(a), a.lastSeen ? t('chat.agents.lastActive', { date: dateTime(a.lastSeen) }) : t('chat.agents.neverActive')].filter(Boolean).join(' · ');
+  const meta = (a) => [agentLine(a), seenLine(a.id, a.lastSeen ?? null)].filter(Boolean).join(' · ');
   const draw = () => {
     if (!body || !body.isConnected) return;
     const ul = body.querySelector('[data-agents]');
@@ -2153,10 +2163,33 @@ export async function agentsDialog() {
   });
 }
 
-// Add an agent: the form, then its key once.
+// The choices of "Answers with" in the key step (chat-agents.js runnerChoices): on desktop the person's agents of
+// Settings, Agents, ready ones first. A status check can take seconds (an offline server), so it gets 3 s and is asked
+// as early as possible; without an answer the agents keep Settings' order. Without Settings, as in the browser, or
+// when none of them can answer, the agents the runner finds on its computer by itself.
+function askRunnerChoices() {
+  if (WEB) return Promise.resolve(runnerChoices(null));
+  const status = Promise.race([api('agentStatus').catch(() => null), sleep(3000).then(() => null)]);
+  return Promise.all([api('agentConfig').catch(() => null), status]).then(([config, st]) => {
+    const list = config ? runnerChoices(config, { status: st }) : [];
+    return list.length ? list : runnerChoices(null);
+  });
+}
+
+// The channel on screen, when a new agent of the person's may join it there and then (canAddAgent).
+function channelToJoin(agent) {
+  const room = K.CH.openId ? K.CH.rooms.get(K.CH.openId) : null;
+  const candidate = { id: agent.id, kind: 'agent', state: 'active', agent: { sponsor: K.me() } };
+  // The person sees the channel, so they are in it: a private one takes their agent from its managers.
+  return room && canAddAgent(candidate, room, K.me(), new Set([K.me()])) ? room : null;
+}
+
+// Add an agent: the form, then its key once, in a config for the runner, with the offer to add it to the channel on
+// screen.
 export async function addAgent() {
+  const choices = askRunnerChoices();
   const made = await agentForm(null);
-  if (made && made.key) await showAgentKey(made);
+  if (made && made.key) await showAgentKey(made, { choices: await choices, room: channelToJoin(made.agent) });
   return made ? made.agent : null;
 }
 
@@ -2170,11 +2203,13 @@ export async function editAgent(agent) {
 export async function newAgentKey(agent) {
   const ws = K.CH.ws;
   if (!ws || !agent) return null;
+  // Asked while the question is open, so the key step needn't wait for a slow status check after the key is made.
+  const choices = askRunnerChoices();
   const ok = await confirmDialog(t('chat.agents.newKeyTitle', { name: agent.name }), t('chat.agents.newKeyBody', { name: agent.name }), t('chat.agents.newKeyConfirm'));
   if (!ok || ws !== K.CH.ws) return null;
   try {
     const made = await api('chatNewAgentKey', ws, agent.id);
-    if (made && made.key && ws === K.CH.ws) await showAgentKey(made);
+    if (made && made.key && ws === K.CH.ws) await showAgentKey(made, { choices: await choices });
     return made ? made.agent : null;
   } catch (err) {
     toast(K.errorText(err), 5000);
@@ -2345,33 +2380,43 @@ async function agentForm(agent = null) {
   });
 }
 
-// The key of an agent, shown once after Add an agent and New key: the key with Copy, the server's address and the
-// workspace ID, and a ready config for the reference runner with Copy. On desktop the config can take its backend
-// from one of the person's agents in Settings, Agents, with an environment variable in place of that agent's own key.
+// The key step after Add an agent and New key: what to do, in three steps. 1, Answers with: the agent the runner hands
+// mentions to, preselected (askRunnerChoices), with A program of my own last. 2, the runner's config, with the key in
+// it, which shows only once: Copy config is the filled button until something was copied. 3, how to start the runner
+// with Node.js 22 or newer. A new agent of the person's can join the channel on screen when the step closes (room).
 // Closing before anything was copied asks first, as the invitation link does.
-async function showAgentKey({ agent, key }) {
+//
+// Starting the runner from Rukoo itself ("Run on this computer", #373) would go at the head of step 3, as Copy config
+// heads step 2.
+async function showAgentKey({ agent, key }, { choices = [], room = null } = {}) {
   const ws = K.CH.ws;
   if (!ws || !agent || !key) return null;
   const server = K.CH.state?.server || '';
-  let backend = PLACEHOLDER_BACKEND;
-  let choices = [];
+  let pick = choices.length ? choices[0].id : OWN_PROGRAM;
   let kept = false;
-  const config = () => runnerConfig({ server, workspace: ws, key, backend });
+  let join = Boolean(room);
+  const backend = () => choices.find((c) => c.id === pick)?.backend || PLACEHOLDER_BACKEND;
+  const config = () => runnerConfig({ server, workspace: ws, key, backend: backend() });
 
+  // The config for the agent picked, and the line under the choice: the variable its key goes in, or what to put in
+  // place of my-agent.
   const drawConfig = (body) => {
     const cfg = config();
-    body.querySelector('[name="config"]').value = runnerText(cfg);
+    const field = body.querySelector('[name="config"]');
+    field.value = runnerText(cfg);
+    field.scrollTop = 0;
     const env = runnerEnv(cfg);
-    const envLine = body.querySelector('[data-env]');
-    envLine.hidden = !env.length;
-    envLine.textContent = env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
-    body.querySelector('[data-placeholder]').hidden = cfg.backend.type !== PLACEHOLDER_BACKEND.type || cfg.backend.command !== PLACEHOLDER_BACKEND.command;
+    const help = body.querySelector('[data-use-help]');
+    const text = pick === OWN_PROGRAM ? t('chat.agents.ownHelp', { command: PLACEHOLDER_BACKEND.command }) : env.length ? t('chat.agents.keyEnv', { name: env[0] }) : '';
+    help.hidden = !text;
+    help.textContent = text;
+    help.classList.toggle('ch-warn', env.length > 0 && pick !== OWN_PROGRAM);
   };
-  // Copy key is the filled button until something was copied; Done is filled after.
+  // Copy config is the filled button until something was copied; Done is filled after.
   const showKept = (scrim) => {
-    const copyKey = scrim.querySelector('[data-copy-key]');
-    copyKey.classList.toggle('primary', !kept);
-    copyKey.classList.toggle('secondary', kept);
+    const copyConfig = scrim.querySelector('[data-copy-config]');
+    copyConfig.classList.toggle('primary', !kept);
+    copyConfig.classList.toggle('secondary', kept);
     scrim.querySelector('.dialog').classList.toggle('ch-quiet-close', !kept);
   };
   const keep = (scrim) => {
@@ -2379,14 +2424,6 @@ async function showAgentKey({ agent, key }) {
     kept = true;
     showKept(scrim);
   };
-  const copy = (scrim, value, done) =>
-    navigator.clipboard.writeText(value).then(
-      () => {
-        toast(done);
-        keep(scrim);
-      },
-      () => {}
-    );
   const leaveOk = () => {
     if (kept) return true;
     return dialog({
@@ -2399,66 +2436,81 @@ async function showAgentKey({ agent, key }) {
     });
   };
 
-  return wsDialog({
+  const option = (value, label) => `<option value="${esc(value)}"${value === pick ? ' selected' : ''}>${esc(label)}</option>`;
+  await wsDialog({
     title: t('chat.agents.keyTitle', { name: agent.name }),
     wide: true,
     buttons: [{ get label() { return t('chat.invite.done'); }, value: true }],
     beforeClose: () => leaveOk(),
     render(body) {
       const scrim = body.closest('.scrim');
-      const fact = (label, value, name) =>
-        `<label>${esc(label)}<input type="text" name="${name}" class="sel ch-link-field" readonly spellcheck="false" value="${esc(value)}"/></label>`;
       body.innerHTML = `<div class="form ch-form ch-agent-key">
-        <p class="ch-agent-once">${esc(t('chat.agents.keyOnce', { name: agent.name }))}</p>
-        <div class="ch-agent-copy-row">${fact(t('chat.agents.key'), key, 'key')}<button type="button" class="btn primary sm" data-copy-key>${icons.copy}<span>${esc(t('chat.agents.copyKey'))}</span></button></div>
-        <div class="ch-agent-facts">${fact(t('chat.agents.server'), server, 'server')}${fact(t('chat.agents.workspaceId'), ws, 'workspace')}</div>
+        <ol class="ch-agent-steps">
+          <li class="ch-agent-step">
+            <label>${esc(t('chat.agents.useMine'))}<select name="use">${choices.map((c) => option(c.id, c.name)).join('')}${option(OWN_PROGRAM, t('chat.agents.useOwn'))}</select></label>
+            <p class="field-help" data-use-help hidden></p>
+          </li>
+          <li class="ch-agent-step">
+            <div class="ch-agent-step-head"><span class="ch-label" id="ch-agent-config-label">${esc(t('chat.agents.config'))}</span><button type="button" class="btn primary sm" data-copy-config>${icons.copy}<span>${esc(
+              t('chat.agents.copyConfig')
+            )}</span></button></div>
+            <textarea name="config" class="sel ch-agent-config" aria-labelledby="ch-agent-config-label" readonly spellcheck="false" rows="9"></textarea>
+            <p class="ch-agent-once">${esc(t('chat.agents.keyOnce', { name: agent.name }))}</p>
+          </li>
+          <li class="ch-agent-step">
+            <span class="ch-label">${esc(t('chat.agents.runTitle'))}</span>
+            <p class="field-help">${esc(t('chat.agents.configRun'))}</p>
+            <code class="ch-agent-cmd sel">${esc(RUNNER_COMMAND)}</code>
+            <button type="button" class="link-btn ch-agent-get" data-get-runner>${icons.popOut}<span>${esc(t('chat.agents.getRunner'))}</span></button>
+          </li>
+        </ol>
         ${
-          WEB
-            ? ''
-            : `<label data-use hidden>${esc(t('chat.agents.useMine'))}<select name="use"><option value="">${esc(t('chat.agents.useNone'))}</option></select>
-                 <span class="field-help">${esc(t('chat.agents.useMineHelp'))}</span></label>`
+          room
+            ? `<label class="ch-check-row ch-agent-join"><input type="checkbox" name="join" checked/><span class="ch-radio-text"><span class="ch-check-label">${esc(
+                t('chat.agents.joinChannel', { name: agent.name, channel: room.name || '' })
+              )}</span><span class="field-help">${esc(t('chat.host.agents'))}</span></span></label>`
+            : ''
         }
-        <label>${esc(t('chat.agents.config'))}<textarea name="config" class="sel ch-agent-config" readonly spellcheck="false" rows="12"></textarea></label>
-        <p class="field-help" data-placeholder>${esc(t('chat.agents.configBackend'))}</p>
-        <p class="field-help ch-warn" data-env hidden></p>
-        <div class="ch-agent-copy-end"><button type="button" class="btn secondary sm" data-copy-config>${icons.copy}<span>${esc(t('chat.agents.copyConfig'))}</span></button></div>
-        <p class="field-help">${esc(t('chat.agents.configRun'))} <code class="ch-agent-cmd sel">${esc(RUNNER_COMMAND)}</code></p>
-        <p class="note">${esc(t('chat.agents.configPrivate'))}</p>
       </div>`;
       drawConfig(body);
       showKept(scrim);
-      body.querySelector('[data-copy-key]').addEventListener('click', () => copy(scrim, key, t('chat.agents.keyCopied')));
-      body.querySelector('[data-copy-config]').addEventListener('click', () => copy(scrim, body.querySelector('[name="config"]').value, t('chat.agents.configCopied')));
-      // Ctrl+C in the key or the config copies too.
-      for (const field of body.querySelectorAll('[name="key"], [name="config"]')) field.addEventListener('copy', () => keep(scrim));
-      const use = body.querySelector('[name="use"]');
-      if (use) {
-        use.addEventListener('change', () => {
-          const pick = choices.find((c) => c.id === use.value);
-          backend = pick ? pick.backend : PLACEHOLDER_BACKEND;
-          drawConfig(body);
-        });
-        // The agents of Settings, Agents, without their keys (agentConfig never gives one).
-        api('agentConfig')
-          .then((cfg) => {
-            if (!body.isConnected) return;
-            choices = runnerAgents(cfg);
-            if (!choices.length) return;
-            for (const c of choices) {
-              const o = document.createElement('option');
-              o.value = c.id;
-              o.textContent = c.name;
-              use.append(o);
-            }
-            body.querySelector('[data-use]').hidden = false;
-          })
-          .catch(() => {});
-      }
-      const field = body.querySelector('[name="key"]');
-      field.focus();
-      field.select();
+      body.querySelector('[data-copy-config]').addEventListener('click', () =>
+        navigator.clipboard.writeText(body.querySelector('[name="config"]').value).then(
+          () => {
+            toast(t('chat.agents.configCopied'));
+            keep(scrim);
+          },
+          () => {}
+        )
+      );
+      // Ctrl+C in the config copies too.
+      body.querySelector('[name="config"]').addEventListener('copy', () => keep(scrim));
+      body.querySelector('[name="use"]').addEventListener('change', (e) => {
+        pick = e.target.value;
+        drawConfig(body);
+      });
+      body.querySelector('[data-get-runner]').addEventListener('click', () => api('openExternal', RUNNER_URL).catch(() => {}));
+      body.querySelector('[name="join"]')?.addEventListener('change', (e) => {
+        join = e.target.checked;
+      });
+      // The config shows from its top, where the server, the workspace and the key are, and Copy config takes the
+      // focus once dialog() gave it to the first field.
+      const field = body.querySelector('[name="config"]');
+      field.setSelectionRange(0, 0);
+      field.scrollTop = 0;
+      setTimeout(() => body.querySelector('[data-copy-config]')?.focus(), 0);
     }
   });
+  // However the step closed, the agent joins the channel when the box stayed checked: the channel shows "Bart added
+  // Clark", and a refusal says why.
+  if (room && join && ws === K.CH.ws) {
+    try {
+      await api('chatAddToChannel', ws, room.id, agent.id);
+    } catch (err) {
+      toast(`${t('chat.channel.addFailed', { names: agent.name })} ${K.errorText(err)}`, 5000);
+    }
+  }
+  return null;
 }
 
 // ---------- direct messages (desktop-ui 6.11, contract 3.12) ----------

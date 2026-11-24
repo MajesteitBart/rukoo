@@ -47,6 +47,7 @@ import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.root.ChatSheet
 import nl.bvdm.rukoo.ui.settings.ErrorLine
 import nl.bvdm.rukoo.ui.settings.RkDialog
+import nl.bvdm.rukoo.ui.settings.openWebPage
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.RukooMono
 import nl.bvdm.rukoo.workspaces.Agent
@@ -182,13 +183,28 @@ object AgentRules {
     fun named(ids: List<String>): Pair<List<String>, Int> = if (ids.size <= 3) ids to 0 else ids.take(2) to ids.size - 2
 
     /**
-     * The backend of a config made on the phone, desktop's chat-agents.js `PLACEHOLDER_BACKEND`: a command to replace
-     * with the person's own. The phone can't read the desktop's Settings > Agents to fill in one of theirs.
+     * The command of "A program of my own", desktop's chat-agents.js `PLACEHOLDER_BACKEND`: a placeholder to replace
+     * with the person's own program. The runner's --check fails while it is there.
      */
     const val CONFIG_COMMAND = "my-agent"
 
-    /** How to start the runner with the config saved as agent.json (desktop's `RUNNER_COMMAND`). */
-    const val RUNNER_COMMAND = "node integrations/agent-runner/runner.js --config agent.json"
+    /** The choices of "Answers with" (desktop's chat-agents.js `PLAIN_AGENTS` and `OWN_PROGRAM`). */
+    const val CLAUDE = "claude"
+    const val CODEX = "codex"
+    const val OWN_PROGRAM = "own"
+
+    /**
+     * What "Answers with" offers on the phone, in order, the first one picked: the agents the runner finds on its
+     * computer without any settings, as in desktop's browser app, then a program of the person's own. The phone can't
+     * read the desktop's Settings > Agents to offer one of theirs.
+     */
+    val BACKENDS = listOf(CLAUDE, CODEX, OWN_PROGRAM)
+
+    /** How to start the runner with the config saved as agent.json next to runner.js (desktop's `RUNNER_COMMAND`). */
+    const val RUNNER_COMMAND = "node runner.js --config agent.json"
+
+    /** Where to get the runner: its README on GitHub, whose "Get the runner" says how (desktop's `RUNNER_URL`). */
+    const val RUNNER_URL = "https://github.com/MajesteitBart/rukoo/blob/main/integrations/agent-runner/README.md#get-the-runner"
 
     @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     private val pretty = Json {
@@ -199,16 +215,22 @@ object AgentRules {
     /**
      * A config for the reference runner (integrations/agent-runner) with this agent's key, as desktop's chat-agents.js
      * `runnerConfig` and `runnerText` write it: [server], the account server the key works at, [workspace], the key, the
-     * placeholder backend, what the runner reads of a conversation, and empty instructions, two spaces deep.
+     * backend [backend] of [BACKENDS] picks, what the runner reads of a conversation, and empty instructions, two spaces
+     * deep.
      */
-    fun runnerConfig(server: String, workspace: String, key: String): String {
+    fun runnerConfig(server: String, workspace: String, key: String, backend: String = BACKENDS.first()): String {
         val config: JsonObject = buildJsonObject {
             put("server", server.trimEnd('/'))
             put("workspace", workspace)
             put("key", key)
             putJsonObject("backend") {
-                put("type", "command")
-                put("command", CONFIG_COMMAND)
+                when (backend) {
+                    CLAUDE, CODEX -> put("type", backend)
+                    else -> {
+                        put("type", "command")
+                        put("command", CONFIG_COMMAND)
+                    }
+                }
             }
             putJsonObject("context") {
                 put("threadMessages", 50)
@@ -307,8 +329,9 @@ private class AgentFormState(val agent: Agent?) {
  * list, each agent with who added it, whom it answers, whether it answers other agents and when it was last active,
  * with Edit and Remove for its sponsor, owners and admins and New key for its sponsor only; Add an agent's form, with
  * its name, who it answers (Everyone, Only me, or Chosen people from the workspace) and whether it answers other
- * agents; and after Add and New key the key, shown once, with the server, the workspace's ID and a runner config,
- * each to copy. Closing before anything was copied asks first, and the sheet stays while a key is being made.
+ * agents; and after Add and New key the key, shown once, in a runner config to copy, with whom it answers with and how
+ * to start the runner ([KeyFields]). Closing before the config was copied asks first, and the sheet stays while a key
+ * is being made.
  *
  * Workspace members' agent menu opens it on [target] ([AgentRules.opened]): an agent's form, or the key just made for
  * one (handed over through [ChatUi.holdAgentKey]). Done, Save and Cancel then go back to Workspace members.
@@ -622,40 +645,45 @@ private fun AgentFields(
 }
 
 /**
- * A key shown once: the key, the server it works at and the workspace's ID, each to read, and a runner config that
- * holds all three, to copy, with what to change in it and how to start the runner. Until something was [copied],
- * Copy key is the filled button.
+ * A key shown once, as desktop's key step: what to do in three steps. Answers with: the agent the runner hands
+ * mentions to ([AgentRules.BACKENDS], Claude Code first, a program of the person's own last). The runner config, with
+ * the key in it, and Copy config, the filled button until something was [copied]. How to start the runner, with Node.js
+ * 22 or newer, and Get the runner on GitHub.
  */
 @Composable
 private fun KeyFields(ui: ChatUi, made: MadeAgent, server: String, ws: String, copied: Boolean, onCopied: () -> Unit) {
     val context = LocalContext.current
-    val config = remember(made, server, ws) { AgentRules.runnerConfig(server, ws, made.key) }
-    val keyCopied = stringResource(R.string.chat_agents_key_copied)
+    var backend by remember(made) { mutableStateOf(AgentRules.BACKENDS.first()) }
+    val config = remember(made, server, ws, backend) { AgentRules.runnerConfig(server, ws, made.key, backend) }
     val configCopied = stringResource(R.string.chat_agents_config_copied)
-    Form {
-        RkTextField(value = made.key, onValueChange = {}, label = stringResource(R.string.chat_agents_key), readOnly = true, singleLine = false, maxLines = 3, mono = true)
-        Help(stringResource(R.string.chat_agents_key_once))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RkButton(stringResource(R.string.chat_agents_copy_key), {
-                copySensitive(context, made.key)
-                onCopied()
-                ui.toasts.showToast(keyCopied)
-            }, kind = if (copied) RkButtonKind.SECONDARY else RkButtonKind.PRIMARY, size = RkButtonSize.SMALL, icon = PanelIcons.Copy)
+    val labels = mapOf(
+        AgentRules.CLAUDE to "Claude Code",
+        AgentRules.CODEX to "Codex",
+        AgentRules.OWN_PROGRAM to stringResource(R.string.chat_agents_use_own),
+    )
+    Form { Text(stringResource(R.string.chat_agents_use_mine), style = Rk.type.text12, color = Rk.colors.text2) }
+    Column(Modifier.selectableGroup()) {
+        for (choice in AgentRules.BACKENDS) {
+            RadioRow(labels.getValue(choice), selected = backend == choice, onClick = { backend = choice })
         }
-        RkTextField(value = server.trimEnd('/'), onValueChange = {}, label = stringResource(R.string.chat_agents_server), readOnly = true)
-        RkTextField(value = ws, onValueChange = {}, label = stringResource(R.string.chat_agents_workspace_id), readOnly = true, mono = true)
+    }
+    Form {
+        if (backend == AgentRules.OWN_PROGRAM) Help(stringResource(R.string.chat_agents_own_help, AgentRules.CONFIG_COMMAND))
         RkTextField(value = config.trimEnd(), onValueChange = {}, label = stringResource(R.string.chat_agents_config), readOnly = true, singleLine = false, maxLines = 14, mono = true)
-        Help(stringResource(R.string.chat_agents_config_backend))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             RkButton(stringResource(R.string.chat_agents_copy_config), {
                 copySensitive(context, config)
                 onCopied()
                 ui.toasts.showToast(configCopied)
-            }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = PanelIcons.Copy)
+            }, kind = if (copied) RkButtonKind.SECONDARY else RkButtonKind.PRIMARY, size = RkButtonSize.SMALL, icon = PanelIcons.Copy)
         }
+        Help(stringResource(R.string.chat_agents_key_once, made.agent.name))
+        Text(stringResource(R.string.chat_agents_run_title), style = Rk.type.text12, color = Rk.colors.text2)
         Help(stringResource(R.string.chat_agents_config_run))
         Text(AgentRules.RUNNER_COMMAND, style = Rk.type.text12.copy(fontFamily = RukooMono, fontFeatureSettings = null), color = Rk.colors.text)
-        Help(stringResource(R.string.chat_agents_config_private))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RkButton(stringResource(R.string.chat_agents_get_runner), { openWebPage(context, AgentRules.RUNNER_URL) }, kind = RkButtonKind.GHOST, size = RkButtonSize.SMALL)
+        }
     }
 }
 

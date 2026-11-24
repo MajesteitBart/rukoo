@@ -1,5 +1,7 @@
 package nl.bvdm.rukoo.ui.chat
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import nl.bvdm.rukoo.ui.root.ChatSheet
 import nl.bvdm.rukoo.workspaces.AgentSettings
 import nl.bvdm.rukoo.workspaces.Block
@@ -680,7 +682,7 @@ class ChatSheetRulesTest {
     fun `the runner config is the desktop's, with the server, the workspace, the key and a command to replace`() {
         val key = "rka_" + "a".repeat(22) + "." + "b".repeat(43)
         val w = id("w", "acme")
-        // Byte for byte what desktop's chat-agents.js runnerText writes for a config without one of the person's agents.
+        // Byte for byte what desktop's chat-agents.js runnerText writes for A program of my own.
         val expected = """
             |{
             |  "server": "https://rukoo.io",
@@ -698,7 +700,25 @@ class ChatSheetRulesTest {
             |  "instructions": ""
             |}
             |""".trimMargin()
-        assertEquals(expected, AgentRules.runnerConfig("https://rukoo.io/", w, key))
-        assertEquals("node integrations/agent-runner/runner.js --config agent.json", AgentRules.RUNNER_COMMAND)
+        assertEquals(expected, AgentRules.runnerConfig("https://rukoo.io/", w, key, AgentRules.OWN_PROGRAM))
+        // The runner starts from its own folder, which its README on GitHub says how to get.
+        assertEquals("node runner.js --config agent.json", AgentRules.RUNNER_COMMAND)
+        assertEquals("https://github.com/MajesteitBart/rukoo/blob/main/integrations/agent-runner/README.md#get-the-runner", AgentRules.RUNNER_URL)
+    }
+
+    @Test
+    fun `Answers with starts on Claude Code, offers Codex, and keeps a program of the person's own last`() {
+        val key = "rka_" + "a".repeat(22) + "." + "b".repeat(43)
+        val w = id("w", "acme")
+        // Desktop's browser app offers the same (chat-agents.js PLAIN_AGENTS, then OWN_PROGRAM): agents the runner finds
+        // on its computer without settings, so the config it starts on can answer. The placeholder never comes first.
+        assertEquals(listOf(AgentRules.CLAUDE, AgentRules.CODEX, AgentRules.OWN_PROGRAM), AgentRules.BACKENDS)
+        val backend = { choice: String? -> Json.parseToJsonElement(if (choice == null) AgentRules.runnerConfig("https://rukoo.io", w, key) else AgentRules.runnerConfig("https://rukoo.io", w, key, choice)).jsonObject["backend"].toString() }
+        assertEquals("""{"type":"claude"}""", backend(null))
+        assertEquals("""{"type":"claude"}""", backend(AgentRules.CLAUDE))
+        assertEquals("""{"type":"codex"}""", backend(AgentRules.CODEX))
+        assertEquals("""{"type":"command","command":"my-agent"}""", backend(AgentRules.OWN_PROGRAM))
+        // Claude Code's config, byte for byte as desktop writes {"type":"claude"}.
+        assertTrue(AgentRules.runnerConfig("https://rukoo.io", w, key).contains("\n  \"backend\": {\n    \"type\": \"claude\"\n  },\n"))
     }
 }
