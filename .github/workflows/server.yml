@@ -1,0 +1,134 @@
+name: Account server
+
+# Deploys the account server in server/ to the server the Rukoo apps use, the bvdm environment in wrangler.jsonc, when
+# a change to what it runs reaches main. Each run tests and deploys main as it is when the run starts, whichever commit
+# started it, and a failing test stops the deploy. Pull requests never deploy: the server job in ci.yml tests them. Run
+# the workflow by hand on main to deploy main again without a change. A merge that changes both this server and the
+# website deploys both at once, in no set order, so a website change that needs a new server route merges after the
+# server change that adds it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/src/**'
+      # index.js and mcp.js read the version from package.json; the lockfile pins the Wrangler that deploys.
+      - 'server/package.json'
+      - 'server/package-lock.json'
+      - 'server/wrangler.jsonc'
+      - '.github/workflows/server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One queue per branch, so a run started by hand on another branch, which does nothing, never takes main's place.
+  group: server-${{ github.ref }}
+  # Runs never cancel each other: a deploy that started always finishes. GitHub keeps one run waiting behind it and
+  # lets a newer run, a rerun of an old one included, replace that one. Nothing is lost that way, because every run
+  # takes main as it is when it starts, so each deploy is at least as new as the one before it.
+  cancel-in-progress: false
+
+jobs:
+  test:
+    # Only main deploys, so a run started by hand on another branch does nothing.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      # The commit these tests pass on, which the deploy job checks out again.
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+      # The bundle and the bvdm settings the deploy below uses, without the token.
+      - run: npx wrangler deploy --dry-run --env bvdm --outdir "$RUNNER_TEMP/rukoo-account"
+
+  deploy:
+    needs: test
+    # A fork has no Cloudflare token for this server.
+    if: github.repository == 'MajesteitBart/rukoo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The environment holds the Cloudflare token, shared with website.yml, and only lets main use it.
+    environment:
+      name: rukoo.io
+      url: https://meet.rukoo.io
+    permissions:
+      contents: read
+      # To start a fresh run on main when this one is out of date (below).
+      actions: write
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.test.outputs.commit }}
+          persist-credentials: false
+      # "Re-run failed jobs" runs this job again with the commit the earlier test job passed on, which can be older
+      # than main by now. Then this job doesn't deploy it, so older code never replaces newer: it starts a fresh run on
+      # main, which tests and deploys main's newest server code. A rerun that took the place of a waiting run is
+      # covered the same way.
+      - name: Check that main has no newer server code
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --quiet --depth=1 origin main
+          if git diff --quiet HEAD FETCH_HEAD -- src package.json package-lock.json wrangler.jsonc; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            gh workflow run server.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "::notice::main has server changes that this run's tests didn't cover, so this run doesn't deploy. A fresh run on main tests and deploys them."
+          fi
+      - uses: actions/setup-node@v7
+        if: steps.newest.outputs.deploy == 'true'
+        with:
+          node-version: '24'
+      # The Wrangler in package-lock.json, the one the tests and the dry run used. Install scripts stay off and nothing
+      # else is run, so Wrangler is the only package that runs next to the token.
+      - run: npm ci --ignore-scripts
+        if: steps.newest.outputs.deploy == 'true'
+      - name: Deploy ${{ needs.test.outputs.commit }}
+        if: steps.newest.outputs.deploy == 'true'
+        run: npx wrangler deploy --env bvdm
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Every app starts with GET /v1/info: on rukoo.io through the website's Worker, and on the server's own two
+      # addresses. Each must answer it with the server's features once the new code is live.
+      - name: Check that the server answers
+        if: steps.newest.outputs.deploy == 'true'
+        run: |
+          for url in https://rukoo.io/v1/info https://meet.rukoo.io/v1/info https://rukoo-account.bvdm.ai/v1/info; do
+            ok=
+            for attempt in 1 2 3 4 5 6; do
+              if curl -fsS --max-time 15 -o "$RUNNER_TEMP/info.json" "$url" &&
+                node -e 'const i = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(i.features)) process.exit(1); console.log(`features: ${i.features.join(", ")}; team chat: ${(i.workspace?.capabilities ?? []).join(", ") || "off"}`)' "$RUNNER_TEMP/info.json"; then
+                ok=1
+                break
+              fi
+              sleep 10
+            done
+            if [ -z "$ok" ]; then
+              echo "::error::$url didn't answer GET /v1/info after the deploy"
+              exit 1
+            fi
+            echo "$url answers"
+          done

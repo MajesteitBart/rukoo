@@ -172,7 +172,8 @@
     "logs": { "invocation_logs": false }
   },
 
-  // The server Rukoo itself uses, run by its maintainer: npm run deploy -- --env bvdm. A fork deploys the settings
+  // The server Rukoo itself uses, run by its maintainer. A change that reaches main deploys it through
+  // .github/workflows/server.yml; by hand it is npm run deploy -- --env bvdm. A fork deploys the settings
   // above with its own vars instead. Bindings and vars don't carry over into an environment, so they're repeated.
   // meet.rukoo.io is this Worker's own custom domain, for the booking pages. rukoo.io reaches it through the
   // rukoo-site Worker's ACCOUNT service binding (README.md) for the account API. rukoo-account.bvdm.ai stays for
