@@ -81,7 +81,7 @@ The job reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the GitHub
 
 `npm run deploy` also works from your own computer, after `wrangler login` or with those two variables set. It builds `site/app/` first. The early access form needs two Worker secrets, set with `wrangler secret put`: `RESEND_API_KEY` and `EARLY_ACCESS_TO`, the address the requests go to. A deploy keeps them.
 
-The account server deploys separately, from `server/`, through `.github/workflows/server.yml` when a change to it reaches `main` ([server/README.md](../server/README.md#the-server-rukoo-uses)). The site Worker reaches it through the `ACCOUNT` service binding, so when a site change depends on a server change, merge the server change first and let its deploy finish.
+The account server deploys separately, from `server/`. The site Worker reaches it through the `ACCOUNT` service binding, so merge and deploy the server first when a site change depends on a server change.
 
 ## History
 

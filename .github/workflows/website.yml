@@ -4,7 +4,7 @@ name: Website
 # pass. Run the workflow by hand on main to deploy without a change, for example after a server deploy.
 # Rukoo in the browser (rukoo.io/app) is built from the desktop's renderer, catalogs and chat engine, so a change to
 # those is a change to the website too. A server change only runs the tests: the browser tests run against it, but
-# server.yml deploys the server. The tests also start the server from its wrangler.jsonc and seed it with
+# the server deploys separately. The tests also start the server from its wrangler.jsonc and seed it with
 # test/fixtures/real-server.js.
 on:
   pull_request:

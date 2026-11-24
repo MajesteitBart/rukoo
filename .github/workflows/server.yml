@@ -64,21 +64,37 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # A rerun of an older run keeps its own commit. When main has other server code by now, this run stops here
+      # instead of putting older code back; the run for main's newest server change deploys that.
+      - name: Check that this is main's newest server code
+        id: newest
+        run: |
+          git fetch --quiet --depth=1 origin main
+          if git diff --quiet HEAD FETCH_HEAD -- src package.json package-lock.json wrangler.jsonc; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main has newer server code than ${GITHUB_SHA::8}, so this run doesn't deploy"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v7
+        if: steps.newest.outputs.deploy == 'true'
         with:
           node-version: '24'
       # The Wrangler in package-lock.json, the one the tests and the dry run used. Install scripts stay off and nothing
       # else is run, so Wrangler is the only package that runs next to the token.
       - run: npm ci --ignore-scripts
+        if: steps.newest.outputs.deploy == 'true'
       - run: npx wrangler deploy --env bvdm
+        if: steps.newest.outputs.deploy == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      # Every app starts with GET /v1/info, on rukoo.io and on the Worker's old address. Both must answer it with the
-      # server's features once the new code is live.
+      # Every app starts with GET /v1/info: on rukoo.io through the website's Worker, and on the server's own two
+      # addresses. Each must answer it with the server's features once the new code is live.
       - name: Check that the server answers
+        if: steps.newest.outputs.deploy == 'true'
         run: |
-          for url in https://rukoo.io/v1/info https://rukoo-account.bvdm.ai/v1/info; do
+          for url in https://rukoo.io/v1/info https://meet.rukoo.io/v1/info https://rukoo-account.bvdm.ai/v1/info; do
             ok=
             for attempt in 1 2 3 4 5 6; do
               if curl -fsS --max-time 15 -o "$RUNNER_TEMP/info.json" "$url" &&
