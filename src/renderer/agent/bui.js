@@ -1505,6 +1505,8 @@ export function chatComposer(opts = {}, handlers = {}) {
   const ta = h('div', {
     class: 'bui-pb__ta is-empty',
     contenteditable: 'plaintext-only',
+    // Also in the Tab order while off and read-only (setDisabled's readable), when the editable no longer is.
+    tabindex: '0',
     role: 'textbox',
     'aria-multiline': 'true',
     spellcheck: 'true',
@@ -1719,6 +1721,8 @@ export function chatComposer(opts = {}, handlers = {}) {
   }
   // step -1 undoes, 1 redoes.
   function undo(step) {
+    // Text that can't be edited isn't undone either.
+    if (state.disabled) return;
     const i = history.at + step;
     if (i < 0 || i >= history.list.length) return;
     history.at = i;
@@ -2046,6 +2050,12 @@ export function chatComposer(opts = {}, handlers = {}) {
     // pick a command or send.
     if (e.isComposing || e.keyCode === 229) return;
     const key = e.key.toLowerCase();
+    // Read-only, Ctrl+A selects the input's text, not the page's, for Ctrl+C to copy.
+    if (state.disabled && (e.ctrlKey || e.metaKey) && !e.altKey && key === 'a') {
+      e.preventDefault();
+      placeSelection(0, value().length);
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
       e.preventDefault();
       undo(key === 'y' || e.shiftKey ? 1 : -1);

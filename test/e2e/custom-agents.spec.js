@@ -334,6 +334,37 @@ test('a chat whose agent was removed keeps its unsent text readable and copyable
   expect(await userMessages()).toEqual([[id, ['Hello Booper']]]);
 });
 
+// The read-only input took no keyboard focus, so its text was only reachable with the mouse.
+test("a removed agent's read-only text can be reached with Tab and copied with the keyboard, and undo leaves it", async () => {
+  await launch();
+  const id = await win.evaluate(() => window.mail.call('agentAddCustom', 'booper').then((r) => r.id));
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  await win.keyboard.press('Control+j');
+  await pickAgentRow('Booper');
+  await input().fill('Hello Booper');
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Booper']);
+  await input().fill('A follow-up for Booper');
+  await win.evaluate((x) => window.mail.call('agentRemoveCustom', x), id);
+  await expect(input()).not.toBeEditable();
+  // The agent menu comes right after the input: Shift+Tab from it lands in the text.
+  await win.locator('.agentpane .bui-pb__modelbtn').focus();
+  await win.keyboard.press('Shift+Tab');
+  await expect(input()).toBeFocused();
+  await win.keyboard.press('Control+a');
+  expect(await win.evaluate(() => document.getSelection().toString())).toBe('A follow-up for Booper');
+  await app.evaluate(({ clipboard }) => clipboard.writeText(''));
+  await win.keyboard.press('Control+c');
+  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe('A follow-up for Booper');
+  // The editor's undo doesn't change text that can't be edited: typing it was a step it could take back.
+  await win.keyboard.press('Control+z');
+  await expect(input()).toHaveText('A follow-up for Booper');
+  await win.keyboard.press('Control+z');
+  await win.keyboard.press('Control+y');
+  await expect(input()).toHaveText('A follow-up for Booper');
+  await expect(input()).toBeFocused();
+});
+
 test('an OpenAI-compatible agent: its own toggles, and the setup most MCP clients take', async () => {
   await launch();
   await openAgents();
