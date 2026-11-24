@@ -448,6 +448,36 @@ class WorkspaceSocketTest {
         await("the ticket once the wait is over") { tickets() == 2 }
     }
 
+    @Test
+    fun `a saved Retry-After runs on the socket's own clock`() {
+        // The clock the socket is given, standing in for a monotonic one; the wall clock plays no part.
+        val clock = AtomicLong(5_000_000)
+        server.answerWith(refusal("start dm too fast", retryAfter = "60"))
+        server.answer("ticket")
+        upgrade(ServerSide())
+        val pacing = SocketPacing()
+        fun paced() = WorkspaceSocket(
+            okhttp, WorkspaceSocket.socketUrl(server.url, w), { client.socketTicket(w) }, listener, scope,
+            timing = quick, now = clock::get, pacing = pacing,
+        ).also { sockets += it }
+        val first = paced()
+        first.start()
+        await("the wait") { first.lastDelay == 60_000L }
+        first.close()
+
+        clock.addAndGet(59_000)
+        val second = paced()
+        second.start()
+        assertEquals("what is left on its clock", 1_000L, second.lastDelay)
+        second.close()
+
+        clock.addAndGet(1_000)
+        val third = paced()
+        third.start()
+        await("a ticket once its clock says the wait is over") { opened.get() == 1 }
+        assertEquals(2, tickets())
+    }
+
     // The review's interleaving: the retry timer's delay ends while another call holds the socket's lock, and a newer
     // Retry-After arrives under that lock. Cancelling the timer then can't stop it; it must look again.
     @Test

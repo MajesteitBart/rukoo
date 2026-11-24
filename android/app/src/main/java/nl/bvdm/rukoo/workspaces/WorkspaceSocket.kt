@@ -60,7 +60,8 @@ class WorkspaceSocket(
     private val listener: Listener,
     private val scope: CoroutineScope,
     private val timing: Timing = Timing(),
-    private val now: () -> Long = System::currentTimeMillis,
+    /** A clock in milliseconds that a wall-clock correction doesn't move, for the waits in [pacing]. */
+    private val now: () -> Long = MONOTONIC,
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
     /** The workspace's waits, shared with the sockets the service makes for it before and after this one. */
     private val pacing: SocketPacing = SocketPacing(),
@@ -521,6 +522,12 @@ class WorkspaceSocket(
 
         /** Frames over this many bytes are ignored. */
         const val MAX_FRAME = 1024
+
+        /**
+         * The JVM's monotonic clock in milliseconds. The app passes `SystemClock.elapsedRealtime` instead, which also
+         * counts the time the phone sleeps.
+         */
+        val MONOTONIC: () -> Long = { System.nanoTime() / 1_000_000 }
 
         /** The lease ran out (§3.11). */
         const val CLOSE_LEASE = 4001

@@ -119,7 +119,8 @@ fun interface ChatSockets {
 class OkHttpChatSockets(
     private val client: OkHttpClient,
     private val timing: WorkspaceSocket.Timing = WorkspaceSocket.Timing(),
-    private val now: () -> Long = System::currentTimeMillis,
+    /** The sockets' clock, which a wall-clock correction mustn't move ([WorkspaceSocket.MONOTONIC]). */
+    private val now: () -> Long = WorkspaceSocket.MONOTONIC,
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
 ) : ChatSockets {
     override fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope, pacing: SocketPacing): ChatSocket {
