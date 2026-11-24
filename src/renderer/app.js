@@ -1,5 +1,5 @@
 import { t, setLanguage, localize, shortcutLabel, getLocale } from './i18n.js';
-import { visibleModes, modeFor } from './modes.js';
+import { visibleModes, modeFor, withMode } from './modes.js';
 import { icons } from './icons.js';
 import {
   api,
@@ -290,7 +290,8 @@ function whenModeShown(mode, run, what = mode) {
 
 async function turnModeOn(mode, run = null) {
   try {
-    await api('updateSettings', { hiddenModes: hiddenModes().filter((m) => m !== mode) });
+    // From the list as the tabs show it, like the Tabs page's switches (modes.js withMode).
+    await api('updateSettings', { hiddenModes: withMode(hiddenModes(), mode, false, chat.available(), hasMail()) });
   } catch (err) {
     return toast(err.message, 5000);
   }

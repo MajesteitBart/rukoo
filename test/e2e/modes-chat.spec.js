@@ -172,6 +172,21 @@ test('with only a Rukoo account, Use Chat only lands in Chat, survives a restart
   await expect(tab('chat')).toHaveAttribute('aria-selected', 'true');
   await expect(setup()).toHaveCount(0);
 
+  // With that stored list Chat is locked, and Calendar's switch works: off, then on again. The change saves the list
+  // as the tabs show it, with Chat on.
+  await openTabsSettings();
+  await expect(modeSwitch('chat')).toBeDisabled();
+  await expect(modeSwitch('calendar')).toBeEnabled();
+  await modeSwitch('calendar').click();
+  await expect(modeSwitch('calendar')).toHaveAttribute('aria-checked', 'false');
+  expect(await hiddenModes()).toEqual(['mail', 'calendar', 'meeting']);
+  await modeSwitch('calendar').click();
+  await expect(modeSwitch('calendar')).toHaveAttribute('aria-checked', 'true');
+  expect(await hiddenModes()).toEqual(['mail', 'meeting']);
+  await expect(modeSwitch('meeting')).toBeEnabled();
+  await closeSettings();
+  await expect(tabs()).toHaveText(['Calendar', 'Chat']);
+
   // Signed out, the first-run page shows, with team chat's way back and a way to Settings.
   await win.evaluate(() => window.mail.call('accountSignOut'));
   await expect(setup().locator('.provider-grid')).toBeVisible({ timeout: 15000 });

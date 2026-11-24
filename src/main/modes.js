@@ -39,4 +39,11 @@ function modeHidden(hidden, mode, chatAvailable, hasMail = true) {
   return !visibleModes(hidden, chatAvailable, hasMail).includes(mode);
 }
 
-module.exports = { MODES, normalizeHidden, usable, visibleModes, modeHidden };
+// The stored list as the tabs show it now: a mode that shows although the list turns it off (the one that stays in
+// visibleModes) counts as on. The window's switches work from this list (src/renderer/modes.js withMode).
+function effectiveHidden(hidden, chatAvailable, hasMail = true) {
+  const shown = visibleModes(hidden, chatAvailable, hasMail);
+  return normalizeHidden(hidden).filter((m) => !shown.includes(m));
+}
+
+module.exports = { MODES, normalizeHidden, usable, visibleModes, modeHidden, effectiveHidden };

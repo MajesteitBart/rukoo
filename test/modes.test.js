@@ -113,6 +113,28 @@ test('without a mail account Chat is the tab that stays: its switch is locked an
   assert.deepEqual(main.visibleModes(['mail', 'calendar', 'meeting'], false, false), ['mail']);
 });
 
+test('a stored list that turned Chat off, without a mail account, leaves the other switches free', async () => {
+  const { canHide, withMode } = await load();
+  // Chat shows although the list turns it off: it is what stays without a mail account. Calendar can still go and
+  // come back, and the change saves the list as the tabs showed it, with Chat on.
+  const stored = ['mail', 'meeting', 'chat'];
+  assert.deepEqual(main.visibleModes(stored, true, false), ['calendar', 'chat']);
+  assert.deepEqual(main.effectiveHidden(stored, true, false), ['mail', 'meeting']);
+  assert.equal(canHide(stored, 'calendar', true, false), true, 'Calendar is not the one that has to stay');
+  assert.equal(canHide(stored, 'chat', true, false), false, 'Chat is');
+  const calendarOff = withMode(stored, 'calendar', true, true, false);
+  assert.deepEqual(calendarOff, ['mail', 'calendar', 'meeting']);
+  assert.deepEqual(main.visibleModes(calendarOff, true, false), ['chat']);
+  assert.deepEqual(withMode(calendarOff, 'calendar', false, true, false), ['mail', 'meeting']);
+  // Meet on works the same way: Chat stays on in what is saved.
+  assert.deepEqual(withMode(stored, 'meeting', false, true, false), ['mail']);
+  // Mail standing in with a mail account, while Chat is away: turning Calendar on saves Mail as on too.
+  assert.deepEqual(main.visibleModes(['mail', 'calendar', 'meeting'], false, true), ['mail']);
+  assert.deepEqual(withMode(['mail', 'calendar', 'meeting'], 'calendar', false, false, true), ['meeting']);
+  // A mode turned off that doesn't show stays off in what is saved, Chat while it is away included.
+  assert.deepEqual(main.effectiveHidden(['calendar', 'chat'], false, true), ['calendar', 'chat']);
+});
+
 test("main and the window agree on every setting, with and without team chat or a mail account", async () => {
   const renderer = await load();
   for (const hidden of subsets()) {
@@ -121,6 +143,24 @@ test("main and the window agree on every setting, with and without team chat or 
         const label = `${JSON.stringify(hidden)} chat ${chat} mail ${mail}`;
         assert.deepEqual(renderer.normalizeHidden(hidden), main.normalizeHidden(hidden), label);
         assert.deepEqual(renderer.visibleModes(hidden, chat, mail), main.visibleModes(hidden, chat, mail), label);
+        assert.deepEqual(renderer.effectiveHidden(hidden, chat, mail), main.effectiveHidden(hidden, chat, mail), label);
+        // What is saved after a change shows the same tabs as before it, apart from the mode switched.
+        const shown = main.visibleModes(hidden, chat, mail);
+        assert.deepEqual(main.visibleModes(main.effectiveHidden(hidden, chat, mail), chat, mail), shown, label);
+        // A switch that shows on is locked only when its mode is the one usable mode left: every other usable mode
+        // that shows can go.
+        const usableShown = shown.filter((m) => main.usable(m, chat, mail));
+        for (const mode of shown) {
+          const free = renderer.canHide(hidden, mode, chat, mail);
+          const alone = usableShown.length === 0 || (usableShown.length === 1 && usableShown[0] === mode);
+          assert.equal(free, !alone, `${label} - ${mode} switch`);
+          // Switching it off and on again gives the list the tabs showed.
+          if (free) {
+            const off = renderer.withMode(hidden, mode, true, chat, mail);
+            assert.deepEqual(main.visibleModes(off, chat, mail), shown.filter((m) => m !== mode), `${label} - ${mode} off`);
+            assert.deepEqual(main.visibleModes(renderer.withMode(off, mode, false, chat, mail), chat, mail), shown, `${label} - ${mode} back`);
+          }
+        }
         // Whatever is stored, a mode that can be used shows whenever one can.
         if (chat || mail) assert.ok(main.visibleModes(hidden, chat, mail).some((m) => main.usable(m, chat, mail)), label);
         // What the window offers to switch off always leaves a mode that can be used and shows by itself, without

@@ -36,19 +36,28 @@ export function modeHidden(hidden, mode, chatAvailable, hasMail = true) {
   return !visibleModes(hidden, chatAvailable, hasMail).includes(mode);
 }
 
+// The stored list as the tabs show it now: a mode that shows although the list turns it off (the one that stays in
+// visibleModes) counts as on. A switch works from this list and saves it, so after a change the setting says what the
+// tabs showed, and the mode that stood in doesn't lock the others' switches.
+export function effectiveHidden(hidden, chatAvailable, hasMail = true) {
+  const shown = visibleModes(hidden, chatAvailable, hasMail);
+  return normalizeHidden(hidden).filter((m) => !shown.includes(m));
+}
+
 // Whether the setting's switch for mode can turn it off: another mode that can be used must still show, without the
 // fallback in visibleModes. Without a mail account that is Chat, so Chat's switch stays on. A mode turned off can
-// always be turned on.
+// always be turned on. A mode that stands in counts as on (effectiveHidden).
 export function canHide(hidden, mode, chatAvailable, hasMail = true) {
-  const off = normalizeHidden(hidden);
+  const off = effectiveHidden(hidden, chatAvailable, hasMail);
   if (off.includes(mode)) return true;
   const next = [...off, mode];
   return MODES.some((m) => !next.includes(m) && usable(m, chatAvailable, hasMail));
 }
 
-// The list after the switch for mode turned it on (hide false) or off (hide true), or null when it can't go off.
+// The list after the switch for mode turned it on (hide false) or off (hide true), or null when it can't go off. It
+// starts from the list as the tabs show it (effectiveHidden), so a mode that stood in is saved as on.
 export function withMode(hidden, mode, hide, chatAvailable, hasMail = true) {
-  const off = normalizeHidden(hidden);
+  const off = effectiveHidden(hidden, chatAvailable, hasMail);
   if (!MODES.includes(mode)) return null;
   if (!hide) return off.filter((m) => m !== mode);
   if (!canHide(off, mode, chatAvailable, hasMail)) return null;

@@ -1414,9 +1414,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const shown = visibleModes(hidden, chatOn, hasMail);
       const rows = MODES.filter((m) => m !== 'chat' || chatOn || hidden.includes('chat')).map((m) => {
         const on = m === 'chat' && !chatOn ? !hidden.includes('chat') : shown.includes(m);
-        // A mode can show although it is turned off, when nothing else that can be used does (visibleModes): its
-        // switch stays put too.
-        const locked = on && (hidden.includes(m) || !canHide(hidden, m, chatOn, hasMail));
+        // A mode that shows although it is turned off stands in for the others (visibleModes), and canHide counts it as
+        // on: its switch is locked only while it is the one mode left that can be used.
+        const locked = on && !canHide(hidden, m, chatOn, hasMail);
         const lockedWhy = m === 'chat' && !hasMail ? 'settings.modes.chatNeeded' : 'settings.modes.lastOn';
         const desc = locked ? t(lockedWhy) : m === 'chat' && !chatOn ? t('settings.modes.chatAway') : '';
         return row({ title: esc(t(MODE_LABELS[m])), desc: esc(desc), action: `mode:${m}`, toggle: on, disabled: locked });
