@@ -259,7 +259,9 @@ for (const shape of SHAPES) {
 
     test('a second start before the window has rendered still opens the mail the last run left', async () => {
       await leaveMail(shape);
-      // The person starts Rukoo again right after the start from sign-in, while its page still loads.
+      // The person starts Rukoo again right after the start from sign-in, while its page still loads. Playwright's
+      // evaluate can run in the middle of main's startup code; a real second start comes as an event of its own, after
+      // that code, so it goes through a timer here.
       const early = async () => {
         const shown = await app.evaluate(
           ({ app, BrowserWindow }) =>
@@ -267,10 +269,13 @@ for (const shape of SHAPES) {
               const go = () => {
                 const w = BrowserWindow.getAllWindows()[0];
                 if (!w) return setTimeout(go, 5);
-                global.__renderedLater = false;
-                w.once('ready-to-show', () => (global.__renderedLater = true));
-                app.emit('second-instance', {}, ['rukoo'], process.cwd());
-                resolve(w.isVisible());
+                global.__order = [];
+                w.once('ready-to-show', () => global.__order.push('rendered'));
+                setTimeout(() => {
+                  app.emit('second-instance', {}, ['rukoo'], process.cwd());
+                  global.__order.push('shown');
+                  resolve(w.isVisible());
+                }, 0);
               };
               go();
             })
@@ -279,7 +284,7 @@ for (const shape of SHAPES) {
       };
       await launch({ shape, ...loginStart, env: { ...(loginStart.env || {}), SEM_UNDO_SEND: '1' }, early });
       // The window showed first and rendered after.
-      await expect.poll(() => app.evaluate(() => global.__renderedLater), { timeout: 15000 }).toBe(true);
+      await expect.poll(() => app.evaluate(() => global.__order), { timeout: 15000 }).toEqual(['shown', 'rendered']);
       await mailFails();
       expect(await composeSubjects(2)).toEqual(LEFT);
       expect((await main()).visible).toBe(true);

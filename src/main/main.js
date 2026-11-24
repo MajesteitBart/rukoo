@@ -129,6 +129,9 @@ let restartForUpdate = false;
 // stays hidden until someone opens it, and the tray icon is there to open it with.
 let loginItem = null;
 let startHidden = false;
+// After such a start: what opens the mail the last run left (recover in app.whenReady), once a main window has both
+// rendered and shown. A main window that closes unseen, as in a quit that is called off, leaves it to the next one.
+let recoverLater = null;
 let syncTimer = null;
 // The emails that came in since the main window last had focus, by id; badgeCount() counts the ones still new.
 let newSinceFocus = new Set();
@@ -2275,6 +2278,14 @@ function createWindow({ hidden = false } = {}) {
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
   reveal(win, b.maximized, hidden);
+  // Before anything can show it: a second start, the tray, an .ics file.
+  if (recoverLater) {
+    whenRenderedAndShown(win, () => {
+      const run = recoverLater;
+      recoverLater = null;
+      if (run) run();
+    });
+  }
   win.loadFile(path.join(RENDERER, 'index.html'));
 }
 
@@ -2504,12 +2515,11 @@ app.whenReady().then(() => {
   });
   applyTheme();
   // From the login item the window starts in the tray, without taking the focus; opening Rukoo shows it.
-  createWindow({ hidden: startHidden });
   // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json). After a start
-  // from the login item they stay on disk until the person first shows the window, so no editor takes the focus;
-  // listened for before the queues below or a second start can show it.
+  // from the login item they stay on disk until the person first shows the window, so no editor takes the focus.
   const recover = () => reopenHeld(reopenUnsent());
-  if (startHidden) whenRenderedAndShown(win, recover);
+  if (startHidden) recoverLater = recover;
+  createWindow({ hidden: startHidden });
   // After the main window shows, so the compose window comes up in front of it.
   win.once('ready-to-show', () => {
     mailtoQueue.start();
