@@ -1487,6 +1487,18 @@ test('an email sent again straight away after edits comes back after a kill as i
   await expect(again.locator('.dialog')).toContainText('Check Sent before you send it again');
   await again.locator('.dialog .buttons button').click();
   await expect(again.locator('.editor')).toContainText('Added after the refusal.');
+
+  // Second review of #309: after that note, one click on Send delivered it again. Send now asks first, and only Send
+  // anyway lets it go.
+  await holdSendsWithoutUndo();
+  await again.locator('[data-c="send"]').click();
+  await expect(again.locator('.scrim .dialog')).toContainText('This email may already have gone.');
+  await again.click('.scrim .buttons button:text-is("Cancel")');
+  await again.waitForTimeout(500);
+  expect(await app.evaluate(() => global.__sends.length)).toBe(0);
+  await again.locator('[data-c="send"]').click();
+  await again.click('.scrim .buttons button:text-is("Send anyway")');
+  await expect.poll(() => app.evaluate(() => global.__sends.length)).toBe(1);
 });
 
 // Review of #309: an editor's Drafts save let its kept email go only once the renderer heard back, after the save had
@@ -1568,6 +1580,74 @@ test('a compose window whose email is refused straight away keeps it until it an
   await clickClosing(again, '.scrim .buttons button:text-is("Delete")');
   await expect.poll(kept, { timeout: 10000 }).toEqual([]);
   expect(app.windows()).toHaveLength(1);
+});
+
+// What a script finds in the compose window's page, or null when the page doesn't answer within 2 seconds.
+const composePage = (script) =>
+  app.evaluate(({ BrowserWindow }, script) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('compose.html'));
+    if (!w) return null;
+    return Promise.race([w.webContents.executeJavaScript(script), new Promise((resolve) => setTimeout(() => resolve(null), 2000))]);
+  }, script);
+
+// Second review of #309: a compose window whose page loaded again after a crash got the email and id it was first opened
+// with. Once the server took the first send, that id counted as new, and Send delivered the email a second time. The
+// page now gets the email as main has it, once the send has ended: here, that it went, with no editor to send it again.
+test('a compose window whose page loads again during a send shows that the email went, and cannot send it a second time', async () => {
+  test.setTimeout(120000);
+  await app.evaluate(() => {
+    global.__semEngine.saveDraft = () => Promise.reject(new Error('No connection'));
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  // Written in a compose window and refused after the wait: it opens again in a compose window of its own.
+  const [page] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  await page.waitForSelector('.composer .editor');
+  page.on('dialog', () => {});
+  await page.locator('[data-rinput="to"]').fill('someone@example.com');
+  await page.locator('[data-rinput="to"]').press('Enter');
+  await page.locator('[data-field="subject"]').fill('Sent once only');
+  await page.locator('.editor').click();
+  await page.keyboard.type('One copy.');
+  await clickClosing(page, '[data-c="send"]');
+  const [reopened] = await Promise.all([app.waitForEvent('window'), sendWaiting()]);
+  reopened.on('dialog', () => {});
+  await reopened.waitForSelector('.composer .editor');
+  await expect(reopened.locator('.dialog')).toContainText('Mailbox full');
+  await reopened.locator('.dialog .buttons button').click();
+  expect(kept()).toEqual(['Sent once only']);
+
+  // Sent again straight away; the server takes its time.
+  await holdSendsWithoutUndo();
+  await reopened.locator('[data-c="send"]').click();
+  await expect.poll(() => app.evaluate(() => global.__sends.length)).toBe(1);
+  // Its page crashes and loads again while the send runs.
+  await app.evaluate(
+    ({ BrowserWindow }) =>
+      new Promise((resolve) => {
+        const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('compose.html'));
+        w.webContents.once('render-process-gone', () => {
+          w.webContents.once('did-finish-load', resolve);
+          w.webContents.reload();
+        });
+        w.webContents.forcefullyCrashRenderer();
+      })
+  );
+  // While the send waits for the server, the new page gets no editor.
+  await expect.poll(() => composePage('document.readyState'), { timeout: 20000 }).toBe('complete');
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  expect(await composePage('Boolean(document.querySelector(".composer"))')).toBe(false);
+
+  // The server takes it: the page says it went, and has nothing to send it with.
+  await app.evaluate(() => global.__sends[0].resolve(true));
+  await expect.poll(() => composePage('document.querySelector("[data-compose-settled]")?.textContent || ""'), { timeout: 20000 }).toBe('Email sent');
+  expect(await composePage('Boolean(document.querySelector(".composer, [data-c=send]"))')).toBe(false);
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+  await expect.poll(kept).toEqual([]);
+  // Close takes the window away.
+  await composePage('setTimeout(() => document.querySelector(".compose-error button").click(), 0), true');
+  await expect.poll(() => app.windows().length, { timeout: 10000 }).toBe(1);
 });
 
 test('Undo once the email is on its way says it is too late', async () => {
