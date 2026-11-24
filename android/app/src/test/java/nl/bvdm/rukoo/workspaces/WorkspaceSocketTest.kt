@@ -389,6 +389,71 @@ class WorkspaceSocketTest {
         assertEquals("no second ticket before Retry-After", 1, tickets())
     }
 
+    @Test
+    fun `a 429 to the upgrade waits its Retry-After, and a nudge doesn't cut it short`() {
+        server.answer("ticket")
+        server.answerWith(MockResponse().setResponseCode(429).setHeader("Retry-After", "1"))
+        server.answer("ticket")
+        upgrade(ServerSide())
+        val s = socket()
+        s.start()
+        await("the wait") { s.lastDelay == 1_000L }
+        assertEquals(SocketState.DOWN, s.state.value)
+        s.nudge()
+        Thread.sleep(500)
+        assertEquals("no second ticket before Retry-After", 1, tickets())
+        await("open after Retry-After") { opened.get() == 1 }
+        server.verify()
+    }
+
+    @Test
+    fun `close is final, so its waiting retry never fires and start, nudge and check do nothing`() {
+        server.answerWith(MockResponse().setResponseCode(503))
+        val s = socket(quick.copy(backoff = listOf(300L)))
+        s.start()
+        await("the backoff") { s.state.value == SocketState.DOWN }
+        s.close()
+        s.start()
+        s.nudge()
+        s.check()
+        Thread.sleep(700)
+        assertEquals(SocketState.OFF, s.state.value)
+        assertEquals("no second ticket", 1, tickets())
+    }
+
+    @Test
+    fun `a new socket on the same pacing waits out the backoff of the one closed before it`() {
+        repeat(2) { server.answerWith(MockResponse().setResponseCode(503)) }
+        val pacing = SocketPacing()
+        fun paced() = WorkspaceSocket(
+            okhttp, WorkspaceSocket.socketUrl(server.url, w), { client.socketTicket(w) }, listener, scope,
+            timing = quick.copy(backoff = listOf(600L)), random = { 1.0 }, pacing = pacing,
+        ).also { sockets += it }
+        val first = paced()
+        first.start()
+        await("the backoff") { first.state.value == SocketState.DOWN }
+        first.close()
+        val second = paced()
+        second.start()
+        assertEquals("it waits instead of asking at once", SocketState.DOWN, second.state.value)
+        Thread.sleep(200)
+        assertEquals(1, tickets())
+        await("the ticket once the wait is over") { tickets() == 2 }
+    }
+
+    @Test
+    fun `check pings an open socket at once`() {
+        val side = ServerSide()
+        server.answer("ticket")
+        upgrade(side)
+        val s = socket(quick.copy(pingEvery = 60_000))
+        s.start()
+        side.next()
+        await("open") { s.state.value == SocketState.OPEN }
+        s.check()
+        await("a ping") { side.received.contains("ping") }
+    }
+
     /** A listener on 127.0.0.1 that reads the upgrade request and never answers it. */
     private fun silent(block: (ServerSocket, () -> java.io.BufferedReader) -> Unit) {
         ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { endpoint ->

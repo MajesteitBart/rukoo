@@ -5,6 +5,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +38,14 @@ import okio.ByteString
  *   [Listener.parked]: the session ended (the client already told the account service), the workspace is gone, or
  *   Rukoo needs an update. Trying again wouldn't help.
  * - **Upgrade refused.** A `401` to the upgrade means the ticket expired or was used: one new ticket at once, and the
- *   backoff after a second refusal in a row. A `404` parks it as a `4003` does, a `426` as the ticket's `426` does.
+ *   backoff after a second refusal in a row. A `429` waits `Retry-After` as the ticket's does. A `404` parks it as a
+ *   `4003` does, a `426` as the ticket's `426` does.
+ * - **Waits by workspace.** The backoff's step and next attempt, a `Retry-After` and the last quick reconnect live in
+ *   [pacing], which the service keeps per workspace, so a new socket for the same workspace waits them out too. An
+ *   attempt that [close] cuts short counts as a failed one, so a network that comes and goes doesn't ask for a ticket
+ *   each time.
+ * - **One lifetime.** [stop] parks the socket until [start]. [close] ends it for good: it cancels the socket's own
+ *   scope, and nothing called on it afterwards connects again.
  *
  * [client] should come from the app's shared one; the socket derives its own with [Timing.upgradeTimeout] for the
  * upgrade only, without OkHttp's own pings and without redirects. Listener calls run on OkHttp's and [scope]'s
@@ -53,6 +61,8 @@ class WorkspaceSocket(
     private val timing: Timing = Timing(),
     private val now: () -> Long = System::currentTimeMillis,
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
+    /** The workspace's waits, shared with the sockets the service makes for it before and after this one. */
+    private val pacing: SocketPacing = SocketPacing(),
 ) {
     /** What the service does when the socket says something. Every method has a default that does nothing. */
     interface Listener {
@@ -100,15 +110,19 @@ class WorkspaceSocket(
         .build()
 
     private val lock = Any()
+
+    // Everything this socket launches runs here; close cancels it, so no timer or attempt outlives the socket.
+    private val job = SupervisorJob(scope.coroutineContext[Job])
+    private val own = CoroutineScope(scope.coroutineContext + job)
+
+    // Set once by close and never cleared: a closed socket doesn't connect again.
+    private var closed = false
     private val _state = MutableStateFlow(SocketState.OFF)
 
     /** OFF while parked or not started, CONNECTING, OPEN, or DOWN while it waits to try again. */
     val state: StateFlow<SocketState> = _state.asStateFlow()
 
     private var wanted = false
-
-    // Failed attempts in a row, for the backoff; an open socket resets it.
-    private var attempt = 0
 
     // Each connect gets a number; what an older ticket or socket answers is ignored.
     private var token = 0
@@ -117,7 +131,6 @@ class WorkspaceSocket(
     private var retryJob: Job? = null
     private var pingJob: Job? = null
     private var pongJob: Job? = null
-    private var quickAt = Long.MIN_VALUE / 2
 
     // A 401 to the upgrade gets one new ticket at once; a second in a row meets the backoff.
     private var refusedOnce = false
@@ -125,20 +138,21 @@ class WorkspaceSocket(
     // Whether [socket] finished its upgrade. One that didn't is cancelled on close: a close frame only queues.
     private var opened = false
 
-    // A ticket 429's Retry-After: no ticket is asked for before this time, whatever nudges.
-    private var limitedUntil = Long.MIN_VALUE
-
     /** The wait before the last scheduled attempt, for tests and debugging; null when none was scheduled. */
     @Volatile
     var lastDelay: Long? = null
         private set
 
-    /** The service wants this socket open. */
+    /**
+     * The service wants this socket open. It connects at once, or when the workspace's backoff or `Retry-After`
+     * ([pacing]) ends. Nothing after [close].
+     */
     fun start() {
         synchronized(lock) {
-            if (wanted && _state.value != SocketState.OFF) return
+            if (closed || (wanted && _state.value != SocketState.OFF)) return
             wanted = true
-            connectLocked()
+            val wait = pacing.waitBeforeStart(now())
+            if (wait > 0) laterLocked(wait) else connectLocked()
         }
     }
 
@@ -148,17 +162,31 @@ class WorkspaceSocket(
     }
 
     /**
+     * Ends this socket for good: closed, its timers and attempt cancelled with its scope, and [start], [nudge] and
+     * [check] do nothing from now on. An attempt under way counts as a failed one in [pacing].
+     */
+    fun close() {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            if (_state.value == SocketState.CONNECTING) pacing.failed(now(), random(), timing.backoff)
+            parkLocked()
+        }
+        job.cancel()
+    }
+
+    /**
      * Focus or resume: a socket waiting to try again tries now, from the first step of the backoff, and an open one
      * pings at once, which finds a connection that died while the phone slept. A ticket `429` still waits its
      * `Retry-After` (§3.11).
      */
     fun nudge() {
         synchronized(lock) {
-            if (!wanted) return
+            if (!wanted || closed) return
             when (_state.value) {
                 SocketState.DOWN -> {
-                    if (now() < limitedUntil) return
-                    attempt = 0
+                    if (pacing.limited(now())) return
+                    pacing.reset()
                     connectLocked()
                 }
                 SocketState.OPEN -> pingLocked()
@@ -167,15 +195,25 @@ class WorkspaceSocket(
         }
     }
 
+    /**
+     * The phone's default network moved to another: an open socket pings at once, so one left on the old network is
+     * found and connects again through the backoff. A socket waiting to try again keeps its wait.
+     */
+    fun check() {
+        synchronized(lock) {
+            if (wanted && !closed && _state.value == SocketState.OPEN) pingLocked()
+        }
+    }
+
     // ---- connecting ----
 
     private fun connectLocked() {
-        if (!wanted) return
+        if (!wanted || closed) return
         val mine = ++token
         clearTimersLocked()
         closeSocketLocked(1000)
         _state.value = SocketState.CONNECTING
-        connectJob = scope.launch { connect(mine) }
+        connectJob = own.launch { connect(mine) }
     }
 
     private suspend fun connect(mine: Int) {
@@ -191,7 +229,7 @@ class WorkspaceSocket(
             return
         }
         synchronized(lock) {
-            if (mine != token || !wanted) return
+            if (mine != token || !wanted || closed) return
             val request = try {
                 Request.Builder()
                     .url(url)
@@ -219,9 +257,7 @@ class WorkspaceSocket(
                     true
                 }
                 "rate_limited" -> {
-                    val wait = e.retryAfterS?.times(1000) ?: timing.rateLimited
-                    limitedUntil = now() + wait
-                    laterLocked(wait)
+                    limitedLocked(e.retryAfterS)
                     false
                 }
                 else -> {
@@ -244,7 +280,7 @@ class WorkspaceSocket(
             synchronized(lock) {
                 if (!current(webSocket)) return
                 opened = true
-                attempt = 0
+                pacing.reset()
                 refusedOnce = false
                 lastDelay = null
                 _state.value = SocketState.OPEN
@@ -303,6 +339,11 @@ class WorkspaceSocket(
                         }
                         null
                     }
+                    429 -> {
+                        refusedOnce = false
+                        limitedLocked(WorkspaceError.retryAfterSeconds(response?.header("Retry-After")))
+                        null
+                    }
                     404 -> {
                         parkLocked()
                         ({ listener.removed() })
@@ -333,9 +374,7 @@ class WorkspaceSocket(
                 when (code) {
                     CLOSE_LEASE -> {
                         // The lease ran out and the server sent this instead of a wake: something may be new.
-                        val t = now()
-                        if (t - quickAt >= timing.quickReconnectGap) {
-                            quickAt = t
+                        if (pacing.quickReconnect(now(), timing.quickReconnectGap)) {
                             connectLocked()
                         } else {
                             backoffLocked()
@@ -365,7 +404,7 @@ class WorkspaceSocket(
 
     private fun schedulePingLocked() {
         pingJob?.cancel()
-        pingJob = scope.launch {
+        pingJob = own.launch {
             delay(timing.pingEvery)
             synchronized(lock) { pingLocked() }
         }
@@ -378,7 +417,7 @@ class WorkspaceSocket(
         s.send("ping")
         if (pongJob == null) {
             val mine = token
-            pongJob = scope.launch {
+            pongJob = own.launch {
                 delay(timing.pongTimeout)
                 synchronized(lock) {
                     if (mine != token || _state.value != SocketState.OPEN) return@synchronized
@@ -404,20 +443,25 @@ class WorkspaceSocket(
     /** The next backoff step. Any failure but a repeated upgrade `401` ends a run of 401s, so the next gets its quick retry. */
     private fun backoffLocked(afterRefusal: Boolean = false) {
         if (!afterRefusal) refusedOnce = false
-        val delayMs = backoffDelay(attempt, random(), timing.backoff)
-        attempt++
-        laterLocked(delayMs)
+        laterLocked(pacing.failed(now(), random(), timing.backoff))
+    }
+
+    /** A `429`: no ticket or upgrade before `Retry-After` ([retryAfterS]), or [Timing.rateLimited] without one. */
+    private fun limitedLocked(retryAfterS: Long?) {
+        val wait = retryAfterS?.times(1000) ?: timing.rateLimited
+        pacing.limit(now() + wait)
+        laterLocked(wait)
     }
 
     private fun laterLocked(delayMs: Long) {
         clearTimersLocked()
         lastDelay = delayMs
         _state.value = SocketState.DOWN
-        retryJob = scope.launch {
+        retryJob = own.launch {
             delay(delayMs)
             synchronized(lock) {
                 retryJob = null
-                if (wanted && _state.value == SocketState.DOWN) connectLocked()
+                if (wanted && !closed && _state.value == SocketState.DOWN) connectLocked()
             }
         }
     }
@@ -496,5 +540,66 @@ class WorkspaceSocket(
             }
             return "$scheme/v1/workspaces/$ws/socket"
         }
+    }
+}
+
+/**
+ * The waits one workspace's socket owes the server (§3.11, §3.19). The service keeps one per workspace for the
+ * session, so they outlive the socket that met them: the socket closed when Phone tools' window closes and the one
+ * made when it opens again share them. [WorkspaceSocket] calls these under its own lock; they lock this too, as a
+ * closed socket can still be finishing a call while its successor starts.
+ */
+class SocketPacing {
+    // Failed or cut-short attempts in a row, for the backoff; an open socket resets it.
+    private var attempt = 0
+
+    // When the backoff allows the next attempt. A nudge may go sooner.
+    private var retryAt = Long.MIN_VALUE
+
+    // A 429's Retry-After: no ticket or upgrade before this, whatever nudges.
+    private var limitedUntil = Long.MIN_VALUE
+
+    // The last reconnect at once after a 4001.
+    private var quickAt = Long.MIN_VALUE / 2
+
+    /** How long a socket that starts at [now] waits first: until the backoff's next attempt or `Retry-After`, or 0. */
+    @Synchronized
+    fun waitBeforeStart(now: Long): Long {
+        val until = maxOf(retryAt, limitedUntil)
+        return if (until <= now) 0 else until - now
+    }
+
+    /** Whether `Retry-After` still holds at [now]. */
+    @Synchronized
+    fun limited(now: Long): Boolean = now < limitedUntil
+
+    /** An attempt failed or was cut short at [now]: the next backoff step. Returns its wait. */
+    @Synchronized
+    fun failed(now: Long, random: Double, table: List<Long>): Long {
+        val wait = WorkspaceSocket.backoffDelay(attempt, random, table)
+        attempt++
+        retryAt = now + wait
+        return wait
+    }
+
+    /** A `429` that holds until [until]. */
+    @Synchronized
+    fun limit(until: Long) {
+        limitedUntil = maxOf(limitedUntil, until)
+    }
+
+    /** A socket opened, or a nudge tries at once: the backoff starts over. `Retry-After` stays. */
+    @Synchronized
+    fun reset() {
+        attempt = 0
+        retryAt = Long.MIN_VALUE
+    }
+
+    /** Whether a `4001` at [now] may reconnect at once: at most once per [gap]. */
+    @Synchronized
+    fun quickReconnect(now: Long, gap: Long): Boolean {
+        if (now - quickAt < gap) return false
+        quickAt = now
+        return true
     }
 }

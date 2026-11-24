@@ -93,27 +93,41 @@ internal class AccountChat(private val account: () -> AccountService) : ChatAcco
     override fun infoAt(): Long? = account().infoAt()
 }
 
-/** A wake socket as the service drives it; [OkHttpChatSockets] makes [WorkspaceSocket]s, tests make fakes. */
+/**
+ * A wake socket as the service drives it; [OkHttpChatSockets] makes [WorkspaceSocket]s, tests make fakes. Each has one
+ * lifetime: after [close] nothing called on it connects again, so a caller that still holds one can't revive it.
+ */
 interface ChatSocket {
     val state: StateFlow<SocketState>
     fun start()
-    fun stop()
     fun nudge()
+
+    /** The default network moved: an open socket pings at once; one waiting to try again keeps its wait. */
+    fun check()
+
+    /** Ends it for good ([WorkspaceSocket.close]). */
+    fun close()
 }
 
 fun interface ChatSockets {
-    fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope): ChatSocket
+    /** A socket for one workspace, waiting out that workspace's [pacing], which it shares with the workspace's others. */
+    fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope, pacing: SocketPacing): ChatSocket
 }
 
 /** [WorkspaceSocket]s on a client derived from the app's shared one. */
-class OkHttpChatSockets(private val client: OkHttpClient, private val timing: WorkspaceSocket.Timing = WorkspaceSocket.Timing()) : ChatSockets {
-    override fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope): ChatSocket {
-        val socket = WorkspaceSocket(client, url, ticket, listener, scope, timing)
+class OkHttpChatSockets(
+    private val client: OkHttpClient,
+    private val timing: WorkspaceSocket.Timing = WorkspaceSocket.Timing(),
+    private val now: () -> Long = System::currentTimeMillis,
+) : ChatSockets {
+    override fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope, pacing: SocketPacing): ChatSocket {
+        val socket = WorkspaceSocket(client, url, ticket, listener, scope, timing, now = now, pacing = pacing)
         return object : ChatSocket {
             override val state: StateFlow<SocketState> get() = socket.state
             override fun start() = socket.start()
-            override fun stop() = socket.stop()
             override fun nudge() = socket.nudge()
+            override fun check() = socket.check()
+            override fun close() = socket.close()
         }
     }
 }
@@ -285,9 +299,11 @@ class WorkspaceService internal constructor(
 
     private data class OnScreen(val ws: String? = null, val room: String? = null, val thread: String? = null)
 
+    // A socket the service owns, from reconcileSockets until it leaves liveSockets. Closing is final: a nudge or a
+    // recheck that took it from the map before then can call it, but can't make it connect again.
     private class LiveSocket(val ws: String, val socket: ChatSocket, val watch: Job, val listener: WorkspaceSocket.Listener) {
         fun close() {
-            socket.stop()
+            socket.close()
             watch.cancel()
         }
     }
@@ -678,6 +694,9 @@ class WorkspaceService internal constructor(
         // The open wake sockets by workspace: the one on screen in the foreground, and in Phone tools' window those of
         // the most recently active workspaces. Added under socketLock; the end of a session or a workspace removes too.
         val liveSockets = ConcurrentHashMap<String, LiveSocket>()
+
+        // Each workspace's socket waits (backoff, Retry-After), kept across its sockets for the session.
+        val pacing = ConcurrentHashMap<String, SocketPacing>()
         val socketLock = Mutex()
         val listLock = Any()
         @Volatile var listing: Deferred<List<WorkspaceRef>?>? = null
@@ -808,6 +827,7 @@ class WorkspaceService internal constructor(
         l.outbox.forget(ws)
         alerts.onWorkspaceGone(ws)
         l.liveSockets.remove(ws)?.close()
+        l.pacing.remove(ws)
         syncVersion.update { it + 1 }
         l.scope.launch {
             if (l.selected == ws) quietly { pickSelected(l) }
@@ -938,7 +958,8 @@ class WorkspaceService internal constructor(
                 continue
             }
             val listener = SocketListener(l, ws)
-            val socket = sockets.open(url, { l.client.socketTicket(ws) }, listener, l.scope)
+            val pacing = l.pacing.getOrPut(ws) { SocketPacing() }
+            val socket = sockets.open(url, { l.client.socketTicket(ws) }, listener, l.scope, pacing)
             val watch = l.scope.launch { socket.state.collect { stateChanged() } }
             l.liveSockets[ws] = LiveSocket(ws, socket, watch, listener)
             socket.start()
@@ -1029,6 +1050,20 @@ class WorkspaceService internal constructor(
     internal val windowOpen: Boolean get() = window
 
     /**
+     * The phone's default network moved to another usable one ([ChatBackground]). In Phone tools' window with the app
+     * in the background, each open socket pings at once, which finds one left on the old network, and every workspace
+     * runs once, waiting out its backoff ([catchUp]); a socket waiting to try again keeps its wait. In the foreground
+     * the network callback's [nudge] already covers it.
+     */
+    fun networkMoved() {
+        if (!window || foreground) return
+        val l = live ?: return
+        if (!isLive()) return
+        for (open in l.liveSockets.values) open.socket.check()
+        catchUp()
+    }
+
+    /**
      * Focus, resume or a network that came back (§3.11): list again at most once a minute, run the selected workspace
      * now (at most once per 5 s) and the others spread over 10 s, reconnect a socket that is down, kick the outbox.
      */
@@ -1058,6 +1093,7 @@ class WorkspaceService internal constructor(
                     }
                 }
             }
+            // A socket reconciliation closes meanwhile ignores these: closing is final.
             for (open in l.liveSockets.values) open.socket.let { if (it.state.value == SocketState.OFF) it.start() else it.nudge() }
             updateSockets(l)
             l.outbox.kick(retryNow = true)
