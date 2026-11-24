@@ -462,6 +462,31 @@ class ChatSheetRulesTest {
     private val withAgents = people + agent(clark, "Clark", sponsor = me, answers = AgentRules.SPONSOR) + agent(revy, "Revy", sponsor = bo)
 
     @Test
+    fun `leaving a private channel names the agents you made that leave it with you`() {
+        val bee = id("u", "bee")
+        val old = id("u", "old")
+        val dir = (withAgents + agent(bee, "Bee", sponsor = me) + agent(old, "Old", sponsor = me, state = "former")).associateBy { it.id }
+        val room = channel("c1", "secret", visibility = "private").copy(agents = 3)
+        val inside = listOf(me, bo, ann, clark, revy, bee).map { RoomMember(it, "member") }
+
+        assertTrue(SheetRules.mayTakeAgents(room, dir, me))
+        assertFalse("an open channel keeps them", SheetRules.mayTakeAgents(room.copy(visibility = "workspace"), dir, me))
+        assertFalse("the last person archives it, which its own text says", SheetRules.mayTakeAgents(room.copy(members = 1), dir, me))
+        assertFalse("no agents in it", SheetRules.mayTakeAgents(room.copy(agents = 0), dir, me))
+        assertFalse(SheetRules.mayTakeAgents(room.copy(archived = true), dir, me))
+        assertFalse("you made no agent", SheetRules.mayTakeAgents(room, people.associateBy { it.id }, me))
+        assertFalse(SheetRules.mayTakeAgents(room, dir, ann))
+        assertFalse(SheetRules.mayTakeAgents(room, dir, null))
+
+        // Yours, active and in the channel, by name; not someone else's, not a former one, not one outside the channel.
+        assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(room, inside, dir, me, byName).map { it.name })
+        assertEquals(listOf("Revy"), SheetRules.leavingAgents(room, inside, dir, bo, byName).map { it.name })
+        assertEquals(emptyList<Member>(), SheetRules.leavingAgents(room, null, dir, me, byName))
+        assertEquals(emptyList<Member>(), SheetRules.leavingAgents(room.copy(visibility = "workspace"), inside, dir, me, byName))
+        assertEquals(3, SheetRules.LEAVING_AGENTS_NAMED)
+    }
+
+    @Test
     fun `agents are never in a DM, never successors, and don't make a workspace less empty`() {
         assertEquals(listOf("Ann", "Bo"), SheetRules.dmCandidates(withAgents, me, setOf(cy), byName).map { it.name })
         val picker = SheetRules.dmPicker(withAgents, me, emptySet(), "", byName)

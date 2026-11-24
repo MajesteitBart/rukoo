@@ -496,6 +496,47 @@ test('leaving: the only owner, the channels that may need a successor, and who c
   assert.equal(SUCCESSOR_SEARCH_FROM, 6);
 });
 
+test('leaving a private channel names the agents you made that leave it with you', async () => {
+  const { mayTakeAgents, agentsLeavingWith, leavingAgentsText } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const nl = (key, params) => i18n.translate('nl', key, params);
+  const lf = (lang) => new Intl.ListFormat(lang, { type: 'conjunction' });
+  const collator = new Intl.Collator('en', { sensitivity: 'base' });
+  const agent = (label, sponsor, state = 'active') => ({ id: id('u', label), kind: 'agent', name: label, role: 'member', state, joinedAt: 0, agent: { sponsor, answers: 'sponsor', members: [], agents: false } });
+  const clark = agent('Clark', ME);
+  const bee = agent('Bee', ME);
+  const robs = agent('Robbot', ROB);
+  const gone = agent('Gone', ME, 'removed');
+  const dir = new Map([...members, ...[clark, bee, robs, gone].map((a) => [a.id, a])]);
+  const room = { id: 'c1', kind: 'channel', visibility: 'private', role: 'member', archived: false, members: 3, agents: 3 };
+  const inside = [ME, SANNE, ROB, clark.id, bee.id, robs.id].map((member) => ({ member, role: 'member' }));
+
+  assert.equal(mayTakeAgents(room, dir, ME), true);
+  assert.equal(mayTakeAgents({ ...room, visibility: 'workspace' }, dir, ME), false, 'an open channel keeps them');
+  assert.equal(mayTakeAgents({ ...room, members: 1 }, dir, ME), false, 'the last person archives it, which its own text says');
+  assert.equal(mayTakeAgents({ ...room, agents: 0 }, dir, ME), false, 'no agents in it');
+  assert.equal(mayTakeAgents({ ...room, agents: undefined }, dir, ME), true, 'a row without the count may hold some');
+  assert.equal(mayTakeAgents({ ...room, archived: true }, dir, ME), false);
+  assert.equal(mayTakeAgents(room, members, ME), false, 'you made no agent');
+  assert.equal(mayTakeAgents(room, dir, SANNE), false);
+
+  // Yours, active and in the channel, by name; not someone else's, not a removed one, not one outside the channel.
+  assert.deepEqual(agentsLeavingWith(room, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
+  assert.deepEqual(agentsLeavingWith(room, inside, dir, ROB, collator, en).map((m) => m.name), ['Robbot']);
+  assert.deepEqual(agentsLeavingWith(room, null, dir, ME, collator, en), [], "the members didn't load");
+  assert.deepEqual(agentsLeavingWith({ ...room, visibility: 'workspace' }, inside, dir, ME, collator, en), []);
+
+  const line = (list, t, lang) => leavingAgentsText(list, { t, listFormat: lf(lang) });
+  assert.equal(line([clark], en, 'en'), 'Your agent Clark leaves with you.');
+  assert.equal(line([bee, clark], en, 'en'), 'Your agents Bee and Clark leave with you.');
+  assert.equal(line([bee, clark], nl, 'nl'), 'Je agents Bee en Clark vertrekken met je mee.');
+  assert.equal(line([clark], nl, 'nl'), 'Je agent Clark vertrekt met je mee.');
+  const four = [bee, clark, gone, robs];
+  assert.equal(line(four, en, 'en'), 'Your 4 agents in this channel leave with you.');
+  assert.equal(line(four, nl, 'nl'), 'Je 4 agents in dit kanaal vertrekken met je mee.');
+  assert.equal(line([], en, 'en'), null);
+});
+
 test("a closed DM's bar names the person you blocked and offers a new conversation only where the server takes one", async () => {
   const { closedBar } = await loading;
   const en = (key, params) => i18n.translate('en', key, params);

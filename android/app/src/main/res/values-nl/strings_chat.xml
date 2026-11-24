@@ -340,6 +340,12 @@
     <string name="chat_channel_leave_body_public">Je kunt opnieuw deelnemen via Kanalen bekijken.</string>
     <string name="chat_channel_leave_body_private">Iemand moet je opnieuw toevoegen voordat je het kunt lezen.</string>
     <string name="chat_channel_leave_body_last">Je bent de laatste hier, dus als je vertrekt wordt #%1$s gearchiveerd.</string>
+    <string name="chat_channel_leave_agent">Je agent %1$s vertrekt met je mee.</string>
+    <string name="chat_channel_leave_agents">Je agents %1$s vertrekken met je mee.</string>
+    <plurals name="chat_channel_leave_agents_many">
+        <item quantity="one">Je %d agent in dit kanaal vertrekt met je mee.</item>
+        <item quantity="other">Je %d agents in dit kanaal vertrekken met je mee.</item>
+    </plurals>
     <string name="chat_channel_leave">Verlaten</string>
     <string name="chat_channel_successor_title">Kies een nieuwe kanaalbeheerder voor #%1$s</string>
     <string name="chat_channel_successor_body">Jij bent de enige kanaalbeheerder. Kies iemand die het overneemt voordat je vertrekt.</string>

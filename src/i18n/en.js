@@ -11823,6 +11823,18 @@
     "message": "You're the last one here, so leaving archives #{name}.",
     "description": "Leave a channel: confirmation text when the user is its last member. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
   },
+  "chat.channel.leaveAgent": {
+    "message": "Your agent {name} leaves with you.",
+    "description": "Leave a private channel, or hand it over and leave: second paragraph when one agent the user made is in it, since a private channel keeps someone's agents only while they are in it. {name}: the agent's name. Android chat_channel_leave_agent. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgents": {
+    "message": "Your agents {names} leave with you.",
+    "description": "The same as chat.channel.leaveAgent, for two or three agents. {names}: their names as the language lists them (\"Clark and Bee\"). Android chat_channel_leave_agents. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsMany": {
+    "message": { "one": "Your {count} agent in this channel leaves with you.", "other": "Your {count} agents in this channel leave with you." },
+    "description": "The same as chat.channel.leaveAgents, for more than three agents. {count}: how many. Android chat_channel_leave_agents_many. src/renderer/chat-model.js (leavingAgentsText)"
+  },
   "chat.channel.leave": {
     "message": "Leave",
     "description": "Leave a channel: confirmation button. src/renderer/chat-dialogs.js"

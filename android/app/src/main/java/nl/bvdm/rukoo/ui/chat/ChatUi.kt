@@ -625,14 +625,20 @@ class ChatUi(
      * Leave a channel (desktop-ui 6.9). The only manager of a channel with others in it picks a successor from its full
      * members ([members] is the directory) in [prompt], without a confirmation first; anyone else is asked, with what
      * leaving means here. When the channel's members don't load, the server's `last_manager` opens the prompt instead.
+     * Leaving a private channel takes the person's agents out of it too, and both say so; the channel's members load
+     * for that only when the directory holds an agent of theirs.
      */
     fun askLeaveChannel(ws: String, room: Room, members: Map<String, Member>, me: String?) = launch("leave:${room.id}", context(ws)) {
-        if (SheetRules.sharedManaged(listOf(room)).isNotEmpty()) {
-            val inside = membersOrNull(ws, room.id)
-            if (inside != null && SheetRules.soleManager(inside, me, agentIds(members))) {
+        val managed = SheetRules.sharedManaged(listOf(room)).isNotEmpty()
+        var inside: List<RoomMember>? = null
+        if (managed || SheetRules.mayTakeAgents(room, members, me)) {
+            inside = membersOrNull(ws, room.id)
+            if (managed && inside != null && SheetRules.soleManager(inside, me, agentIds(members))) {
                 expectGone(room.id)
                 promptError = null
-                prompt = ChatPrompt.Successor(ws, room, SheetRules.successors(inside.map { it.member }, members, me, collator()))
+                prompt = ChatPrompt.Successor(
+                    ws, room, SheetRules.successors(inside.map { it.member }, members, me, collator()), leavingAgentsLine(room, inside, members, me),
+                )
                 return@launch
             }
         }
@@ -642,7 +648,8 @@ class ChatUi(
             LeaveBody.PRIVATE -> strings.get(R.string.chat_channel_leave_body_private)
             LeaveBody.PUBLIC -> strings.get(R.string.chat_channel_leave_body_public)
         }
-        if (!confirm(strings.get(R.string.chat_channel_leave_title, name), body, strings.get(R.string.chat_channel_leave), danger = true)) return@launch
+        val text = listOfNotNull(body, leavingAgentsLine(room, inside, members, me)).joinToString("\n\n")
+        if (!confirm(strings.get(R.string.chat_channel_leave_title, name), text, strings.get(R.string.chat_channel_leave), danger = true)) return@launch
         expectGone(room.id)
         try {
             leaveChannel(ws, room.id, null)
@@ -655,8 +662,13 @@ class ChatUi(
             promptError = null
             prompt = asking
             try {
-                val ids = roomMembers(ws, room.id).map { it.member }
-                if (prompt === asking) prompt = asking.copy(people = SheetRules.successors(ids, members, me, collator()))
+                val loaded = roomMembers(ws, room.id)
+                if (prompt === asking) {
+                    prompt = asking.copy(
+                        people = SheetRules.successors(loaded.map { it.member }, members, me, collator()),
+                        agents = leavingAgentsLine(room, loaded, members, me),
+                    )
+                }
             } catch (e2: CancellationException) {
                 throw e2
             } catch (e2: Exception) {
@@ -666,6 +678,19 @@ class ChatUi(
                 }
             }
         }
+    }
+
+    /**
+     * What leaving [room] says about the agents [me] made among its members ([inside]), or null (desktop's
+     * chat-dialogs.js `leavingAgentsLine`): up to three names, past that how many.
+     */
+    private fun leavingAgentsLine(room: Room, inside: List<RoomMember>?, members: Map<String, Member>, me: String?): String? {
+        val agents = SheetRules.leavingAgents(room, inside, members, me, collator())
+        if (agents.isEmpty()) return null
+        if (agents.size > SheetRules.LEAVING_AGENTS_NAMED) return strings.plural(R.plurals.chat_channel_leave_agents_many, agents.size, agents.size)
+        val names = chatNames(strings)
+        if (agents.size == 1) return strings.get(R.string.chat_channel_leave_agent, names.display(agents[0]))
+        return strings.get(R.string.chat_channel_leave_agents, names.list(agents.map { names.display(it) }))
     }
 
     /** The successor [prompt]'s submit: leave, handing the channel to [successor]. */
@@ -1055,9 +1080,10 @@ class ChatUi(
 sealed interface ChatPrompt {
     /**
      * The only manager of [room] picks who manages it next before leaving (desktop-ui 6.9): its active full members
-     * other than the person, [people] null while they load.
+     * other than the person, [people] null while they load. [agents] says which of the person's agents leave the
+     * channel with them, or is null.
      */
-    data class Successor(val ws: String, val room: Room, val people: List<Member>?) : ChatPrompt
+    data class Successor(val ws: String, val room: Room, val people: List<Member>?, val agents: String? = null) : ChatPrompt
 
     /**
      * Leaving [ws] (named [name]) as the only manager of [channels]: a successor is picked for each, then one button

@@ -519,3 +519,57 @@ test("an agent's captions pass 4.5:1 in the Agents and Members dialogs, Add agen
     await win.keyboard.press('Backspace');
   }
 });
+
+// A private channel keeps someone's agents only while they are in it (server/WORKSPACES.md "Channels"), so leaving it
+// takes theirs out too, and both ways of leaving say which. An open channel keeps them, and its confirmation says
+// nothing about them.
+test('leaving a private channel names your agents in it, which leave with you; an open channel says nothing of them', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const clark = await server.seedAgent(bart, ws, { name: 'Clark' });
+  const bee = await server.seedAgent(bart, ws, { name: 'Bee' });
+  const revy = await server.seedAgent(olga, ws, { name: 'Revy' });
+  // Olga's private #secret with Bart, his two agents and hers; Bart's private #plans with Olga and Clark, which he
+  // alone manages; Clark in general too, which the whole workspace sees.
+  const secret = await server.seedChannel(olga, ws.id, { name: 'secret', visibility: 'private', members: [bartMe.id, clark.agent.id, bee.agent.id, revy.agent.id] });
+  await server.seedChannel(bart, ws.id, { name: 'plans', visibility: 'private', members: [ws.me.id, clark.agent.id] });
+  const inGeneral = await server.call('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/members`, { token: bart.token, body: { member: clark.agent.id } });
+  expect(inGeneral.status).toBe(200);
+  await ready(bart);
+
+  // #plans: the successor question comes first and names Clark. Cancel keeps Bart and Clark in.
+  await roomRow(win, 'plans').click();
+  await roomMenu(win, 'Leave channel');
+  let dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Choose a new manager for #plans', { timeout: 15000 });
+  await expect(dialog.locator('.ch-person-pick .ch-check-label')).toHaveText(['Olga Owner'], { timeout: 15000 });
+  await expect(dialog.locator('.dialog-body > p:not([hidden]):not(.error)')).toHaveText([
+    "You're its only manager. Pick someone to take over before you leave.",
+    'Your agent Clark leaves with you.'
+  ]);
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // General: Clark stays in an open channel, so the confirmation doesn't mention him.
+  await roomRow(win, 'general').click();
+  await roomMenu(win, 'Leave channel');
+  dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Leave #general?');
+  await expect(dialog.locator('.dialog-body p')).toHaveText(['You can join again from Browse channels.']);
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // #secret: both of Bart's agents by name, never Olga's Revy. Leaving takes them out and leaves Revy in.
+  await roomRow(win, 'secret').click();
+  await roomMenu(win, 'Leave channel');
+  dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Leave #secret?');
+  await expect(dialog.locator('.dialog-body p')).toHaveText(['Someone has to add you again before you can read it.', 'Your agents Bee and Clark leave with you.'], {
+    timeout: 15000
+  });
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0, { timeout: 15000 });
+  await expect(roomRow(win, 'secret')).toHaveCount(0, { timeout: 15000 });
+  const inside = (await serverGet(server, olga, ws.id, `/channels/${secret.id}/members`)).members.map((m) => m.member);
+  expect(inside.sort()).toEqual([ws.me.id, revy.agent.id].sort());
+  expect(inside).not.toContain(bee.agent.id);
+});
