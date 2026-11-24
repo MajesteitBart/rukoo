@@ -1,10 +1,11 @@
 name: Account server
 
 # Deploys the account server in server/ to the server the Rukoo apps use, the bvdm environment in wrangler.jsonc, when
-# a change to what it runs reaches main. The tests run again on that commit first, and a failing test stops the deploy.
-# Pull requests never deploy: the server job in ci.yml tests them. Run the workflow by hand on main to deploy main
-# again without a change. A merge that changes both this server and the website deploys both at once, in no set order,
-# so a website change that needs a new server route merges after the server change that adds it.
+# a change to what it runs reaches main. Each run tests and deploys main as it is when the run starts, whichever commit
+# started it, and a failing test stops the deploy. Pull requests never deploy: the server job in ci.yml tests them. Run
+# the workflow by hand on main to deploy main again without a change. A merge that changes both this server and the
+# website deploys both at once, in no set order, so a website change that needs a new server route merges after the
+# server change that adds it.
 on:
   push:
     branches: [main]
@@ -21,22 +22,32 @@ permissions:
   contents: read
 
 concurrency:
+  # One queue per branch, so a run started by hand on another branch, which does nothing, never takes main's place.
   group: server-${{ github.ref }}
-  # Deploys never cancel each other: one that started always finishes, and a newer run replaces one that is still
-  # waiting, so the newest commit on main wins.
+  # Runs never cancel each other: a deploy that started always finishes. GitHub keeps one run waiting behind it and
+  # lets a newer run, a rerun of an old one included, replace that one. Nothing is lost that way, because every run
+  # takes main as it is when it starts, so each deploy is at least as new as the one before it.
   cancel-in-progress: false
 
 jobs:
   test:
+    # Only main deploys, so a run started by hand on another branch does nothing.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
     defaults:
       run:
         working-directory: server
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: main
           persist-credentials: false
+      # The commit these tests pass on, which the deploy job checks out again.
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -49,8 +60,8 @@ jobs:
 
   deploy:
     needs: test
-    # A fork has no Cloudflare token for this server, and only main deploys.
-    if: github.repository == 'MajesteitBart/rukoo' && github.ref == 'refs/heads/main'
+    # A fork has no Cloudflare token for this server.
+    if: github.repository == 'MajesteitBart/rukoo'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The environment holds the Cloudflare token, shared with website.yml, and only lets main use it.
@@ -63,36 +74,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.test.outputs.commit }}
           persist-credentials: false
-      # A rerun of an older run keeps its own commit. When main has other server code by now, this run stops here
-      # instead of putting older code back; the run for main's newest server change deploys that.
-      - name: Check that this is main's newest server code
-        id: newest
-        run: |
-          git fetch --quiet --depth=1 origin main
-          if git diff --quiet HEAD FETCH_HEAD -- src package.json package-lock.json wrangler.jsonc; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::main has newer server code than ${GITHUB_SHA::8}, so this run doesn't deploy"
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/setup-node@v7
-        if: steps.newest.outputs.deploy == 'true'
         with:
           node-version: '24'
       # The Wrangler in package-lock.json, the one the tests and the dry run used. Install scripts stay off and nothing
       # else is run, so Wrangler is the only package that runs next to the token.
       - run: npm ci --ignore-scripts
-        if: steps.newest.outputs.deploy == 'true'
-      - run: npx wrangler deploy --env bvdm
-        if: steps.newest.outputs.deploy == 'true'
+      - name: Deploy ${{ needs.test.outputs.commit }}
+        run: npx wrangler deploy --env bvdm
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       # Every app starts with GET /v1/info: on rukoo.io through the website's Worker, and on the server's own two
       # addresses. Each must answer it with the server's features once the new code is live.
       - name: Check that the server answers
-        if: steps.newest.outputs.deploy == 'true'
         run: |
           for url in https://rukoo.io/v1/info https://meet.rukoo.io/v1/info https://rukoo-account.bvdm.ai/v1/info; do
             ok=
