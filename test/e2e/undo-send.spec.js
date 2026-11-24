@@ -52,8 +52,17 @@ const sendWaiting = () => app.evaluate(() => global.__semOutbox.flush());
 const held = () => app.evaluate(() => global.__semRefused.size);
 // What held.json in the profile lists (main.js heldMail): the emails in the outbox and the kept ones, by subject.
 const heldFile = () => path.join(dataDir, 'data', 'held.json');
-// The emails in it, without the ids it took from an older Rukoo's unsent.json.
-const onDisk = () => (fs.existsSync(heldFile()) ? JSON.parse(fs.readFileSync(heldFile(), 'utf8')).filter((e) => e.restore) : []);
+// The emails in it, without the ids it took from an older Rukoo's unsent.json. Read once: Rukoo removes the file when
+// the last email goes, also between a check that it exists and the read.
+const readHeld = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+};
+const onDisk = () => readHeld(heldFile()).filter((e) => e.restore);
 const kept = () => onDisk().map((e) => e.restore.state.subject);
 // Ends Rukoo at once, without a quit, as a crash or Task Manager would.
 async function crash() {
@@ -662,7 +671,7 @@ test('emails that wait when Rukoo is killed open again at the next start, unsent
 test('an email reopened after a crash comes back after another crash, until its editor saves or sends it', async () => {
   test.setTimeout(120000);
   const file = path.join(dataDir, 'data', 'held.json');
-  const kept = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map((e) => e.restore.state.subject) : []);
+  const kept = () => readHeld(file).map((e) => e.restore.state.subject);
   const crash = async () => {
     const exited = app.waitForEvent('close');
     kill(app.process());
