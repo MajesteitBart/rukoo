@@ -1069,3 +1069,32 @@ test('a thread opened at its newest replies keeps the dot for the new replies ab
   await expect(oldest).toBeInViewport();
   await expect(line).not.toHaveClass(/has-new/);
 });
+
+// A thread left open in a window nobody looks at shows its replies to no one: they stay new until the window is back.
+test('a reply that comes into an open thread while the window has no focus stays new until the window has it again', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  const question = await server.post(bart, ws.id, ws.general, 'Lunch on Friday?');
+  await server.post(olga, ws.id, ws.general, 'I do', { root: question.messageId });
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  const line = message('Lunch on Friday?').locator('.ch-replies');
+  await expect(line).toHaveClass(/has-new/, { timeout: 15000 });
+  await line.click();
+  await expect(threadLog().locator('li.ch-msg', { hasText: 'I do' })).toBeInViewport({ timeout: 15000 });
+  await expect(line).not.toHaveClass(/has-new/);
+  // The window loses the focus with the thread still open, and a reply comes in. The test window's focus is emulated
+  // for the whole run, so the page is told it has none.
+  await win.evaluate(() => {
+    document.hasFocus = () => false;
+  });
+  await server.post(olga, ws.id, ws.general, 'Me too', { root: question.messageId });
+  await expect(threadLog().locator('li.ch-msg', { hasText: 'Me too' })).toBeInViewport({ timeout: 15000 });
+  await expect(line).toHaveClass(/has-new/);
+  // Back in the window, the reply in view counts as seen.
+  await win.evaluate(() => {
+    delete document.hasFocus;
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect(line).not.toHaveClass(/has-new/);
+});

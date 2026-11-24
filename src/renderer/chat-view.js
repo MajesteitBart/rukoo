@@ -276,8 +276,16 @@ export function mountView(section, H) {
     });
   }
 
+  // Whether an open thread shows to the person: the window has the focus, Chat is on screen, and no Settings page or
+  // dialog covers it. As with reading, what arrives in a window nobody looks at wasn't seen.
+  const threadInSight = () => H.active() && document.hasFocus() && document.visibilityState !== 'hidden' && !document.querySelector('#overlays .page, .scrim');
+
   // A dialog closing or the window coming back can make what shows count: look again.
-  const recheck = () => setTimeout(considerRead, 0);
+  const recheck = () =>
+    setTimeout(() => {
+      considerRead();
+      threadShown();
+    }, 0);
   window.addEventListener('focus', recheck);
   document.addEventListener('visibilitychange', recheck);
   document.addEventListener('click', recheck, true);
@@ -1977,10 +1985,11 @@ export function mountView(section, H) {
   // The open thread showed its replies (issue #376): each reply row in view, at least half of it or of the view, is no
   // longer new on this visit (chat-model.js repliesInView), and the dot under the first message and its part of the
   // pill go once none is left. Replies that were never in view, above or below it, stay new, also when a newer one was.
-  // Nothing counts while the thread still moves to the reply it opened at (T.settled). The log draws again only when
+  // Nothing counts while the thread still moves to the reply it opened at (T.settled), or while the thread shows to
+  // nobody (threadInSight): a reply that comes in then counts once the window is back. The log draws again only when
   // that changed.
   function threadShown() {
-    if (!T || thread.hidden) return;
+    if (!T || thread.hidden || !threadInSight()) return;
     const items = [];
     for (const li of tLog.querySelectorAll('li.ch-msg[data-seq]')) {
       const row = T.rows.get(li.dataset.key);
