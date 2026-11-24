@@ -22,7 +22,9 @@
 // A send or Drafts save of a kept email makes it busy until the server answers, or for wait ms at most: nothing opens
 // it elsewhere, closes it or starts anything else with it. While a send or save can still end, even after that, no
 // second one starts. A send without an answer in time may still go: like one that was on its way when Rukoo ended, it
-// is unsure, and Send goes again only once the person has been told to check Sent and says yes (confirmed).
+// is unsure, and Send goes again only once the person has been told to check Sent and says yes (confirmed). A save that
+// reaches Drafts after another editor took its email over leaves the email in that draft: that editor goes on with it
+// (moved()) before it sends or saves.
 //
 // Every change replaces the whole file, written beside it first and then moved over it, so a crash halfway leaves the
 // last whole list; synchronously, so a kill straight after the change finds it.
@@ -32,6 +34,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { savedToDrafts } = require('./outbox');
 
 // A change to held.json that couldn't be written.
 class JournalError extends Error {
@@ -67,6 +70,17 @@ class UnsureError extends Error {
     super('Nobody knows whether this email went.');
     this.name = 'UnsureError';
     this.code = 'EKEPTUNSURE';
+  }
+}
+
+// A send or save of a kept email from an editor that still names the draft the email was in before a late Drafts save
+// replaced it (save()). draftId: the draft it is in now, which the editor goes on with before it tries again.
+class MovedError extends Error {
+  constructor(draftId) {
+    super('This email is in another draft now.');
+    this.name = 'MovedError';
+    this.code = 'EKEPTMOVED';
+    this.draftId = draftId;
   }
 }
 
@@ -365,9 +379,23 @@ class HeldMail {
     if (this.retry) this.write();
   }
 
+  // A held.json the start couldn't read is read again before a change takes memory as it was, so going back after a
+  // write that fails never drops what that read brought. While it still can't be read, the JournalError goes to the
+  // caller and the write is tried again later.
+  fresh() {
+    if (!this.unread) return;
+    try {
+      this.reread();
+    } catch (err) {
+      this.later();
+      throw err;
+    }
+  }
+
   // A change that must be in the file before what comes next happens: when it can't be written, memory goes back to
   // what it was and the JournalError goes to the caller.
   change(fn) {
+    this.fresh();
     const kept = new Map(this.kept);
     const editors = new Map(this.editors);
     const last = new Map(this.last);
@@ -461,6 +489,16 @@ class HeldMail {
     this.settled.set(id, { as, ...(subject ? { subject } : {}) });
   }
 
+  // Throws a MovedError when a late Drafts save left this kept email in a draft the editor's restore doesn't name: the
+  // editor goes on with that draft first, or its save would leave a second one beside it, and its send would leave it.
+  moved(id, restore) {
+    const r = this.kept.get(id);
+    const now = r && r.restore.state && r.restore.state.pendingRemap === true ? r.restore.state.draftId : null;
+    if (typeof now !== 'string' || !now) return;
+    const named = isRestore(restore) && restore.state && typeof restore.state === 'object' ? restore.state.draftId : null;
+    if (named !== now) throw new MovedError(now);
+  }
+
   // A kept email nobody holds, and that isn't busy, after its send or save ended or ran past wait: main opens it again.
   unheld(id) {
     if (this.kept.has(id) && !this.attached(id) && !this.busy.has(id)) this.orphaned(id);
@@ -496,12 +534,16 @@ class HeldMail {
   // Send with Undo send. enqueue() puts the email in the outbox, whose write of held.json lists it (main.js gives the
   // outbox commit() as its changed()). A kept email this editor holds leaves the file in that same write, so a kill
   // finds it once, as itself or as queued. When the write fails, it stays kept, held by this editor, and the error goes
-  // to the caller. One that may have gone already goes only with confirmed. Returns what enqueue() returns.
-  queue(editor, keptId, enqueue, { confirmed = false } = {}) {
+  // to the caller. One that may have gone already goes only with confirmed. restore: what the editor holds now, which
+  // enqueue() puts in the outbox. Returns what enqueue() returns.
+  queue(editor, keptId, enqueue, { confirmed = false, restore = null } = {}) {
     const id = this.claim(editor, keptId);
     if (!id) return enqueue();
     if (this.inflight.has(id)) throw new BusyError();
     if (this.unsure(id) && !confirmed) throw new UnsureError();
+    this.moved(id, restore);
+    // enqueue() writes the file, and reads it first when the start couldn't: that read comes before memory is taken.
+    this.fresh();
     const kept = new Map(this.kept);
     const editors = new Map(this.editors);
     // Done with before the outbox's write, so a held.json read again in it (reread()) can't list it twice.
@@ -558,6 +600,7 @@ class HeldMail {
     const claimed = this.claim(editor, keptId);
     if (claimed && this.inflight.has(claimed)) throw new BusyError();
     if (claimed && this.unsure(claimed) && !confirmed) throw new UnsureError();
+    if (claimed) this.moved(claimed, restore);
     if (!isRestore(restore)) {
       // Nothing to open its editor from, as for a send that never had one.
       await deliver(() => {});
@@ -629,6 +672,7 @@ class HeldMail {
     const id = this.claim(editor, keptId);
     if (!id) return store({});
     if (this.inflight.has(id)) throw new BusyError();
+    this.moved(id, restore);
     const snapshot = isRestore(restore) ? restore : null;
     // Whether this save still answers for the email: nobody else took it over after wait.
     const ours = () => this.kept.has(id) && [undefined, editor].includes(this.holder(id));
@@ -654,6 +698,10 @@ class HeldMail {
       .then(
         (value) => {
           accepted();
+          // Another editor took the email over meanwhile and goes on with it. The draft this save stored replaced the
+          // one that editor opened on, so it goes on with this one (moved()), as an editor that opens it from here does.
+          const r = this.kept.get(id);
+          if (r && typeof value === 'string' && value) this.note(() => this.kept.set(id, { ...r, restore: savedToDrafts(r.restore, value) }), 'note the draft an email is in');
           return value;
         },
         (err) => {
@@ -715,4 +763,4 @@ class HeldMail {
   }
 }
 
-module.exports = { HeldMail, JournalError, BusyError, DoneError, UnsureError };
+module.exports = { HeldMail, JournalError, BusyError, DoneError, UnsureError, MovedError };

@@ -952,3 +952,103 @@ test('an email that may have gone already goes again only with the yes of the pe
   await going;
   assert.equal(held.get('k'), null);
 });
+
+// Third review (P1): a held.json the start couldn't read was read again inside the first write, after the change had
+// taken memory as it was. When that write failed, going back dropped what the read had just brought, and the next
+// write, or the one at quit, left those emails out.
+test('what held.json lists once it can be read again stays in memory and in the file, also when the write that read it fails', async () => {
+  const busy = () => Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+  const lastRun = (files) => {
+    fs.mkdirSync(path.dirname(files.file), { recursive: true });
+    fs.writeFileSync(files.file, JSON.stringify([{ id: 'old', restore: restore('Unsent from the last run'), error: 'Mailbox full' }]));
+  };
+
+  // A send straight away: the file can be read again, and the write that lists the new email as on its way fails.
+  const files = profile();
+  lastRun(files);
+  const clock = fakeClock();
+  const held = failing('readFileSync', files.file, () => restart(files, () => [], { timers: clock.timers }), busy);
+  assert.deepEqual(held.list(), []);
+  let delivered = 0;
+  const full = breakFs('renameSync', files.file, { times: 1 });
+  await assert.rejects(held.send(4, null, restore('New'), () => (delivered += 1)), JournalError);
+  full.restore();
+  assert.equal(delivered, 0);
+  assert.ok(held.get('old'), 'memory keeps what the read brought');
+  // The write tried again, then the one at quit.
+  clock.advance(1000);
+  assert.deepEqual(subjects(files.file), ['Unsent from the last run']);
+  held.flush();
+  assert.deepEqual(restart(files).list().map((r) => r.id), ['old']);
+
+  // Send with Undo send: the outbox's write reads the file again, and fails.
+  const other = profile();
+  lastRun(other);
+  const later = fakeClock();
+  const blocked = failing('readFileSync', other.file, () => restart(other, () => [], { timers: later.timers }), busy);
+  failing('readFileSync', other.file, () => blocked.keep({ id: 'k', restore: restore('Refused'), error: 'x' }), busy);
+  blocked.attach(2, 'k');
+  assert.throws(() => blocked.queue(2, 'k', () => failing('renameSync', other.file, () => blocked.commit())), JournalError);
+  assert.ok(blocked.get('old'), 'memory keeps what the read brought');
+  assert.equal(blocked.holder('k'), 2);
+  later.advance(1000);
+  assert.deepEqual(subjects(other.file).sort(), ['Refused', 'Unsent from the last run']);
+  blocked.flush();
+  assert.deepEqual(restart(other).list().map((r) => r.id).sort(), ['k', 'old']);
+});
+
+// Third review (P2): an editor that took over an email whose first save ran past its time kept the draft it opened on.
+// When that save reached Drafts after all, the editor's next save stored a second draft beside it.
+test('an editor that took over an email whose late save reached Drafts goes on with that draft, so Drafts has it once', async () => {
+  const files = profile();
+  const clock = fakeClock();
+  const orphaned = [];
+  const engine = new Engine({ dataDir: tempDir('sem-held-engine-') }).init();
+  const acc = await engine.addAccount({ type: 'demo' });
+  await engine.syncAccount(acc.id);
+  const held = restart(files, () => [], { timers: clock.timers, wait: 60000, orphaned: (id) => orphaned.push(id) });
+  held.keep({ id: 'k', restore: restore('Saved late'), error: 'Mailbox full' });
+  held.attach('pane', 'k');
+  const session = engine.session(engine.account(acc.id));
+  const append = session.append.bind(session);
+  let release = null;
+  session.append = async (...args) => {
+    if (!release) await new Promise((resolve) => (release = resolve));
+    return append(...args);
+  };
+  const mail = (r) => ({ accountId: acc.id, to: ['someone@example.com'], subject: r.state.subject, html: r.html, draftId: r.state.draftId || null });
+  // What an editor's Save does (composer.js saveDraft): told that its email is in another draft now, it goes on with
+  // that one (adopt), and saves again.
+  const editorSave = async (editor, r) => {
+    try {
+      return await held.save(editor, 'k', r, (hooks) => engine.saveDraft(mail(r), hooks));
+    } catch (err) {
+      if (err.code !== 'EKEPTMOVED') throw err;
+      const adopted = { ...r, state: { ...r.state, draftId: err.draftId } };
+      return held.save(editor, 'k', adopted, (hooks) => engine.saveDraft(mail(adopted), hooks));
+    }
+  };
+  // The reading pane's save gets as far as the server, which takes its time; the page crashes meanwhile.
+  const first = editorSave('pane', restore('Saved late'));
+  while (!release) await tick();
+  held.detach('pane');
+  clock.advance(60000);
+  await tick();
+  assert.deepEqual(orphaned, ['k']);
+  // A compose window opens the email, and its saves wait while the first can still end.
+  assert.equal(held.attach(4, 'k'), true);
+  const opened = held.get('k').restore;
+  // The first save reaches Drafts after all.
+  release();
+  const late = await first;
+  assert.ok(late);
+  // The compose window saves what it holds, with what was typed while it waited.
+  const typed = { ...opened, html: '<p>Typed while it waited</p>' };
+  const saved = await editorSave(4, typed);
+  const drafts = (await engine.listMessages({ scope: acc.id, view: 'drafts' })).filter((m) => m.subject === 'Saved late');
+  assert.equal(drafts.length, 1, 'Drafts has the email once');
+  assert.equal(drafts[0].id, saved);
+  assert.match((await engine.getMessage(saved)).html, /Typed while it waited/);
+  assert.equal(held.get('k'), null);
+  await engine.close();
+});

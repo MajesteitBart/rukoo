@@ -1662,6 +1662,206 @@ test('a compose window whose page loads again during a send shows that the email
   await expect.poll(() => app.windows().length, { timeout: 10000 }).toBe(1);
 });
 
+// The subjects of the demo account's drafts with this subject, and the text of the first, after a sync.
+const draftsNamed = (subject) =>
+  app.evaluate(async (_e, subject) => {
+    const engine = global.__semEngine;
+    const id = engine.accounts[0].id;
+    await engine.syncAccount(id);
+    const found = engine.listMessages({ scope: id, view: 'drafts' }).filter((m) => m.subject === subject);
+    return { count: found.length, html: found.length ? (await engine.getMessage(found[0].id)).html : '' };
+  }, subject);
+
+// Third review of #309 (P1): an editor whose send ran past its time heard that the email may have gone. Once the server
+// took it after all, the next Send heard "already sent", and the editor dropped the email's id, so the Send after that,
+// or a save, went as a new email. The editor now keeps naming the email, says what became of it, and closes on Send.
+test('an editor in the reading pane whose email the server took late sends and saves it no more, however often Send is confirmed', async () => {
+  test.setTimeout(120000);
+  await refusedInPane('Taken late', 'One copy only.');
+  await holdSendsWithoutUndo();
+  await app.evaluate(() => (global.__semHeldMail.wait = 1000));
+  await composer().locator('[data-c="send"]').click();
+  await expect(win.locator('.scrim .dialog')).toContainText("didn't say whether it took this email");
+  await win.locator('.scrim .dialog .buttons button').click();
+  // The server takes it after all.
+  await app.evaluate(() => global.__sends[0].resolve(true));
+  await expect.poll(kept).toEqual([]);
+  // A save stores nothing, also the one after it.
+  await app.evaluate(() => (global.__allowSaves = true));
+  await composer().locator('.editor').click();
+  await win.keyboard.press('End');
+  await win.keyboard.type(' Typed after it went.');
+  for (let i = 0; i < 2; i += 1) {
+    await win.keyboard.press('Control+s');
+    await expect(notice()).toContainText('already sent this email');
+    await win.waitForTimeout(500);
+  }
+  expect((await draftsNamed('Taken late')).count).toBe(0);
+  // Send, confirmed each time the editor asks, for as long as it is there.
+  for (let i = 0; i < 3 && (await composer().count()); i += 1) {
+    await composer().locator('[data-c="send"]').click();
+    await win.click('.scrim .buttons button:text-is("Send anyway")');
+    await win.waitForTimeout(1500);
+    expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+    await expect(win.locator('.scrim .dialog')).toContainText('already sent this email');
+    await win.locator('.scrim .dialog .buttons button').click();
+  }
+  await composerGone();
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+  expect((await draftsNamed('Taken late')).count).toBe(0);
+  expect(kept()).toEqual([]);
+});
+
+test('a compose window whose email the server took late sends it no more, however often Send is confirmed', async () => {
+  test.setTimeout(120000);
+  await holdSendsWithoutUndo();
+  await app.evaluate(() => (global.__semHeldMail.wait = 1000));
+  const [page] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  await page.waitForSelector('.composer .editor');
+  page.on('dialog', () => {});
+  await page.locator('[data-rinput="to"]').fill('someone@example.com');
+  await page.locator('[data-rinput="to"]').press('Enter');
+  await page.locator('[data-field="subject"]').fill('Taken late in a window');
+  await page.locator('.editor').click();
+  await page.keyboard.type('One copy only.');
+  await page.locator('[data-c="send"]').click();
+  await expect(page.locator('.scrim .dialog')).toContainText("didn't say whether it took this email");
+  await page.locator('.scrim .dialog .buttons button').click();
+  await app.evaluate(() => global.__sends[0].resolve(true));
+  await expect.poll(kept).toEqual([]);
+  for (let i = 0; i < 3 && !page.isClosed(); i += 1) {
+    await page.locator('[data-c="send"]').click();
+    await page.click('.scrim .buttons button:text-is("Send anyway")');
+    await page.waitForTimeout(1500);
+    expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+    await expect(page.locator('.scrim .dialog')).toContainText('already sent this email');
+    const closed = page.waitForEvent('close', { timeout: 3000 }).catch(() => {});
+    await page
+      .locator('.scrim .dialog .buttons button')
+      .click()
+      .catch((err) => {
+        if (!page.isClosed() && !/has been closed/.test(err.message)) throw err;
+      });
+    await closed;
+  }
+  expect(page.isClosed()).toBe(true);
+  expect(app.windows()).toHaveLength(1);
+  expect(await app.evaluate(() => global.__sends.length)).toBe(1);
+});
+
+// Third review of #309 (P2): a compose window whose page loaded again during a Drafts save of its kept email opened the
+// draft it had before, which that save had just replaced, because only the old page would have told main the new one.
+// Main now notes the stored draft for the window before the save counts as ended.
+test('a compose window whose page loads again during a Drafts save opens the draft that save stored', async () => {
+  test.setTimeout(120000);
+  await app.evaluate(() => {
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  // Written in a compose window, saved once, and refused after the wait: it opens again on that draft.
+  const [page] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  await page.waitForSelector('.composer .editor');
+  page.on('dialog', () => {});
+  await page.locator('[data-rinput="to"]').fill('someone@example.com');
+  await page.locator('[data-rinput="to"]').press('Enter');
+  await page.locator('[data-field="subject"]').fill('Saved twice');
+  await page.locator('.editor').click();
+  await page.keyboard.type('First save.');
+  await page.keyboard.press('Control+s');
+  await expect.poll(async () => (await draftsNamed('Saved twice')).count).toBe(1);
+  await clickClosing(page, '[data-c="send"]');
+  const [reopened] = await Promise.all([app.waitForEvent('window'), sendWaiting()]);
+  reopened.on('dialog', () => {});
+  await reopened.waitForSelector('.composer .editor');
+  await expect(reopened.locator('.dialog')).toContainText('Mailbox full');
+  await reopened.locator('.dialog .buttons button').click();
+  expect(kept()).toEqual(['Saved twice']);
+
+  // The next save stores its draft, which replaces the first, and then waits; the page crashes and loads again.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const save = engine.saveDraft.bind(engine);
+    engine.saveDraft = async (payload, hooks) => {
+      const id = await save(payload, hooks);
+      global.__stored = id;
+      await new Promise((resolve) => (global.__releaseSave = resolve));
+      return id;
+    };
+  });
+  await reopened.locator('.editor').click();
+  await reopened.keyboard.press('End');
+  await reopened.keyboard.type(' Second save.');
+  await reopened.keyboard.press('Control+s');
+  await expect.poll(() => app.evaluate(() => global.__stored || null)).not.toBeNull();
+  await expect.poll(kept).toEqual([]);
+  await app.evaluate(
+    ({ BrowserWindow }) =>
+      new Promise((resolve) => {
+        const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('compose.html'));
+        w.webContents.once('render-process-gone', () => {
+          w.webContents.once('did-finish-load', resolve);
+          w.webContents.reload();
+        });
+        w.webContents.forcefullyCrashRenderer();
+      })
+  );
+  await app.evaluate(() => global.__releaseSave());
+  // The new page opens the draft the save stored, with the second save's words.
+  await expect.poll(() => composePage('document.querySelector(".composer .editor")?.textContent || ""'), { timeout: 20000 }).toContain('Second save.');
+  expect(await composePage('document.querySelector("[data-field=subject]").value')).toBe('Saved twice');
+  expect((await draftsNamed('Saved twice')).count).toBe(1);
+});
+
+// Third review of #309 (P2): when the reading pane's save of a kept email ran past its time and the page crashed, the
+// email opened in a compose window. The first save then reached Drafts after all, and the window, which still had the
+// draft it opened on, stored a second draft on its next save. It now goes on with the draft the first save stored.
+test('a compose window that took over an email whose late save reached Drafts goes on with that draft, so Drafts has it once', async () => {
+  test.setTimeout(120000);
+  await refusedInPane('Saved late', 'Typed in the pane.');
+  // The pane's save gets as far as the server, which holds the draft until the test lets it go.
+  await app.evaluate(() => {
+    global.__semHeldMail.wait = 1000;
+    global.__allowSaves = true;
+    const engine = global.__semEngine;
+    const session = engine.session(engine.accounts[0]);
+    const append = session.append.bind(session);
+    session.append = async (folder, raw, flags = []) => {
+      if (flags.includes('\\Draft') && !global.__appendHeld) {
+        global.__appendHeld = true;
+        await new Promise((resolve) => (global.__releaseAppend = resolve));
+      }
+      return append(folder, raw, flags);
+    };
+  });
+  await composer().locator('.editor').click();
+  await win.keyboard.press('Control+s');
+  await expect.poll(() => app.evaluate(() => Boolean(global.__appendHeld))).toBe(true);
+  // The main window's page crashes. Once the save has run past its time, the email opens in a compose window.
+  const [popped] = await Promise.all([
+    app.waitForEvent('window', { timeout: 20000 }),
+    app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('index.html')).webContents.forcefullyCrashRenderer())
+  ]);
+  popped.on('dialog', () => {});
+  await popped.waitForSelector('.composer .editor');
+  await expect(popped.locator('.dialog')).toContainText('Drafts');
+  await popped.locator('.dialog .buttons button').click();
+  // The first save reaches Drafts after all.
+  await app.evaluate(() => global.__releaseAppend());
+  await expect.poll(() => app.evaluate(() => global.__semHeldMail.inflight.size)).toBe(0);
+  expect((await draftsNamed('Saved late')).count).toBe(1);
+  // The window saves what it holds, with what was typed meanwhile.
+  await popped.locator('.editor').click();
+  await popped.keyboard.press('End');
+  await popped.keyboard.type(' Typed in the window.');
+  await popped.keyboard.press('Control+s');
+  await expect.poll(kept).toEqual([]);
+  await popped.waitForTimeout(1000);
+  const drafts = await draftsNamed('Saved late');
+  expect(drafts.count).toBe(1);
+  expect(drafts.html).toContain('Typed in the window.');
+});
+
 test('Undo once the email is on its way says it is too late', async () => {
   await app.evaluate(() => {
     const engine = global.__semEngine;

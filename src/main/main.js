@@ -1069,14 +1069,16 @@ function keptUnheld(id) {
 }
 
 // What an editor hears when held.json couldn't take the email it sends, when the email is on its way already or done
-// with, or when it may have gone already. kept tells the editor which (windowError): 'done', and it names that email no
-// more; 'unsure', and its Send asks first from now on.
+// with, or when it may have gone already. kept tells the editor which (windowError): 'done', and it can send or save that
+// email no more; 'unsure', and its Send asks first from now on; 'moved', and it goes on with the draft a late save left
+// the email in (draftId) before it tries again.
 function keptError(err) {
   const code = err && err.code;
   if (code === 'EJOURNAL') return new Error(t('composer.errors.journal', { error: err.message }));
   if (code === 'EKEPTBUSY') return new Error(t('composer.errors.alreadySending'));
   if (code === 'EKEPTDONE') return Object.assign(new Error(t('composer.errors.alreadyDone')), { kept: 'done' });
   if (code === 'EKEPTUNSURE') return Object.assign(new Error(t('composer.errors.sendUnknown')), { kept: 'unsure', ...(typeof err.keptId === 'string' ? { keptId: err.keptId } : {}) });
+  if (code === 'EKEPTMOVED') return Object.assign(new Error(t('composer.errors.alreadySending')), { kept: 'moved', draftId: err.draftId });
   return err;
 }
 
@@ -1977,7 +1979,7 @@ const windowApi = {
       engine.checkSend(payload);
       if (ms > 0 && restore && typeof restore === 'object' && win && !win.isDestroyed()) {
         const origin = sender === win.webContents ? 'main' : 'window';
-        const { id } = heldMail.queue(editor, keptIdOf(keptId), () => outbox.queue({ payload, restore, origin, ms }), sure);
+        const { id } = heldMail.queue(editor, keptIdOf(keptId), () => outbox.queue({ payload, restore, origin, ms }), { ...sure, restore });
         send('send-queued', { id, ms });
         return { queued: id, ms };
       }
@@ -1991,10 +1993,17 @@ const windowApi = {
   // A Drafts save from an editor; an agent's draft cards follow it, also from a compose window. keptId and restore:
   // the kept email the editor holds and what it holds now, which held.json has before the server gets the draft, and
   // lets go the moment the server has it (heldmail.js save()). A save held.json couldn't note fails with the system's
-  // error, as any save that fails.
+  // error, as any save that fails. A compose window claims the stored draft before the save counts as ended, so a page
+  // that loads again meanwhile opens that draft (composeInit), not the one it replaced.
   saveDraft: async (sender, payload, keptId, restore) => {
+    const store = async (hooks) => {
+      const id = await storeDraft(payload, hooks);
+      const c = composeWindows.get(sender.id);
+      if (c && id) c.draftId = String(id);
+      return id;
+    };
     try {
-      return await heldMail.save(editorOf(sender), keptIdOf(keptId), restore, (hooks) => storeDraft(payload, hooks));
+      return await heldMail.save(editorOf(sender), keptIdOf(keptId), restore, store);
     } catch (err) {
       throw err && err.code === 'EJOURNAL' ? err : keptError(err);
     }
@@ -2117,6 +2126,7 @@ function windowError(err) {
   // the editor names from then on (heldmail.js send()). kept: what the editor does about it (keptError).
   const kept = err && typeof err.keptId === 'string' ? { keptId: err.keptId.slice(0, 100) } : {};
   if (err && (err.kept === 'done' || err.kept === 'unsure')) kept.kept = err.kept;
+  if (err && err.kept === 'moved' && typeof err.draftId === 'string') Object.assign(kept, { kept: 'moved', draftId: err.draftId.slice(0, 2000) });
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
   if (!code) return kept;
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { ...kept, code, appPasswordProvider: err.appPasswordProvider } : { ...kept, code };

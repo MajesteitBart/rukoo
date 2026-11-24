@@ -1322,6 +1322,19 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     renderAttachments();
   }
 
+  // Main says a save of this email, started by the editor that had it before this one, reached Drafts after this editor
+  // took it over (kept: 'moved', heldmail.js moved()). This editor goes on with that draft, which replaced the one it
+  // opened on, keeping what was typed meanwhile: its next save replaces that draft, and attachments copied from the
+  // replaced one come from there. true when it did, and the save or send is tried again.
+  function adopt(err) {
+    if (!err || err.kept !== 'moved' || typeof err.draftId !== 'string' || err.draftId === st.draftId) return false;
+    const was = st.draftId;
+    st.draftId = err.draftId;
+    if (was && st.forwardId === was) pendingRemap = { id: err.draftId, sent: st.attachments.filter((a) => a.forwardIndex !== undefined) };
+    if (!inline) api('composeDraft', err.draftId).catch(() => {});
+    return true;
+  }
+
   // Saves run one at a time; a save requested during another runs after it. An editor that opens again on a draft
   // main saved for it first points its attachments at that draft; when that can't be done now, the next save or send
   // tries again and says so.
@@ -1342,9 +1355,19 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         await richEditor.idle();
         if (sending || closed) return false;
         const editsBefore = editCount;
-        const sent = st.attachments.slice();
+        let sent = st.attachments.slice();
         // A kept email goes into held.json as it is now first, and main lets it go once the server has the draft.
-        const id = await api('saveDraft', payload(sent), keptId, keptId ? undoState() : null);
+        let id;
+        for (;;) {
+          try {
+            id = await api('saveDraft', payload(sent), keptId, keptId ? undoState() : null);
+            break;
+          } catch (err) {
+            if (!adopt(err)) throw err;
+            await settleAttachments();
+            sent = st.attachments.slice();
+          }
+        }
         keptId = null;
         st.draftId = id;
         st.savedAt = Date.now();
@@ -1361,10 +1384,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return true;
       } catch (err) {
         failed = true;
-        // Main is done with the email this editor named: it went or is in Drafts. This editor says so, and saves as
-        // one for any draft from now on.
+        // Main is done with the email this editor named: it went or is in Drafts. This editor says so, keeps naming
+        // it, so main refuses every send or save of it from here on, and stops saving by itself.
         const done = err && err.kept === 'done';
-        if (done) keptId = null;
+        if (done) autosave = false;
         if (!auto || done) toast(err.message, 5000);
         return false;
       } finally {
@@ -1477,7 +1500,16 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       await dropping;
       await saving;
       await settleAttachments();
-      const res = await api('send', payload(undefined, { sending: true }), undoState(), keptId, unsure);
+      let res;
+      for (;;) {
+        try {
+          res = await api('send', payload(undefined, { sending: true }), undoState(), keptId, unsure);
+          break;
+        } catch (err) {
+          if (!adopt(err)) throw err;
+          await settleAttachments();
+        }
+      }
       done = true;
       // A held email's draft stays on the server until it goes; main tells the chat's draft cards then.
       gone = !(res && res.queued);
@@ -1485,12 +1517,16 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       finish(res && res.queued ? null : inline ? t('composer.status.sent') : null);
     } catch (err) {
       // Refused straight away: main keeps the email for this editor from now on, under this id. No answer in time:
-      // it may still go, so the next Send asks first. Done with: it went or is in Drafts, and this editor goes on as
-      // one for any email.
+      // it may still go, so the next Send asks first. Done with: it went or is in Drafts, as when the server took it
+      // after the editor heard it may have gone. The editor says so and closes, naming the email to the end, so
+      // nothing sends or saves it again.
       if (err && typeof err.keptId === 'string') keptId = err.keptId;
       if (err && err.kept === 'unsure') unsure = true;
-      if (err && err.kept === 'done') keptId = null;
       await dialog({ title: t('composer.errors.send'), body: `<p>${esc(err.message)}</p>` });
+      if (err && err.kept === 'done') {
+        done = true;
+        finish(null);
+      }
     } finally {
       if (!done) {
         sending = false;

@@ -2773,7 +2773,7 @@
   },
   "composer.errors.alreadyDone": {
     "message": "Rukoo already sent this email or saved it to Drafts, so it didn't do that again. Check Sent and Drafts.",
-    "description": "Shown under 'Sending failed' (composer.errors.send), or as a notice after a save, when an editor sends or saves an email Rukoo already sent or saved to Drafts, as a window that is still open after the server took the email late. Also shown in a compose window whose page loaded again after a crash, when Rukoo can't say what became of its email. src/main/main.js (keptError); src/renderer/compose.js (init)"
+    "description": "Shown under 'Sending failed' (composer.errors.send), or as a notice after a save, when an editor sends or saves an email Rukoo already sent or saved to Drafts, as a window that is still open after the server took the email late. After Send the editor then closes. Also shown in a compose window whose page loaded again after a crash, when Rukoo can't say what became of its email. src/main/main.js (keptError); src/renderer/compose.js (init)"
   },
   "composer.errors.alreadySending": {
     "message": "This email is already on its way, or open in another window. Check Sent before you send it again.",
