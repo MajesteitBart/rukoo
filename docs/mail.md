@@ -37,7 +37,7 @@ The newest message opens when you start the app or switch folders. It stays unre
 
 Ctrl+click and Shift+click select several messages for one action, and so can the keyboard; see [Selecting with the keyboard](#selecting-with-the-keyboard). Right-click opens a menu with shortcuts, and you can drag messages onto a folder. Deleting, archiving and moving can be undone from the notice that follows, or with `Ctrl+Z`.
 
-When the mail server refuses one of these, the email comes back in the list at once and the notice says why. For several emails it says how many went, and its Undo covers those. A refused Undo leaves the email where it was moved and lets you try again. A server without the IMAP MOVE command copies the email first. If it can't confirm removing the original, Rukoo keeps the copy and asks you to check both folders before trying again.
+When the mail server refuses one of these, the email comes back in the list at once, opens again if you were reading it, and the notice says why. For several emails it says how many went, and its Undo covers those. A refused Undo leaves the email where it was moved and lets you try again. Empty Trash and Empty Spam say how many emails went when the server keeps some, and a draft the server won't delete stays in Drafts. A server without the IMAP MOVE command copies the email first. If it can't confirm removing the original, Rukoo keeps the copy and asks you to check both folders before trying again.
 
 ## Reading
 

@@ -2458,6 +2458,13 @@ async function undoMoves(ids, reopen) {
   if (back.length) toast(back.length === 1 ? t('mailbox.undo.restored') : t('mailbox.undo.restoredCount', { count: back.length }));
 }
 
+// Puts the list right after emails came back: refused by the server, or kept at the no-Trash question. The email that
+// was open (open) opens again, unless another has been opened since detach() showed shown.
+async function showBack(back, open, shown) {
+  await refresh().catch(() => {});
+  if (open && back.includes(open) && S.selectedId === shown && S.list.some((x) => x.id === open)) openMessage(open);
+}
+
 export async function removeMessages(list) {
   list = list.filter(Boolean);
   if (!list.length) return;
@@ -2471,9 +2478,12 @@ export async function removeMessages(list) {
     );
     if (!ok) return renderList();
   }
+  const open = S.selectedId;
   const reopen = detach(list);
+  const shown = S.selectedId;
   const moved = [];
   const confirm = [];
+  const back = [];
   let deleted = 0;
   let total = list.length;
   // The first refusal. A refused email is back in the engine's list, and the notice at the end says why.
@@ -2485,6 +2495,7 @@ export async function removeMessages(list) {
       else if (where === 'confirm') confirm.push(m);
       else deleted++;
     } catch (err) {
+      back.push(m.id);
       error = error || err.message;
     }
   }
@@ -2503,15 +2514,16 @@ export async function removeMessages(list) {
           await api('remove', m.id, { force: true });
           deleted++;
         } catch (err) {
+          back.push(m.id);
           error = error || err.message;
         }
       }
     } else {
       total -= confirm.length;
-      await refresh();
+      back.push(...confirm.map((m) => m.id));
     }
   }
-  if (error) refresh();
+  if (back.length) showBack(back, reopen && open, shown);
   if (moved.length) {
     const done = moved.length === 1 ? t('mailbox.delete.movedOne') : t('mailbox.delete.movedCount', { count: moved.length });
     offerUndo(moved, error ? t('mailbox.delete.movedSome', { count: moved.length, total, error }) : done, reopen);
@@ -2536,8 +2548,11 @@ async function moveMessages(list, target, label) {
     .map((m) => ({ m, path: destination(m, target) }))
     .filter((p) => p.path && p.path !== p.m.folder);
   if (!plan.length) return toast(target.role === 'archive' ? t('mailbox.move.noArchive') : t('mailbox.move.alreadyThere'));
+  const open = S.selectedId;
   const reopen = detach(plan.map((p) => p.m));
+  const shown = S.selectedId;
   const moved = [];
+  const back = [];
   // The first refusal, as in removeMessages().
   let error = null;
   for (const { m, path } of plan) {
@@ -2545,10 +2560,11 @@ async function moveMessages(list, target, label) {
       await api('move', m.id, path);
       moved.push(m.id);
     } catch (err) {
+      back.push(m.id);
       error = error || err.message;
     }
   }
-  if (error) refresh();
+  if (back.length) showBack(back, reopen && open, shown);
   if (!moved.length) return error && toast(error, 5000);
   const done = moved.length === 1 ? t('mailbox.move.one', { folder: label }) : t('mailbox.move.count', { count: moved.length, folder: label });
   offerUndo(moved, error ? t('mailbox.move.some', { count: moved.length, total: plan.length, folder: label, error }) : done, reopen);

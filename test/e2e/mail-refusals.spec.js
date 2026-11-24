@@ -55,6 +55,9 @@ test('a delete or archive the server refuses puts the email back at once and say
   await expect(notice()).toContainText(REFUSED);
   await expect(notice().locator('button')).toHaveCount(0);
   await expect(bencompare).toBeVisible();
+  // The email that was open opens again, instead of the next one that took its place.
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
+  await expect(bencompare).toHaveClass(/\bselected\b/);
   await win.screenshot({ path: testInfo.outputPath('refused-delete.png'), animations: 'disabled' });
 
   await readOnly('Archive', true);
@@ -62,6 +65,7 @@ test('a delete or archive the server refuses puts the email back at once and say
   await win.click('[data-reader="archive"]');
   await expect(notice()).toContainText(REFUSED);
   await expect(bencompare).toBeVisible();
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
   expect(await inView('trash')).not.toContain('Sign in to Bencompare');
   expect(await inView('archive')).not.toContain('Sign in to Bencompare');
 
@@ -101,7 +105,7 @@ test('when the server refuses one of several emails, the notice says why and its
   expect(await inView('trash')).not.toContain('Re: Dinner on Saturday');
 });
 
-test('an Undo the server refuses leaves the email archived and offers Undo again, which works once allowed', async () => {
+test('an Undo the server refuses leaves the email archived and offers Undo again, which works once allowed', async ({}, testInfo) => {
   const bencompare = row('Sign in to Bencompare');
   await bencompare.click();
   await win.click('[data-reader="archive"]');
@@ -114,6 +118,7 @@ test('an Undo the server refuses leaves the email archived and offers Undo again
   await expect(notice().locator('button')).toHaveText('Undo');
   await expect(bencompare).toHaveCount(0);
   expect(await inView('archive')).toContain('Sign in to Bencompare');
+  await win.screenshot({ path: testInfo.outputPath('refused-undo.png'), animations: 'disabled' });
 
   await readOnly('Archive', false);
   await notice().locator('button').click();
