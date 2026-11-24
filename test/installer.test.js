@@ -77,6 +77,21 @@ test('a release without a feed, or another version in it, downloads nothing; a f
   assert.deepEqual(u.calls.filter(([c]) => c === 'download').map(([, v]) => v), ['2.1.2', '2.1.2'], 'the next check tries again');
 });
 
+test('an AppImage update that moves Rukoo to a file with the new version says where it went', async () => {
+  const u = fakeUpdater({ feeds: { [found('2.1.1').feed]: '2.1.1' } });
+  // electron-updater's AppImageUpdater emits this inside install(), while the quit runs.
+  u.install = () => {
+    u.emit('appimage-filename-updated', '/home/me/Apps/Rukoo-Mail-2.1.1-x86_64.AppImage');
+    return true;
+  };
+  const installer = new UpdateInstaller({ kind: 'appimage', createUpdater: () => u });
+  const moved = [];
+  installer.on('moved', (file) => moved.push(file));
+  await installer.download(found('2.1.1'));
+  assert.equal(installer.install(), true);
+  assert.deepEqual(moved, ['/home/me/Apps/Rukoo-Mail-2.1.1-x86_64.AppImage']);
+});
+
 test('a newer release found while one downloads comes next', async () => {
   const feeds = { [found('2.1.1').feed]: '2.1.1', [found('2.1.2').feed]: '2.1.2' };
   const u = fakeUpdater({ feeds });

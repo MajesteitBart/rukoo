@@ -67,6 +67,9 @@ class UpdateInstaller extends EventEmitter {
     });
     // A failure also rejects the call that caused it; download() handles that.
     u.on('error', () => {});
+    // The AppImage update puts the new version in a file with that version in its name and removes the old one.
+    // Whatever points at the old file follows (main.js: the autostart entry, loginitem.js).
+    u.on('appimage-filename-updated', (file) => this.emit('moved', file));
     this.updater = u;
     return u;
   }

@@ -50,6 +50,7 @@ const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
+const { LoginItem, loginTarget, electronLogin, linuxAutostart, memoryLogin, HIDDEN_FLAG } = require('./loginitem');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
 const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
@@ -124,6 +125,10 @@ let updates = null;
 let installer = null;
 // The user chose Restart to update: the quit installs the new version and starts it.
 let restartForUpdate = false;
+// Settings > General > Open when you sign in (loginitem.js). startHidden: this start came from it, so the main window
+// stays hidden until someone opens it, and the tray icon is there to open it with.
+let loginItem = null;
+let startHidden = false;
 let syncTimer = null;
 // The emails that came in since the main window last had focus, by id; badgeCount() counts the ones still new.
 let newSinceFocus = new Set();
@@ -284,9 +289,11 @@ function refreshBadge(count = badgeCount()) {
   refreshTray(count);
 }
 
-// The tray icon is there while closing or minimizing hides the main window, so the window can always come back.
+// The tray icon is there while closing or minimizing hides the main window, so the window can always come back. A start
+// from the login item hides the window too, so its icon stays for that run, also with both settings off; closing the
+// window then quits as those settings say. A Mac has the Dock for that.
 function updateTray() {
-  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray;
+  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray || (startHidden && process.platform !== 'darwin');
   if (wanted && !tray) {
     tray = new TrayIcon({
       icon: ICON,
@@ -633,6 +640,20 @@ function mailClient() {
 async function refreshMailClient() {
   const client = mailClient();
   if (client) await client.refresh({ portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE) });
+}
+
+// The login item (loginitem.js). Only an installed app gets the system's own; a run from a checkout, a development or
+// test profile and a portable or unpacked copy get none (loginTarget). Test mode never touches the system: Linux's
+// autostart entry goes to the test profile, Windows' and macOS' login item lives in memory, and a spec reads both
+// through global.__semLoginItem.
+function makeLoginItem() {
+  const platform = process.platform;
+  if (process.env.SEM_HIDDEN) {
+    const system = platform === 'linux' ? linuxAutostart({ dir: path.join(app.getPath('userData'), 'autostart') }) : memoryLogin();
+    return new LoginItem({ platform, target: { exe: path.join(app.getPath('userData'), 'Rukoo Mail') }, system });
+  }
+  const target = loginTarget({ platform, packaged: app.isPackaged, inApplications: () => app.isInApplicationsFolder() });
+  return new LoginItem({ platform, target, system: platform === 'linux' ? linuxAutostart() : electronLogin(app) });
 }
 
 // Links never navigate an app window; they open in the browser or, for mailto:, in a compose window.
@@ -1503,6 +1524,16 @@ const api = {
     await shell.openExternal(SETTINGS_URL);
     return true;
   },
+  // Settings > General > Open when you sign in: what the system has now (loginitem.js status()), and the switch.
+  openAtLoginState: () => loginItem.status(),
+  setOpenAtLogin: (on) => {
+    if (!loginItem.status().available) throw new Error(t('settings.general.openAtLoginUnavailable'));
+    try {
+      return loginItem.set(on === true);
+    } catch (_) {
+      throw new Error(t('settings.general.openAtLoginFailed'));
+    }
+  },
   print: (html) => printHtml(html),
   setBadge: (dataUrl, count) => {
     if (!win || process.platform !== 'win32') return;
@@ -2261,13 +2292,14 @@ app.on('activate', () => {
 });
 
 // Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
-// the main window stays where it was, in the tray too.
+// the main window stays where it was, in the tray too. The login item starting a Rukoo that already runs changes
+// nothing.
 app.on('second-instance', (e, argv, workingDirectory) => {
   const link = mailto.fromArgs(argv);
   const file = link ? null : icsFromArgs(argv, workingDirectory);
   if (link) mailtoQueue.accept(link);
   else if (file) icsQueue.accept(file);
-  else if (engine && windowState) showWindow();
+  else if (engine && windowState && !argv.includes(HIDDEN_FLAG)) showWindow();
 });
 
 app.whenReady().then(() => {
@@ -2380,6 +2412,11 @@ app.whenReady().then(() => {
   // After every check, so a download that failed tries again with the next one.
   updates.on('checked', (state) => installer.download(state.available).catch(() => {}));
   installer.on('changed', () => broadcast('updates', updatesState()));
+  loginItem = makeLoginItem();
+  if (process.env.SEM_HIDDEN) global.__semLoginItem = loginItem;
+  startHidden = loginItem.startedHidden(process.argv);
+  // The AppImage update renames Rukoo's file during the quit; the autostart entry follows it.
+  installer.on('moved', (file) => loginItem.moved(file));
   // ---- voice ----
   // Before the hub, whose meeting tools use it, and before the first window, which it may have to hide. A development
   // or test profile (SEM_DATA_DIR) only finds a Voice paired through RUKOO_VOICE_BRIDGE, never the installed one.
@@ -2436,7 +2473,8 @@ app.whenReady().then(() => {
     broadcast('theme');
   });
   applyTheme();
-  createWindow();
+  // From the login item the window starts in the tray, without taking the focus; opening Rukoo shows it.
+  createWindow({ hidden: startHidden });
   // After the main window shows, so the compose window comes up in front of it.
   win.once('ready-to-show', () => {
     mailtoQueue.start();
@@ -2445,6 +2483,7 @@ app.whenReady().then(() => {
     reopenHeld(reopenUnsent());
   });
   refreshMailClient().catch(() => {});
+  loginItem.refresh();
   updateTray();
   scheduleSync();
   engine.syncAll().catch(() => {});

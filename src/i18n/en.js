@@ -5440,6 +5440,38 @@
     "message": "Minimizing puts the window in the tray instead of on the taskbar.",
     "description": "settings > general. Settings > General: explanation below Minimize to the tray. src/renderer/settings.js (render)"
   },
+  "settings.general.openAtLogin": {
+    "message": "Open when you sign in",
+    "description": "settings > general. Settings > General on Windows and Linux: title of the switch that makes Rukoo start, hidden in the tray, when the person signs in to the computer. Off by default; it shows what the system has now. After Minimize to the tray. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginHelp": {
+    "message": "Rukoo starts hidden in the tray when you sign in to the computer, so new mail and team chat notify you without opening Rukoo first.",
+    "description": "settings > general. Settings > General on Windows and Linux: explanation below Open when you sign in, saying what it is for. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginUnavailable": {
+    "message": "Only the installed app can open when you sign in.",
+    "description": "settings > general. Settings > General on Windows and Linux, below Open when you sign in, in the portable Windows app, an unpacked build or a run from source, which can't register themselves; the switch isn't there then. Also the error if the switch is used there. src/renderer/settings.js (loginRow), src/main/main.js (setOpenAtLogin)"
+  },
+  "settings.general.openAtLoginMac": {
+    "message": "Open at login",
+    "description": "settings > general. Settings > General on macOS: title of the switch that makes Rukoo a login item, so it starts in the background when the person logs in. Off by default. Matches the wording of macOS's Login Items. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginMacHelp": {
+    "message": "Rukoo starts in the background when you log in, so new mail and team chat notify you without opening Rukoo first.",
+    "description": "settings > general. Settings > General on macOS: explanation below Open at login, saying what it is for. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginMacUnavailable": {
+    "message": "Move Rukoo Mail to Applications and open it there first.",
+    "description": "settings > general. Settings > General on macOS, below Open at login, for a copy that runs from the disk image, Downloads or source, which may not register itself. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginMacApproval": {
+    "message": "Allow Rukoo Mail under System Settings › General › Login Items to finish.",
+    "description": "settings > general. Settings > General on macOS, below Open at login, while macOS waits for the person to allow the new login item. Name the System Settings panes as macOS does in this language. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginFailed": {
+    "message": "Rukoo couldn't change this. Try again, or check the startup apps in your system's settings.",
+    "description": "settings > general. Toast after the Open when you sign in switch was used and the system kept its login item as it was. src/renderer/settings.js, src/main/main.js (setOpenAtLogin)"
+  },
   "settings.general.notifications": {
     "message": "Notifications",
     "description": "settings > general. src/renderer/settings.js (render)"

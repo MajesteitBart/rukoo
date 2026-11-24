@@ -129,9 +129,11 @@ Sound for new mail, in Settings → General, plays a short coo when mail comes i
 
 Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
 
+Notifications come only while Rukoo runs. Settings → General → Open when you sign in (Open at login on a Mac) starts the installed app hidden when you sign in to the computer, so new mail and team chat notify you after a restart without opening Rukoo first. It's off by default. [Platforms](platforms.md) says how each system shows it.
+
 Rukoo checks your accounts for new mail on the sync schedule in Settings → General, every 5 minutes unless you change it. When you bring its window forward, from the tray, the taskbar or another app, it also checks each account that last synced more than a minute ago, starting with the inbox. With the schedule set to manual, it only syncs when you ask, with `F5` or Sync in the tray menu.
 
-Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, the sound for new mail, a test notification, taskbar badge, sync interval, close and minimize to the tray, the app for email links, spam addresses, VIPs and folder visibility. Settings → Signatures holds the signatures (none by default, plain text or formatted) and the booking link under them. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
+Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, the sound for new mail, a test notification, taskbar badge, sync interval, close and minimize to the tray, opening when you sign in, the app for email links, spam addresses, VIPs and folder visibility. Settings → Signatures holds the signatures (none by default, plain text or formatted) and the booking link under them. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
 
 ## What Rukoo keeps on your computer
 

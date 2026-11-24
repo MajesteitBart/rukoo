@@ -32,6 +32,30 @@
   Pop $0
 !macroend
 
+; Settings > General > Open when you sign in (src/main/loginitem.js): Electron writes a Run value named after the app's
+; AppUserModelID (APP_ID in src/main/main.js), the program, quoted or not, followed by --start-hidden. Uninstalling
+; removes it when it starts this installation, so Windows doesn't look for a program that is gone at every sign-in.
+; An update keeps it: the new version installs at the same path.
+!macro rukooRemoveLoginItem
+  Push $0
+  Push $1
+  Push $2
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "nl.bvdm.rukoo-mail"
+  StrCpy $1 $0 1
+  ${if} $1 == '"'
+    StrCpy $0 $0 "" 1
+  ${endIf}
+  StrLen $2 "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+  StrCpy $1 $0 $2
+  ${if} $1 == "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "nl.bvdm.rukoo-mail"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "nl.bvdm.rukoo-mail"
+  ${endIf}
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
+
 ; Removes that registration again when it starts this installation; one that starts a portable copy stays. An update
 ; runs the old version's uninstaller first; the registration stays then too.
 !macro customUnInstall
@@ -46,5 +70,6 @@
       DeleteRegValue HKCU "${RUKOO_MAIL_KEYS}\Classes\.ics\OpenWithProgids" "RukooMail.ics"
     ${endIf}
     Pop $0
+    !insertmacro rukooRemoveLoginItem
   ${endIf}
 !macroend
