@@ -630,14 +630,14 @@ test('flags for many messages of a folder go in one STORE per flag under one loc
   assert.ok(first.length > 0 && first.length < sparse.length);
 });
 
-// #308: moves and deletes. A stand-in for imapflow that logs what it is asked, in the folder it has open. The email
-// has flags, or is gone when flags is null. move and copy: what messageMove and messageCopy answer (a function runs
-// instead). deletes: what each messageDelete does, in turn: true (the email is gone), false (\Deleted is set and the
-// EXPUNGE fails), 'unstored' (the STORE fails too, so no flag) or a function. unflag: whether taking \Deleted off works.
-// uidNext: what each STATUS of the destination says, in turn; an Error throws.
-function mover({ caps = ['IMAP4rev1', 'MOVE', 'UIDPLUS'], enabled = [], move = null, copy = null, deletes = [], unflag = true, flags = [], uidNext = ['40', '40'] } = {}) {
+// #308: moves and deletes. A stand-in for imapflow that logs what it is asked, in the folder it has open, for the
+// MOVE path. flags: the email's flags, or null when it's gone. move: what messageMove answers for each uid (a function
+// of the uid runs instead). states: what each STATUS of the destination says, in turn, as [UIDVALIDITY, UIDNEXT]; an
+// Error throws, null says nothing. extra: what each FETCH answers besides the emails asked, such as another email's
+// line a server sends of its own accord.
+function mover({ caps = ['IMAP4rev1', 'MOVE', 'UIDPLUS'], enabled = [], move = null, present = null, states = [['9', 40], ['9', 40]], extra = [] } = {}) {
   const log = [];
-  let current = flags && new Set(flags);
+  const here = new Set(present || [5]);
   const client = {
     usable: true,
     capabilities: new Map(caps.map((c) => [c, true])),
@@ -650,66 +650,64 @@ function mover({ caps = ['IMAP4rev1', 'MOVE', 'UIDPLUS'], enabled = [], move = n
     },
     status: async (path) => {
       log.push(`STATUS ${path}`);
-      const next = uidNext.shift();
+      const next = states.shift();
       if (next instanceof Error) throw next;
-      return next == null ? { path } : { path, uidNext: Number(next) };
+      return next == null ? { path } : { path, uidValidity: BigInt(next[0]), uidNext: next[1] };
     },
     messageMove: async (set, destination) => {
       log.push(`MOVE ${set} ${destination}`);
-      return typeof move === 'function' ? move() : move;
+      return typeof move === 'function' ? move(Number(set)) : move;
     },
-    messageCopy: async (set, destination) => {
-      log.push(`COPY ${set} ${destination}`);
-      return typeof copy === 'function' ? copy() : copy;
-    },
-    messageDelete: async (set) => {
-      log.push(`delete ${set} in ${client.mailbox.path}`);
-      const answer = deletes.shift();
-      if (typeof answer === 'function') return answer();
-      if (answer === true) current = null;
-      else if (answer === false && current) current.add('\\Deleted');
-      return answer === true;
-    },
-    messageFlagsRemove: async (set, list) => {
-      log.push(`-${list.join(' ')} ${set}`);
-      if (unflag && current) for (const flag of list) current.delete(flag);
-      return unflag;
-    },
-    fetchOne: async (set, query) => {
-      log.push(`${query.flags ? 'flags' : 'uid'} ${set}`);
-      return current && { uid: Number(set), flags: new Set(current) };
+    fetchAll: async (set) => {
+      log.push(`FETCH ${set}`);
+      const asked = new Set(set.split(',').flatMap((p) => {
+        const [a, b = a] = p.split(':').map(Number);
+        return Array.from({ length: b - a + 1 }, (_, i) => a + i);
+      }));
+      return [...extra, ...[...here].filter((u) => asked.has(u)).map((uid) => ({ uid, flags: new Set() }))];
     }
   };
-  // gone(): another app expunged the email.
-  return { log, client, s: session(client), gone: () => (current = null), flags: () => current };
+  // gone(uid): another app expunged the email.
+  return { log, client, s: session(client), gone: (uid = 5) => here.delete(uid) };
 }
-// What imapflow gives for a COPY or MOVE with UIDPLUS: uid became to in Archive.
-const copyUid = (uid, to) => ({ path: 'INBOX', destination: 'Archive', uidValidity: 9n, uidMap: new Map([[uid, to]]) });
+// What imapflow gives for a MOVE with UIDPLUS: uid became to in Archive (UIDVALIDITY 9).
+const copyUid = (uid, to, validity = 9n) => ({ path: 'INBOX', destination: 'Archive', uidValidity: validity, uidMap: new Map([[uid, to]]) });
 
-test('a MOVE the server turns down throws refused once Rukoo has checked that nothing changed', async () => {
-  let m = mover({ move: copyUid(5, 41) });
-  assert.deepEqual(await m.s.move('INBOX', 5, 'Archive'), { uid: 41, uidValidity: '9' });
+test('a MOVE the server turns down throws refused once Rukoo has read back that nothing changed', async () => {
+  let m = mover({ move: copyUid(5, 40) });
+  assert.deepEqual(await m.s.move('INBOX', 5, 'Archive'), { uid: 40, uidValidity: '9' });
   assert.deepEqual(m.log, ['lock INBOX', 'STATUS Archive', 'MOVE 5 Archive', 'release INBOX']);
 
-  // imapflow answers false for a NO. The email is still in Inbox and Archive's UIDNEXT didn't move: nothing changed.
+  // imapflow answers false for a NO. The email is still in Inbox by its UID, and Archive has the UIDVALIDITY and
+  // UIDNEXT it had before: nothing changed.
   m = mover({ move: false });
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { message: t('errors.move.refused'), refused: true });
-  assert.deepEqual(m.log, ['lock INBOX', 'STATUS Archive', 'MOVE 5 Archive', 'uid 5', 'STATUS Archive', 'release INBOX']);
+  assert.deepEqual(m.log, ['lock INBOX', 'STATUS Archive', 'MOVE 5 Archive', 'STATUS Archive', 'FETCH 5', 'release INBOX']);
 
   // A throw from messageMove is checked the same way.
   m = mover({
     move: () => {
-      throw new Error('Socket closed');
+      throw new Error('Command failed');
     }
   });
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { message: t('errors.move.refused'), refused: true });
+
+  // Inbox was rebuilt on the server since the cache read it: nothing is sent, and the error says why.
+  m = mover({ move: copyUid(5, 40) });
+  await assert.rejects(m.s.move('INBOX', 5, 'Archive', { expectUidValidity: '2' }), { code: 'UIDVALIDITY', unsent: true, message: t('errors.folder.rebuilt') });
+  assert.deepEqual(m.log, ['lock INBOX', 'release INBOX']);
 });
 
 test('a MOVE whose result is unknown throws unknown, never refused', async () => {
-  const unknown = { message: t('errors.move.unknown'), unknown: true };
+  const unknown = (err) => err.message === t('errors.move.unknown') && err.unknown === true && !err.refused;
   // An untagged COPYUID and then a tagged NO: the original stayed, but Archive's UIDNEXT moved, so there may be a copy.
-  let m = mover({ move: false, uidNext: ['40', '41'] });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), (err) => err.message === unknown.message && err.unknown && !err.refused);
+  let m = mover({ move: false, states: [['9', 40], ['9', 41]] });
+  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
+
+  // #308 follow-up: Archive was rebuilt in between. Its UIDNEXT is 40 again, but in another UIDVALIDITY, so it proves
+  // nothing about what the MOVE did.
+  m = mover({ move: false, states: [['9', 40], ['10', 40]] });
+  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
 
   // The original left Inbox: the server may well have moved it.
   m = mover({
@@ -720,7 +718,12 @@ test('a MOVE whose result is unknown throws unknown, never refused', async () =>
   });
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
 
-  // The connection closed before the answer.
+  // #308 follow-up: the FETCH answers only for another email, as a server may of its own accord. That is no proof that
+  // uid 5 is still there.
+  m = mover({ move: false, present: [], extra: [{ uid: 6, flags: new Set() }, { seq: 1, flags: new Set() }] });
+  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
+
+  // The connection closed before the answer: nothing is read back over it.
   m = mover({
     move: () => {
       m.client.usable = false;
@@ -730,205 +733,105 @@ test('a MOVE whose result is unknown throws unknown, never refused', async () =>
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
   assert.deepEqual(m.log, ['lock INBOX', 'STATUS Archive', 'MOVE 5 Archive', 'release INBOX']);
 
-  // A throw after the command went out, with the connection gone.
-  m = mover({
-    move: () => {
-      m.client.usable = false;
-      throw new Error('Connection closed');
-    }
-  });
+  // Without Archive's state from before, nothing proves the server didn't add the email there.
+  m = mover({ move: false, states: [new Error('NO'), ['9', 40]] });
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
-
-  // Without Archive's UIDNEXT from before, nothing proves the server didn't add the email there.
-  m = mover({ move: false, uidNext: [new Error('NO'), '40'] });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
-  m = mover({ move: false, uidNext: [null, '40'] });
+  m = mover({ move: false, states: [null, ['9', 40]] });
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
   // Nor without the email read back in Inbox.
   m = mover({ move: false });
-  m.client.fetchOne = async () => {
+  m.client.fetchAll = async () => {
     throw new Error('Command failed');
   };
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), unknown);
 });
 
+// #308 follow-up: the checks of a batch. A failure between two OKs is proven clean by the second OK's COPYUID when
+// that is the very next uid of the destination; when it skips one, something came in, maybe the failure's copy.
+test('in a batch, a MOVE that failed between two others is refused only when the next COPYUID follows on', async () => {
+  const answers = (skip) => (uid) => (uid === 6 ? false : copyUid(uid, uid === 5 ? 40 : skip ? 42 : 41));
+  let m = mover({ move: answers(false), present: [5, 6, 7] });
+  let out = await m.s.moveMany('INBOX', [5, 6, 7], 'Archive');
+  assert.deepEqual(out.get(5), { uid: 40, uidValidity: '9' });
+  assert.equal(out.get(6).error.refused, true);
+  assert.deepEqual(out.get(7), { uid: 41, uidValidity: '9' });
+  // One STATUS before the batch, none after: the OK after the failure already showed nothing came in.
+  assert.deepEqual(m.log, ['lock INBOX', 'STATUS Archive', 'MOVE 5 Archive', 'MOVE 6 Archive', 'MOVE 7 Archive', 'FETCH 6', 'release INBOX']);
+
+  m = mover({ move: answers(true), present: [5, 6, 7] });
+  out = await m.s.moveMany('INBOX', [5, 6, 7], 'Archive');
+  assert.equal(out.get(6).error.unknown, true);
+  assert.deepEqual(out.get(7), { uid: 42, uidValidity: '9' });
+
+  // What Rukoo knows of Archive's UIDNEXT carries over to the next batch, moved on by the COPYUIDs: no STATUS again.
+  m.log.length = 0;
+  await m.s.moveMany('INBOX', [8], 'Archive').catch(() => {});
+  assert.deepEqual(m.log.filter((l) => l.startsWith('STATUS')), []);
+});
+
 // RFC 9051 makes MOVE part of IMAP4rev2, so a server of that version alone needn't list it. imapflow's messageMove
 // sends MOVE to such a server, and Rukoo mustn't take the COPY-and-delete way there.
 test('an IMAP4rev2 server gets MOVE without the MOVE capability, as imapflow decides it', async () => {
-  let m = mover({ caps: ['IMAP4rev2', 'UIDPLUS'], move: copyUid(5, 41) });
-  assert.deepEqual(await m.s.move('INBOX', 5, 'Archive'), { uid: 41, uidValidity: '9' });
-  assert.ok(m.log.includes('MOVE 5 Archive') && !m.log.some((l) => l.startsWith('COPY')));
+  let m = mover({ caps: ['IMAP4rev2', 'UIDPLUS'], move: copyUid(5, 40) });
+  assert.deepEqual(await m.s.move('INBOX', 5, 'Archive'), { uid: 40, uidValidity: '9' });
+  assert.ok(m.log.includes('MOVE 5 Archive'));
 
   // A server of both versions, with IMAP4rev2 enabled.
-  m = mover({ caps: ['IMAP4rev1', 'IMAP4rev2', 'UIDPLUS'], enabled: ['IMAP4REV2'], move: copyUid(5, 41) });
+  m = mover({ caps: ['IMAP4rev1', 'IMAP4rev2', 'UIDPLUS'], enabled: ['IMAP4REV2'], move: copyUid(5, 40) });
   await m.s.move('INBOX', 5, 'Archive');
-  assert.ok(m.log.includes('MOVE 5 Archive') && !m.log.some((l) => l.startsWith('COPY')));
+  assert.ok(m.log.includes('MOVE 5 Archive'));
 
-  // The same server with IMAP4rev2 not enabled runs as IMAP4rev1, without MOVE.
-  m = mover({ caps: ['IMAP4rev1', 'IMAP4rev2', 'UIDPLUS'], copy: copyUid(5, 41), deletes: [true] });
-  await m.s.move('INBOX', 5, 'Archive');
-  assert.ok(m.log.includes('COPY 5 Archive') && !m.log.some((l) => l.startsWith('MOVE')));
-});
-
-test('a delete for good that fails takes off only a \\Deleted it set itself', async () => {
-  let m = mover({ deletes: [true] });
-  await m.s.deleteForever('Trash', 7);
-  assert.deepEqual(m.log, ['lock Trash', 'flags 7', 'delete 7 in Trash', 'release Trash']);
-
-  // The EXPUNGE refused after this delete set \Deleted: the flag comes off again.
-  m = mover({ deletes: [false] });
-  await assert.rejects(m.s.deleteForever('Trash', 7), { message: t('errors.delete.refused'), refused: true });
-  assert.deepEqual(m.log, ['lock Trash', 'flags 7', 'delete 7 in Trash', 'flags 7', '-\\Deleted 7', 'flags 7', 'release Trash']);
-  assert.ok(!m.flags().has('\\Deleted'));
-
-  // The STORE refused as well: there is no flag to take off.
-  m = mover({ deletes: ['unstored'] });
-  await assert.rejects(m.s.deleteForever('Trash', 7), { message: t('errors.delete.refused'), refused: true });
-  assert.ok(!m.log.some((l) => l.startsWith('-')));
-
-  // Another app had marked the email before: its flag stays, and the notice says the email is still marked.
-  m = mover({ deletes: [false], flags: ['\\Deleted'] });
-  await assert.rejects(m.s.deleteForever('Trash', 7), { message: t('errors.delete.stillMarked'), refused: true, marked: true });
-  assert.ok(!m.log.some((l) => l.startsWith('-')));
-  assert.ok(m.flags().has('\\Deleted'));
-
-  // Flags that couldn't be read first: Rukoo doesn't know who set the flag, so it stays.
-  m = mover({ deletes: [false] });
-  const fetchOne = m.client.fetchOne;
-  let reads = 0;
-  m.client.fetchOne = async (...args) => {
-    if (reads++ === 0) throw new Error('Command failed');
-    return fetchOne(...args);
+  // The same server with IMAP4rev2 not enabled runs as IMAP4rev1, without MOVE: a COPY.
+  m = mover({ caps: ['IMAP4rev1', 'IMAP4rev2', 'UIDPLUS'], move: copyUid(5, 40) });
+  m.client.messageCopy = async (set, destination) => {
+    m.log.push(`COPY ${set} ${destination}`);
+    return false;
   };
-  await assert.rejects(m.s.deleteForever('Trash', 7), { message: t('errors.delete.stillMarked'), marked: true });
-  assert.ok(!m.log.some((l) => l.startsWith('-')));
-
-  // Taking the flag off failed.
-  m = mover({ deletes: [false], unflag: false });
-  await assert.rejects(m.s.deleteForever('Trash', 7), { message: t('errors.delete.stillMarked'), marked: true });
-
-  // The email is gone after all, or the connection went: nobody knows what the server did.
-  m = mover({
-    deletes: [
-      () => {
-        m.gone();
-        return false;
-      }
-    ]
-  });
-  await assert.rejects(m.s.deleteForever('Trash', 7), { message: t('errors.delete.unknown'), unknown: true });
-  m = mover({
-    deletes: [
-      () => {
-        m.client.usable = false;
-        return false;
-      }
-    ]
-  });
-  await assert.rejects(m.s.deleteForever('Trash', 7), { message: t('errors.delete.unknown'), unknown: true });
-  assert.ok(!m.log.some((l) => l.startsWith('-')));
-});
-
-test('without MOVE a failed delete after COPY keeps the copy and reports the partial move', async () => {
-  const caps = ['IMAP4rev1', 'UIDPLUS'];
-  let m = mover({ caps, copy: copyUid(5, 41), deletes: [true] });
-  assert.deepEqual(await m.s.move('INBOX', 5, 'Archive'), { uid: 41, uidValidity: '9' });
-  assert.deepEqual(m.log, ['lock INBOX', 'COPY 5 Archive', 'flags 5', 'delete 5 in INBOX', 'release INBOX']);
-
-  // The COPY refused: nothing changed, and nothing is deleted.
-  m = mover({ caps, copy: false });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { message: t('errors.move.refused'), refused: true });
-  assert.deepEqual(m.log, ['lock INBOX', 'COPY 5 Archive', 'release INBOX']);
-
-  // The COPY's answer never came: it may have been made.
-  m = mover({
-    caps,
-    copy: () => {
-      m.client.usable = false;
-      return false;
-    }
-  });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { message: t('errors.move.unknown'), unknown: true });
-
-  // The delete failed after the copy: the original's \Deleted comes off again and the copy stays.
-  m = mover({ caps, copy: copyUid(5, 41), deletes: [false] });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { message: t('errors.move.copied'), copied: true });
-  assert.deepEqual(m.log, ['lock INBOX', 'COPY 5 Archive', 'flags 5', 'delete 5 in INBOX', 'flags 5', '-\\Deleted 5', 'flags 5', 'release INBOX']);
-
-  // Unless another app had set it.
-  m = mover({ caps, copy: copyUid(5, 41), deletes: [false], flags: ['\\Deleted'] });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { copied: true });
-  assert.ok(!m.log.some((l) => l.startsWith('-')));
-
-  // The original was already expunged. An OK from STORE alone would not prove it was still present.
-  m = mover({ caps, copy: copyUid(5, 41), deletes: [false], flags: null });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { copied: true });
-  assert.deepEqual(m.log, ['lock INBOX', 'COPY 5 Archive', 'flags 5', 'delete 5 in INBOX', 'flags 5', 'release INBOX']);
-
-  // A disconnect after COPY can throw from messageDelete before it sends anything.
-  m = mover({
-    caps,
-    copy: copyUid(5, 41),
-    deletes: [
-      () => {
-        m.client.usable = false;
-        throw Object.assign(new Error('Connection not available'), { code: 'NoConnection' });
-      }
-    ]
-  });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { message: t('errors.move.copied'), copied: true });
-  assert.deepEqual(m.log, ['lock INBOX', 'COPY 5 Archive', 'flags 5', 'delete 5 in INBOX', 'release INBOX']);
-
-  // A server without UIDPLUS may not report the copy's new UID either.
-  m = mover({ caps: ['IMAP4rev1'], copy: { path: 'INBOX', destination: 'Archive' }, deletes: [false] });
-  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { copied: true });
-  assert.ok(!m.log.includes('lock Archive'));
+  await m.s.move('INBOX', 5, 'Archive').catch(() => {});
+  assert.ok(m.log.includes('COPY 5 Archive') && !m.log.some((l) => l.startsWith('MOVE')));
 });
 
 // The same over TCP, against the fixture mailbox, which turns commands down when told: this is what imapflow does
 // with the server's answers.
 const tcpAccount = (port) => new ImapAccount({ type: 'imap', email: 'me@example.test', imap: { host: '127.0.0.1', port, secure: false }, smtp: {} }, 'secret');
 
-test('over a real connection, a refused MOVE or EXPUNGE throws and clears only its own deletion flag', async () => {
-  const box = await imapMailbox({ email: 'me@example.test' });
+// Runs fn(box, s, inbox) against a fixture mailbox of these capabilities, and closes both.
+async function overTcp(capabilities, fn) {
+  const box = await imapMailbox({ email: 'me@example.test', capabilities });
   const s = tcpAccount(box.port);
-  const inbox = box.folders.get('INBOX');
   try {
+    await fn(box, s, box.folders.get('INBOX'));
+  } finally {
+    await s.close();
+    await box.close();
+  }
+}
+const sentSince = (box, from) => box.commands.slice(from);
+// Waits until check() holds; fails instead of hanging.
+async function until(check, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+const deleted = (m) => m.flags.has('\\Deleted');
+
+test('over a real connection, a refused MOVE throws refused and leaves both folders as they were', () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
     const a = box.put('INBOX', { subject: 'Stays' });
     box.refuse((command) => /^UID MOVE /i.test(command));
     await assert.rejects(s.move('INBOX', a.uid, 'Archive'), { message: t('errors.move.refused'), refused: true });
     assert.deepEqual(inbox.messages.map((m) => m.subject), ['Stays']);
     assert.equal(box.folders.get('Archive').messages.length, 0);
-
-    box.refuse((command) => /^UID EXPUNGE /i.test(command));
-    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.refused') });
-    assert.deepEqual(inbox.messages.map((m) => m.subject), ['Stays']);
-    assert.ok(!inbox.messages[0].flags.has('\\Deleted'), 'a later expunge must not delete the restored email');
-
-    // Another app marked it for deletion first. Rukoo leaves that flag alone and says so.
-    inbox.messages[0].flags.add('\\Deleted');
-    const sent = box.commands.length;
-    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked') });
-    assert.ok(inbox.messages[0].flags.has('\\Deleted'));
-    assert.ok(box.commands.slice(sent).some((c) => /^UID EXPUNGE /i.test(c)));
-    assert.ok(!box.commands.slice(sent).some((c) => /^UID STORE \S+ -FLAGS/i.test(c)));
-    inbox.messages[0].flags.delete('\\Deleted');
-
     box.refuse(null);
     assert.equal((await s.move('INBOX', a.uid, 'Archive')).uidValidity, '7');
     assert.equal(inbox.messages.length, 0);
-  } finally {
-    await s.close();
-    await box.close();
-  }
-});
+  }));
 
-test('over a real connection, a MOVE that copied before its NO, or lost its answer, is unknown', async () => {
-  const box = await imapMailbox({ email: 'me@example.test' });
-  const s = tcpAccount(box.port);
-  const inbox = box.folders.get('INBOX');
-  const archive = box.folders.get('Archive');
-  try {
+test('over a real connection, a MOVE that copied before its NO, or lost its answer, is unknown', () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
+    const archive = box.folders.get('Archive');
     const a = box.put('INBOX', { subject: 'Copied' });
     // * OK [COPYUID ...] and then a NO: the server made a copy and kept the original.
     box.refuse((command) => (/^UID MOVE /i.test(command) ? 'copied' : false));
@@ -942,11 +845,29 @@ test('over a real connection, a MOVE that copied before its NO, or lost its answ
     await assert.rejects(s.move('INBOX', b.uid, 'Archive'), { message: t('errors.move.unknown'), unknown: true });
     assert.ok(!inbox.messages.some((m) => m.subject === 'Dropped'));
     assert.ok(archive.messages.some((m) => m.subject === 'Dropped'));
-  } finally {
-    await s.close();
-    await box.close();
-  }
-});
+  }));
+
+// #308 follow-up, finding 1: Archive is rebuilt while the MOVE runs. The copy lands in the new Archive, whose
+// UIDNEXT ends where the old one was; only its UIDVALIDITY tells the two apart.
+test('over a real connection, a MOVE that copied into a rebuilt destination is unknown, though UIDNEXT looks the same', () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
+    const archive = box.folders.get('Archive');
+    for (let i = 0; i < 3; i++) box.put('Archive', { subject: `Old ${i}` });
+    const a = box.put('INBOX', { subject: 'Partly moved' });
+    // Rukoo knows Archive as UIDVALIDITY 7, UIDNEXT 4. The server then rebuilds it as UIDVALIDITY 8, already at UIDNEXT
+    // 3 with two emails, and the MOVE copies into it before answering NO: UIDNEXT 4 again.
+    await s.move('INBOX', box.put('INBOX', { subject: 'First' }).uid, 'Archive');
+    box.before((command) => {
+      if (!/^UID MOVE /i.test(command)) return;
+      archive.uidValidity = 8;
+      archive.messages = archive.messages.slice(0, 2).map((m, i) => ({ ...m, uid: i + 1 }));
+      archive.nextUid = 4;
+    });
+    box.refuse((command) => (/^UID MOVE /i.test(command) ? 'copied' : false));
+    await assert.rejects(s.move('INBOX', a.uid, 'Archive'), (err) => err.unknown === true && !err.refused);
+    assert.ok(archive.messages.some((m) => m.subject === 'Partly moved'));
+    assert.ok(inbox.messages.some((m) => m.subject === 'Partly moved'));
+  }));
 
 test('over a real connection, a server of IMAP4rev2 alone gets UID MOVE', async () => {
   const box = await imapMailbox({ email: 'me@example.test', rev: 'IMAP4rev2', capabilities: ['UIDPLUS'] });
@@ -964,29 +885,213 @@ test('over a real connection, a server of IMAP4rev2 alone gets UID MOVE', async 
   }
 });
 
-test('over a real connection, a server without MOVE keeps the copy when the EXPUNGE is refused', async () => {
-  const old = await imapMailbox({ email: 'me@example.test', capabilities: ['UIDPLUS'] });
-  const s2 = tcpAccount(old.port);
-  try {
-    const b = old.put('INBOX', { subject: 'Moves later' });
-    // Inbox turns the EXPUNGE down after the copy.
-    old.refuse((command, folder) => /EXPUNGE/i.test(command) && folder === 'INBOX');
-    await assert.rejects(s2.move('INBOX', b.uid, 'Archive'), { message: t('errors.move.copied'), copied: true });
-    assert.ok(old.commands.some((c) => /^UID COPY /i.test(c)));
-    assert.ok(!old.commands.some((c) => /^UID MOVE /i.test(c)));
-    assert.deepEqual(old.folders.get('Archive').messages.map((m) => m.subject), ['Moves later']);
-    assert.deepEqual(old.folders.get('INBOX').messages.map((m) => [m.subject, m.flags.has('\\Deleted')]), [['Moves later', false]]);
+// #308 follow-up, finding 2. With CONDSTORE the server shows whose \Deleted it is: MODSEQ before, a STORE on condition
+// that nothing changed since (UNCHANGEDSINCE), and a STORE taking it off on condition that nothing changed after Rukoo's.
+test('over a real connection with CONDSTORE, a refused EXPUNGE takes off the deletion mark this delete set, and only that', () =>
+  overTcp(['MOVE', 'UIDPLUS', 'CONDSTORE'], async (box, s, inbox) => {
+    const a = box.put('INBOX', { subject: 'Stays' });
+    box.refuse((command) => /^UID EXPUNGE /i.test(command));
+    let from = box.commands.length;
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.refused'), refused: true, stage: 'expunge' });
+    assert.ok(!deleted(inbox.messages[0]), 'a later expunge must not delete the restored email');
+    const sent = sentSince(box, from);
+    assert.ok(sent.some((c) => /^UID STORE \d+ \(UNCHANGEDSINCE \d+\) \+FLAGS/i.test(c)));
+    assert.ok(sent.some((c) => /^UID STORE \d+ \(UNCHANGEDSINCE \d+\) -FLAGS/i.test(c)));
 
-    // With the copy in Archive, a user can delete the original when the server allows it.
-    old.refuse(null);
-    await s2.deleteForever('INBOX', b.uid);
-    assert.equal(old.folders.get('INBOX').messages.length, 0);
-    assert.deepEqual(old.folders.get('Archive').messages.map((m) => m.subject), ['Moves later']);
-  } finally {
-    await s2.close();
-    await old.close();
+    // Another app had marked it before: its mark stays, and the notice says the email is still marked.
+    box.touch('INBOX', a.uid, (m) => m.flags.add('\\Deleted'));
+    from = box.commands.length;
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), refused: true, marked: true });
+    assert.ok(deleted(inbox.messages[0]));
+    assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
+    box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
+
+    // Another app marks it after Rukoo read its flags and before Rukoo's STORE, which the server then turns down: the
+    // review's case. Rukoo set nothing, so it takes nothing off.
+    box.refuse((command) => /^UID STORE /i.test(command));
+    box.before((command) => {
+      if (/^UID STORE /i.test(command)) box.touch('INBOX', a.uid, (m) => m.flags.add('\\Deleted'));
+    });
+    from = box.commands.length;
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true, stage: 'store' });
+    assert.ok(deleted(inbox.messages[0]));
+    assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
+    box.before(null);
+    box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
+
+    // The same mark set between the read and Rukoo's STORE, which then goes through: its condition fails (MODIFIED),
+    // so Rukoo's flag can't be told from the other app's, and it stays after the refused EXPUNGE.
+    box.refuse((command) => /^UID EXPUNGE /i.test(command));
+    box.before((command) => {
+      if (/^UID STORE \d+ \(UNCHANGEDSINCE/i.test(command) && /\+FLAGS/i.test(command)) box.touch('INBOX', a.uid, (m) => m.flags.add('\\Seen'));
+    });
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true, stage: 'expunge' });
+    assert.ok(deleted(inbox.messages[0]));
+    box.before(null);
+    box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
+
+    // Another app changes the email after Rukoo's STORE and before taking the flag off: that STORE's condition fails,
+    // and the flag stays.
+    box.before((command) => {
+      if (/^UID EXPUNGE /i.test(command)) box.touch('INBOX', a.uid, (m) => m.flags.add('\\Flagged'));
+    });
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true });
+    assert.ok(deleted(inbox.messages[0]));
+    box.before(null);
+    box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
+
+    box.refuse(null);
+    await s.deleteForever('INBOX', a.uid);
+    assert.equal(inbox.messages.length, 0);
+  }));
+
+// #308 follow-up, finding 2: the review's second case. The email was already marked; the server answers the flag read
+// with another email's FETCH first, which imapflow's fetchOne took for this one.
+test("over a real connection, another email's FETCH in the flag read doesn't make a deletion mark look like Rukoo's", () =>
+  overTcp(['MOVE', 'UIDPLUS', 'CONDSTORE'], async (box, s, inbox) => {
+    const a = box.put('INBOX', { subject: 'Marked by another app', flags: ['\\Deleted'] });
+    const b = box.put('INBOX', { subject: 'Another email' });
+    box.before((command, folder, write) => {
+      if (/^UID FETCH /i.test(command)) write(`* 2 FETCH (UID ${b.uid} FLAGS () MODSEQ (${inbox.messages[1].modseq}))\r\n`);
+    });
+    box.refuse((command) => /^UID EXPUNGE /i.test(command));
+    const from = box.commands.length;
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), marked: true });
+    assert.ok(deleted(inbox.messages[0]));
+    assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
+  }));
+
+test('over a real connection without CONDSTORE, a refused EXPUNGE leaves the deletion mark and says so, and a refused STORE is a refusal', () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
+    const a = box.put('INBOX', { subject: 'Stays' });
+    // Nothing on this server shows that the mark is Rukoo's: another app may have set it in between.
+    box.refuse((command) => /^UID EXPUNGE /i.test(command));
+    let from = box.commands.length;
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.stillMarked'), refused: true, marked: true, stage: 'expunge' });
+    assert.ok(deleted(inbox.messages[0]));
+    assert.ok(!sentSince(box, from).some((c) => /-FLAGS/i.test(c)));
+    // No flag read first: without MODSEQs it could prove nothing.
+    assert.ok(!sentSince(box, from).some((c, i, all) => /^UID FETCH /i.test(c) && all.indexOf(c) < all.findIndex((x) => /^UID STORE /i.test(x))));
+    box.touch('INBOX', a.uid, (m) => m.flags.delete('\\Deleted'));
+
+    // The STORE refused: no mark, the email stayed.
+    box.refuse((command) => /^UID STORE /i.test(command));
+    from = box.commands.length;
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.refused'), refused: true, stage: 'store' });
+    assert.ok(!sentSince(box, from).some((c) => /EXPUNGE/i.test(c)));
+    assert.ok(!deleted(inbox.messages[0]));
+  }));
+
+test('over a real connection, a delete that lost its answer, or whose email went anyway, is unknown', () =>
+  overTcp(['MOVE', 'UIDPLUS', 'CONDSTORE'], async (box, s, inbox) => {
+    const a = box.put('INBOX', { subject: 'Gone anyway' });
+    // Another app expunges it while Rukoo's EXPUNGE is refused.
+    box.refuse((command) => /^UID EXPUNGE /i.test(command));
+    box.before((command) => {
+      if (/^UID EXPUNGE /i.test(command)) inbox.messages = inbox.messages.filter((m) => m.uid !== a.uid);
+    });
+    await assert.rejects(s.deleteForever('INBOX', a.uid), { message: t('errors.delete.unknown'), unknown: true });
+    box.before(null);
+
+    const b = box.put('INBOX', { subject: 'Dropped' });
+    box.refuse((command) => (/^UID EXPUNGE /i.test(command) ? 'drop' : false));
+    await assert.rejects(s.deleteForever('INBOX', b.uid), { message: t('errors.delete.unknown'), unknown: true });
+  }));
+
+test('over a real connection, a server without MOVE keeps the copy when the EXPUNGE is refused, and takes off only its own mark', async () => {
+  for (const [capabilities, cleared] of [
+    [['UIDPLUS', 'CONDSTORE'], true],
+    [['UIDPLUS'], false],
+    [['CONDSTORE'], true]
+  ]) {
+    await overTcp(capabilities, async (box, s, inbox) => {
+      const b = box.put('INBOX', { subject: 'Moves later' });
+      // Inbox turns the EXPUNGE down after the copy.
+      box.refuse((command, folder) => /EXPUNGE/i.test(command) && folder === 'INBOX');
+      await assert.rejects(s.move('INBOX', b.uid, 'Archive'), { message: t('errors.move.copied'), copied: true });
+      assert.ok(box.commands.some((c) => /^UID COPY /i.test(c)));
+      assert.ok(!box.commands.some((c) => /^UID MOVE /i.test(c)));
+      assert.deepEqual(box.folders.get('Archive').messages.map((m) => m.subject), ['Moves later']);
+      assert.deepEqual(inbox.messages.map((m) => [m.subject, deleted(m)]), [['Moves later', !cleared]], capabilities.join(' '));
+
+      // With the copy in Archive, a user can delete the original when the server allows it.
+      box.refuse(null);
+      box.touch('INBOX', b.uid, (m) => m.flags.delete('\\Deleted'));
+      await s.deleteForever('INBOX', b.uid);
+      assert.equal(inbox.messages.length, 0);
+    });
   }
 });
+
+// #308 follow-up, finding 6: the checks must not cost a round trip per email. Counted over TCP for 500 emails; the
+// commands of the move or delete itself are one MOVE, or one STORE and one EXPUNGE, per email, as before #308.
+test('a batch of 500 moves asks one STATUS, and 500 deletes read flags once per 100 emails', () =>
+  overTcp(['MOVE', 'UIDPLUS', 'CONDSTORE'], async (box, s, inbox) => {
+    const uids = Array.from({ length: 500 }, (_, i) => box.put('INBOX', { subject: `Email ${i}` }).uid);
+    const count = (from, re) => sentSince(box, from).filter((c) => re.test(c)).length;
+    let from = box.commands.length;
+    const moved = await s.moveMany('INBOX', uids, 'Archive');
+    assert.ok([...moved.values()].every((r) => r.uid && !r.error));
+    assert.equal(count(from, /^UID MOVE /i), 500);
+    assert.equal(count(from, /^STATUS /i), 1);
+    assert.equal(count(from, /^UID FETCH /i), 0);
+    assert.equal(count(from, /^SELECT /i), 1);
+
+    const archived = box.folders.get('Archive').messages.map((m) => m.uid);
+    from = box.commands.length;
+    const gone = await s.deleteMany('Archive', archived);
+    assert.ok([...gone.values()].every((r) => !r.error));
+    assert.equal(count(from, /^UID STORE /i), 500);
+    assert.equal(count(from, /^UID EXPUNGE /i), 500);
+    assert.equal(count(from, /^UID FETCH /i), 5);
+    assert.equal(box.folders.get('Archive').messages.length, 0);
+
+    // All 500 refused: still checked per turn of 100, not per email.
+    const again = Array.from({ length: 500 }, (_, i) => box.put('INBOX', { subject: `Again ${i}` }).uid);
+    box.refuse((command) => /^UID MOVE /i.test(command));
+    from = box.commands.length;
+    const refused = await s.moveMany('INBOX', again, 'Archive');
+    assert.ok([...refused.values()].every((r) => r.error && r.error.refused));
+    assert.equal(count(from, /^STATUS /i), 5);
+    assert.equal(count(from, /^UID FETCH /i), 5);
+    assert.equal(inbox.messages.length, 500);
+  }));
+
+// Rukoo sends the STOREs and EXPUNGE of a delete itself, which imapflow doesn't put after the DONE of an IDLE as it
+// does its own commands. A lock on the folder that's open already leaves an IDLE running.
+test('over a real connection, a delete for good on a folder that went idle ends the IDLE first', () =>
+  overTcp(['MOVE', 'UIDPLUS', 'IDLE'], async (box, s, inbox) => {
+    const options = s.imapOptions.bind(s);
+    s.imapOptions = async () => ({ ...(await options()), autoIdleDelay: 20 });
+    const [a, b] = [box.put('INBOX', { subject: 'First' }), box.put('INBOX', { subject: 'Second' })];
+    await s.deleteForever('INBOX', a.uid);
+    await until(() => box.commands[box.commands.length - 1] === 'IDLE');
+    let timer;
+    const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error('waited for the IDLE')), 3000)));
+    await Promise.race([s.deleteForever('INBOX', b.uid), late]).finally(() => clearTimeout(timer));
+    assert.equal(inbox.messages.length, 0);
+  }));
+
+test('over a real connection, a batch whose connection drops goes on over a new one, and a rebuilt folder stops it unsent', () =>
+  overTcp(['MOVE', 'UIDPLUS'], async (box, s, inbox) => {
+    const uids = Array.from({ length: 5 }, (_, i) => box.put('INBOX', { subject: `Email ${i}` }).uid);
+    // The third MOVE is carried out, and the connection closes before its answer.
+    let n = 0;
+    box.refuse((command) => (/^UID MOVE /i.test(command) && ++n === 3 ? 'drop' : false));
+    const out = await s.moveMany('INBOX', uids, 'Archive');
+    assert.equal(out.get(uids[2]).error.unknown, true);
+    for (const uid of [uids[0], uids[1], uids[3], uids[4]]) assert.ok(out.get(uid).uid, `uid ${uid} moved`);
+    assert.equal(inbox.messages.length, 0);
+
+    // Inbox rebuilt since the cache knew it: not one command for its emails.
+    box.refuse(null);
+    const c = box.put('INBOX', { subject: 'After' });
+    const from = box.commands.length;
+    const rebuilt = await s.moveMany('INBOX', [c.uid], 'Archive', { expectUidValidity: '6' });
+    assert.equal(rebuilt.get(c.uid).error.code, 'UIDVALIDITY');
+    assert.equal(rebuilt.get(c.uid).error.unsent, true);
+    assert.ok(!sentSince(box, from).some((x) => /MOVE|STORE|EXPUNGE/i.test(x)));
+  }));
 
 test('an inbox sync counts the unread mail below the window by uid, and says null when the server does not tell', async () => {
   const flags = { 3: [], 4: ['\\Seen'], 5: [], 6: [], 7: ['\\Seen'] };

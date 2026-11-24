@@ -3,7 +3,7 @@
 const { t } = require('../i18n');
 
 const { ImapFlow } = require('imapflow');
-const { hasCapability } = require('imapflow/lib/tools.js');
+const { hasCapability, canUseFlag } = require('imapflow/lib/tools.js');
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const util = require('./mailutil');
@@ -45,72 +45,152 @@ function uidChunks(uids) {
 
 const uidSets = (uids) => uidChunks(uids).map((c) => c.set);
 
-// What a move or delete the server didn't carry out throws. refused: the server turned it down and nothing changed,
-// so the email is where it was. unknown: nobody knows what the server did (a lost connection, or an answer that
-// doesn't prove the folders are as they were), so the engine syncs the folders involved before anything is retried.
+// What a move or delete that didn't go as asked gives for an email. refused: the server turned it down, and Rukoo read
+// back that nothing changed: the email is still in its folder, by its own UID in the folder's generation the command
+// used, and the destination of a move took nothing in (moveTurn()). unsent: Rukoo never sent the command for the
+// email (the connection or the folder didn't open, or the folder was rebuilt since, code 'UIDVALIDITY'), so it
+// changed nothing, though it read nothing back either. unknown: anything else, such as an answer that never came or
+// one that proves nothing; the engine syncs the folders involved before anything is retried. copied: a server
+// without MOVE kept the copy it made (moveTurn()).
 const refusal = (key, extra = {}) => Object.assign(new Error(t(key)), { refused: true, ...extra });
-const uncertain = (key) => Object.assign(new Error(t(key)), { unknown: true });
+const uncertain = (key, extra = {}) => Object.assign(new Error(t(key)), { unknown: true, ...extra });
+
+// How many emails of a batch go under one mailbox lock, one turn on the connection. Between turns the user's other
+// commands get their go. The flags a delete reads first, and the checks after failures, cover a turn at a time.
+const TURN = 100;
+
+// How long Rukoo uses what it knows of a destination's UIDNEXT (ImapAccount.uidNexts) before it asks again. Older
+// knowledge would still be safe, only less precise: see moveTurn().
+const UIDNEXT_FRESH_MS = 60000;
+
+// imapflow's own test for a capability, which counts what IMAP4rev2 has built in once that version is active.
+const has = (client, capability) => Boolean(client.capabilities) && hasCapability({ capabilities: client.capabilities, enabled: client.enabled || new Set() }, capability);
 
 // Whether imapflow's messageMove sends MOVE, by imapflow's own test: the MOVE capability, or IMAP4rev2, whose base
-// protocol has MOVE (RFC 9051 section 6.4.8). Without it Rukoo copies and deletes itself; see move().
-const canMove = (client) => !client.capabilities || hasCapability({ capabilities: client.capabilities, enabled: client.enabled || new Set() }, 'MOVE');
+// protocol has MOVE (RFC 9051 section 6.4.8). Without it Rukoo copies and deletes itself; see moveTurn().
+const canMove = (client) => !client.capabilities || has(client, 'MOVE');
 
-// The UIDNEXT of a folder other than the open one, or null when the server doesn't say.
-async function uidNext(client, path) {
+// Whether the open folder keeps a MODSEQ for each email (CONDSTORE, RFC 7162), by which the server can show that a
+// flag is the one Rukoo set (deleteOne()).
+const modseqs = (client) => Boolean(client.enabled && client.enabled.has('CONDSTORE') && client.mailbox && !client.mailbox.noModseq);
+
+// UIDVALIDITY and UIDNEXT of a folder other than the open one, as { validity, next }; null when STATUS doesn't give
+// both. A STATUS answer only comes for the folder asked: Rukoo doesn't turn on NOTIFY, the one way to get others.
+async function folderState(client, path) {
+  if (client.usable === false) return null;
   try {
-    const status = await client.status(path, { uidNext: true });
-    return status && status.uidNext != null ? String(status.uidNext) : null;
+    const status = await client.status(path, { uidNext: true, uidValidity: true });
+    if (!status || status.uidNext == null || status.uidValidity == null) return null;
+    return { validity: String(status.uidValidity), next: Number(status.uidNext) };
   } catch (_) {
     return null;
   }
 }
 
-// The flags of uid in the open folder; null when it isn't there, undefined when they couldn't be read.
-async function readFlags(client, uid) {
-  if (client.usable === false) return undefined;
+// What the server says now of these uids in the open folder, read by UID in sets that fit a command line: a Map
+// uid → { flags, modseq }, modseq with CONDSTORE only. Only answers that carry one of these UIDs count: a server may
+// send a FETCH of another email with them (RFC 9051 section 7.5.2), and imapflow lists that one too. A uid the map
+// lacks isn't in the folder. null when the read failed.
+async function readMany(client, uids) {
+  if (client.usable === false) return null;
+  const want = new Set(uids.map(Number));
+  const out = new Map();
   try {
-    const message = await client.fetchOne(String(uid), { flags: true }, { uid: true });
-    return message && message.flags ? message.flags : null;
-  } catch (_) {
-    return undefined;
-  }
-}
-
-// Deletes uid from the open folder: messageDelete sets \Deleted and expunges, and answers false for a failure of
-// either. Returns 'deleted', or what is left when it didn't finish: 'kept' (there without \Deleted), 'marked' (there
-// with it) or 'unknown'. After a failure it takes \Deleted off again so a later EXPUNGE from any app won't remove an
-// email Rukoo has put back in the list, but only when the flag wasn't there before: another app may have set it.
-async function deleteMessage(client, uid) {
-  const before = await readFlags(client, uid);
-  try {
-    if (await client.messageDelete(String(uid), { uid: true })) return 'deleted';
-  } catch (_) {
-    // imapflow can throw before the command goes out, for example after a lost connection.
-  }
-  let flags = await readFlags(client, uid);
-  if (!flags) return 'unknown';
-  if (flags.has('\\Deleted') && before && !before.has('\\Deleted')) {
-    const cleared = await client.messageFlagsRemove(String(uid), ['\\Deleted'], { uid: true }).catch(() => false);
-    if (cleared) flags = await readFlags(client, uid);
-    if (!flags) return 'unknown';
-  }
-  return flags.has('\\Deleted') ? 'marked' : 'kept';
-}
-
-// What a MOVE that didn't answer OK did. imapflow gives false for a NO, a BAD and a lost connection alike, and a server
-// can make the copy before it answers NO: RFC 6851 section 3.3 only says it SHOULD NOT leave an email in both folders.
-// It counts as refused only when the email is still in the open folder and the destination's UIDNEXT is what it was
-// before the MOVE (before), so nothing was added there.
-async function moveOutcome(client, uid, destination, before) {
-  if (client.usable !== false && before != null) {
-    try {
-      const still = await client.fetchOne(String(uid), { uid: true }, { uid: true });
-      if (still && (await uidNext(client, destination)) === before) return refusal('errors.move.refused');
-    } catch (_) {
-      // Unknown, as below.
+    for (const set of uidSets([...want])) {
+      for (const m of (await client.fetchAll(set, { uid: true, flags: true }, { uid: true })) || []) {
+        const uid = Number(m && m.uid);
+        if (want.has(uid) && m.flags) out.set(uid, { flags: m.flags, modseq: m.modseq != null ? String(m.modseq) : null });
+      }
     }
+  } catch (_) {
+    return null;
   }
-  return uncertain('errors.move.unknown');
+  return client.usable === false ? null : out;
+}
+
+// What a FETCH line in the answer to a command says of an email: { uid, modseq }.
+function fetchLine(untagged) {
+  const list = (untagged && untagged.attributes && untagged.attributes[1]) || [];
+  const out = { uid: null, modseq: null };
+  for (let i = 0; i + 1 < list.length; i += 2) {
+    const key = String((list[i] && list[i].value) || '').toUpperCase();
+    const value = list[i + 1];
+    if (key === 'UID') out.uid = Number(value && value.value);
+    else if (key === 'MODSEQ' && Array.isArray(value) && value[0] && /^\d+$/.test(String(value[0].value))) out.modseq = String(value[0].value);
+  }
+  return out;
+}
+
+// The code in brackets of a tagged answer, such as MODIFIED, in capitals.
+function answerCode(response) {
+  const section = response && response.attributes && response.attributes[0] && response.attributes[0].section;
+  return section && section[0] && typeof section[0].value === 'string' ? section[0].value.toUpperCase() : '';
+}
+
+// How a command Rukoo sent itself ended when it didn't answer OK: 'no' for the server's NO or BAD, 'lost' when no
+// answer came.
+const failedAs = (client, err) => (client.usable !== false && err && err.responseStatus ? 'no' : 'lost');
+
+// A UID STORE of \Deleted on uid in the open folder: op '+' sets it, '-' takes it off. With since, the server changes
+// the email only if nothing changed it after that MODSEQ (UNCHANGEDSINCE, RFC 7162 section 3.1.3). Rukoo sends this
+// command itself: imapflow's messageFlagsAdd answers true for a STORE the condition left alone (MODIFIED), and puts
+// UNCHANGEDSINCE after the flags, where the RFC has it before them. It runs under a mailbox lock, which keeps imapflow
+// from starting IDLE in between. Answers { status, modseq }: 'ok' with the MODSEQ the server gave the change,
+// 'modified' when the condition left the email alone, or failedAs().
+async function storeDeleted(client, uid, op, since = null) {
+  if (op === '+' && !canUseFlag(client.mailbox, '\\Deleted')) return { status: 'no' };
+  const attributes = [{ type: 'SEQUENCE', value: String(uid) }];
+  if (since != null) attributes.push([{ type: 'ATOM', value: 'UNCHANGEDSINCE' }, { type: 'ATOM', value: String(since) }]);
+  attributes.push({ type: 'ATOM', value: `${op}FLAGS` }, [{ type: 'ATOM', value: '\\Deleted' }]);
+  let modseq = null;
+  try {
+    const response = await client.exec('UID STORE', attributes, {
+      untagged: {
+        FETCH: async (untagged) => {
+          const line = fetchLine(untagged);
+          if (line.uid === Number(uid) && line.modseq) modseq = line.modseq;
+        }
+      }
+    });
+    const code = answerCode(response.response);
+    response.next();
+    return code === 'MODIFIED' ? { status: 'modified' } : { status: 'ok', modseq };
+  } catch (err) {
+    return { status: failedAs(client, err) };
+  }
+}
+
+// The EXPUNGE of uid, once it carries \Deleted: UID EXPUNGE with UIDPLUS, which leaves other emails marked for
+// deletion alone, and a plain EXPUNGE without it, as imapflow's messageDelete sends. 'ok', or failedAs().
+async function expungeOne(client, uid) {
+  const byUid = has(client, 'UIDPLUS');
+  try {
+    const response = await client.exec(byUid ? 'UID EXPUNGE' : 'EXPUNGE', byUid ? [{ type: 'SEQUENCE', value: String(uid) }] : false);
+    response.next();
+    return 'ok';
+  } catch (err) {
+    return failedAs(client, err);
+  }
+}
+
+// Deletes uid from the open folder: a STORE of \Deleted, then an EXPUNGE, each of which can fail on its own. before:
+// what readMany() said of the email before its turn. When the EXPUNGE fails, \Deleted comes off again only when the
+// server shows that this STORE set it and nothing changed the email since: it had no \Deleted at that read, the STORE
+// went on condition that nothing changed it after the read, and taking the flag off goes on condition that nothing
+// changed it after the STORE. Anything else, a server without CONDSTORE included, leaves the flag: another app may
+// have set it. Answers 'deleted', 'store' (the STORE failed), 'expunge' (the EXPUNGE failed) or 'lost' (an answer
+// never came).
+async function deleteOne(client, uid, before) {
+  const since = before && before.modseq && !before.flags.has('\\Deleted') ? before.modseq : null;
+  let set = await storeDeleted(client, uid, '+', since);
+  const mine = since != null && set.status === 'ok' ? set.modseq : null;
+  // Something changed the email after the read: a plain STORE, whose flag Rukoo can't tell from another app's.
+  if (set.status === 'modified') set = await storeDeleted(client, uid, '+');
+  if (set.status !== 'ok') return set.status === 'lost' ? 'lost' : 'store';
+  const expunged = await expungeOne(client, uid);
+  if (expunged !== 'no') return expunged === 'ok' ? 'deleted' : 'lost';
+  if (mine && (await storeDeleted(client, uid, '-', mine)).status === 'lost') return 'lost';
+  return 'expunge';
 }
 
 // A connection and the commands waiting for it: what the user waits for goes first, then background work. idle
@@ -352,6 +432,9 @@ class ImapAccount {
     this.oneConnection = false;
     // Set by close(): the account is gone or uses a new session, so nothing may connect through this one again.
     this.closed = false;
+    // What Rukoo knows of folders' UIDNEXT, by path: { validity, next, at }, next being at most the real UIDNEXT. A
+    // move's checks use it; see moveTurn().
+    this.uidNexts = new Map();
   }
 
   async auth(user) {
@@ -720,58 +803,180 @@ class ImapAccount {
     });
   }
 
-  // Returns the message's uid in the destination and that mailbox's UIDVALIDITY, as far as the
-  // server reports them (UIDPLUS). With expectUidValidity, refuses to touch a mailbox whose uids
-  // were reassigned since: the uid would point at another message.
-  // What didn't go as asked throws: refused when the server turned it down and nothing changed, unknown when that
-  // isn't certain (moveOutcome()), copied when a copy was left in destination. A server without MOVE gets a COPY and
-  // then a delete from path (deleteMessage()); imapflow's messageMove does the same, but says false both when the COPY
-  // failed and when the delete failed after the copy was made. Keep the copy after a failed delete because another
-  // client may already have expunged the original.
-  move(path, uid, destination, { expectUidValidity = null } = {}) {
-    return this.run(async (client) => {
-      const lock = await client.getMailboxLock(path);
-      const opts = { uid: true };
-      let res;
+  // Runs work over uids in turns of TURN, each turn under its own lock of path, and returns what each uid got: a Map
+  // uid → { uid, uidValidity } for a move, {} for a delete, or { error } (refusal() and the rest). With
+  // expectUidValidity it touches nothing in a path whose uids were given out again since: they would name other
+  // emails. work(client, uids, results, sent) records a result for each uid it sends a command for, after adding the
+  // uid to sent. A uid it leaves without one goes into the next turn: the connection went before its go, so nothing
+  // was sent for it. A turn that fails gives every uid still without a result its error: unsent for those nothing was
+  // sent for, unknown (by unknownKey) for any it was.
+  async inTurns(path, uids, expectUidValidity, unknownKey, work) {
+    const results = new Map();
+    let todo = [...new Set(uids.map(Number))];
+    while (todo.length) {
+      const turn = todo.slice(0, TURN);
+      const sent = new Set();
       try {
-        if (expectUidValidity && String(client.mailbox.uidValidity) !== String(expectUidValidity)) {
-          throw Object.assign(new Error(t('errors.folder.rebuilt')), { code: 'UIDVALIDITY' });
-        }
-        if (!canMove(client)) {
-          // A COPY that fails leaves the destination as it was (RFC 3501 section 6.4.7), unless the answer never came.
-          res = await client.messageCopy(String(uid), destination, opts).catch(() => false);
-          if (!res) throw client.usable === false ? uncertain('errors.move.unknown') : refusal('errors.move.refused');
-          if ((await deleteMessage(client, uid)) !== 'deleted') throw Object.assign(new Error(t('errors.move.copied')), { copied: true });
-        } else {
-          const before = await uidNext(client, destination);
-          res = await client.messageMove(String(uid), destination, opts).catch(() => false);
-          if (!res) throw await moveOutcome(client, uid, destination, before);
-        }
-      } finally {
-        lock.release();
+        await this.run(async (client) => {
+          const lock = await client.getMailboxLock(path);
+          try {
+            if (expectUidValidity != null && String(client.mailbox.uidValidity) !== String(expectUidValidity)) {
+              throw Object.assign(new Error(t('errors.folder.rebuilt')), { code: 'UIDVALIDITY' });
+            }
+            // A lock on the folder that is open already doesn't end imapflow's IDLE, and the STOREs and EXPUNGEs Rukoo
+            // sends itself (storeDeleted()) would wait behind it. A NOOP ends it; the lock keeps a new one from starting.
+            if (client.idling) await client.noop();
+            await work(client, turn, results, sent);
+          } finally {
+            lock.release();
+          }
+        });
+      } catch (err) {
+        const failed = Object.assign(err instanceof Error ? err : new Error(String(err)), { unsent: true });
+        for (const uid of todo) if (!results.has(uid)) results.set(uid, { error: sent.has(uid) ? uncertain(unknownKey) : failed });
+        break;
       }
-      return {
-        uid: res.uidMap ? res.uidMap.get(uid) || null : null,
-        uidValidity: res.uidValidity ? String(res.uidValidity) : null
-      };
+      const left = todo.filter((uid) => !results.has(uid));
+      // Not one email had its go: the connection was gone from the start.
+      if (left.length === todo.length) {
+        const gone = Object.assign(new Error(t('errors.connection.closed')), { unsent: true });
+        for (const uid of left) results.set(uid, { error: gone });
+        break;
+      }
+      todo = left;
+    }
+    return results;
+  }
+
+  // What Rukoo knows of destination's UIDNEXT, from uidNexts while it is fresh, or else from a STATUS.
+  async destinationState(client, path) {
+    const known = this.uidNexts.get(path);
+    if (known && Date.now() - known.at < UIDNEXT_FRESH_MS) return known;
+    return this.knowState(path, await folderState(client, path));
+  }
+
+  // Keeps what a STATUS said of path's UIDVALIDITY and UIDNEXT, or forgets it when it said nothing.
+  knowState(path, state) {
+    if (!state) {
+      this.uidNexts.delete(path);
+      return null;
+    }
+    const known = { ...state, at: Date.now() };
+    this.uidNexts.set(path, known);
+    return known;
+  }
+
+  // After a MOVE or COPY that answered OK: path took the email at uid to, so in that UIDVALIDITY its UIDNEXT is past
+  // that. Without a COPYUID Rukoo knows nothing of the folder until its next STATUS.
+  movedInto(path, known, to, uidValidity) {
+    if (!to || !uidValidity) return this.knowState(path, null);
+    const next = known && known.validity === uidValidity ? Math.max(known.next, to + 1) : to + 1;
+    return this.knowState(path, { validity: uidValidity, next });
+  }
+
+  // One turn of moveMany(): a MOVE (or a COPY and a delete) per email. One that fails counts as refused only with
+  // proof that it changed nothing: the email is still in the open folder by its UID, in the UIDVALIDITY of the turn,
+  // and the destination took nothing in. For that Rukoo keeps the destination's UIDVALIDITY and UIDNEXT (uidNexts).
+  // Within one UIDVALIDITY UIDNEXT only grows, with every email added (RFC 9051 section 2.3.1.1), so what Rukoo knows
+  // is never above it. When an OK's COPYUID gives the email exactly that next uid, or a STATUS after the failures
+  // still says it, nothing came into the destination in between, from the failures neither. Mail that arrives
+  // meanwhile can turn a refusal into unknown, never the other way round. So the checks cost one STATUS per
+  // destination and batch, and a FETCH and a STATUS per turn with failures. imapflow answers false for a NO, a BAD and
+  // a lost connection alike, and a server can make the copy before it answers NO: RFC 6851 section 3.3 only says it
+  // SHOULD NOT leave an email in both folders.
+  async moveTurn(client, turn, destination, results, sent) {
+    const opts = { uid: true };
+    const move = canMove(client);
+    const validity = String(client.mailbox.uidValidity);
+    // For the deletes after a COPY: the flags before, where MODSEQs can show which \Deleted is Rukoo's.
+    const before = !move && modseqs(client) ? await readMany(client, turn) : null;
+    let known = await this.destinationState(client, destination);
+    const failed = [];
+    // The failures not shown yet to have added nothing to the destination, and those shown to.
+    let open = [];
+    const clean = new Set();
+    for (const uid of turn) {
+      if (client.usable === false) break;
+      sent.add(uid);
+      const res = await client[move ? 'messageMove' : 'messageCopy'](String(uid), destination, opts).catch(() => false);
+      if (!res) {
+        failed.push(uid);
+        open.push(uid);
+        continue;
+      }
+      const to = res.uidMap ? res.uidMap.get(uid) || null : null;
+      const uidValidity = res.uidValidity != null ? String(res.uidValidity) : null;
+      if (known && to === known.next && uidValidity === known.validity) for (const u of open) clean.add(u);
+      open = [];
+      known = this.movedInto(destination, known, to, uidValidity);
+      // Without MOVE: the copy is made, the original goes. When it doesn't, the copy stays.
+      if (!move && (await deleteOne(client, uid, before && before.get(uid))) !== 'deleted') {
+        results.set(uid, { error: Object.assign(new Error(t('errors.move.copied')), { copied: true }) });
+        continue;
+      }
+      results.set(uid, { uid: to, uidValidity });
+    }
+    if (open.length) {
+      const now = await folderState(client, destination);
+      if (known && now && now.validity === known.validity && now.next === known.next) for (const u of open) clean.add(u);
+      this.knowState(destination, now);
+    }
+    if (!failed.length) return;
+    const here = await readMany(client, failed);
+    const same = Boolean(here) && Boolean(client.mailbox) && String(client.mailbox.uidValidity) === validity;
+    for (const uid of failed) {
+      const refused = same && here.has(uid) && clean.has(uid);
+      results.set(uid, { error: refused ? refusal('errors.move.refused') : uncertain('errors.move.unknown') });
+    }
+  }
+
+  // Moves uids from path to destination, one MOVE each, and returns what each got (inTurns()): with UIDPLUS, its uid
+  // in destination and that folder's UIDVALIDITY. A server without MOVE gets a COPY and then a delete (deleteOne());
+  // imapflow's messageMove does the same, but answers false both when the COPY failed and when the delete failed after
+  // the copy was made. After a failed delete the copy stays (errors.move.copied): another app may already have
+  // expunged the original.
+  moveMany(path, uids, destination, { expectUidValidity = null } = {}) {
+    return this.inTurns(path, uids, expectUidValidity, 'errors.move.unknown', (client, turn, results, sent) => this.moveTurn(client, turn, destination, results, sent));
+  }
+
+  // moveMany() for one email: its uid in destination and that folder's UIDVALIDITY, or the error.
+  async move(path, uid, destination, opts = {}) {
+    const r = (await this.moveMany(path, [uid], destination, opts)).get(Number(uid));
+    if (r.error) throw r.error;
+    return { uid: r.uid, uidValidity: r.uidValidity };
+  }
+
+  // Deletes uids from path for good and returns what each got (inTurns()): {} for an email that's gone, or { error }.
+  // refused, with stage 'store' or 'expunge' for the command that failed, when the email is still there by its UID;
+  // with errors.delete.stillMarked and marked when it still carries \Deleted. unknown when Rukoo can't tell. The flags
+  // before (deleteOne()) and what's left after are read once per turn, for all its emails at once.
+  deleteMany(path, uids, { expectUidValidity = null } = {}) {
+    return this.inTurns(path, uids, expectUidValidity, 'errors.delete.unknown', async (client, turn, results, sent) => {
+      const before = modseqs(client) ? await readMany(client, turn) : null;
+      const stage = new Map();
+      for (const uid of turn) {
+        if (client.usable === false) break;
+        sent.add(uid);
+        const left = await deleteOne(client, uid, before && before.get(uid));
+        if (left === 'deleted') results.set(uid, {});
+        else if (left === 'lost') results.set(uid, { error: uncertain('errors.delete.unknown') });
+        else stage.set(uid, left);
+      }
+      if (!stage.size) return;
+      const after = await readMany(client, [...stage.keys()]);
+      for (const [uid, at] of stage) {
+        const m = after && after.get(uid);
+        if (!m) results.set(uid, { error: uncertain('errors.delete.unknown') });
+        else if (m.flags.has('\\Deleted')) results.set(uid, { error: refusal('errors.delete.stillMarked', { marked: true, stage: at }) });
+        else results.set(uid, { error: refusal('errors.delete.refused', { stage: at }) });
+      }
     });
   }
 
-  // A delete that didn't finish throws: refused when the email is still there (also when it still carries \Deleted,
-  // which the message says), unknown when Rukoo can't tell.
-  deleteForever(path, uid) {
-    return this.run(async (client) => {
-      const lock = await client.getMailboxLock(path);
-      try {
-        const left = await deleteMessage(client, uid);
-        if (left === 'deleted') return;
-        if (left === 'kept') throw refusal('errors.delete.refused');
-        if (left === 'marked') throw refusal('errors.delete.stillMarked', { marked: true });
-        throw uncertain('errors.delete.unknown');
-      } finally {
-        lock.release();
-      }
-    });
+  // deleteMany() for one email: throws its error.
+  async deleteForever(path, uid, opts = {}) {
+    const r = (await this.deleteMany(path, [uid], opts)).get(Number(uid));
+    if (r.error) throw r.error;
   }
 
   append(path, raw, flags = []) {
