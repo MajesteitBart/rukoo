@@ -187,6 +187,16 @@ class ChatSheetRulesTest {
     }
 
     @Test
+    fun `the billing row is for owners and admins on a server that bills workspaces`() {
+        val withBilling = listOf(WorkspaceAction.RENAME_ME, WorkspaceAction.MEMBERS, WorkspaceAction.INVITE, WorkspaceAction.BILLING, WorkspaceAction.BLOCKED, WorkspaceAction.LEAVE, WorkspaceAction.DELETE)
+        assertEquals(withBilling, SheetRules.workspaceActions(view(), billing = true))
+        assertTrue(WorkspaceAction.BILLING in SheetRules.workspaceActions(view(role = "admin"), billing = true))
+        assertFalse(WorkspaceAction.BILLING in SheetRules.workspaceActions(view(role = "member"), billing = true))
+        assertFalse(WorkspaceAction.BILLING in SheetRules.workspaceActions(view(role = "guest"), billing = true))
+        assertFalse(WorkspaceAction.BILLING in SheetRules.workspaceActions(view(), billing = false))
+    }
+
+    @Test
     fun `while the server asks for an update only the sheets without writes in the workspace stay open`() {
         val stay = ChatSheet.entries.filter { SheetRules.opensWhileReadOnly(it) }.toSet()
         assertEquals(setOf(ChatSheet.JOIN, ChatSheet.CREATE_WORKSPACE, ChatSheet.DETAILS, ChatSheet.MEMBERS), stay)

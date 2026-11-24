@@ -225,6 +225,20 @@ class WorkspaceClient internal constructor(
         return fetch(ws(w, "/changes") + if (query.isEmpty()) "" else "?" + query.joinToString("&"), FeedPage.serializer())
     }
 
+    /** `GET …/billing`: what Stripe bills the workspace, for an owner or admin (server/WORKSPACES.md "Billing"). */
+    suspend fun billing(w: String): WorkspaceBilling = fetch(ws(w, "/billing"), BillingAnswer.serializer()).billing
+
+    /**
+     * `POST …/billing/checkout` or `…/billing/portal` ([kind]), for an owner: the address of Stripe's page, in [locale]
+     * (`en`, `nl` or `auto`). Only an `https` address comes back.
+     */
+    suspend fun billingLink(w: String, kind: String, locale: String): String {
+        require(kind == "checkout" || kind == "portal")
+        val url = send("POST", ws(w, "/billing/$kind"), BillingLink.serializer(), buildJsonObject { put("locale", locale) }).url
+        if (!url.startsWith("https://")) throw WorkspaceError("server", message = "a billing link that isn't https")
+        return url
+    }
+
     /** `POST …/socket-ticket`: a short-lived ticket for the wake socket's `Authorization: Ticket` header. */
     suspend fun socketTicket(w: String): SocketTicket = send("POST", ws(w, "/socket-ticket"), SocketTicket.serializer())
 

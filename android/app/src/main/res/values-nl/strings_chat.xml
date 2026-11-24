@@ -427,6 +427,28 @@
     <string name="chat_name_title">Je naam in %1$s</string>
     <string name="chat_name_hint">Mensen in deze werkruimte zien deze naam. Je naam in e-mail en je account blijft hetzelfde.</string>
 
+    <string name="chat_billing_title">Betalen</string>
+    <string name="chat_billing_loading">Betaalstatus laden…</string>
+    <string name="chat_billing_status_none">Niet ingesteld</string>
+    <string name="chat_billing_status_incomplete">Wacht op betaling</string>
+    <string name="chat_billing_status_trialing">Proefperiode</string>
+    <string name="chat_billing_status_active">Actief</string>
+    <string name="chat_billing_status_past_due">Betaling achterstallig</string>
+    <string name="chat_billing_status_unpaid">Onbetaald</string>
+    <string name="chat_billing_status_paused">Gepauzeerd</string>
+    <string name="chat_billing_status_canceled">Beëindigd</string>
+    <string name="chat_billing_status_unknown">Onbekend</string>
+    <string name="chat_billing_total">%1$s per maand</string>
+    <string name="chat_billing_total_incl">%1$s per maand, inclusief btw</string>
+    <string name="chat_billing_total_excl">%1$s per maand plus btw</string>
+    <string name="chat_billing_owners_only">Alleen eigenaren kunnen het betalen wijzigen.</string>
+    <string name="chat_billing_set_up">Betalen instellen</string>
+    <string name="chat_billing_manage">Betalen beheren</string>
+    <string name="chat_errors_billing_active">Voor deze werkruimte wordt nog betaald. Zeg het abonnement op via Betalen beheren en verwijder de werkruimte als het betalen is afgelopen.</string>
+    <string name="chat_errors_billing_none">Voor deze werkruimte is betalen nog niet ingesteld.</string>
+    <string name="chat_errors_billing_unavailable">Stripe is niet bereikbaar. Probeer het zo opnieuw.</string>
+    <string name="chat_billing_opened">Stripe is geopend in je browser. Kom hier terug als je klaar bent.</string>
+
     <!-- chat.settings.* -->
     <string name="chat_settings_you">Jij</string>
     <string name="chat_settings_role">Je rol</string>
@@ -521,4 +543,9 @@
         <item quantity="one">%d chatbericht was nog niet verstuurd en is verloren gegaan toen Rukoo de chatopslag moest herstellen.</item>
         <item quantity="other">%d chatberichten waren nog niet verstuurd en zijn verloren gegaan toen Rukoo de chatopslag moest herstellen.</item>
     </plurals>
+    <plurals name="chat_billing_seats">
+        <item quantity="one">%d betaalde plek</item>
+        <item quantity="other">%d betaalde plekken</item>
+    </plurals>
+    <string name="chat_billing_unavailable">De betaalstatus kon niet laden.</string>
 </resources>

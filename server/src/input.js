@@ -210,9 +210,10 @@ export const RESERVED_HANDLES = new Set(
     .join(' ')
     .split(' ')
 );
-// Handles reserved after accounts could claim them: join is the path of team chat's invitation links (join.js). Nobody
-// claims one any more, and an account that already holds one keeps its page and goes on publishing it.
-export const LATER_RESERVED_HANDLES = new Set(['join']);
+// Handles reserved after accounts could claim them: join is the path of team chat's invitation links (join.js), billing
+// the page Stripe sends a workspace owner back to (billing.js). Nobody claims one any more, and an account that already
+// holds one keeps its page and goes on publishing it.
+export const LATER_RESERVED_HANDLES = new Set(['join', 'billing']);
 export const RESERVED_SLUGS = new Set('api mcp booking bookings llms openapi ics assets manage prepare'.split(' '));
 export const BOOKING_ID = /^[A-Za-z0-9_-]{22}$/;
 export const LOCATION_KINDS = ['googleMeet', 'phone', 'inPerson', 'link', 'none'];

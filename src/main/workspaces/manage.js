@@ -91,7 +91,9 @@ class Manage {
     chatStartDm: (svc, ws, members) => svc.manage.startDm(ws, members),
     chatLeaveDm: (svc, ws, c) => svc.manage.leaveDm(ws, c),
     chatBlock: (svc, ws, member) => svc.manage.block(ws, member),
-    chatUnblock: (svc, ws, member) => svc.manage.unblock(ws, member)
+    chatUnblock: (svc, ws, member) => svc.manage.unblock(ws, member),
+    chatBilling: (svc, ws) => svc.manage.billing(ws),
+    chatBillingLink: (svc, ws, kind, locale) => svc.manage.billingLink(ws, kind, locale)
   };
 
   constructor(svc) {
@@ -546,6 +548,25 @@ class Manage {
     this.svc.guard(epoch);
     this.confirm(epoch, ws);
     return true;
+  }
+
+  // ---- billing (server/WORKSPACES.md, Billing) ----
+
+  // chatBilling: the workspace's billing for an owner or admin, live (GET /billing). A server without billing answers
+  // 404 without a scope, which the window reads as no billing.
+  async billing(ws) {
+    this.row(ws);
+    if (!this.svc.capabilities().includes('billing')) throw new ChatError('not_found');
+    return wire.checkBilling(await this.svc.call(ws, 'GET', '/billing'));
+  }
+
+  // chatBillingLink: a Stripe page for an owner, Checkout ('checkout') or the customer portal ('portal'), in locale.
+  // The window opens it in the browser. Nothing is retried after a network error: Checkout hands out the page that is
+  // still open when asked again.
+  async billingLink(ws, kind, locale) {
+    this.row(ws);
+    if (!this.svc.capabilities().includes('billing')) throw new ChatError('not_found');
+    return wire.checkBillingLink(await this.svc.call(ws, 'POST', `/billing/${kind}`, { locale }));
   }
 
   // ---- channels ----

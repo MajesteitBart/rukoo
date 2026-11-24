@@ -2,6 +2,7 @@ import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast, showMenu, closeMenu, menuOpen, dialog, confirmDialog, KEEP_OPEN, segmented, setSegmented } from './ui.js';
 import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM, dmPicker, addPeopleEmpty, inviteGrant, inviteRowChannels } from './chat-model.js';
+import { billingModel, showsBilling } from './chat-billing.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -1753,8 +1754,8 @@ export async function workspaceMembers() {
   });
 }
 
-// Workspace settings (desktop-ui 6.16, contract 5.10): your name and role, the host, invitations, blocked people,
-// Delete workspace for an owner, and Leave.
+// Workspace settings (desktop-ui 6.16, contract 5.10): your name and role, the host, invitations, billing for owners
+// and admins when the server bills workspaces, blocked people, Delete workspace for an owner, and Leave.
 export async function workspaceSettings() {
   const ws = K.CH.ws;
   if (!ws) return null;
@@ -1762,6 +1763,79 @@ export async function workspaceSettings() {
   let closeDialog = null;
   // The people whose Unblock is on its way: a redraw meanwhile keeps their button off.
   const unblocking = new Set();
+  const section = (part, title, inner) => `<section class="ch-set" data-part="${part}"><h3 class="ch-set-title">${esc(title)}</h3>${inner}</section>`;
+  // Billing (server/WORKSPACES.md, Billing): loaded when the dialog opens, and again when the window comes back into
+  // focus, as after Stripe's page in the browser. bill keeps the last answer while a new one loads or fails.
+  let bill = { data: null, error: null };
+  let billBusy = false;
+  const billingShown = () => showsBilling(K.CH.state?.capabilities, K.myRole());
+  const billingHtml = () => {
+    if (!billingShown()) return '';
+    if (!bill.data) {
+      const inner = bill.error
+        ? `<p class="error ch-set-help" role="alert">${esc(bill.error)}</p><div><button type="button" class="btn secondary sm" data-set="billing-retry">${esc(t('chat.billing.retry'))}</button></div>`
+        : `<p class="field-help ch-set-help" aria-live="polite">${esc(t('chat.billing.loading'))}</p>`;
+      return section('billing', t('chat.billing.title'), inner);
+    }
+    const m = billingModel(bill.data, { role: K.myRole(), locale: getLocale(), t });
+    const row = (label, value, help) =>
+      `<div class="ch-set-row"><span class="ch-set-text"><span class="ch-set-label">${esc(label)}</span>${value}${help ? `<span class="ch-bill-help">${esc(help)}</span>` : ''}</span></div>`;
+    const rows = [
+      row(t('chat.billing.statusLabel'), `<span class="ch-set-value"><span class="ch-bill-status" data-tone="${m.status.tone}">${esc(m.status.label)}</span></span>`),
+      ...m.rows.map((r) => row(r.label, `<span class="ch-set-value ch-bill-value">${esc(r.value)}</span>`, r.help))
+    ].join('');
+    const notes = m.notes.map((n) => `<p class="field-help ch-set-help ch-bill-note"${n.tone ? ` data-tone="${n.tone}"` : ''}>${esc(n.text)}</p>`).join('');
+    const failed = bill.error ? `<p class="error ch-set-help" role="alert">${esc(bill.error)}</p>` : '';
+    // The dialog's Close is its one filled button, so these stay secondary.
+    const actions = m.actions.length
+      ? `<div class="ch-set-row ch-set-end">${m.actions
+          .map((a) => `<button type="button" class="btn secondary sm" data-billing="${a.kind}"${billBusy ? ' disabled aria-busy="true"' : ''}>${esc(a.label)}</button>`)
+          .join('')}</div>`
+      : '';
+    return section('billing', t('chat.billing.title'), `<div class="ch-bill">${rows}</div>${notes}${failed}${actions}`);
+  };
+  // Draws the Billing section again in place, so the other sections keep the focus, the pointer and an open list.
+  const drawBilling = () => {
+    if (!body || !body.isConnected) return;
+    const fresh = document.createElement('template');
+    fresh.innerHTML = billingHtml();
+    const now = fresh.content.firstElementChild;
+    const was = body.querySelector('[data-part="billing"]');
+    const focused = was && was.contains(document.activeElement) ? document.activeElement : null;
+    const key = focused && focusKey(focused);
+    if (was && now) was.replaceWith(now);
+    else if (was !== now) return draw();
+    if (key) body.querySelector(key)?.focus();
+  };
+  const loadBilling = async () => {
+    if (!billingShown()) return;
+    try {
+      bill = { data: (await api('chatBilling', ws)).billing, error: null };
+    } catch (err) {
+      bill = { data: bill.data, error: K.errorText(err) };
+    }
+    drawBilling();
+  };
+  // Opens Stripe's page for kind ('checkout' or 'portal') in the browser, through the window's bridge.
+  const openBilling = async (kind) => {
+    if (billBusy) return;
+    billBusy = true;
+    drawBilling();
+    try {
+      const { url } = await api('chatBillingLink', ws, kind, getLocale().toLowerCase().startsWith('nl') ? 'nl' : 'en');
+      await api('openExternal', url);
+      bill = { ...bill, error: null };
+      toast(t('chat.billing.opened'), 4000);
+    } catch (err) {
+      bill = { ...bill, error: K.errorText(err) };
+    }
+    billBusy = false;
+    drawBilling();
+  };
+  const onFocus = () => {
+    if (!body || !body.isConnected) return window.removeEventListener('focus', onFocus);
+    loadBilling();
+  };
   // The dialog's sections, each named by data-part.
   const html = () => {
     const me = K.CH.view?.me || { name: nameOf(K.me()), role: K.myRole() };
@@ -1769,7 +1843,6 @@ export async function workspaceSettings() {
     const limits = K.CH.state?.limits;
     const blocks = [...K.CH.blocks].sort((a, b) => collator().compare(nameOf(a), nameOf(b)));
     const alone = nobodyElse();
-    const section = (part, title, inner) => `<section class="ch-set" data-part="${part}"><h3 class="ch-set-title">${esc(title)}</h3>${inner}</section>`;
     const you = section(
       'you',
       t('chat.settings.you'),
@@ -1819,7 +1892,7 @@ export async function workspaceSettings() {
     const leave = `<section class="ch-set ch-set-leave" data-part="leave"><div class="ch-set-row ch-set-end"><button type="button" class="btn sm ch-danger-btn" data-set="leave"${
       onlyOwnerNow ? ' aria-describedby="ch-leave-why"' : ''
     }>${icons.leave}<span>${esc(t('chat.workspace.leave'))}</span></button>${del}</div>${leaveWhy}${why}</section>`;
-    return `${you}${host}${invites}${blocked}${leave}<p class="error" data-error="" hidden></p>`;
+    return `${you}${host}${invites}${billingHtml()}${blocked}${leave}<p class="error" data-error="" hidden></p>`;
   };
   const draw = () => {
     if (!body || !body.isConnected) return;
@@ -1847,13 +1920,18 @@ export async function workspaceSettings() {
     buttons: [closeButton()],
     // The sections drawn from the directory (you, the people you blocked, Leave and Delete) follow it, each drawn
     // again only when it changed: the other buttons keep the focus and the pointer, and an open list of invitations
-    // stays loaded. Sections that come or go with a new role draw it all again.
+    // stays loaded. Sections that come or go with a new role draw it all again; Billing, when it comes with an owner's
+    // or admin's role, loads then.
     redraw: () => {
       const fresh = document.createElement('template');
       fresh.innerHTML = html();
       const was = [...body.children];
       const now = [...fresh.content.children];
-      if (was.map((el) => el.dataset.part).join() !== now.map((el) => el.dataset.part).join()) return draw();
+      if (was.map((el) => el.dataset.part).join() !== now.map((el) => el.dataset.part).join()) {
+        draw();
+        if (billingShown() && !bill.data) loadBilling();
+        return;
+      }
       was.forEach((el, i) => {
         if (['you', 'blocked', 'leave'].includes(el.dataset.part) && el.outerHTML !== now[i].outerHTML) el.replaceWith(now[i]);
       });
@@ -1862,7 +1940,11 @@ export async function workspaceSettings() {
       body = b;
       closeDialog = done;
       draw();
+      loadBilling();
+      window.addEventListener('focus', onFocus);
       body.addEventListener('click', async (e) => {
+        const billing = e.target.closest('[data-billing]');
+        if (billing) return openBilling(billing.dataset.billing);
         const un = e.target.closest('[data-unblock]');
         if (un) {
           const id = un.dataset.unblock;
@@ -1881,6 +1963,10 @@ export async function workspaceSettings() {
           case 'invite':
             await invitePeople();
             return after();
+          case 'billing-retry':
+            bill = { data: null, error: null };
+            drawBilling();
+            return loadBilling();
           case 'delete':
             closeDialog(null);
             return deleteWorkspace();

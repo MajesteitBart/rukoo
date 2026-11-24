@@ -12648,6 +12648,66 @@ button.ch-replies .ch-replies-n {
 .ch-set-end {
   justify-content: flex-start;
 }
+/* Workspace settings, Billing: label and value rows two to a line where they fit, a status pill (a 22px pill with a
+   6px dot, a tint behind saturated text; grey on the chip color when nothing is billed), and numbers in tabular
+   figures. */
+.ch-bill {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px 12px;
+}
+.ch-bill .ch-set-row {
+  align-items: flex-start;
+}
+.ch-bill-value {
+  font-variant-numeric: tabular-nums;
+}
+.ch-bill-help {
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+}
+.ch-bill-status {
+  --tone: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  max-width: 100%;
+  padding: 0 9px 0 8px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--tone);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-bill-status::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.ch-bill-status[data-tone='ok'] {
+  --tone: var(--ok);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+}
+.ch-bill-status[data-tone='warn'] {
+  --tone: var(--warn);
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+}
+.ch-bill-status[data-tone='danger'] {
+  --tone: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+.dialog .ch-bill-note[data-tone='danger'] {
+  color: var(--danger);
+}
 .ch-browse-row > .btn {
   flex: none;
 }

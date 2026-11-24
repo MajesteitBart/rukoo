@@ -135,6 +135,14 @@ const TEXT = {
       'The page’s code comes from this site each time you open it. Whoever runs the site, or someone who broke into it, could change that code to read your password as you type it, and with it open your encrypted records. The Rukoo apps run the code you installed. If that matters to you, use team chat in one of them.'
     ],
     webSecurity: 'In a browser that holds only as long as the page’s code is what this site published (see In a browser).',
+    // Only while Stripe processes billing on this server (config.js, stripeOn).
+    whereBilling: 'Paying for a team workspace goes through Stripe (see Billing).',
+    billing: 'Billing',
+    billingText: [
+      'Owners of a team workspace on this server can pay for it per member through Stripe, a payment service. Every active member of the workspace counts as a paid seat, guests included; an invitation nobody has used yet doesn’t. The owner sets up billing and manages it on Stripe’s own pages: the payment method, the name and address on the invoices and, if they want, a VAT number go to Stripe there. This server never receives card or bank details.',
+      'For a workspace with billing, this server keeps the IDs Stripe gave the workspace’s customer, subscription and open checkout page, the subscription’s status, how many seats Stripe bills, when the current period ends and whether the last payment went through. It sends Stripe the workspace’s ID and the number of seats, and nothing about the members or what they write. The owners and admins of the workspace see this billing status in Rukoo; only owners can change it. Stripe tells this server when a payment or the subscription changes, and the server keeps the ID of each such message for 30 days, so it handles each one once.',
+      'Stripe processes the billing details on our behalf, and for some purposes, such as preventing fraud and meeting its own legal duties, as a controller under its own privacy policy. It may process them outside the European Union, under its data processing terms. We handle billing to give the workspace the subscription its owner chose (the agreement, article 6(1)(b) GDPR) and keep invoices and payment records as long as tax law requires (a legal obligation, article 6(1)(c) GDPR); those stay at Stripe. A workspace can be deleted once its subscription can no longer be charged, and that deletes what this server keeps about its billing.'
+    ],
     security: 'Security',
     securityText: (protocol) =>
       `Your password goes through Argon2id on your device, and your records are encrypted with AES-256-GCM before they leave it. We can’t reset your password: without your password or your recovery key, nobody can open your records, including us. ${protocol} describes exactly how it works.`,
@@ -253,6 +261,13 @@ const TEXT = {
       'De code van de pagina komt elke keer dat je hem opent van deze site. Wie de site beheert, of iemand die erop heeft ingebroken, zou die code zo kunnen veranderen dat hij je wachtwoord leest terwijl je het typt, en daarmee je versleutelde records openen. De Rukoo-apps draaien de code die je hebt geïnstalleerd. Vind je dat belangrijk, gebruik teamchat dan in een van de apps.'
     ],
     webSecurity: 'In een browser geldt dat alleen zolang de code van de pagina is wat deze site publiceerde (zie In een browser).',
+    whereBilling: 'Betalen voor een teamwerkruimte gaat via Stripe (zie Betalen).',
+    billing: 'Betalen',
+    billingText: [
+      'Eigenaren van een teamwerkruimte op deze server kunnen er per lid voor betalen via Stripe, een betaaldienst. Elk actief lid van de werkruimte telt als betaalde plek, gasten ook; een uitnodiging die nog niemand gebruikte niet. De eigenaar stelt betalen in en beheert het op de eigen pagina’s van Stripe: de betaalmethode, de naam en het adres op de facturen en, als die dat wil, een btw-nummer gaan daar naar Stripe. Deze server krijgt nooit kaart- of bankgegevens.',
+      'Voor een werkruimte waarvoor betaald wordt, bewaart deze server de ID’s die Stripe aan de klant, het abonnement en de open betaalpagina van de werkruimte gaf, de status van het abonnement, voor hoeveel plekken Stripe rekent, wanneer de huidige periode afloopt en of de laatste betaling is gelukt. Hij stuurt Stripe de ID van de werkruimte en het aantal plekken, en niets over de leden of wat ze schrijven. De eigenaren en beheerders van de werkruimte zien deze betaalstatus in Rukoo; alleen eigenaren kunnen hem wijzigen. Stripe laat deze server weten wanneer een betaling of het abonnement verandert, en de server bewaart de ID van elk zo’n bericht 30 dagen, zodat hij elk bericht één keer verwerkt.',
+      'Stripe verwerkt de betaalgegevens namens ons, en voor sommige doelen, zoals het voorkomen van fraude en het nakomen van zijn eigen wettelijke plichten, als verwerkingsverantwoordelijke onder zijn eigen privacybeleid. Het kan ze buiten de Europese Unie verwerken, onder zijn verwerkersvoorwaarden. We verwerken betaalgegevens om de werkruimte het abonnement te geven dat de eigenaar koos (de overeenkomst, artikel 6 lid 1 onder b AVG) en bewaren facturen en betalingen zo lang als de belastingwet vraagt (een wettelijke plicht, artikel 6 lid 1 onder c AVG); die blijven bij Stripe. Een werkruimte kan worden verwijderd zodra er niet meer voor het abonnement kan worden afgeschreven, en dan verdwijnt ook wat deze server over het betalen ervan bewaart.'
+    ],
     security: 'Beveiliging',
     securityText: (protocol) =>
       `Je wachtwoord gaat op je apparaat door Argon2id, en je records worden met AES-256-GCM versleuteld voordat ze het verlaten. We kunnen je wachtwoord niet resetten: zonder je wachtwoord of je herstelsleutel kan niemand je records openen, wij ook niet. ${protocol} beschrijft precies hoe het werkt.`,
@@ -294,13 +309,14 @@ function bytesText(bytes, lang) {
   return `${bytes} bytes`;
 }
 
-// chat: null while team chat is off, else { retentionDays, inviteSignups, previews, files } (index.js), files null
-// without a files bucket and else { store, maxBytes, workspaceBytes }, with provider and place when store is 's3'
-// (config.js, filesStorage). The statement mentions team chat only on a server that runs it, and link previews and
-// files only where the server makes or keeps them. web: Rukoo in the browser runs on this server's website (WEB_APP,
-// with team chat on), which the statement then covers too. codes: what the server sends codes by email for (codes.js,
-// codePurposes). With none, the statement says the server sends no mail. expireDays: EXPIRE_UNUSED_DAYS, after which
-// accounts that are never used are deleted, which the statement says while it is set; 0 when it isn't.
+// chat: null while team chat is off, else { retentionDays, inviteSignups, previews, files, billing } (index.js), files
+// null without a files bucket and else { store, maxBytes, workspaceBytes }, with provider and place when store is 's3'
+// (config.js, filesStorage). The statement mentions team chat only on a server that runs it, link previews and files
+// only where the server makes or keeps them, and Stripe only where billing is on. web: Rukoo in the browser runs on
+// this server's website (WEB_APP, with team chat on), which the statement then covers too. codes: what the server sends
+// codes by email for (codes.js, codePurposes). With none, the statement says the server sends no mail. expireDays:
+// EXPIRE_UNUSED_DAYS, after which accounts that are never used are deleted, which the statement says while it is set;
+// 0 when it isn't.
 export function privacy({ operator, jurisdiction, chat = null, web = false, codes = [], expireDays = 0 }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const who = operator.name ? T.whoText(link(operator.url, operator.name)) : escape(T.unnamed);
@@ -320,7 +336,7 @@ export function privacy({ operator, jurisdiction, chat = null, web = false, code
         s3: chat.files.store === 's3' ? T.s3Keeper(chat.files.provider, chat.files.place) : null
       }
     : null;
-  const where = [T.whereText(place), ...(mailed ? [T.whereCodes] : []), ...(chat ? [T.whereChat(files)] : [])].join(' ');
+  const where = [T.whereText(place), ...(mailed ? [T.whereCodes] : []), ...(chat ? [T.whereChat(files)] : []), ...(chat?.billing ? [T.whereBilling] : [])].join(' ');
   const emailCodes = mailed
     ? `<h2 id="email-codes">${escape(T.codes)}</h2>\n${T.codesText(signupCodes)
         .map((p) => `<p>${escape(p)}</p>`)
@@ -337,6 +353,7 @@ export function privacy({ operator, jurisdiction, chat = null, web = false, code
         .map((p) => `<p>${escape(p)}</p>`)
         .join('\n')}\n\n`
     : '';
+  const billing = chat?.billing ? `<h2 id="billing">${escape(T.billing)}</h2>\n${T.billingText.map((p) => `<p>${escape(p)}</p>`).join('\n')}\n\n` : '';
   return `<!doctype html>
 <html lang="${lang}">
 <head>
@@ -380,7 +397,7 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 ${emailCodes}<h2 id="booking-pages">${escape(T.booking)}</h2>
 ${T.bookingText.map((p) => `<p>${escape(p)}</p>`).join('\n')}
 
-${teamChat}${browser}<h2>${escape(T.security)}</h2>
+${teamChat}${billing}${browser}<h2>${escape(T.security)}</h2>
 <p>${T.securityText(link(PROTOCOL_URL, T.protocol))}${inBrowser ? ` ${escape(T.webSecurity)}` : ''}</p>
 
 <h2>${escape(T.changes)}</h2>

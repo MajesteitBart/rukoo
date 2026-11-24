@@ -146,6 +146,56 @@ export function webAppOn(env) {
   return workspacesOn(env) && String(env.WEB_APP ?? '').trim().toLowerCase() === 'on';
 }
 
+// Billing team workspaces per member through Stripe (README.md, Billing) is off until the operator sets BILLING to
+// "on", and needs team chat and four settings: the STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET secrets and the
+// STRIPE_PRICE_ID and STRIPE_TAX vars. With BILLING on and one of them missing, billing stays off and the Worker logs
+// once which. billingOn says whether owners can set billing up: open a Checkout page.
+const BILLING_SETTINGS = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID'];
+let billingWarned = false;
+
+// Whether the subscriptions workspaces have keep working: Stripe's webhook, the customer portal, the seats following
+// the members, the Billing section and closing a Checkout page left open. That needs team chat and the two secrets,
+// whatever BILLING says, so an operator who turns BILLING off only stops new Checkout pages, and keeps the secrets
+// until the last subscription has ended (README.md, Billing). True whenever billingOn is.
+export function stripeOn(env) {
+  return workspacesOn(env) && text(env.STRIPE_SECRET_KEY) !== null && webhookSecrets(env).length > 0;
+}
+
+export function billingOn(env) {
+  if (!workspacesOn(env) || String(env.BILLING ?? '').trim().toLowerCase() !== 'on') return false;
+  const missing = BILLING_SETTINGS.filter((name) => !text(env[name]));
+  if (!billingTax(env)) missing.push('STRIPE_TAX');
+  if (missing.length && !billingWarned) {
+    billingWarned = true;
+    console.error(`BILLING is on, but ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} missing; billing stays off.`);
+  }
+  return missing.length === 0;
+}
+
+// The webhook's signing secrets: STRIPE_WEBHOOK_SECRET, or two separated by a comma while one is being rolled.
+export function webhookSecrets(env) {
+  return String(env.STRIPE_WEBHOOK_SECRET || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// Whether the secret key is a live one. A test key's server takes only test events, and a live key's only live ones.
+export function stripeLive(env) {
+  return /^(sk|rk)_live_/.test(text(env.STRIPE_SECRET_KEY) ?? '');
+}
+
+// How Checkout charges VAT (STRIPE_TAX), a choice the operator makes on purpose: { automatic } for Stripe Tax, { rate }
+// for the ID of a tax rate (txr_…) every seat carries, { none } for nothing on top of the price ("none"), and null
+// when it is missing or not one of these, which keeps billing off.
+export function billingTax(env) {
+  const value = text(env.STRIPE_TAX);
+  if (value === 'automatic') return { automatic: true };
+  if (value === 'none') return { none: true };
+  if (value && /^txr_[A-Za-z0-9]+$/.test(value)) return { rate: value };
+  return null;
+}
+
 // Link cards are made unless WORKSPACE_PREVIEWS is "off".
 export function previewsOn(env) {
   return String(env.WORKSPACE_PREVIEWS ?? '').trim().toLowerCase() !== 'off';

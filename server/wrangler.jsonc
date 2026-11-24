@@ -137,7 +137,18 @@
     "WORKSPACE_FILES_S3_PLACE": "",
     // "on" when Rukoo's website runs in front of this server with Rukoo in the browser at /app/ (website/), as on
     // rukoo.io. The privacy statement then covers what the browser keeps. "off" for a server on its own.
-    "WEB_APP": "off"
+    "WEB_APP": "off",
+    // Billing team workspaces per member through Stripe (README.md, Billing): "on" or "off". On also needs team chat,
+    // STRIPE_PRICE_ID below and two Worker secrets, STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET, never here.
+    "BILLING": "off",
+    // The Stripe price of one seat a month, such as "price_…": recurring, per unit, with its tax included or not as
+    // Stripe says. The server never names an amount itself.
+    "STRIPE_PRICE_ID": "",
+    // VAT at Checkout, chosen on purpose: "automatic" for Stripe Tax, the ID of a tax rate ("txr_…") each seat carries,
+    // or "none" for nothing on top of the price. Empty keeps billing off.
+    "STRIPE_TAX": "",
+    // For tests only: the address of a stand-in for Stripe's API. Leave it empty.
+    "STRIPE_API": ""
   },
 
   // Files in team chat live in a private R2 bucket, or in the S3-compatible bucket the WORKSPACE_FILES_S3_* settings
@@ -253,7 +264,14 @@
         "WORKSPACE_FILES_S3_PROVIDER": "UpCloud",
         "WORKSPACE_FILES_S3_PLACE": "Frankfurt am Main",
         // The website in front of this server runs team chat in the browser at rukoo.io/app/.
-        "WEB_APP": "on"
+        "WEB_APP": "on",
+        // Billing stays off until rukoo.io has a Stripe account, a seat price of EUR 19.50 a month including Dutch VAT
+        // and the two secrets: npx wrangler secret put STRIPE_SECRET_KEY --env bvdm, and the same for
+        // STRIPE_WEBHOOK_SECRET (README.md, Billing).
+        "BILLING": "off",
+        "STRIPE_PRICE_ID": "",
+        "STRIPE_TAX": "",
+        "STRIPE_API": ""
       },
       "ratelimits": [
         { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },

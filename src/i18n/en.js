@@ -12163,6 +12163,146 @@
     "message": "Invitations",
     "description": "Workspace settings dialog: section heading over the invitations. src/renderer/chat-dialogs.js"
   },
+  "chat.billing.title": {
+    "message": "Billing",
+    "description": "Workspace settings dialog: section heading over the workspace's billing, for owners and admins when the server bills workspaces. src/renderer/chat-dialogs.js"
+  },
+  "chat.billing.loading": {
+    "message": "Loading billing…",
+    "description": "Workspace settings dialog, Billing section: shown while the billing status loads. src/renderer/chat-dialogs.js"
+  },
+  "chat.billing.retry": {
+    "message": "Try again",
+    "description": "Workspace settings dialog, Billing section: button after the billing status failed to load. src/renderer/chat-dialogs.js"
+  },
+  "chat.billing.statusLabel": {
+    "message": "Status",
+    "description": "Workspace settings dialog, Billing section: label of the row with the subscription's status pill. src/renderer/chat-dialogs.js"
+  },
+  "chat.billing.status.none": {
+    "message": "Not set up",
+    "description": "Billing status pill: the workspace has no subscription. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.incomplete": {
+    "message": "Waiting for payment",
+    "description": "Billing status pill: Checkout finished but the first payment hasn't gone through yet. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.trialing": {
+    "message": "Trial",
+    "description": "Billing status pill: the subscription is in a free trial. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.active": {
+    "message": "Active",
+    "description": "Billing status pill: the subscription is paid and running. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.pastDue": {
+    "message": "Payment overdue",
+    "description": "Billing status pill: a renewal payment failed and Stripe is retrying it. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.unpaid": {
+    "message": "Unpaid",
+    "description": "Billing status pill: Stripe stopped retrying a failed payment. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.paused": {
+    "message": "Paused",
+    "description": "Billing status pill: the subscription is paused in Stripe. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.canceled": {
+    "message": "Ended",
+    "description": "Billing status pill: the subscription was cancelled and has ended. src/renderer/chat-billing.js"
+  },
+  "chat.billing.status.unknown": {
+    "message": "Unknown",
+    "description": "Billing status pill: a status this version of Rukoo doesn't know. src/renderer/chat-billing.js"
+  },
+  "chat.billing.seatsLabel": {
+    "message": "Paid seats",
+    "description": "Billing section row label: how many seats Stripe bills. The value is a number. src/renderer/chat-billing.js"
+  },
+  "chat.billing.seatsToBeLabel": {
+    "message": "Paid seats once set up",
+    "description": "Billing section row label before billing is set up: how many seats Checkout will bill, one per member. The value is a number. src/renderer/chat-billing.js"
+  },
+  "chat.billing.totalLabel": {
+    "message": "Monthly total",
+    "description": "Billing section row label: what the workspace pays each month. src/renderer/chat-billing.js"
+  },
+  "chat.billing.totalToBeLabel": {
+    "message": "Monthly total once set up",
+    "description": "Billing section row label before billing is set up: what the workspace will pay each month. src/renderer/chat-billing.js"
+  },
+  "chat.billing.total": {
+    "message": "{amount} a month",
+    "description": "Billing section: the monthly total when the price says nothing about VAT. {amount}: the amount with its currency, such as €58.50. src/renderer/chat-billing.js"
+  },
+  "chat.billing.totalIncl": {
+    "message": "{amount} a month, VAT included",
+    "description": "Billing section: the monthly total for a price that includes VAT. {amount}: the amount with its currency, such as €58.50. src/renderer/chat-billing.js"
+  },
+  "chat.billing.totalExcl": {
+    "message": "{amount} a month plus VAT",
+    "description": "Billing section: the monthly total for a price without VAT. {amount}: the amount with its currency. src/renderer/chat-billing.js"
+  },
+  "chat.billing.perSeat": {
+    "message": "{amount} per member a month",
+    "description": "Billing section: help under the monthly total, the price of one seat, when the price says nothing about VAT. {amount}: such as €19.50. src/renderer/chat-billing.js"
+  },
+  "chat.billing.perSeatIncl": {
+    "message": "{amount} per member a month, VAT included",
+    "description": "Billing section: help under the monthly total, the price of one seat including VAT. {amount}: such as €19.50. src/renderer/chat-billing.js"
+  },
+  "chat.billing.perSeatExcl": {
+    "message": "{amount} per member a month plus VAT",
+    "description": "Billing section: help under the monthly total, the price of one seat without VAT. {amount}: the amount. src/renderer/chat-billing.js"
+  },
+  "chat.billing.renewsLabel": {
+    "message": "Renews on",
+    "description": "Billing section row label: the date the subscription renews. The value is a date. src/renderer/chat-billing.js"
+  },
+  "chat.billing.endsLabel": {
+    "message": "Ends on",
+    "description": "Billing section row label: the date a cancelled subscription ends. The value is a date. src/renderer/chat-billing.js"
+  },
+  "chat.billing.failedOwner": {
+    "message": "The last payment failed. Update the payment method in Manage billing.",
+    "description": "Billing section note for an owner when the last invoice payment failed. src/renderer/chat-billing.js"
+  },
+  "chat.billing.failedAdmin": {
+    "message": "The last payment failed. An owner can update the payment method.",
+    "description": "Billing section note for an admin when the last invoice payment failed. src/renderer/chat-billing.js"
+  },
+  "chat.billing.whoCounts": {
+    "message": "Every member who joined is a paid seat, guests included.",
+    "description": "Billing section note before billing is set up: who counts as a paid seat. src/renderer/chat-billing.js"
+  },
+  "chat.billing.vacant": {
+    "message": { "one": "{count} seat is vacant. Someone who joins takes it at no extra charge; if it's still vacant at renewal, it leaves the bill.", "other": "{count} seats are vacant. People who join take them at no extra charge; seats still vacant at renewal leave the bill." },
+    "description": "Billing section note: members left, and their seats stay billed until renewal. {count}: the vacant seats. src/renderer/chat-billing.js"
+  },
+  "chat.billing.pending": {
+    "message": { "one": "{count} open invitation isn't billed until someone joins with it.", "other": "{count} open invitations aren't billed until people join with them." },
+    "description": "Billing section note: open invitations hold no seat. {count}: the open invitations. src/renderer/chat-billing.js"
+  },
+  "chat.billing.syncing": {
+    "message": "Updating the seats in Stripe…",
+    "description": "Billing section note: a seat change is on its way to Stripe. src/renderer/chat-billing.js"
+  },
+  "chat.billing.ownersOnly": {
+    "message": "Only owners can change billing.",
+    "description": "Billing section note for an admin, who sees billing but can't change it. src/renderer/chat-billing.js"
+  },
+  "chat.billing.setUp": {
+    "message": "Set up billing",
+    "description": "Billing section button for an owner: opens Stripe Checkout in the browser. src/renderer/chat-billing.js"
+  },
+  "chat.billing.manage": {
+    "message": "Manage billing",
+    "description": "Billing section button for an owner: opens Stripe's customer portal in the browser, for the payment method, invoices and cancelling. src/renderer/chat-billing.js"
+  },
+  "chat.billing.opened": {
+    "message": "Stripe opened in your browser. Come back here when you're done.",
+    "description": "Toast after Set up billing or Manage billing opened a Stripe page in the browser. src/renderer/chat-dialogs.js"
+  },
   "chat.notify.body": {
     "message": "{name}: {text}",
     "description": "Team chat notification: body line. {name}: the author; {text}: the first 120 characters of the message, with mentions as @Name. src/main/workspaces/notify.js"
@@ -12326,6 +12466,18 @@
   "chat.errors.filesOff": {
     "message": "{host} doesn't take files.",
     "description": "Team chat error, in a toast: the server has no file storage (403 files_off). {host}: the server. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.billingActive": {
+    "message": "This workspace still has billing. Cancel it in Manage billing, and delete the workspace once billing has ended.",
+    "description": "Team chat error: deleting a workspace whose subscription can still charge, or opening Checkout for one that has billing (409 billing_active). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.billingNone": {
+    "message": "This workspace has no billing yet.",
+    "description": "Team chat error: Manage billing for a workspace without a subscription (409 billing_none). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.billingUnavailable": {
+    "message": "Stripe couldn't be reached. Try again in a moment.",
+    "description": "Team chat error: the server couldn't reach Stripe for Checkout or the portal (502 billing_unavailable). src/renderer/chat.js (chatErrorText)"
   },
   "chat.errors.fileTooLargeSize": {
     "message": "This file is larger than {size}, the most this server takes.",

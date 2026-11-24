@@ -308,6 +308,35 @@ data class ReadAck(val read: Long)
 @Serializable
 data class SocketTicket(val ticket: String, val expiresAt: Long = 0, val protocol: String = SOCKET_PROTOCOL)
 
+/**
+ * `GET /billing`, for an owner or admin while the server bills workspaces (server/WORKSPACES.md "Billing"). [seats] is
+ * what Stripe bills, null without a subscription that can still charge; [price] is one seat a month, in cents.
+ */
+@Serializable
+data class WorkspaceBilling(
+    val status: String = "none",
+    val members: Int = 0,
+    val pending: Int = 0,
+    val seats: Int? = null,
+    val periodEnd: Long? = null,
+    val cancelAtPeriodEnd: Boolean = false,
+    val payment: String? = null,
+    val syncing: Boolean = false,
+    val canCheckout: Boolean = false,
+    val canManage: Boolean = false,
+    val price: BillingPrice = BillingPrice(),
+)
+
+@Serializable
+data class BillingPrice(val amount: Long = 1950, val currency: String = "eur", val interval: String = "month", val taxBehavior: String = "inclusive")
+
+@Serializable
+internal data class BillingAnswer(val billing: WorkspaceBilling)
+
+/** `POST /billing/checkout` and `/billing/portal`: a Stripe page to open in the browser. */
+@Serializable
+internal data class BillingLink(val url: String)
+
 /** The largest message, in UTF-8 bytes after trimming (§3.16). */
 const val TEXT_BYTES = 16_384
 

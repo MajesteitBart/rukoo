@@ -89,6 +89,9 @@ object ChatErrors {
             "last_owner" -> s.get(R.string.chat_errors_last_owner)
             "last_manager" -> s.get(R.string.chat_errors_last_manager)
             "members_remain" -> s.get(R.string.chat_errors_members_remain)
+            "billing_active" -> s.get(R.string.chat_errors_billing_active)
+            "billing_none" -> s.get(R.string.chat_errors_billing_none)
+            "billing_unavailable" -> s.get(R.string.chat_errors_billing_unavailable)
             "archived" -> s.get(R.string.chat_errors_archived)
             "invite_gone" -> s.get(R.string.chat_errors_invite_gone)
             "quota" -> when (e.limit) {
