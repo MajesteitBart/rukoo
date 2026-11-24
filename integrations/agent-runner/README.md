@@ -23,7 +23,7 @@ Every mention starts a fresh session in the runtime, without memory of earlier m
 
 ## Get the runner
 
-The runner is this folder of the Rukoo repository on GitHub; the installed Rukoo app doesn't contain it. It needs [Node.js](https://nodejs.org) 22 or newer on the computer it runs on (`node --version` says which one you have). `runner.js` loads `rukoo.js`, `backends.js` and `prompt.js` from its own folder and nothing else, so download those four files into one folder:
+Rukoo's desktop app ships this folder and runs it for you: **Run on this computer** in the key step after **Add an agent** starts the agent with one of the agents of Settings → Agents answering, with nothing to install or set ([In Rukoo's desktop app](#in-rukoos-desktop-app)). To run it on another computer, such as the machine Hermes or Booper already runs on, get it from this folder of the Rukoo repository on GitHub. It needs [Node.js](https://nodejs.org) 22 or newer on the computer it runs on (`node --version` says which one you have). `runner.js` loads `rukoo.js`, `backends.js` and `prompt.js` from its own folder and nothing else, so download those four files into one folder:
 
 ```sh
 mkdir rukoo-agent && cd rukoo-agent
@@ -50,11 +50,11 @@ node runner.js --config agent.json
 
 ## Get a key
 
-A full member of the workspace makes the agent in Rukoo: the workspace menu → **Agents** → **Add an agent**. They choose its name, whom it answers (a new agent starts on **Only me**) and whether it answers other agents, and become its sponsor. Rukoo then shows **Connect** for the agent, in three steps:
+A full member of the workspace makes the agent in Rukoo: the workspace menu → **Agents** → **Add an agent**. They choose its name, whom it answers (a new agent starts on **Only me**) and whether it answers other agents, and become its sponsor. Rukoo then shows **Connect** for the agent:
 
 1. **Answers with** picks the runtime that answers for the agent. On the desktop it lists the agents of Settings → Agents that can answer, the ones whose status check passed first, so the first ready one is picked; in the browser and on the phone it offers Claude Code and Codex. **A program of my own** comes last and leaves `"command": "my-agent"` in the config for you to replace. An agent with a secret, such as a Hermes API key, gets the name of an environment variable in place of that secret.
-2. **Copy config** copies the config for this runner, with the server's address, the workspace id and the agent's key in it. Rukoo shows the key only this once.
-3. How to start the runner, as above, with **Get the runner on GitHub**, which opens this section.
+2. On the desktop, **Run on this computer** runs the agent there ([In Rukoo's desktop app](#in-rukoos-desktop-app)). The config below is under **Run it on another computer instead**.
+3. **Copy config** copies the config for this runner, with the server's address, the workspace id and the agent's key in it. Rukoo shows the key only this once. Then how to start the runner, as above, with **Get the runner on GitHub**, which opens this section.
 
 After **Add an agent** the step also offers to add the new agent to the channel on screen, when its sponsor may add it there.
 
@@ -62,7 +62,7 @@ The key looks like `rka_` followed by 66 characters. The config Rukoo shows hold
 
 Then add the agent to the channels it should work in: **Add people** in a channel lists agents under a heading of their own. A channel manager can add any agent, and a sponsor can add their own agent to a channel the whole workspace can see that they are in. A private channel takes an agent only while its sponsor is in it, and when the sponsor leaves it or is taken out, the agent leaves it too.
 
-**New key**, in the Agents dialog or the agent's menu in the workspace's Members, replaces the key at once. Only the sponsor has **New key**, since the key reads every channel the agent is in; an owner or admin can edit or remove the agent. The runner then stops with exit code 2 and says why, and so it does when the agent is removed, its sponsor leaves the workspace or becomes a guest, or the server turns agents off.
+**New key**, in the Agents dialog or the agent's menu in the workspace's Members, replaces the key at once. Only the sponsor has **New key**, since the key reads every channel the agent is in; an owner or admin can edit or remove the agent. The runner then stops with exit code 2 and says why, and so it does when the agent is removed, its sponsor leaves the workspace or becomes a guest, or the server turns agents off. A runner that Rukoo's desktop app runs takes the new key by itself.
 
 ## The config
 
@@ -189,6 +189,15 @@ Start-ScheduledTask -TaskName 'Rukoo agent Clark'
 ```
 
 This keeps the key in a user variable, so `clark.json` has no `key`. The variable reaches programs started after it was set, the task included. The log goes to `clark.log` next to the config.
+
+## In Rukoo's desktop app
+
+The desktop app (`src/main/agent-runs.js`) runs this folder as it ships inside the app, one process per agent, for as long as Rukoo runs, in the tray too. It needs no Node.js of its own: Electron's utility process runs `src/main/agent-runner-child.js`, which loads `runner.js` from here. [docs/chat.md](../../docs/chat.md#running-it-on-this-computer) describes it from the person's side.
+
+- The backend is one of the agents of Settings → Agents, built from those settings each time the runner starts, as the config the key step shows has it. The app never takes a backend from anywhere else, so it never runs a `command` backend.
+- The config it writes, in the profile's `data/agent-runs/`, holds no key: the app keeps the agent's key encrypted with the system's keyring and passes it, with the backend's own secret, to the runner's process in its first message. Neither is in that process's environment or on disk in the clear, and the runner keeps both out of every program it starts, by name and by value.
+- `Runner` takes a `report` function next to `log`; the app uses it for the line it shows under the agent: connected, the channels it is in, the backend's problems from the checks above, a failed answer, a server it can't reach, a key that stopped working. The events carry ids and the runner's own messages, never a message's text.
+- A runner that ends by itself starts again after 2 seconds, then after longer pauses up to 5 minutes. Exit code 2 keeps it stopped until New key; when the agent turns out to be removed, the app deletes its key and files. Signing out, leaving the workspace or removing the agent does that too.
 
 ## Whom the agent answers
 

@@ -150,8 +150,14 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   const step = dialogBox(win);
   await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
   await expect(step.locator('[name="key"], [name="server"], [name="workspace"]')).toHaveCount(0);
-  // The config shows from its top, with the server, the workspace and the key, and Copy config has the focus.
-  await expect(step.locator('[data-copy-config]')).toBeFocused();
+  // On the computer Run on this computer leads, filled and with the focus; the runner's config, to run the agent
+  // somewhere else, is under a closed section, without the key until it opens.
+  await expect(step.locator('[data-run]')).toBeFocused();
+  await expect(step.locator('[data-run]')).toHaveClass(/\bprimary\b/);
+  await expect(step.locator('[data-elsewhere]')).not.toHaveAttribute('open', '');
+  await expect(step.locator('[name="config"]')).toHaveValue('');
+  await step.locator('[data-elsewhere] summary').click();
+  await expect(step.locator('[name="config"]')).not.toHaveValue('');
   expect(await step.locator('[name="config"]').evaluate((el) => el.scrollTop)).toBe(0);
   const config = async () => JSON.parse(await step.locator('[name="config"]').inputValue());
   const key = (await config()).key;
@@ -174,26 +180,32 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   expect((await config()).backend).toEqual({ type: 'openai', url: 'http://127.0.0.1:18789', model: 'openclaw/default' });
   await use.selectOption({ label: 'A program of my own' });
   expect((await config()).backend).toEqual({ type: 'command', command: 'my-agent' });
-  await expect(step.locator('[data-use-help]')).toHaveText('Put your program in place of my-agent in the config. It gets the question on stdin and answers on stdout.');
+  await expect(step.locator('[data-key-help]')).toHaveText('Put your program in place of my-agent in the config. It gets the question on stdin and answers on stdout.');
+  // Rukoo runs only the agents of Settings, Agents: a program of one's own takes the runner.
+  await expect(step.locator('[data-run]')).toBeDisabled();
+  await expect(step.locator('[data-use-help]')).toHaveText('Rukoo can run only the agents of Settings > Agents. For a program of your own, start the runner yourself with the config below.');
   await use.selectOption({ label: 'Claude Code' });
-  // Step 3: the runner comes from GitHub and starts from its own folder.
+  await expect(step.locator('[data-run]')).toBeEnabled();
+  // The runner comes from GitHub and starts from its own folder.
   await expect(step.locator('.ch-agent-cmd')).toHaveText('node runner.js --config agent.json');
-  await expect(step.locator('.ch-agent-step').nth(2)).toContainText('with Node.js 22 or newer');
+  await expect(step.locator('[data-elsewhere]')).toContainText('with Node.js 22 or newer');
   await expect(step.locator('[data-get-runner]')).toHaveText('Get the runner on GitHub');
   // general is on screen: the step offers to add Clark there. Here Bart adds it through Add agents instead.
   await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Clark to #general');
   await expect(step.locator('[name="join"]')).toBeChecked();
   await step.locator('[name="join"]').uncheck();
-  // Closing before copying asks first; Copy config copies it, and then Done is the filled button.
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bprimary\b/);
+  // Closing before it runs or the config was copied asks first; Copy config copies it, and then Done is the filled
+  // button.
+  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
   await win.keyboard.press('Escape');
   const ask = win.locator('.scrim').last().locator('.dialog');
-  await expect(ask.locator('h2')).toHaveText('Close without copying the config?');
+  await expect(ask.locator('h2')).toHaveText('Close without connecting Clark?');
   await ask.locator('.buttons button', { hasText: 'Go back' }).click();
   await step.locator('[data-copy-config]').click();
   await expect(toast()).toHaveText('Config copied');
   await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(await step.locator('[name="config"]').inputValue());
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
+  await expect(step.locator('[data-run]')).toHaveClass(/\bsecondary\b/);
+  await expect(step).not.toHaveClass(/\bch-quiet-close\b/);
   await step.locator('.buttons button').last().click();
 
   // The list has it, with a menu for Bart; the key works for the agent's own routes.
@@ -326,9 +338,10 @@ test('workspace members show the agents in a group of their own, with no Message
   await expect(agents.locator('.ch-agent-meta')).toHaveText(['Made by Bart · Answers everyone · Not connected yet', 'Made by Olga Owner · Answers only Olga Owner · Not connected yet']);
   // Olga's agent: Bart, a member, has nothing to do with it.
   await expect(agents.filter({ hasText: 'Revy' }).locator('[data-person]')).toHaveCount(0);
-  // His own: Edit, New key and Remove, and never Message, Block or a role.
+  // His own: Edit, New key, Run on this computer (it runs nowhere here yet) and Remove, and never Message, Block or a
+  // role.
   await agents.filter({ hasText: 'Clark' }).locator('[data-person]').click();
-  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Remove agent']);
+  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Run on this computer', 'Remove agent']);
   await menuItem(win, 'Edit agent').click();
   const form = dialogBox(win);
   await expect(form.locator('h2')).toHaveText('Edit Clark');
@@ -347,6 +360,8 @@ test('workspace members show the agents in a group of their own, with no Message
   await confirm.locator('.buttons button').last().click();
   const step = dialogBox(win);
   await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
+  await step.locator('[data-elsewhere] summary').click();
+  await expect(step.locator('[name="config"]')).not.toHaveValue('');
   const key = JSON.parse(await step.locator('[name="config"]').inputValue()).key;
   expect(key).toMatch(KEY);
   expect(key).not.toBe(mine.key);
@@ -391,7 +406,7 @@ test("an admin edits and removes someone else's agent but gets no New key; a pri
   await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'Remove agent']);
   await win.keyboard.press('Escape');
   await agents.filter({ hasText: 'Clark' }).locator('[data-person]').click();
-  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Remove agent']);
+  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Run on this computer', 'Remove agent']);
   await win.keyboard.press('Escape');
   await dialog.locator('.buttons button').last().click();
   // The Agents dialog says the same.
@@ -506,6 +521,8 @@ test('the key step starts on the ready default agent and adds the new agent to t
   await expect(step.locator('h2')).toHaveText('Connect Helper', { timeout: 15000 });
   // The default agent comes first among the ready ones.
   await expect(step.locator('[name="use"] option')).toHaveText(['Codex', 'OpenClaw', 'Claude Code', 'A program of my own']);
+  await step.locator('[data-elsewhere] summary').click();
+  await expect(step.locator('[name="config"]')).not.toHaveValue('');
   expect(JSON.parse(await step.locator('[name="config"]').inputValue()).backend).toEqual({ type: 'codex' });
   await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Helper to #general');
   await expect(step.locator('[name="join"]')).toBeChecked();

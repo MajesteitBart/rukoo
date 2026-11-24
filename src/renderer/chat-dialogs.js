@@ -2552,7 +2552,9 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     const button = body.querySelector('[data-run]');
     if (!button) return;
     const own = pick === OWN_PROGRAM;
-    const run = runOf(ws, agent.id);
+    const found = runOf(ws, agent.id);
+    // In no channel yet says nothing new while the box under the step adds it to the channel on screen at Done.
+    const run = found && room && join && found.channels === 0 ? { ...found, channels: null } : found;
     const state = running && run ? runStateText(run, { t, use: choices.find((c) => c.id === run.use)?.name || '', locale: getLocale() }) : null;
     button.hidden = Boolean(state);
     if (!button.hasAttribute('aria-busy')) button.disabled = own;
@@ -2704,6 +2706,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
         body.querySelector('[data-get-runner]').addEventListener('click', () => api('openExternal', RUNNER_URL).catch(() => {}));
         body.querySelector('[name="join"]')?.addEventListener('change', (e) => {
           join = e.target.checked;
+          drawRun(body);
         });
         // The config shows from its top, where the server, the workspace and the key are. The filled button takes the
         // focus once dialog() gave it to the first field: Run on this computer, or Copy config, or Done once it runs.
