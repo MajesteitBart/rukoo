@@ -37,7 +37,7 @@
 ; then --start-hidden. Uninstalling removes it when its program is exactly this installation's, so Windows doesn't look
 ; for a program that is gone at every sign-in. An update keeps it: the new version installs at the same path.
 ; Only the Windows user who uninstalls: the uninstaller reaches that user's registry alone, so after an install for
-; all users, others who turned it on keep their entry until they remove it under Startup apps.
+; all users, others who turned it on keep their Run value, and may still see Rukoo Mail under Startup apps.
 !macro rukooRemoveLoginItem
   Push $0
   Push $1
