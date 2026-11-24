@@ -143,13 +143,24 @@ function writeState(file, state) {
 
 class Runner {
   // config: normalizeConfig()'s result. backend: a stand-in for tests. log(level, message). retryMs: the first wait
-  // before a post is sent again, doubled each time.
-  constructor(config, { log = defaultLog, backend, retryMs = 1000 } = {}) {
+  // before a post is sent again, doubled each time. report(event): what a program that started the runner shows of
+  // its state, such as Rukoo's desktop app (src/main/agent-runs.js): { type: 'connected' | 'problems' | 'pass' |
+  // 'unreachable' | 'answered' | 'failed' | 'refused', … }. Events carry ids and the runner's own messages, never a
+  // message's text.
+  constructor(config, { log = defaultLog, backend, retryMs = 1000, report = () => {} } = {}) {
     this.config = config;
     this.log = log;
+    this.report = (event) => {
+      try {
+        report(event);
+      } catch {}
+    };
     this.api = new Rukoo({ server: config.server, workspace: config.workspace, key: config.key, allowHttp: config.allowHttp });
-    // Child processes never get the agent's key, by name or by value.
-    this.backend = backend || makeBackend(config.backend, { hide: { hideNames: [config.keyEnv, DEFAULT_KEY_ENV], hideValues: [config.key] } });
+    // Child processes never get the agent's key, or the backend's own secret, by name or by value.
+    const b = config.backend && typeof config.backend === 'object' ? config.backend : {};
+    const backendEnv = typeof b.keyEnv === 'string' ? b.keyEnv.trim() : '';
+    const backendKey = typeof b.key === 'string' && b.key.trim() ? b.key.trim() : backendEnv ? String(process.env[backendEnv] || '').trim() : '';
+    this.backend = backend || makeBackend(config.backend, { hide: { hideNames: [config.keyEnv, DEFAULT_KEY_ENV, backendEnv], hideValues: [config.key, backendKey] } });
     this.state = readState(config.state, log);
     this.rooms = new Map();
     this.dirty = new Set();
@@ -204,6 +215,12 @@ class Runner {
             ? `its sponsor and ${this.me.members.length} chosen ${this.me.members.length === 1 ? 'member' : 'members'}`
             : `only its sponsor (its setting ${JSON.stringify(String(this.me.answers))} is new to this runner)`;
     this.log('info', `Connected as agent ${this.me.id} in workspace ${this.api.workspace}. It answers ${answers}, ${this.me.agents ? 'and other agents' : 'not other agents'}.`);
+    this.report({ type: 'connected', agent: this.me.id });
+  }
+
+  // The channels the agent is in, of the rooms the feed brought so far.
+  channelCount() {
+    return [...this.rooms.values()].filter((row) => row.kind === 'channel' && !row.archived).length;
   }
 
   async loadWorkspace() {
@@ -243,9 +260,13 @@ class Runner {
         } catch (err) {
           if (err instanceof KeyRefused) return this.fail(err);
           this.passError = err;
-          if (!this.stopped) this.log('warn', `Could not read the workspace: ${err.message}; trying again later`);
+          if (!this.stopped) {
+            this.log('warn', `Could not read the workspace: ${err.message}; trying again later`);
+            this.report({ type: 'unreachable', message: err.message });
+          }
           return;
         }
+        if (!this.stopped) this.report({ type: 'pass', channels: this.channelCount() });
       } while (this.again && !this.stopped);
     })().finally(() => {
       this.pumping = null;
@@ -256,6 +277,7 @@ class Runner {
   fail(err) {
     this.fatal = err;
     this.log('error', "The agent's key no longer works: it was replaced, the agent was removed, its sponsor left, or the server turned agents off. Get a new key in Rukoo's Agents dialog.");
+    this.report({ type: 'refused' });
     this.stop();
   }
 
@@ -506,12 +528,14 @@ class Runner {
       if (this.stopped) throw new Error('Stopped');
       this.stats.failed++;
       this.log('warn', `The backend failed on ${ev.id} in ${c}, so nothing was posted: ${err.message}`);
+      this.report({ type: 'failed', message: err.message });
       return;
     }
     const text = cleanAnswer(answer);
     if (!text) {
       this.stats.failed++;
       this.log('warn', `The backend gave no answer to ${ev.id} in ${c}, so nothing was posted`);
+      this.report({ type: 'failed', message: 'The backend gave no answer' });
       return;
     }
     const converted = convertMentions(text, (id) => {
@@ -524,6 +548,7 @@ class Runner {
     if (!parts.length) {
       this.stats.failed++;
       this.log('warn', `The backend gave no answer to ${ev.id} in ${c}, so nothing was posted`);
+      this.report({ type: 'failed', message: 'The backend gave no answer' });
       return;
     }
     const at = Date.now() + this.clockOffset;
@@ -566,6 +591,7 @@ class Runner {
     } else {
       this.stats.answered++;
       this.log('info', `Answered ${p.trigger} in ${p.conversation}${p.parts.length > 1 ? ` in ${p.parts.length} parts` : ''}`);
+      this.report({ type: 'answered' });
     }
     return posted;
   }
@@ -739,12 +765,15 @@ class Runner {
         const passing = err instanceof RukooError && !(err instanceof KeyRefused) && (err.network || err.status >= 500 || err.status === 429);
         if (!passing || this.stopped) throw err;
         this.log('warn', `Could not reach the server: ${err.message}; trying again in ${wait / 1000} s`);
+        this.report({ type: 'unreachable', message: err.message });
         await sleep(wait, this.abort.signal);
         if (this.stopped) return;
       }
     }
     // What would keep every answer from going out, said at the start rather than at the first mention.
-    for (const p of await this.backendProblems()) if (p.level === 'error') this.log('warn', p.message);
+    const errors = (await this.backendProblems()).filter((p) => p.level === 'error');
+    for (const p of errors) this.log('warn', p.message);
+    this.report({ type: 'problems', problems: errors.map((p) => ({ code: p.code || null, message: p.message })) });
     this.timer = setInterval(() => this.pump(), this.config.pollSeconds * 1000);
     this.socketLoop().catch((err) => this.log('warn', `The wake socket stopped: ${err.message}`));
     await this.pump();

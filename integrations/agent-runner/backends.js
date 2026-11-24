@@ -641,8 +641,11 @@ class CommandBackend {
 
 // ---- Checks (--check) ----
 //
-// What a backend needs before the first mention comes, as a list of { level, message }: 'error' when it can't answer
-// as configured, 'info' for what was found. Each error says what to do next. The runner's --check prints them and
+// What a backend needs before the first mention comes, as a list of { level, message, code }: 'error' when it can't
+// answer as configured, 'info' for what was found. Each error says what to do next, and its code what kind of problem
+// it is, for a program that shows it in its own words (Rukoo's desktop app): missing (the program isn't there),
+// placeholder (my-agent), key_env (the variable for its secret is empty), unreachable (nothing answers at its
+// address) or backend_key (the server there refused the key, or asks for one). The runner's --check prints them and
 // exits with 1 for an error; a normal start prints them as warnings and runs anyway, since a server can come up later.
 
 const CHECK_TIMEOUT = 5000;
@@ -677,7 +680,7 @@ function keyProblem(config, env) {
   if (typeof config.key === 'string' && config.key.trim()) return null;
   const name = typeof config.keyEnv === 'string' ? config.keyEnv.trim() : '';
   if (!name || String(envValue(env, name) || '').trim()) return null;
-  return { level: 'error', message: `${name} is not set, and the backend needs it for its key or token. Set it in the terminal or service that starts the runner, then start it again.` };
+  return { level: 'error', code: 'key_env', message: `${name} is not set, and the backend needs it for its key or token. Set it in the terminal or service that starts the runner, then start it again.` };
 }
 
 // Whether something answers at a backend's address: { status } for any HTTP answer, else { reason }.
@@ -709,7 +712,7 @@ async function checkHttp(backend, { env, timeout, health, keyed, what }) {
   const url = String(config.url || '').trim();
   const first = await probe(url, health, { timeout });
   if (first.reason) {
-    out.push({ level: 'error', message: `Nothing answers at ${url} (${first.reason}). Start ${what} there, or correct the backend's "url".` });
+    out.push({ level: 'error', code: 'unreachable', message: `Nothing answers at ${url} (${first.reason}). Start ${what} there, or correct the backend's "url".` });
     return out;
   }
   if (missing) return out;
@@ -718,6 +721,7 @@ async function checkHttp(backend, { env, timeout, health, keyed, what }) {
   if (second.status === 401 || second.status === 403) {
     out.push({
       level: 'error',
+      code: 'backend_key',
       message: key
         ? `${url} refused the backend's key (HTTP ${second.status}). Check the key or token in ${config.keyEnv ? config.keyEnv : '"key"'}.`
         : `${url} asks for a key (HTTP ${second.status}). Add "keyEnv" to the backend and set that variable to its key or token.`
@@ -739,7 +743,7 @@ async function checkCli() {
   try {
     return [{ level: 'info', message: `The backend runs ${this.exe()}` }];
   } catch (err) {
-    return [{ level: 'error', message: err.message }];
+    return [{ level: 'error', code: 'missing', message: err.message }];
   }
 }
 ClaudeBackend.prototype.check = checkCli;
@@ -748,13 +752,13 @@ CodexBackend.prototype.check = checkCli;
 CommandBackend.prototype.check = async function check({ env = process.env } = {}) {
   const program = this.argv[0];
   if (program === PLACEHOLDER_COMMAND) {
-    return [{ level: 'error', message: `The backend's "command" is still ${PLACEHOLDER_COMMAND}, the placeholder from Rukoo. Put your own program there: it gets the prompt on stdin and answers on stdout. Or pick one of your agents when you copy the config.` }];
+    return [{ level: 'error', code: 'placeholder', message: `The backend's "command" is still ${PLACEHOLDER_COMMAND}, the placeholder from Rukoo. Put your own program there: it gets the prompt on stdin and answers on stdout. Or pick one of your agents when you copy the config.` }];
   }
   const cwd = this.config.cwd ? path.resolve(String(this.config.cwd)) : process.cwd();
   const found = findProgram(program, { cwd, env: { ...env, ...(this.config.env || {}) } });
   if (!found) {
     const shim = WINDOWS && !path.extname(program) ? ` On Windows a .cmd or .bat file needs ["cmd", "/c", "${program}.cmd"].` : '';
-    return [{ level: 'error', message: `The backend's program ${program} was not found${/[\\/]/.test(program) ? '' : ' on PATH'}. Set "command" to a program on this computer.${shim}` }];
+    return [{ level: 'error', code: 'missing', message: `The backend's program ${program} was not found${/[\\/]/.test(program) ? '' : ' on PATH'}. Set "command" to a program on this computer.${shim}` }];
   }
   return [{ level: 'info', message: `The backend runs ${found}` }];
 };

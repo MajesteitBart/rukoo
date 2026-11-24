@@ -60,6 +60,7 @@ const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner')
 // ---- chat ----
 const { WorkspaceService, chatTiming } = require('./workspaces');
 const { chatApi } = require('./workspaces/ipc');
+const { AgentRuns, runBackend, runsApi } = require('./agent-runs');
 const { VIEW_SCHEME: CHAT_FILE_SCHEME } = require('./workspaces/files');
 // Team chat shows a downloaded image through rukoo-chat-file://view/<token> (workspaces/files.js), which serves only
 // files this session downloaded. Registered before the app is ready, as Electron requires.
@@ -150,6 +151,8 @@ let booking = null;
 let reminders = null;
 // Team chat (workspaces/index.js). Null until it is made after booking.
 let workspaces = null;
+// The team chat agents this computer runs (agent-runs.js, "Run on this computer"). Null until the agent hub is made.
+let agentRuns = null;
 // Invitations in email and .ics files (calendar/invitations.js).
 let invitations = null;
 // ---- voice ----
@@ -791,6 +794,7 @@ function closeServices() {
   if (reminders) reminders.stop();
   if (booking) booking.close();
   if (workspaces) workspaces.close();
+  if (agentRuns) agentRuns.close();
 }
 
 // Windows is signing out or shutting down. No before-quit or will-quit follows, and Windows ends Rukoo soon after,
@@ -1719,6 +1723,16 @@ const api = {
   ...chatApi(() => workspaces)
 };
 
+// ---- chat agents ----
+// Run on this computer (agent-runs.js): its own calls, and chatCreateAgent, chatNewAgentKey and chatRemoveAgent, which
+// hand main the agent's key instead of the window.
+function agentRunsService() {
+  if (!agentRuns) throw new Error('unknown');
+  return agentRuns;
+}
+Object.assign(api, runsApi(agentRunsService, { chatCreateAgent: api.chatCreateAgent, chatNewAgentKey: api.chatNewAgentKey, chatRemoveAgent: api.chatRemoveAgent }));
+// ---- /chat agents ----
+
 // ---- agents ----
 // The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
 const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -2431,6 +2445,25 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semAgents = hub;
   hub.start().catch((err) => console.error('[agents] start failed:', err));
   // ---- /agents ----
+  // ---- chat agents ----
+  // After the hub, whose settings load as it starts: an agent here answers with one of Settings, Agents.
+  agentRuns = new AgentRuns({
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    secrets,
+    canKeep: () => secrets.available(),
+    account,
+    backendFor: (use) => runBackend(hub.cfg, use),
+    // After a key stopped working: whether the agent is still in the workspace, or was removed.
+    agentExists: (ws, agent) => workspaces.manage.agents(ws).then((res) => res.agents.some((a) => a.id === agent), () => null),
+    log: (level, message) => diag.write(level, 'agent-runs', message)
+  }).init();
+  if (process.env.SEM_HIDDEN) global.__semAgentRuns = agentRuns;
+  agentRuns.on('changed', (state) => send('agent-runs', state));
+  // Leaving a workspace, or losing it, stops its agents here and deletes their keys.
+  workspaces.on('event', (e) => {
+    if (e && e.kind === 'removed') agentRuns.forgetWorkspace(e.ws);
+  });
+  // ---- /chat agents ----
   nativeTheme.on('updated', () => {
     applyTheme();
     broadcast('theme');
