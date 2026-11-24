@@ -160,4 +160,14 @@ test('a draft the server refuses to delete stays in Drafts, and the editor says 
   await expect(row(subject)).toBeVisible();
   expect(await inView('drafts')).toContain(subject);
   await win.screenshot({ path: testInfo.outputPath('refused-draft-discard.png'), animations: 'disabled' });
+
+  // Once the server allows it, the same discard goes through and says so.
+  await readOnly('Drafts', false);
+  await row(subject).dblclick();
+  await expect(win.locator('.composer')).toBeVisible();
+  await win.click('[data-c="discard"]');
+  await win.click('.scrim .buttons button:text-is("Delete")');
+  await expect(notice()).toContainText('Draft deleted');
+  await expect(row(subject)).toHaveCount(0);
+  await expect.poll(() => inView('drafts')).not.toContain(subject);
 });
