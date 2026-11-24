@@ -1172,14 +1172,24 @@ test('over a real connection, an EXPUNGE during the read back after a failure vo
 test('over a real connection, a batch sends no further email once the quit stops it', () =>
   overTcp(['MOVE', 'UIDPLUS'], async (box, s) => {
     const uids = Array.from({ length: 4 }, (_, i) => box.put('INBOX', { subject: `Email ${i}` }).uid);
+    let quit = false;
     box.before((command) => {
-      if (/^UID MOVE /i.test(command) && s.stopBatches) s.stopBatches();
+      if (/^UID (MOVE|STORE) /i.test(command)) quit = true;
     });
-    const out = await s.moveMany('INBOX', uids, 'Archive');
+    const out = await s.moveMany('INBOX', uids, 'Archive', { stopped: () => quit });
     assert.ok(out.get(uids[0]).uid, 'the one in flight moved');
     for (const uid of uids.slice(1)) assert.equal(out.get(uid).error.unsent, true, `uid ${uid} unsent`);
     assert.equal(box.commands.filter((c) => /^UID MOVE /i.test(c)).length, 1);
     assert.equal(box.folders.get('INBOX').messages.length, 3);
+
+    // A delete for good the same way: the email in flight is deleted, with its STORE and EXPUNGE, and no other.
+    quit = false;
+    const left = box.folders.get('INBOX').messages.map((m) => m.uid);
+    const gone = await s.deleteMany('INBOX', left, { stopped: () => quit });
+    assert.deepEqual(gone.get(left[0]), {});
+    for (const uid of left.slice(1)) assert.equal(gone.get(uid).error.unsent, true, `uid ${uid} unsent`);
+    assert.equal(box.commands.filter((c) => /^UID EXPUNGE /i.test(c)).length, 1);
+    assert.equal(box.folders.get('INBOX').messages.length, 2);
   }));
 
 // #308 follow-up, finding 6: the checks must not cost a round trip per email. Counted over TCP for 500 emails; the

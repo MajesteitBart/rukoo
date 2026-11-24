@@ -829,15 +829,15 @@ class ImapAccount {
   // emails. work(client, uids, results, sent) records a result for each uid it sends a command for, after adding the
   // uid to sent. A uid it leaves without one goes into the next turn: the connection went before its go, so nothing
   // was sent for it. A turn that fails gives every uid still without a result its error: unsent for those nothing was
-  // sent for, unknown (by unknownKey) for any it was.
-  async inTurns(path, uids, expectUidValidity, unknownKey, work) {
+  // sent for, unknown (by unknownKey) for any it was. stopped(): true once a quit can't be called off any more
+  // (engine.stopBatches()); work finishes the email it is on and sends no further one, and the rest is unsent.
+  async inTurns(path, uids, expectUidValidity, unknownKey, work, stopped = null) {
     const results = new Map();
     let todo = [...new Set(uids.map(Number))];
     while (todo.length) {
-      // A quit stopped the batches: what wasn't sent stays unsent.
-      if (this.stopping) {
-        const stopped = Object.assign(new Error(t('errors.connection.closed')), { unsent: true });
-        for (const uid of todo) results.set(uid, { error: stopped });
+      if (stopped && stopped()) {
+        const quit = Object.assign(new Error(t('errors.connection.closed')), { unsent: true });
+        for (const uid of todo) results.set(uid, { error: quit });
         break;
       }
       const turn = todo.slice(0, TURN);
@@ -910,7 +910,7 @@ class ImapAccount {
   // destination and batch, and a FETCH and a STATUS per turn with failures. imapflow answers false for a NO, a BAD and
   // a lost connection alike, and a server can make the copy before it answers NO: RFC 6851 section 3.3 only says it
   // SHOULD NOT leave an email in both folders.
-  async moveTurn(client, turn, destination, results, sent) {
+  async moveTurn(client, turn, destination, results, sent, stopped = null) {
     const opts = { uid: true };
     const move = canMove(client);
     // Without MOVE a move is a COPY and a delete, which needs UID EXPUNGE (expungeOne()): nothing is sent, so nothing
@@ -928,7 +928,7 @@ class ImapAccount {
     let open = [];
     const clean = new Set();
     for (const uid of turn) {
-      if (client.usable === false || this.stopping) break;
+      if (client.usable === false || (stopped && stopped())) break;
       sent.add(uid);
       const res = await client[move ? 'messageMove' : 'messageCopy'](String(uid), destination, opts).catch(() => false);
       if (!res) {
@@ -967,8 +967,8 @@ class ImapAccount {
   // imapflow's messageMove does the same, but answers false both when the COPY failed and when the delete failed after
   // the copy was made. After a failed delete the copy stays (errors.move.copied): another app may already have
   // expunged the original. A server with neither MOVE nor UIDPLUS gets nothing (errors.move.noUidExpunge, unsent).
-  moveMany(path, uids, destination, { expectUidValidity = null } = {}) {
-    return this.inTurns(path, uids, expectUidValidity, 'errors.move.unknown', (client, turn, results, sent) => this.moveTurn(client, turn, destination, results, sent));
+  moveMany(path, uids, destination, { expectUidValidity = null, stopped = null } = {}) {
+    return this.inTurns(path, uids, expectUidValidity, 'errors.move.unknown', (client, turn, results, sent) => this.moveTurn(client, turn, destination, results, sent, stopped), stopped);
   }
 
   // moveMany() for one email: its uid in destination and that folder's UIDVALIDITY, or the error.
@@ -983,7 +983,7 @@ class ImapAccount {
   // with errors.delete.stillMarked and marked when it still carries \Deleted. unknown when Rukoo can't tell. The flags
   // before (deleteOne()) and what's left after are read once per turn, for all its emails at once. A server without
   // UIDPLUS gets nothing (errors.delete.noUidExpunge, unsent).
-  deleteMany(path, uids, { expectUidValidity = null } = {}) {
+  deleteMany(path, uids, { expectUidValidity = null, stopped = null } = {}) {
     return this.inTurns(path, uids, expectUidValidity, 'errors.delete.unknown', async (client, turn, results, sent) => {
       // Without UID EXPUNGE no email is deleted on its own (expungeOne()): nothing is sent, so nothing is marked.
       if (!has(client, 'UIDPLUS')) {
@@ -994,7 +994,7 @@ class ImapAccount {
       const before = modseqs(client) ? await readMany(client, turn) : null;
       const stage = new Map();
       for (const uid of turn) {
-        if (client.usable === false || this.stopping) break;
+        if (client.usable === false || (stopped && stopped())) break;
         sent.add(uid);
         const left = await deleteOne(client, uid, before && before.get(uid));
         if (left === 'deleted') results.set(uid, {});
@@ -1011,7 +1011,7 @@ class ImapAccount {
         else if (m.flags.has('\\Deleted')) results.set(uid, { error: refusal('errors.delete.stillMarked', { marked: true, stage: at }) });
         else results.set(uid, { error: refusal('errors.delete.refused', { stage: at }) });
       }
-    });
+    }, stopped);
   }
 
   // deleteMany() for one email: throws its error.
@@ -1054,12 +1054,6 @@ class ImapAccount {
 
   savesSentCopy() {
     return AUTO_SENT_HOSTS.test(this.account.smtp.host || '');
-  }
-
-  // A quit that can't be called off any more (engine.stopBatches()): moveMany() and deleteMany() finish the email they
-  // are on and send no further one; the rest of the batch is unsent.
-  stopBatches() {
-    this.stopping = true;
   }
 
   async close() {

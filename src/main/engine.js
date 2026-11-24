@@ -2125,9 +2125,12 @@ class Engine extends EventEmitter {
   // Takes the emails of a group out of the cache and runs send(uids, expectUidValidity) for them on the account's
   // session, which answers a Map uid → result (ImapAccount.moveMany()). Each item gets putBack and result. A session
   // that throws gives every email that error, which counts as unsure.
+  // send gets a third argument, stopped(), for the session (ImapAccount.inTurns()); a group with stoppable false, the
+  // discard of a draft whose email went out, still goes during a quit, and its session isn't stopped.
   async sendGroup(group, send) {
     const { acc, folder, items } = group;
-    if (this.stopping) {
+    const stoppable = group.stoppable !== false;
+    if (this.stopping && stoppable) {
       // After stopBatches(): nothing goes, and the rows stay where they are.
       const stopped = Object.assign(new Error(t('errors.connection.closed')), { unsent: true });
       for (const it of items) Object.assign(it, { putBack: () => {}, result: { error: stopped } });
@@ -2142,7 +2145,8 @@ class Engine extends EventEmitter {
     try {
       // The uids are the ones of the generation of the folder they were looked up in: on a folder rebuilt since, they
       // would name other emails, and the session sends nothing.
-      results = await this.withPendingMany(acc, folder, items, () => send(items.map((it) => it.uid), group.uidValidity));
+      const stopped = stoppable ? () => this.stopping : null;
+      results = await this.withPendingMany(acc, folder, items, () => send(items.map((it) => it.uid), group.uidValidity, stopped));
     } catch (err) {
       results = new Map();
       for (const it of items) results.set(it.uid, { error: err });
@@ -2186,11 +2190,11 @@ class Engine extends EventEmitter {
   }
 
   // Once a quit can't be called off (main.js): no further email of a move, delete or Undo goes to the server. The
-  // sessions finish the email they are on and give the rest as unsent, whose rows come back in the cache. Settles once
-  // every batch on its way has, so the cache saved after it has those rows; null when no batch is on its way.
+  // sessions finish the email they are on and give the rest as unsent (sendGroup()'s stopped()), whose rows come back
+  // in the cache. Settles once every batch on its way has, so the cache saved after it has those rows; null when no
+  // batch is on its way.
   stopBatches() {
     this.stopping = true;
-    for (const s of this.sessions.values()) if (typeof s.stopBatches === 'function') s.stopBatches();
     if (!this.batches.size) return null;
     return (async () => {
       while (this.batches.size) await Promise.allSettled([...this.batches]);
@@ -2206,7 +2210,7 @@ class Engine extends EventEmitter {
       const { acc, folder } = group;
       group.resync = new Set();
       let moved = 0;
-      for (const it of await this.sendGroup(group, (uids, expectUidValidity) => this.session(acc).moveMany(folder, uids, destination, { expectUidValidity }))) {
+      for (const it of await this.sendGroup(group, (uids, expectUidValidity, stopped) => this.session(acc).moveMany(folder, uids, destination, { expectUidValidity, stopped }))) {
         const r = it.result;
         if (r.error) {
           out.set(it.id, this.failed(group, it, r.error, [folder, destination]));
@@ -2322,7 +2326,7 @@ class Engine extends EventEmitter {
       const { accountId, destination, folder, uidValidity } = items[0].rec;
       const acc = this.account(accountId);
       const group = { acc, folder: destination, uidValidity, items, resync: new Set() };
-      for (const it of await this.sendGroup(group, (uids) => this.session(acc).moveMany(destination, uids, folder, { expectUidValidity: uidValidity }))) {
+      for (const it of await this.sendGroup(group, (uids, v, stopped) => this.session(acc).moveMany(destination, uids, folder, { expectUidValidity: uidValidity, stopped }))) {
         const { rec, result: r } = it;
         if (!r.error) {
           // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
@@ -2460,22 +2464,23 @@ class Engine extends EventEmitter {
 
   // Deletes the emails of ids for good, in one batch per folder (ImapAccount.deleteMany()), and puts 'deleted' or the
   // window's error in out for each.
-  async deleteForGood(ids, out) {
+  async deleteForGood(ids, out, opts = {}) {
     const same = new Map();
-    await this.deleteEntries(this.resolve(ids, out, same), out);
+    await this.deleteEntries(this.resolve(ids, out, same), out, opts);
     this.shareAnswers(out, same);
   }
 
-  // deleteForGood() for entries of resolve().
-  deleteEntries(entries, out) {
-    return this.tracked(this.sendDeletes(entries, out));
+  // deleteForGood() for entries of resolve(). stoppable false: a quit doesn't stop it (sendGroup()).
+  deleteEntries(entries, out, { stoppable = true } = {}) {
+    return this.tracked(this.sendDeletes(entries, out, stoppable));
   }
 
-  async sendDeletes(entries, out) {
+  async sendDeletes(entries, out, stoppable) {
     for (const group of this.groupByFolder(entries)) {
       const { acc, folder } = group;
+      group.stoppable = stoppable;
       group.resync = new Set();
-      for (const it of await this.sendGroup(group, (uids, expectUidValidity) => this.session(acc).deleteMany(folder, uids, { expectUidValidity }))) {
+      for (const it of await this.sendGroup(group, (uids, expectUidValidity, stopped) => this.session(acc).deleteMany(folder, uids, { expectUidValidity, stopped }))) {
         out.set(it.id, it.result.error ? this.failed(group, it, it.result.error, [folder]) : 'deleted');
       }
       this.changed(acc.id);
@@ -2766,7 +2771,8 @@ class Engine extends EventEmitter {
   // up when the send or save began (draftEntry()); a sync since may have given its uid to another draft.
   async discardDraft(id, found = null) {
     const out = new Map();
-    await (found ? this.deleteEntries([found], out) : this.deleteForGood([id], out));
+    // Email held for its Undo notice goes out during a quit (main.js), and its draft goes with it.
+    await (found ? this.deleteEntries([found], out, { stoppable: false }) : this.deleteForGood([id], out, { stoppable: false }));
     const r = out.get(id);
     if (r instanceof Error) throw r;
   }

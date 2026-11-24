@@ -564,27 +564,23 @@ class DemoAccount {
   // What ImapAccount.moveMany and deleteMany answer: a Map uid → the result of move() or deleteForever() for that
   // email, or { error }. They go one email at a time through those two, which the Electron tests replace to act out a
   // server's answers.
-  async moveMany(p, uids, destination, opts = {}) {
-    return this.each(uids, (uid) => this.move(p, uid, destination, opts));
+  async moveMany(p, uids, destination, { stopped = null, ...opts } = {}) {
+    return this.each(uids, (uid) => this.move(p, uid, destination, opts), stopped);
   }
 
-  async deleteMany(p, uids, { expectUidValidity = null } = {}) {
+  async deleteMany(p, uids, { expectUidValidity = null, stopped = null } = {}) {
     if (expectUidValidity && String(this.box(p).uidValidity) !== String(expectUidValidity)) {
       const error = Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY', unsent: true });
       return new Map(uids.map((uid) => [Number(uid), { error }]));
     }
-    return this.each(uids, async (uid) => (await this.deleteForever(p, uid)) || {});
+    return this.each(uids, async (uid) => (await this.deleteForever(p, uid)) || {}, stopped);
   }
 
-  // As ImapAccount.stopBatches: the rest of a batch is unsent.
-  stopBatches() {
-    this.stopping = true;
-  }
-
-  async each(uids, fn) {
+  // stopped(): as for ImapAccount.inTurns, the rest of a batch is unsent once it says so.
+  async each(uids, fn, stopped = null) {
     const out = new Map();
     for (const uid of uids) {
-      if (this.stopping) {
+      if (stopped && stopped()) {
         out.set(Number(uid), { error: Object.assign(new Error(t('errors.connection.closed')), { unsent: true }) });
         continue;
       }

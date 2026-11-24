@@ -677,6 +677,11 @@ test('a quit stops a batch after the email in flight, and the emails not sent ar
   assert.ok(!listed.includes(ids[0]), 'the one in flight went');
   await within(removing);
   assert.equal(sent.length, 1, 'one email went to the server');
+
+  // Email held for its Undo notice still goes out during the quit (main.js), and its draft is discarded with it.
+  const draft = view(engine, acc, 'drafts')[0];
+  await engine.send({ accountId: acc.id, to: ['a@example.com'], subject: 'Hi', text: 'x', draftId: draft.id });
+  assert.ok(!demo.box('Drafts').messages.some((m) => m.uid === draft.uid), 'the draft is gone');
   await engine.close();
 });
 // #308 round 4, finding 6: an email given twice in one batch goes to the server once, and both get its result.
