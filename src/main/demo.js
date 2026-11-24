@@ -541,7 +541,7 @@ class DemoAccount {
     const src = this.box(p);
     const dest = this.box(destination);
     if (expectUidValidity && String(src.uidValidity) !== String(expectUidValidity)) {
-      throw Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY' });
+      throw Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY', unsent: true });
     }
     this.refuse('errors.move.refused', p, destination);
     const idx = src.messages.findIndex((m) => m.uid === Number(uid));
@@ -559,6 +559,33 @@ class DemoAccount {
     const box = this.box(p);
     box.messages = box.messages.filter((m) => m.uid !== Number(uid));
     this.persist();
+  }
+
+  // What ImapAccount.moveMany and deleteMany answer: a Map uid → the result of move() or deleteForever() for that
+  // email, or { error }. They go one email at a time through those two, which the Electron tests replace to act out a
+  // server's answers.
+  async moveMany(p, uids, destination, opts = {}) {
+    return this.each(uids, (uid) => this.move(p, uid, destination, opts));
+  }
+
+  async deleteMany(p, uids, { expectUidValidity = null } = {}) {
+    if (expectUidValidity && String(this.box(p).uidValidity) !== String(expectUidValidity)) {
+      const error = Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY', unsent: true });
+      return new Map(uids.map((uid) => [Number(uid), { error }]));
+    }
+    return this.each(uids, async (uid) => (await this.deleteForever(p, uid)) || {});
+  }
+
+  async each(uids, fn) {
+    const out = new Map();
+    for (const uid of uids) {
+      try {
+        out.set(Number(uid), await fn(uid));
+      } catch (error) {
+        out.set(Number(uid), { error });
+      }
+    }
+    return out;
   }
 
   async append(p, raw, flags = []) {

@@ -2130,17 +2130,22 @@ async function emptyCurrent() {
   toast(tally.notice(gone(trashed, deleted), total), tally.failed ? 5000 : undefined);
 }
 
-// What happened to the emails of one action, for its notice. fail(err) counts an email that didn't go: one that
-// stayed, as the server turned it down, or one nobody can place until its folders have synced (code 'uncertain',
-// engine.js notMoved), with the first reason for each. add() takes those counts from emptyFolder.
+// What happened to the emails of one action, for its notice. fail(r) counts an email that didn't go, from a batch's
+// answer for it ({ error, code }) or a thrown error: one that stayed, as the server turned it down, or one nobody can
+// place until its folders have synced (code 'uncertain', engine.js notMoved), with the first reason for each. An Undo
+// whose folder was rebuilt (code 'rebuilt', engine.js undoAll) counts as one nobody can place, and its reason is
+// given. add() takes those counts from emptyFolder.
 function outcomes() {
   const n = { stayed: 0, unsure: 0 };
-  const reasons = { stayed: null, unsure: null };
+  const reasons = { stayed: null, unsure: null, rebuilt: null };
   return {
-    fail(err) {
-      const kind = err && err.code === 'uncertain' ? 'unsure' : 'stayed';
+    fail(r) {
+      const code = r && r.code;
+      const kind = code === 'uncertain' || code === 'rebuilt' ? 'unsure' : 'stayed';
+      const text = (r && (r.error || r.message)) || null;
       n[kind]++;
-      reasons[kind] ||= (err && err.message) || null;
+      reasons[kind] ||= text;
+      if (code === 'rebuilt') reasons.rebuilt ||= text;
     },
     add(result) {
       for (const kind of ['stayed', 'unsure']) {
@@ -2152,14 +2157,15 @@ function outcomes() {
       return n.stayed + n.unsure;
     },
     // done: a sentence for each way emails went (gone(), mailbox.outcome.*), then one for those that didn't, then the
-    // server's reason for those that stayed. Each count is of one outcome only, so the notice holds for any mix. One
-    // email: just its reason.
+    // server's reason for those that stayed and the reason a rebuilt folder gives. Each count is of one outcome only,
+    // so the notice holds for any mix. One email: just its reason.
     notice(done, total) {
       if (total === 1 && this.failed) return reasons.unsure || reasons.stayed;
       const parts = [...done];
       if (n.stayed) parts.push(t('mailbox.outcome.stayed', { count: n.stayed }));
       if (n.unsure) parts.push(t('mailbox.outcome.unsure', { count: n.unsure }));
       if (n.stayed && reasons.stayed) parts.push(reasons.stayed);
+      if (reasons.rebuilt) parts.push(reasons.rebuilt);
       return parts.join(' ');
     }
   };
@@ -2490,13 +2496,12 @@ async function undoMoves(ids, reopen) {
   const restored = [];
   const failed = [];
   const tally = outcomes();
-  for (const id of ids) {
-    try {
-      restored.push(await api('undoMove', id));
-    } catch (err) {
-      failed.push(id);
-      tally.fail(err);
-    }
+  // One batch per folder to the server (engine.js undoMany).
+  for (const r of await batch('undoMany', ids)) {
+    if (r.error) {
+      failed.push(r.id);
+      tally.fail(r);
+    } else restored.push(r.restored);
   }
   await refresh();
   const back = restored.filter(Boolean);
@@ -2507,6 +2512,16 @@ async function undoMoves(ids, reopen) {
     return offerUndo(failed, tally.notice(done, ids.length), reopen, 5000);
   }
   if (back.length) toast(back.length === 1 ? t('mailbox.undo.restored') : t('mailbox.undo.restoredCount', { count: back.length }));
+}
+
+// A move, delete or Undo of many emails (moveMany, removeMany, undoMany in main.js): an answer per email, { id, ... }
+// or { id, error, code }. A call that fails as a whole leaves each email's result unknown.
+async function batch(method, ids, ...args) {
+  try {
+    return await api(method, ids, ...args);
+  } catch (err) {
+    return ids.map((id) => ({ id, error: err.message, code: err.code || 'uncertain' }));
+  }
 }
 
 // Puts the list right after emails came back: refused by the server, or kept at the no-Trash question. The email that
@@ -2538,18 +2553,17 @@ export async function removeMessages(list) {
   const back = [];
   let deleted = 0;
   let total = list.length;
-  // The emails that didn't go are back in the engine's list, and the notice at the end says why.
+  // The emails that didn't go are back in the engine's list, and the notice at the end says why. One batch per
+  // folder to the server (engine.js removeMany); an answer per email.
   const tally = outcomes();
-  for (const m of list) {
-    try {
-      const where = await api('remove', m.id);
-      if (where === 'trash') moved.push(m.id);
-      else if (where === 'confirm') confirm.push(m);
-      else deleted++;
-    } catch (err) {
-      back.push(m.id);
-      tally.fail(err);
-    }
+  const byId = new Map(list.map((m) => [m.id, m]));
+  for (const r of await batch('removeMany', list.map((m) => m.id))) {
+    if (r.error) {
+      back.push(r.id);
+      tally.fail(r);
+    } else if (r.where === 'trash') moved.push(r.id);
+    else if (r.where === 'confirm') confirm.push(byId.get(r.id));
+    else deleted++;
   }
   if (confirm.length) {
     const ok = await confirmDialog(
@@ -2561,14 +2575,11 @@ export async function removeMessages(list) {
       true
     );
     if (ok) {
-      for (const m of confirm) {
-        try {
-          await api('remove', m.id, { force: true });
-          deleted++;
-        } catch (err) {
-          back.push(m.id);
-          tally.fail(err);
-        }
+      for (const r of await batch('removeMany', confirm.map((m) => m.id), { force: true })) {
+        if (r.error) {
+          back.push(r.id);
+          tally.fail(r);
+        } else deleted++;
       }
     } else {
       total -= confirm.length;
@@ -2606,15 +2617,21 @@ async function moveMessages(list, target, label) {
   const shown = S.selectedId;
   const moved = [];
   const back = [];
-  // As in removeMessages().
+  // As in removeMessages(): one batch per account and destination.
   const tally = outcomes();
+  const batches = new Map();
   for (const { m, path } of plan) {
-    try {
-      await api('move', m.id, path);
-      moved.push(m.id);
-    } catch (err) {
-      back.push(m.id);
-      tally.fail(err);
+    const key = `${m.accountId}
+${path}`;
+    if (!batches.has(key)) batches.set(key, { path, ids: [] });
+    batches.get(key).ids.push(m.id);
+  }
+  for (const { path, ids } of batches.values()) {
+    for (const r of await batch('moveMany', ids, path)) {
+      if (r.error) {
+        back.push(r.id);
+        tally.fail(r);
+      } else moved.push(r.id);
     }
   }
   if (back.length) showBack(back, reopen && open, shown);

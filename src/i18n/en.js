@@ -3157,15 +3157,15 @@
   },
   "errors.delete.refused": {
     "message": "The mail server didn't delete the email.",
-    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft. The email stays and its row comes back. Shown in a notice, also when the editor closes after Delete draft, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteForever); src/main/demo.js (refuse); src/renderer/composer.js (dropDraft)"
+    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft, and the email is still there without a deletion mark. The email stays and its row comes back. Shown in a notice, also when the editor closes after Delete draft, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteMany); src/main/demo.js (refuse); src/renderer/composer.js (dropDraft)"
   },
   "errors.delete.stillMarked": {
     "message": "The mail server didn't finish deleting the email. It's still marked for deletion.",
-    "description": "errors > delete. The IMAP server didn't finish deleting an email for good, and Rukoo couldn't take the \\Deleted flag off it again, so another mail app may still expunge it, or another mail app had marked it before. The email's row comes back. Shown in a notice. src/main/imap.js (deleteForever)"
+    "description": "errors > delete. The IMAP server didn't finish deleting an email for good, and the email still carries the \\Deleted flag, so another mail app may still expunge it. Rukoo takes that flag off only when the server shows (CONDSTORE) that this delete set it and nothing changed the email since; another mail app may have set it. The email's row comes back. Shown in a notice, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteMany, deleteOne)"
   },
   "errors.delete.unknown": {
     "message": "Rukoo couldn't confirm whether the mail server deleted the email.",
-    "description": "errors > delete. The IMAP server didn't confirm deleting an email for good, and Rukoo couldn't read the email back to see whether it is gone, for example because the connection closed. The email's row comes back and the folder syncs, which shows what happened. Shown in a notice. src/main/imap.js (deleteForever)"
+    "description": "errors > delete. The IMAP server didn't confirm deleting an email for good, and Rukoo couldn't read the email back to see whether it is gone, for example because the connection closed. The email's row comes back and the folder syncs, which shows what happened. Shown in a notice. src/main/imap.js (deleteMany)"
   },
   "errors.flags.refused": {
     "message": "The mail server didn't save the change.",
@@ -3525,15 +3525,15 @@
   },
   "errors.move.copied": {
     "message": "The mail server copied the email but didn't confirm removing the original. Check both folders before trying again.",
-    "description": "errors > move. A server without the IMAP MOVE command copied the email but didn't confirm removing the original. Rukoo keeps the copy, so the email may be in both folders; both folders sync. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (move)"
+    "description": "errors > move. A server without the IMAP MOVE command copied the email but didn't confirm removing the original. Rukoo keeps the copy, so the email may be in both folders; both folders sync. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (moveTurn)"
   },
   "errors.move.refused": {
     "message": "The mail server didn't move the email.",
-    "description": "errors > move. The IMAP server turned down moving an email to another folder: Move, Archive, Delete to Trash, Mark as spam, or Undo of one of those. The email stays where it was and its row comes back; after a refused Undo the notice offers Undo again. Shown in a notice, and after mailbox.outcome.stayed when several emails were moved. src/main/imap.js (move, moveOutcome); src/main/demo.js (refuse)"
+    "description": "errors > move. The IMAP server turned down moving an email to another folder: Move, Archive, Delete to Trash, Mark as spam, or Undo of one of those. Rukoo says this only after reading back that the email is still in its folder by its UID and the destination took nothing in, both in the folder generation (UIDVALIDITY) the move used. The email stays where it was and its row comes back; after a refused Undo the notice offers Undo again. Shown in a notice, and after mailbox.outcome.stayed when several emails were moved. src/main/imap.js (moveTurn); src/main/demo.js (refuse)"
   },
   "errors.move.unknown": {
     "message": "Rukoo couldn't confirm whether the mail server moved the email. Check both folders before trying again.",
-    "description": "errors > move. The IMAP server didn't confirm moving an email, and Rukoo can't tell whether it did: the connection closed before the answer, or the server answered NO after it may have copied the email. The email's row comes back while both folders sync, which shows where it is, and Undo isn't offered. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (move, moveOutcome)"
+    "description": "errors > move. The IMAP server didn't confirm moving an email, and Rukoo can't tell whether it did: the connection closed before the answer, or the server answered NO after it may have copied the email. The email's row comes back while both folders sync, which shows where it is, and Undo isn't offered. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (moveTurn)"
   },
   "errors.network.privateHost": {
     "message": "{hostname} is not a public address",
@@ -3557,7 +3557,7 @@
   },
   "errors.undo.rebuilt": {
     "message": "This action can no longer be undone: the folder was rebuilt on the server.",
-    "description": "errors > undo. src/main/engine.js"
+    "description": "errors > undo. Undo after a move, archive or delete, when the folder the email went to was rebuilt on the server since (its UIDVALIDITY changed), so Rukoo can no longer say which email it is. Nothing is sent and the folder syncs. Shown in a notice; when several emails were undone, after mailbox.outcome.unsure, which counts this one. src/main/engine.js (undoAll); src/renderer/app.js (outcomes)"
   },
   "errors.unsubscribe.missing": {
     "message": "This email has no unsubscribe link.",
@@ -4060,7 +4060,7 @@
       "one": "Rukoo couldn't confirm what happened to {count} email. Check where it is before trying again.",
       "other": "Rukoo couldn't confirm what happened to {count} emails. Check where they are before trying again."
     },
-    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails whose result the mail server didn't confirm, for example because the connection closed. Rukoo syncs the folders involved, which shows where they are, and offers no Undo for them. The notice gives no reason for these: this sentence is it. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails whose result the mail server didn't confirm, for example because the connection closed, and emails whose Undo can't be done because the folder was rebuilt on the server. Rukoo syncs the folders involved, which shows where they are, and offers no Undo for them. The notice gives no reason for these, except errors.undo.rebuilt after this sentence for a rebuilt folder. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
   },
   "mailbox.saved.save": {
     "message": "Save to Saved emails",

@@ -458,3 +458,120 @@ test('a refused Undo resyncs the destination when its UIDVALIDITY changed since 
   await until(() => view(engine, acc, 'archive').some((m) => m.subject === target.subject));
   await engine.close();
 });
+
+// #308 follow-up, finding 3: an Undo that failed without proof that the email is still where it was moved. Here another
+// app moved it on from Archive, a sync showed Archive without it (same UIDVALIDITY), and then Undo's SELECT failed, so
+// Undo sent nothing. Rukoo mustn't make up a row for it or offer Undo again; a sync shows where things are.
+test('an Undo that failed without a confirmed refusal puts no row back, offers no Undo again, and syncs', async () => {
+  for (const error of [Object.assign(new Error('Connection lost'), { unsent: true }), new Error('Something else went wrong')]) {
+    const { engine, acc } = await freshEngine();
+    const demo = engine.session(engine.account(acc.id));
+    const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+    await engine.archive(target.id);
+    await until(() => view(engine, acc, 'archive').some((m) => m.subject === target.subject));
+    // Another app moves it from Archive to Travel, and Archive syncs.
+    const archive = demo.box('Archive');
+    const gone = archive.messages.find((m) => m.subject === target.subject);
+    archive.messages = archive.messages.filter((m) => m !== gone);
+    demo.box('Travel').messages.push(gone);
+    await engine.syncFolderAndNotify(engine.account(acc.id), 'Archive');
+    assert.ok(!view(engine, acc, 'archive').some((m) => m.subject === target.subject));
+
+    const syncFolder = demo.syncFolder.bind(demo);
+    const asked = [];
+    let go;
+    const gate = new Promise((r) => (go = r));
+    demo.syncFolder = async (p, ...rest) => {
+      asked.push(p);
+      await gate;
+      return syncFolder(p, ...rest);
+    };
+    demo.move = async () => {
+      throw error;
+    };
+    await assert.rejects(engine.undoMove(target.id), (err) => err.message === error.message);
+    assert.ok(!view(engine, acc, 'archive').some((m) => m.subject === target.subject), `no row made up (${error.message})`);
+    assert.ok(!engine.canUndo(target.id), `no Undo again (${error.message})`);
+    assert.ok(asked.includes('Archive'), 'Archive syncs');
+    go();
+    await engine.close();
+  }
+});
+
+// #308 follow-up, finding 4: a move whose result is unknown syncs both folders, a destination the cache doesn't hold
+// yet included, so a copy left there shows.
+test('a move whose result is unknown syncs a destination the cache has never opened', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  assert.ok(!engine.caches.get(acc.id).boxes.Travel);
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  // The server made the copy and never answered.
+  demo.move = async (p, uid, destination) => {
+    demo.box(destination).messages.push({ ...demo.find(p, uid), uid: demo.state.nextUid++ });
+    demo.persist();
+    throw Object.assign(new Error(t('errors.move.unknown')), { unknown: true });
+  };
+  await assert.rejects(engine.move(target.id, 'Travel'), { code: 'uncertain' });
+  await until(() => engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Travel' }).some((m) => m.subject === target.subject));
+  assert.ok(inbox(engine, acc).some((m) => m.subject === target.subject));
+  await engine.close();
+});
+
+// #308 follow-up, finding 5: an Undo whose folder was rebuilt can't say where the email is by its old uid. The window
+// counts it as not confirmed (code 'rebuilt') and gives the reason; it isn't offered again.
+test('an Undo whose folder was rebuilt counts as not confirmed, with the reason, next to one that went', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const [a, b] = inbox(engine, acc);
+  const [archived] = await engine.moveMany([a.id], 'Archive');
+  const [trashed] = await engine.removeMany([b.id]);
+  assert.deepEqual([archived, trashed], [{ id: a.id }, { id: b.id, where: 'trash' }]);
+  demo.box('Archive').uidValidity = 'rebuilt';
+  const answers = await engine.undoMany([a.id, b.id]);
+  assert.deepEqual(answers[0], { id: a.id, error: t('errors.undo.rebuilt'), code: 'rebuilt' });
+  assert.ok(answers[1].restored && !answers[1].error);
+  assert.ok(!engine.canUndo(a.id));
+  await assert.rejects(engine.undoMove(a.id), { message: t('errors.undo.expired') });
+  await engine.close();
+});
+
+// #308 follow-up, finding 6: a batch goes to the account's session once per folder, so its checks cost a round trip
+// per batch (test/imap.test.js counts the commands), and each email still gets its own outcome.
+test('moving, deleting and undoing many emails is one call to the server per folder, with an outcome per email', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const calls = [];
+  for (const name of ['moveMany', 'deleteMany']) {
+    const real = demo[name].bind(demo);
+    demo[name] = async (p, uids, ...rest) => {
+      calls.push(`${name} ${p} ${uids.length}`);
+      return real(p, uids, ...rest);
+    };
+  }
+  const list = inbox(engine, acc);
+  const ids = list.slice(0, 4).map((m) => m.id);
+  // One of them the server turns down; it alone comes back.
+  const refusedUid = list[1].uid;
+  const move = demo.move.bind(demo);
+  demo.move = async (p, uid, ...rest) => {
+    if (p === 'INBOX' && uid === refusedUid) throw Object.assign(new Error(t('errors.move.refused')), { refused: true });
+    return move(p, uid, ...rest);
+  };
+  const moved = await engine.moveMany(ids, 'Archive');
+  assert.deepEqual(calls, ['moveMany INBOX 4']);
+  assert.deepEqual(moved.map((r) => r.error || null), [null, t('errors.move.refused'), null, null]);
+  assert.ok(inbox(engine, acc).some((m) => m.id === ids[1]));
+  assert.deepEqual(ids.map((id) => engine.canUndo(id)), [true, false, true, true]);
+
+  calls.length = 0;
+  const undone = await engine.undoMany([ids[0], ids[2], ids[3]]);
+  assert.deepEqual(calls, ['moveMany Archive 3']);
+  assert.ok(undone.every((r) => r.restored));
+
+  calls.length = 0;
+  const trash = view(engine, acc, 'trash').map((m) => m.id);
+  const result = await engine.emptyFolder(acc.id, 'Trash');
+  assert.deepEqual(calls, [`deleteMany Trash ${trash.length}`]);
+  assert.equal(result.deleted, trash.length);
+  await engine.close();
+});
