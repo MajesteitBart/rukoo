@@ -184,7 +184,7 @@ test('an Undo whose folder was rebuilt counts as not confirmed and says why, nex
   await row('Sign in to Bencompare').click();
   await row('Call on Thursday').click({ modifiers: ['ControlOrMeta'] });
   await expect(win.locator('.list-tools.selecting .sel-count')).toHaveText('2 selected');
-  await win.click('.list-tools [data-bulk="archive"]');
+  await win.click('.multi-actions [data-bulk="archive"]');
   await expect(notice()).toContainText('2 emails moved to Archive');
   await failFor('move', 'Sign in to Bencompare', 'errors.folder.rebuilt', 'unsent', { code: 'UIDVALIDITY' });
 
