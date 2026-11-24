@@ -1568,8 +1568,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       b.disabled = true;
       try {
         loginState = await api('setOpenAtLogin', want);
-        // The system kept it as it was, and isn't waiting for the person either.
-        if (loginState.on !== want && !loginState.approval) toast(t('settings.general.openAtLoginFailed'), 5000);
+        // The row shows the switch on while macOS waits for approval, so that counts as on: a Mac that still waits
+        // after the switch turned it off kept it as it was.
+        if (Boolean(loginState.on || loginState.approval) !== want) toast(t('settings.general.openAtLoginFailed'), 5000);
       } catch (err) {
         toast(err.message, 5000);
       }

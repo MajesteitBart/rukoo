@@ -7,12 +7,14 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { EventEmitter } = require('events');
 const { tempDir, removeDir } = require('./tmp');
 const {
   LoginItem,
   loginTarget,
   memoryLogin,
   hiddenFlag,
+  whenRenderedAndShown,
   winQuote,
   winCommand,
   winProgram,
@@ -168,6 +170,44 @@ test('macOS: a start at login says so itself, asked of the first start of an ins
   const dev = memoryLogin({ platform: 'darwin', opened: true });
   assert.equal(new LoginItem({ platform: 'darwin', target: null, system: dev }).fromLogin(['electron', '.'], { first: true }), false);
   assert.deepEqual(dev.calls, []);
+});
+
+// A BrowserWindow as whenRenderedAndShown() hears it: ready-to-show once its page has rendered, show when it shows.
+function fakeWindow() {
+  return new EventEmitter();
+}
+
+test('after a start from the login item, the mail the last run left opens once, when the window has rendered and shows', () => {
+  // A plain start from the tray: rendered first, shown later.
+  let w = fakeWindow();
+  let runs = 0;
+  whenRenderedAndShown(w, () => runs++);
+  w.emit('ready-to-show');
+  assert.equal(runs, 0, 'rendered in the tray, nobody looks');
+  w.emit('show');
+  assert.equal(runs, 1);
+  w.emit('hide');
+  w.emit('show');
+  assert.equal(runs, 1, 'once only');
+
+  // A second start, or an .ics file, shows the window before its page rendered.
+  w = fakeWindow();
+  runs = 0;
+  whenRenderedAndShown(w, () => runs++);
+  w.emit('show');
+  assert.equal(runs, 0, 'shown, but nothing to open the editors over yet');
+  w.emit('ready-to-show');
+  assert.equal(runs, 1);
+  w.emit('show');
+  assert.equal(runs, 1);
+
+  // A window that only rendered, or only showed, opens nothing.
+  w = fakeWindow();
+  runs = 0;
+  whenRenderedAndShown(w, () => runs++);
+  w.emit('ready-to-show');
+  assert.equal(runs, 0);
+  assert.equal(w.listenerCount('show'), 1, 'still waits for the show');
 });
 
 // makensis from RUKOO_MAKENSIS, or the one electron-builder downloaded to build the installer; null without one.

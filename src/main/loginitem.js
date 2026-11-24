@@ -206,4 +206,21 @@ class LoginItem {
   }
 }
 
-module.exports = { LoginItem, loginTarget, electronLogin, memoryLogin, hiddenFlag, winQuote, winCommand, winProgram, HIDDEN_FLAG, UNINSTALLER, APP_ID };
+// After a start from the login item, the main window's first look: run fn once the window has both rendered its page
+// (ready-to-show) and shown, whichever comes last. A second start or an .ics file can show it before it has rendered.
+// Called before anything can show the window.
+function whenRenderedAndShown(w, fn) {
+  let rendered = false;
+  let shown = false;
+  const go = () => rendered && shown && fn();
+  w.once('ready-to-show', () => {
+    rendered = true;
+    go();
+  });
+  w.once('show', () => {
+    shown = true;
+    go();
+  });
+}
+
+module.exports = { LoginItem, loginTarget, electronLogin, memoryLogin, hiddenFlag, whenRenderedAndShown, winQuote, winCommand, winProgram, HIDDEN_FLAG, UNINSTALLER, APP_ID };

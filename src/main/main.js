@@ -50,7 +50,7 @@ const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
-const { LoginItem, loginTarget, electronLogin, memoryLogin } = require('./loginitem');
+const { LoginItem, loginTarget, electronLogin, memoryLogin, whenRenderedAndShown } = require('./loginitem');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
 const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
@@ -1045,6 +1045,30 @@ const unsent = [];
 const unsentFile = () => path.join(app.getPath('userData'), 'data', 'unsent.json');
 // Whether this run wrote the file, so a later write with nothing left removes only its own.
 let unsentWritten = false;
+// What unsent.json had at the start, until reopenUnsent() opens it: after a start from the login item, only when the
+// window first shows. Every write keeps it, so a quit before that loses none of it.
+let unsentBefore = [];
+
+// unsent.json with own, this run's emails, and unsentBefore, merged by id. Written to a file beside it and moved over
+// it, as held.json is; no file when both are empty.
+function writeUnsent(own) {
+  const ids = new Set(own.map((u) => u.id));
+  const all = [...unsentBefore.filter((u) => !ids.has(u.id)), ...own];
+  const file = unsentFile();
+  if (!all.length) return fs.rmSync(file, { force: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(all));
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+function readUnsent() {
+  try {
+    const list = JSON.parse(fs.readFileSync(unsentFile(), 'utf8'));
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
 
 // Refused emails that wait for the main window's reading pane: { id, restore, error }. 'send-failed' only says that
 // one is here; the window asks for them (sendFailures) once it listens and has drawn its first state, so a main
@@ -1081,24 +1105,21 @@ function keepUnsent() {
   const waiting = refused.list().map(({ id, restore, error }) => ({ id, restore, error }));
   const list = [...unsent, ...waiting].filter((u) => u.restore);
   try {
-    if (list.length) {
-      fs.writeFileSync(unsentFile(), JSON.stringify(list));
-      unsentWritten = true;
-    } else if (unsentWritten) {
-      fs.rmSync(unsentFile(), { force: true });
-      unsentWritten = false;
+    if (list.length || unsentWritten) {
+      writeUnsent(list);
+      unsentWritten = list.length > 0;
     }
   } catch (_) {
     // A profile that can't be written to keeps nothing.
   }
 }
 
-// A quit that wrote unsent.json was called off, and what it listed is open again: the file goes, so the next start
-// doesn't open those emails a second time.
+// A quit that wrote unsent.json was called off, and what it listed is open again: those go from the file, so the next
+// start doesn't open them a second time.
 function forgetUnsent() {
   if (!unsentWritten) return;
   try {
-    fs.rmSync(unsentFile(), { force: true });
+    writeUnsent([]);
     unsentWritten = false;
   } catch (_) {
     // Left for the next start, which opens what it lists.
@@ -1117,14 +1138,18 @@ function openUnsent(list) {
 }
 
 function reopenUnsent() {
-  let list;
+  const list = unsentBefore;
+  if (!list.length) return new Set();
+  unsentBefore = [];
   try {
-    list = JSON.parse(fs.readFileSync(unsentFile(), 'utf8'));
-    fs.rmSync(unsentFile(), { force: true });
+    // A quit that is on keeps what it wrote there for the next start.
+    if (unsentWritten) keepUnsent();
+    else fs.rmSync(unsentFile(), { force: true });
   } catch (_) {
+    unsentBefore = list;
     return new Set();
   }
-  return openUnsent(Array.isArray(list) ? list : []);
+  return openUnsent(list);
 }
 
 // The emails in the outbox, written to held.json in the profile at every change (the outbox's changed()), so a crash
@@ -2322,6 +2347,7 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   // What the last run still held, read before anything can be queued and write held.json anew.
   heldBefore = readHeld();
+  unsentBefore = readUnsent();
   outbox = new Outbox({
     send: (payload) => engine.send(payload),
     sent: (entry) => mailSent(entry.payload, entry.id),
@@ -2479,15 +2505,16 @@ app.whenReady().then(() => {
   applyTheme();
   // From the login item the window starts in the tray, without taking the focus; opening Rukoo shows it.
   createWindow({ hidden: startHidden });
+  // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json). After a start
+  // from the login item they stay on disk until the person first shows the window, so no editor takes the focus;
+  // listened for before the queues below or a second start can show it.
+  const recover = () => reopenHeld(reopenUnsent());
+  if (startHidden) whenRenderedAndShown(win, recover);
   // After the main window shows, so the compose window comes up in front of it.
   win.once('ready-to-show', () => {
     mailtoQueue.start();
     icsQueue.start();
-    // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json). After a start
-    // from the login item they stay on disk until the person first shows the window, so no editor takes the focus.
-    const recover = () => reopenHeld(reopenUnsent());
-    if (startHidden) win.once('show', recover);
-    else recover();
+    if (!startHidden) recover();
   });
   refreshMailClient().catch(() => {});
   updateTray();
