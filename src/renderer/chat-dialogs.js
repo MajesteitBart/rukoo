@@ -2535,8 +2535,10 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
   let running = Boolean(runsHere && before && before.on);
   let kept = running;
   let join = Boolean(room);
-  // Whether main still holds the key for this window: not once it runs here, after 10 minutes or a reload (gone).
+  // Whether main still holds the key for this window: not once it is kept here (stored), after 10 minutes or after a
+  // reload (gone). New key for an agent set up here goes straight to its setup.
   let holds = desktop && held;
+  let stored = desktop && runsHere;
   let gone = false;
   let off = () => {};
   const choice = () => choices.find((c) => c.id === pick) || null;
@@ -2554,7 +2556,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
     field.value = runnerText(cfg);
     field.scrollTop = 0;
     if (!copy.hasAttribute('aria-busy')) copy.disabled = desktop && !holds;
-    const why = !desktop ? '' : holds ? t('chat.agents.keyHidden') : gone || !running ? t('chat.agents.keyGone', { name: agent.name }) : t('chat.agents.keyKeptHere', { name: agent.name });
+    const why = !desktop ? '' : holds ? t('chat.agents.keyHidden') : stored && !gone ? t('chat.agents.keyKeptHere', { name: agent.name }) : t('chat.agents.keyGone', { name: agent.name });
     note.hidden = !why;
     note.textContent = why;
     note.classList.toggle('ch-warn', desktop && !holds);
@@ -2635,6 +2637,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
       await api('agentRunStart', ws, agent.id, { use: pick, name: agent.name });
       running = true;
       // The key is on this computer now, encrypted: main no longer holds it for this window.
+      if (holds) stored = true;
       holds = false;
       keep(scrim);
     } catch (err) {
@@ -2713,6 +2716,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false 
             ${startRunner}
           </li>
         </ol>
+        <p class="error" data-error="" hidden></p>
         ${desktop ? `<p class="field-help" data-no-keyring>${esc(t('chat.agents.noKeyring'))}</p>` : ''}`;
   try {
     await wsDialog({

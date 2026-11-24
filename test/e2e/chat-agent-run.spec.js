@@ -205,7 +205,7 @@ test('Run on this computer: main asks first, the agent answers a mention with no
   await step.locator('[data-elsewhere] summary').click();
   expect(JSON.parse(await step.locator('[name="config"]').inputValue()).key).toBe(MASK);
   await expect(step.locator('[data-copy-config]')).toBeDisabled();
-  await expect(step.locator('[data-key-gone]')).toHaveText('Helper runs on this computer with this key now. To run it somewhere else instead, remove it from this computer and make a new key.');
+  await expect(step.locator('[data-key-gone]')).toHaveText('Rukoo keeps this key for Helper on this computer now. To run Helper somewhere else instead, remove it from this computer and make a new key.');
   expect(await win.evaluate(() => document.body.innerHTML)).not.toMatch(ANY_KEY);
   const stored = fs.readFileSync(path.join(dataDir, 'data', 'agent-runs.json'), 'utf8');
   expect(stored).not.toMatch(ANY_KEY);
@@ -251,6 +251,7 @@ test('Run on this computer: main asks first, the agent answers a mention with no
   await again.locator('[data-elsewhere] summary').click();
   expect(JSON.parse(await again.locator('[name="config"]').inputValue()).key).toBe(MASK);
   await expect(again.locator('[data-copy-config]')).toBeDisabled();
+  await expect(again.locator('[data-key-gone]')).toHaveText('Rukoo keeps this key for Helper on this computer now. To run Helper somewhere else instead, remove it from this computer and make a new key.');
   expect(await asked()).toEqual([]);
   await closeDialogs();
   await ask('still there?');

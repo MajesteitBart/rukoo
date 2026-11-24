@@ -12488,7 +12488,7 @@
     "description": "Key step on the computer: line under the config, whose key is hidden. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.keyKeptHere": {
-    "message": "{name} runs on this computer with this key now. To run it somewhere else instead, remove it from this computer and make a new key.",
+    "message": "Rukoo keeps this key for {name} on this computer now. To run {name} somewhere else instead, remove it from this computer and make a new key.",
     "description": "Key step on the computer, once the agent runs here: line under the config, whose key now lives encrypted on this computer only. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.configSaved": {

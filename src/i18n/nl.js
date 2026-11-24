@@ -3205,7 +3205,7 @@
   "chat.agents.run.gone": "Gestopt: {use} staat uit of staat niet meer in Instellingen > Agents.",
   "chat.agents.runAgainHere": "Opnieuw op deze computer draaien",
   "chat.agents.keyHidden": "Rukoo houdt de sleutel buiten dit venster, zodat niets hier hem kan lezen. Config kopiëren vraagt het je eerst en kopieert hem dan met de sleutel.",
-  "chat.agents.keyKeptHere": "{name} draait nu met deze sleutel op deze computer. Om hem ergens anders te draaien, verwijder je hem van deze computer en maak je een nieuwe sleutel.",
+  "chat.agents.keyKeptHere": "Rukoo bewaart deze sleutel voor {name} nu op deze computer. Om {name} ergens anders te draaien, verwijder je hem van deze computer en maak je een nieuwe sleutel.",
   "chat.agents.configSaved": "Config opgeslagen",
   "chat.agents.toolsWarning": "{use} houdt zijn eigen tools en kan die gebruiken voor iedereen die {name} in een kanaal antwoordt.",
   "chat.agents.runChanged": "Instellingen > Agents veranderde terwijl Rukoo het vroeg. Draai {name} opnieuw om het zo goed te keuren.",
