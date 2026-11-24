@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Rukoo, RukooError, KeyRefused, uuidv7, retryAfter } = require('./rukoo');
-const { makeBackend } = require('./backends');
+const { makeBackend, BackendError } = require('./backends');
 const { buildInput, cleanAnswer, convertMentions, splitReply } = require('./prompt');
 
 const DEFAULT_KEY_ENV = 'RUKOO_AGENT_KEY';
@@ -680,13 +680,15 @@ class Runner {
 
   // ---- Checking ----
 
-  // What the backend needs before the first mention (backends.js, "Checks"): [{ level, message }].
+  // What the backend needs before the first mention (backends.js, "Checks"): [{ level, message }]. stop() ends a check
+  // that still waits, and then nothing is said.
   async backendProblems() {
     if (typeof this.backend.check !== 'function') return [];
     try {
-      return await this.backend.check({ env: process.env });
+      const list = await this.backend.check({ env: process.env, signal: this.abort.signal });
+      return this.stopped ? [] : list;
     } catch (err) {
-      return [{ level: 'error', message: `Could not check the backend: ${err.message}` }];
+      return this.stopped ? [] : [{ level: 'error', message: `Could not check the backend: ${err instanceof BackendError ? err.message : 'the check failed'}` }];
     }
   }
 
@@ -701,6 +703,7 @@ class Runner {
   // can't answer as configured. A key that doesn't work throws KeyRefused, which main() makes 2.
   async check() {
     const problems = await this.backendProblems();
+    if (this.stopped) throw new Error('Stopped before the check finished');
     for (const p of problems) this.log(p.level, p.message);
     await this.connect();
     const rooms = await this.channels();
@@ -745,6 +748,8 @@ class Runner {
     }
     // What would keep every answer from going out, said at the start rather than at the first mention.
     for (const p of await this.backendProblems()) if (p.level === 'error') this.log('warn', p.message);
+    // Stopped while the check waited: nothing may start after stop().
+    if (this.stopped) return;
     this.timer = setInterval(() => this.pump(), this.config.pollSeconds * 1000);
     this.socketLoop().catch((err) => this.log('warn', `The wake socket stopped: ${err.message}`));
     await this.pump();

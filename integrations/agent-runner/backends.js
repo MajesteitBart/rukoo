@@ -52,7 +52,8 @@ function endpoint(base, route) {
   try {
     url = new URL(String(base || '').trim());
   } catch {
-    throw new BackendError(`The backend's "url" is not an address: ${base}`);
+    // Without the value, which can hold a token.
+    throw new BackendError('The backend\'s "url" is not an address');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BackendError('The backend\'s "url" must start with http:// or https://');
   const out = new URL(url.pathname.replace(/\/+$/, '') + route, url.origin);
@@ -136,8 +137,9 @@ class RunsBackend {
     if (!config.url) throw new BackendError('The runs backend needs "url"');
   }
 
-  headers(extra = {}) {
-    const key = secret(this.config);
+  // What every request carries; --check sends the same (env: where the key's variable is read).
+  headers(extra = {}, env = process.env) {
+    const key = secret(this.config, env);
     return { Accept: 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}), ...extra };
   }
 
@@ -240,9 +242,15 @@ class OpenAiBackend {
     if (!config.url) throw new BackendError('The openai backend needs "url"');
   }
 
+  // The key and the config's own headers, which every request carries; --check sends the same.
+  authHeaders(env = process.env) {
+    const key = secret(this.config, env);
+    const extra = this.config.headers && typeof this.config.headers === 'object' ? this.config.headers : {};
+    return { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...extra };
+  }
+
   async run(prompt, { id, signal } = {}) {
     const deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs(this.config)), ...(signal ? [signal] : [])]);
-    const key = secret(this.config);
     const user = `${String(this.config.user || 'rukoo-agent').trim()}:${id}`;
     const body = {
       model: String(this.config.model || '').trim() || 'default',
@@ -253,12 +261,11 @@ class OpenAiBackend {
         { role: 'user', content: prompt.input }
       ]
     };
-    const extra = this.config.headers && typeof this.config.headers === 'object' ? this.config.headers : {};
     let res;
     try {
       res = await fetch(endpoint(this.config.url, '/v1/chat/completions'), {
         method: 'POST',
-        headers: { Accept: 'text/event-stream, application/json', 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}), ...extra },
+        headers: { Accept: 'text/event-stream, application/json', 'Content-Type': 'application/json', ...this.authHeaders() },
         body: JSON.stringify(body),
         redirect: 'error',
         signal: deadline
@@ -642,8 +649,12 @@ class CommandBackend {
 // ---- Checks (--check) ----
 //
 // What a backend needs before the first mention comes, as a list of { level, message }: 'error' when it can't answer
-// as configured, 'info' for what was found. Each error says what to do next. The runner's --check prints them and
-// exits with 1 for an error; a normal start prints them as warnings and runs anyway, since a server can come up later.
+// as configured, 'warn' when the check couldn't tell, 'info' for what was found. Each error says what to do next. The
+// runner's --check prints them and exits with 1 for an error; a normal start prints the errors as warnings and runs
+// anyway, since a server can come up later. signal: the runner's stop, which ends a check that still waits.
+//
+// A message names a backend's address by its origin only: a path or query can hold a token. A failed request is said
+// in the check's own words (a timeout, or the system's error code), never with the request's error text.
 
 const CHECK_TIMEOUT = 5000;
 // The backend command of a config made without one of the person's agents (src/renderer/chat-agents.js).
@@ -672,75 +683,104 @@ function findProgram(file, { cwd = process.cwd(), env = process.env } = {}) {
   return null;
 }
 
-// A backend that names a variable for its secret, with that variable empty, sends no key at all.
-function keyProblem(config, env) {
-  if (typeof config.key === 'string' && config.key.trim()) return null;
-  const name = typeof config.keyEnv === 'string' ? config.keyEnv.trim() : '';
-  if (!name || String(envValue(env, name) || '').trim()) return null;
-  return { level: 'error', message: `${name} is not set, and the backend needs it for its key or token. Set it in the terminal or service that starts the runner, then start it again.` };
+// A .cmd or .bat file, which Windows starts only through cmd.exe: spawn() without a shell fails on it (EINVAL).
+const needsShell = (file) => WINDOWS && /\.(cmd|bat)$/i.test(String(file || '').trim());
+// What the runner's README says to do instead.
+const shellAdvice = (file) => `On Windows a .cmd or .bat file needs ["cmd", "/c", ${JSON.stringify(String(file))}] as "command".`;
+
+// The address of a backend as messages say it: its origin, or the setting's name when it isn't an address.
+function originOf(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.origin;
+  } catch {}
+  return 'the backend\'s "url"';
 }
 
-// Whether something answers at a backend's address: { status } for any HTTP answer, else { reason }.
-async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT } = {}) {
+// The variable a backend names for its secret, when it is where the key comes from and isn't set: the runner then
+// sends no key, which matters only to a server that asks for one.
+function unsetKeyEnv(config, env) {
+  if (typeof config.key === 'string' && config.key.trim()) return null;
+  const name = typeof config.keyEnv === 'string' ? config.keyEnv.trim() : '';
+  return name && !String(envValue(env, name) || '').trim() ? name : null;
+}
+
+// One request to a backend's route with the headers the runner sends: { status } for any HTTP answer, else { reason }
+// and how it failed: bad (the setting isn't an address), timedOut, or stopped (signal).
+async function probe(url, route, { headers = {}, timeout = CHECK_TIMEOUT, signal } = {}) {
   let target;
   try {
     target = endpoint(url, route);
   } catch (err) {
-    return { reason: err.message };
+    return { reason: err.message, bad: true };
   }
   try {
-    const res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeout) });
+    const res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]) });
     res.body?.cancel().catch(() => {});
     return { status: res.status };
   } catch (err) {
-    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return { reason: `no answer within ${Math.round(timeout / 1000)} s` };
-    const cause = err && err.cause;
-    return { reason: clip((cause && (cause.code || cause.message)) || (err && err.message) || 'no answer', 120) };
+    if (signal && signal.aborted) return { reason: 'stopped', stopped: true };
+    if (err && err.name === 'TimeoutError') return { reason: `no answer within ${Math.round(timeout / 1000)} s`, timedOut: true };
+    const code = err && err.cause && err.cause.code;
+    return { reason: typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : 'no connection' };
   }
 }
 
-// The checks of an HTTP backend: its address answers (health, a route that needs no key), and when keyed (keyed, a
-// route that needs the key) it doesn't refuse the key.
-async function checkHttp(backend, { env, timeout, health, keyed, what }) {
+// The checks of an HTTP backend, with the headers its requests carry. health: a route that says whether the server is
+// there; keyed: the route that says whether it takes the runner's requests (the same route, or one that needs the key).
+// Three outcomes: it answers (2xx); it doesn't (nothing at the address, or 401: no key or the wrong one); or the check
+// can't tell (any other answer, or none in time on the keyed route), which passes with a warning.
+async function checkHttp(backend, { env, timeout, signal, headers, health, keyed, what }) {
   const config = backend.config;
-  const out = [];
-  const missing = keyProblem(config, env);
-  if (missing) out.push(missing);
   const url = String(config.url || '').trim();
-  const first = await probe(url, health, { timeout });
-  if (first.reason) {
-    out.push({ level: 'error', message: `Nothing answers at ${url} (${first.reason}). Start ${what} there, or correct the backend's "url".` });
-    return out;
-  }
-  if (missing) return out;
-  const key = secret(config, env);
-  const second = keyed === health && !key ? first : await probe(url, keyed, { timeout, headers: key ? { Authorization: `Bearer ${key}` } : {} });
-  if (second.status === 401 || second.status === 403) {
+  const origin = originOf(url);
+  const unset = unsetKeyEnv(config, env);
+  const out = [];
+  const first = await probe(url, health, { headers, timeout, signal });
+  if (first.stopped) return out;
+  if (first.bad) return [{ level: 'error', message: first.reason }];
+  if (first.reason) return [{ level: 'error', message: `Nothing answers at ${origin} (${first.reason}). Start ${what} there, or correct the backend's "url".` }];
+  const second = keyed === health ? first : await probe(url, keyed, { headers, timeout, signal });
+  if (second.stopped) return out;
+  if (second.status >= 200 && second.status < 300) {
+    out.push({ level: 'info', message: `The backend answers at ${origin}` });
+    if (unset) out.push({ level: 'warn', message: `${unset} is not set, so the runner sends no key. ${origin} answered without one.` });
+  } else if (second.status === 401) {
+    const named = typeof config.keyEnv === 'string' && config.keyEnv.trim() ? config.keyEnv.trim() : '"key"';
     out.push({
       level: 'error',
-      message: key
-        ? `${url} refused the backend's key (HTTP ${second.status}). Check the key or token in ${config.keyEnv ? config.keyEnv : '"key"'}.`
-        : `${url} asks for a key (HTTP ${second.status}). Add "keyEnv" to the backend and set that variable to its key or token.`
+      message: unset
+        ? `${unset} is not set, and ${origin} asks for a key (HTTP 401). Set it in the terminal or service that starts the runner, then start it again.`
+        : secret(config, env)
+          ? `${origin} refused the backend's key (HTTP 401). Check the key or token in ${named}.`
+          : `${origin} asks for a key (HTTP 401). Add "keyEnv" to the backend and set that variable to its key or token.`
     });
-  } else out.push({ level: 'info', message: `The backend answers at ${url}` });
+  } else {
+    const why = second.reason || `HTTP ${second.status} on ${keyed}`;
+    out.push({ level: 'warn', message: `The check couldn't tell whether ${origin} takes the runner's requests (${why}). The runner tries anyway, and its log says when a request fails.` });
+    if (unset) out.push({ level: 'warn', message: `${unset} is not set, so the runner sends no key.` });
+  }
   return out;
 }
 
-RunsBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT } = {}) {
-  return checkHttp(this, { env, timeout, health: '/health', keyed: '/v1/capabilities', what: 'the Hermes or Booper server' });
+RunsBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT, signal } = {}) {
+  return checkHttp(this, { env, timeout, signal, headers: this.headers({}, env), health: '/health', keyed: '/v1/capabilities', what: 'the Hermes or Booper server' });
 };
 
-OpenAiBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT } = {}) {
-  return checkHttp(this, { env, timeout, health: '/v1/models', keyed: '/v1/models', what: 'the server' });
+OpenAiBackend.prototype.check = function check({ env = process.env, timeout = CHECK_TIMEOUT, signal } = {}) {
+  return checkHttp(this, { env, timeout, signal, headers: { Accept: 'application/json', ...this.authHeaders(env) }, health: '/v1/models', keyed: '/v1/models', what: 'the server' });
 };
 
-// Claude Code and Codex: the program is found where the runner looks for it.
+// Claude Code and Codex: the program is found where the runner looks for it, and starts without a shell.
 async function checkCli() {
+  let exe;
   try {
-    return [{ level: 'info', message: `The backend runs ${this.exe()}` }];
+    exe = this.exe();
   } catch (err) {
     return [{ level: 'error', message: err.message }];
   }
+  if (needsShell(exe)) return [{ level: 'error', message: `"exe" is ${exe}, a .cmd or .bat file, which the runner can't start: it starts programs without a shell. Set "exe" to the program's .exe.` }];
+  return [{ level: 'info', message: `The backend runs ${exe}` }];
 }
 ClaudeBackend.prototype.check = checkCli;
 CodexBackend.prototype.check = checkCli;
@@ -750,10 +790,13 @@ CommandBackend.prototype.check = async function check({ env = process.env } = {}
   if (program === PLACEHOLDER_COMMAND) {
     return [{ level: 'error', message: `The backend's "command" is still ${PLACEHOLDER_COMMAND}, the placeholder from Rukoo. Put your own program there: it gets the prompt on stdin and answers on stdout. Or pick one of your agents when you copy the config.` }];
   }
+  if (needsShell(program)) {
+    return [{ level: 'error', message: `The backend's program ${program} is a .cmd or .bat file, which the runner can't start: it starts programs without a shell. ${shellAdvice(program)}` }];
+  }
   const cwd = this.config.cwd ? path.resolve(String(this.config.cwd)) : process.cwd();
   const found = findProgram(program, { cwd, env: { ...env, ...(this.config.env || {}) } });
   if (!found) {
-    const shim = WINDOWS && !path.extname(program) ? ` On Windows a .cmd or .bat file needs ["cmd", "/c", "${program}.cmd"].` : '';
+    const shim = WINDOWS && !path.extname(program) ? ` ${shellAdvice(`${program}.cmd`)}` : '';
     return [{ level: 'error', message: `The backend's program ${program} was not found${/[\\/]/.test(program) ? '' : ' on PATH'}. Set "command" to a program on this computer.${shim}` }];
   }
   return [{ level: 'info', message: `The backend runs ${found}` }];

@@ -213,7 +213,7 @@ node runner.js --config agent.json --check
 node runner.js --config agent.json
 ```
 
-`--check` says what to fix when the backend can't answer: a program that isn't installed, the placeholder `my-agent` still in the config, a key variable that isn't set, or an address where nothing answers or that refuses the key. It also warns when the agent is in no channel yet.
+`--check` says what to fix when the backend can't answer: a program that isn't installed or, on Windows, a `.cmd` file it can't start, the placeholder `my-agent` still in the config, an address where nothing answers, or a server that refuses the key or asks for one whose variable isn't set. When it can't tell whether the backend takes the runner's requests, it passes with a warning. It also warns when the agent is in no channel yet.
 
 The runner reads the agent's settings, follows the workspace's changes and its wake socket, and checks again at least once a minute. For each mention, it first checks what the server will check: the agent's settings, and that the author and the person who started the chain are still in the channel. A mention that fails gets no runtime call and no reply. For the others it gathers the thread, or the channel's latest messages for a mention outside a thread, hands them to the runtime and posts the answer. Either way it moves the agent's read position past the mention. The runtime is one of these:
 
