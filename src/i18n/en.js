@@ -2771,6 +2771,10 @@
     "message": "Select all",
     "description": "Menu item: selects all of the message text. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
   },
+  "composer.errors.alreadyDone": {
+    "message": "Rukoo already sent this email or saved it to Drafts, so it didn't do that again. Check Sent and Drafts.",
+    "description": "Shown under 'Sending failed' (composer.errors.send), or as a notice after a save, when an editor sends or saves an email Rukoo already sent or saved to Drafts, as a window that is still open after the server took the email late. Also shown in a compose window whose page loaded again after a crash, when Rukoo can't say what became of its email. src/main/main.js (keptError); src/renderer/compose.js (init)"
+  },
   "composer.errors.alreadySending": {
     "message": "This email is already on its way, or open in another window. Check Sent before you send it again.",
     "description": "Shown under 'Sending failed' (composer.errors.send) when Send is pressed for an email Rukoo already sends, or that another editor has open: an email the server refused, opened again in an editor. Rukoo doesn't send it twice. src/main/main.js (keptError)"
@@ -2795,9 +2799,17 @@
     "message": "Add at least one recipient",
     "description": "composer > errors. src/renderer/composer.js (send)"
   },
+  "composer.errors.notForgotten": {
+    "message": "Rukoo couldn't note in its profile that you're done with this email, so it may open again the next time Rukoo starts: {error}",
+    "description": "Shown before a compose window closes, or as a notice in the main window for its reading pane, after Delete or Don't save on an email Rukoo kept after the server refused it or after a crash, when the file in Rukoo's profile that keeps such emails can't be written, as on a full disk. error is the system's message. src/main/main.js (composeClose); src/renderer/composer.js (finish)"
+  },
   "composer.errors.send": {
     "message": "Sending failed",
     "description": "composer > errors. src/renderer/composer.js (send)"
+  },
+  "composer.errors.sendUnknown": {
+    "message": "The server didn't say whether it took this email, so it may have gone. Check Sent before you send it again.",
+    "description": "Shown under 'Sending failed' (composer.errors.send) when Send went straight away and the mail server didn't answer within a minute, and in the compose window that opens the email again then. The email may still go. src/main/main.js (keptError, keptNote)"
   },
   "composer.format.bold": {
     "message": "Bold (Ctrl+B)",
@@ -2991,6 +3003,18 @@
     "message": "No subject",
     "description": "composer > send. src/renderer/composer.js (send)"
   },
+  "composer.send.unsureHelp": {
+    "message": "This email may already have gone. Check Sent first, or the people you send it to may get it twice.",
+    "description": "Text of the question after Send in an editor whose email may have gone already: Rukoo ended while it was being sent, or the server didn't answer in time. src/renderer/composer.js (trySend)"
+  },
+  "composer.send.unsureSend": {
+    "message": "Send anyway",
+    "description": "Button in the question composer.send.unsureTitle: sends the email although it may have gone already. src/renderer/composer.js (trySend)"
+  },
+  "composer.send.unsureTitle": {
+    "message": "Send it again?",
+    "description": "Title of the question after Send in an editor whose email may have gone already. src/renderer/composer.js (trySend)"
+  },
   "composer.spelling.add": {
     "message": "Add to dictionary",
     "description": "Menu item: adds the right-clicked misspelled word to the spell checker's dictionary, so it is no longer underlined. Context menu on a misspelled word in the composer, under the spelling suggestions. src/renderer/editmenu.js (open)"
@@ -3073,11 +3097,15 @@
   },
   "composer.undoSend.quitUnsure": {
     "message": "Rukoo quit before it knew whether this email went. Check Sent before you send it again.",
-    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit or closed (Undo send, or Send again in an editor that reopened a refused email). src/main/main.js (openKept)"
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit or closed (Undo send, or Send again in an editor that reopened a refused email). Send then asks first (composer.send.unsureTitle). src/main/main.js (keptNote)"
   },
   "composer.undoSend.crashWaiting": {
     "message": "Rukoo closed before this email was sent. Send it again when it's ready.",
-    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was waiting out its Undo send notice when Rukoo last closed without quitting, as after a crash. It was not sent. src/main/main.js (openKept)"
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was waiting out its Undo send notice when Rukoo last closed without quitting, as after a crash. It was not sent. src/main/main.js (keptNote)"
+  },
+  "composer.undoSend.draftUnsure": {
+    "message": "Rukoo closed while it saved this email to Drafts, and couldn't check Drafts now, so it may be there already. Check Drafts before you send it.",
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email Rukoo kept after the server refused it, whose save to Drafts was on its way when Rukoo last closed, and the server can't be asked now whether Drafts has it, as without a connection. src/main/main.js (keptNote)"
   },
   "composer.undoSend.quitFailed": {
     "message": "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: {error}",

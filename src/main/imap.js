@@ -683,6 +683,26 @@ class ImapAccount {
     });
   }
 
+  // The uid of the message with this Message-ID in the folder at path, as the server has it now, or null. A HEADER
+  // search matches part of a header, so each match is checked whole.
+  findMessageId(path, messageId) {
+    const want = util.normId(messageId);
+    return this.run(async (client) => {
+      const lock = await client.getMailboxLock(path, { readOnly: true });
+      try {
+        const uids = await client.search({ header: { 'Message-ID': want } }, { uid: true });
+        if (!Array.isArray(uids)) throw new Error(t('errors.search.refused'));
+        if (!uids.length) return null;
+        for await (const m of client.fetch(uids.join(','), { uid: true, envelope: true }, { uid: true })) {
+          if (m.envelope && util.normId(m.envelope.messageId) === want) return m.uid;
+        }
+        return null;
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   append(path, raw, flags = []) {
     return this.run(async (client) => {
       const res = await client.append(path, raw, flags);

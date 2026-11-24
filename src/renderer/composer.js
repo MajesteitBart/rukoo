@@ -466,9 +466,13 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const savedElsewhere = restored && Boolean(opts.restore.state && opts.restore.state.pendingRemap === true);
   // The email main keeps in held.json for this editor (main.js, heldmail.js): the one it opened with after the server
   // refused it, a quit left it or Rukoo crashed, or the one a send straight away left here when the server refused it.
-  // Every save, send and close names it, so main answers for that email and no other.
+  // Every save, send and close names it, so main answers for that email and no other. Once it is in Drafts this editor
+  // goes on as one for any draft, and names it no more.
   let keptId = typeof opts.keptId === 'string' ? opts.keptId : null;
-  if (restored || keptId) opts = { ...opts, restore: null, sendError: null, keptId: null };
+  // An email that may have gone already: it was on its way when Rukoo ended, or the server didn't answer in time. Send
+  // asks first, every time, so a second copy never goes with one click.
+  let unsure = opts.unsure === true;
+  if (restored || keptId || unsure) opts = { ...opts, restore: null, sendError: null, keptId: null, unsure: false };
   // Stable for the life of this composer: the chat panel ties an agent's draft card to it.
   const key = crypto.randomUUID();
   // Set once the draft is deleted or sent, so nothing points at a stored draft that is gone.
@@ -1341,6 +1345,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         const sent = st.attachments.slice();
         // A kept email goes into held.json as it is now first, and main lets it go once the server has the draft.
         const id = await api('saveDraft', payload(sent), keptId, keptId ? undoState() : null);
+        keptId = null;
         st.draftId = id;
         st.savedAt = Date.now();
         if (editCount === editsBefore) st.dirty = false;
@@ -1356,7 +1361,11 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return true;
       } catch (err) {
         failed = true;
-        if (!auto) toast(err.message, 5000);
+        // Main is done with the email this editor named: it went or is in Drafts. This editor says so, and saves as
+        // one for any draft from now on.
+        const done = err && err.kept === 'done';
+        if (done) keptId = null;
+        if (!auto || done) toast(err.message, 5000);
         return false;
       } finally {
         st.saving = false;
@@ -1374,16 +1383,28 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     clearTimeout(autosaveTimer);
     cleanups.forEach((fn) => fn());
     // true: the editor answered (sent, saved, deleted, or nothing to keep), which main needs to know for the email it
-    // keeps for this editor (keptId). Main closes a compose window then, and leaves the main window as it is.
+    // keeps for this editor (keptId). Main closes a compose window then, and leaves the main window as it is. When
+    // main couldn't note that answer, it says why ({ error }), and the email opens again at the next start: the
+    // reading pane shows it as a notice, a compose window before it closes.
+    const named = keptId;
+    keptId = null;
     if (inline) {
-      api('composeClose', true, keptId).catch(() => {});
+      api('composeClose', true, named)
+        .then((res) => res && res.error && toast(res.error, 8000))
+        .catch(() => {});
       if (message) toast(message);
       page.remove();
       onDone && onDone();
       return;
     }
     if (message) api('toastMain', message).catch(() => {});
-    api('composeClose', true, keptId);
+    api('composeClose', true, named)
+      .then(async (res) => {
+        if (!res || !res.error) return;
+        await dialog({ body: `<p>${esc(res.error)}</p>` });
+        api('composeClose');
+      })
+      .catch(() => {});
   }
 
   // This editor as it is now, for Undo send: main keeps it while the email waits, and restoredState() opens the
@@ -1446,6 +1467,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         const ok = await confirmDialog(t('composer.send.noSubjectTitle'), t('composer.send.noSubjectHelp'), t('composer.actions.send'));
         if (!ok) return;
       }
+      // It may have gone already: it goes again only once the person has read that and says so.
+      if (unsure && !(await confirmDialog(t('composer.send.unsureTitle'), t('composer.send.unsureHelp'), t('composer.send.unsureSend')))) return;
       clearTimeout(autosaveTimer);
       label.textContent = t('composer.status.sending');
       showSaveState('');
@@ -1454,15 +1477,19 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       await dropping;
       await saving;
       await settleAttachments();
-      const res = await api('send', payload(undefined, { sending: true }), undoState(), keptId);
+      const res = await api('send', payload(undefined, { sending: true }), undoState(), keptId, unsure);
       done = true;
       // A held email's draft stays on the server until it goes; main tells the chat's draft cards then.
       gone = !(res && res.queued);
       // Held for Undo send: the main window says so, with Undo, and says "Email sent" once it went.
       finish(res && res.queued ? null : inline ? t('composer.status.sent') : null);
     } catch (err) {
-      // Refused straight away: main keeps the email for this editor from now on, under this id.
+      // Refused straight away: main keeps the email for this editor from now on, under this id. No answer in time:
+      // it may still go, so the next Send asks first. Done with: it went or is in Drafts, and this editor goes on as
+      // one for any email.
       if (err && typeof err.keptId === 'string') keptId = err.keptId;
+      if (err && err.kept === 'unsure') unsure = true;
+      if (err && err.kept === 'done') keptId = null;
       await dialog({ title: t('composer.errors.send'), body: `<p>${esc(err.message)}</p>` });
     } finally {
       if (!done) {

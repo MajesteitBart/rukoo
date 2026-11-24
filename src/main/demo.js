@@ -545,6 +545,13 @@ class DemoAccount {
     return { uid: m.uid, uidValidity: String(dest.uidValidity) };
   }
 
+  // As ImapAccount.findMessageId: the uid of the message with this Message-ID in folder p, or null.
+  async findMessageId(p, messageId) {
+    const want = util.normId(messageId);
+    const hit = this.box(p).messages.find((m) => util.normId(m.messageId) === want);
+    return hit ? hit.uid : null;
+  }
+
   async deleteForever(p, uid) {
     const box = this.box(p);
     box.messages = box.messages.filter((m) => m.uid !== Number(uid));

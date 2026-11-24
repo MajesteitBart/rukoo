@@ -2429,8 +2429,8 @@ class Engine extends EventEmitter {
   }
 
   // A caller that keeps the email for a crash (heldmail.js) hears appending({ accountId, messageId }) right before the
-  // server gets the draft, so the next start can look for it, and accepted() the moment the server has it, before the
-  // draft it replaces goes.
+  // server gets the draft, so the next start can look for it; when appending throws, the draft isn't saved. accepted()
+  // comes the moment the server has it, before the draft it replaces goes.
   async saveDraft(payload, { appending = null, accepted = null } = {}) {
     const acc = this.account(payload.accountId);
     const drafts = this.folderByRole(acc.id, 'drafts');
@@ -2441,7 +2441,7 @@ class Engine extends EventEmitter {
     // Keep Bcc in the stored draft so it survives reopening.
     const raw = await ImapAccount.compose({ ...mail, keepBcc: true });
     const session = this.session(acc);
-    tell(appending, { accountId: acc.id, messageId: mail.messageId });
+    if (typeof appending === 'function') appending({ accountId: acc.id, messageId: mail.messageId });
     const uid = await session.append(drafts.path, raw, ['\\Seen', '\\Draft']);
     tell(accepted);
     if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
@@ -2451,16 +2451,14 @@ class Engine extends EventEmitter {
     return stored ? encodeId(acc.id, drafts.path, stored) : null;
   }
 
-  // The draft with this Message-ID in the account's Drafts, as the server has it now, or null. For an email whose save
-  // was on its way when Rukoo ended (heldmail.js recover()).
-  async findDraft(accountId, messageId) {
+  // Whether the account's Drafts has the draft with this Message-ID, as the server itself says now, however many drafts
+  // there are: for an email whose save was on its way when Rukoo ended (heldmail.js recover()). Rejects when that can't
+  // be known now, as without a connection, or with the account or its Drafts gone.
+  async hasDraft(accountId, messageId) {
     const acc = this.account(accountId);
     const drafts = this.folderByRole(acc.id, 'drafts');
-    if (!drafts) return null;
-    await this.syncFolderInto(acc, drafts.path);
-    this.changed(acc.id);
-    const uid = this.uidByMessageId(acc.id, drafts.path, messageId);
-    return uid ? encodeId(acc.id, drafts.path, uid) : null;
+    if (!drafts) throw new Error(t('errors.folder.noDrafts'));
+    return (await this.session(acc).findMessageId(drafts.path, messageId)) !== null;
   }
 
   uidByMessageId(accountId, folderPath, messageId) {
