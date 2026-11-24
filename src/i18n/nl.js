@@ -770,6 +770,7 @@
   "composer.status.savedToDrafts": "Opgeslagen in Concepten",
   "composer.status.sending": "Verzenden...",
   "composer.status.sent": "E-mail verzonden",
+  "composer.status.waitingServer": "Wachten tot de mailserver antwoordt over deze e-mail…",
   "composer.titles.draft": "Concept",
   "composer.titles.forward": "Doorsturen",
   "composer.titles.new": "Nieuw bericht",

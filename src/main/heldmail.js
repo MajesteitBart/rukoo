@@ -445,12 +445,20 @@ class HeldMail {
   // holds nothing now, and its id is done with for the rest of the run. The file follows now, or with the next write
   // that can be made; a kill before that brings it back, as on its way when it was, with the note to check Sent.
   settle(id, as) {
-    this.settled.set(id, { as });
+    this.done(id, as);
     if (!this.kept.has(id)) return;
     this.note(() => {
       this.kept.delete(id);
       for (const [editor, held] of [...this.editors]) if (held === id) this.editors.delete(editor);
     }, 'let an email go');
+  }
+
+  // Marks an email done with for the run, as: how. Its subject goes with it, for a window whose page loads again.
+  done(id, as) {
+    const r = this.kept.get(id) || (this.settled.get(id) || {});
+    const state = r.restore && r.restore.state;
+    const subject = state && typeof state.subject === 'string' ? state.subject : typeof r.subject === 'string' ? r.subject : null;
+    this.settled.set(id, { as, ...(subject ? { subject } : {}) });
   }
 
   // A kept email nobody holds, and that isn't busy, after its send or save ended or ran past wait: main opens it again.
@@ -471,7 +479,7 @@ class HeldMail {
     }
     if (!id) return null;
     // Done with before the write, so a held.json read again in it (reread()) can't bring the email back.
-    this.settled.set(id, { as: 'discarded' });
+    this.done(id, 'discarded');
     try {
       this.change(() => {
         this.kept.delete(id);
@@ -497,7 +505,7 @@ class HeldMail {
     const kept = new Map(this.kept);
     const editors = new Map(this.editors);
     // Done with before the outbox's write, so a held.json read again in it (reread()) can't list it twice.
-    this.settled.set(id, { as: 'queued' });
+    this.done(id, 'queued');
     this.kept.delete(id);
     this.editors.delete(editor);
     try {

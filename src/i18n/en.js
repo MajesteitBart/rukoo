@@ -3059,6 +3059,10 @@
     "message": "Email sent",
     "description": "composer > status. src/renderer/composer.js (send); src/main/main.js"
   },
+  "composer.status.waitingServer": {
+    "message": "Waiting for the mail server to answer about this email…",
+    "description": "Shown alone in a compose window whose page loaded again, as after a crash, while its email is still being sent or saved to Drafts. When the server has answered, the window shows the email again, or says it was sent. src/renderer/compose.js (init)"
+  },
   "composer.titles.draft": {
     "message": "Draft",
     "description": "composer > titles. src/renderer/app.js (itemHtml); src/renderer/app.js (renderReader); src/renderer/composer.js"

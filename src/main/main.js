@@ -2045,7 +2045,7 @@ const windowApi = {
     if (!now) return c.opts;
     if (now.record) return keptOptions(now.record);
     if (now.settled.as === 'saved' && c.draftId) return composeOptions({ mode: 'draft', id: c.draftId });
-    return { ...composeOptions({}), settled: now.settled.as };
+    return { ...composeOptions({ subject: now.settled.subject }), settled: now.settled.as };
   },
   // A compose window's editor saved a draft: the window claims it, so the draft cannot open twice.
   composeDraft: (sender, draftId) => {

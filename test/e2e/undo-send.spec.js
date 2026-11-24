@@ -1634,14 +1634,17 @@ test('a compose window whose page loads again during a send shows that the email
         w.webContents.forcefullyCrashRenderer();
       })
   );
-  // While the send waits for the server, the new page gets no editor.
+  // While the send waits for the server, the new page gets no editor, and says what it waits for.
   await expect.poll(() => composePage('document.readyState'), { timeout: 20000 }).toBe('complete');
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  await expect
+    .poll(() => composePage('document.querySelector("[data-compose-waiting]")?.textContent || ""'), { timeout: 20000 })
+    .toBe('Waiting for the mail server to answer about this email…');
   expect(await composePage('Boolean(document.querySelector(".composer"))')).toBe(false);
 
-  // The server takes it: the page says it went, and has nothing to send it with.
+  // The server takes it: the page says it went, under the email's subject, and has nothing to send it with.
   await app.evaluate(() => global.__sends[0].resolve(true));
   await expect.poll(() => composePage('document.querySelector("[data-compose-settled]")?.textContent || ""'), { timeout: 20000 }).toBe('Email sent');
+  expect(await composePage('document.title')).toBe('Sent once only');
   expect(await composePage('Boolean(document.querySelector(".composer, [data-c=send]"))')).toBe(false);
   expect(await app.evaluate(() => global.__sends.length)).toBe(1);
   await expect.poll(kept).toEqual([]);

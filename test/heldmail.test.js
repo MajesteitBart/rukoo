@@ -657,7 +657,7 @@ test('an email the server took is done with for the run: a window that loads aga
   assert.equal(held.attach(9, 'k'), false);
   assert.equal(d.calls, 1);
   // A page that loads again gets the email as main has it now: after the send, that it went; while it goes, it waits.
-  assert.deepEqual(await held.opening(7), { id: 'k', settled: { as: 'sent' } });
+  assert.deepEqual(await held.opening(7), { id: 'k', settled: { as: 'sent', subject: 'Sent once, edited' } });
   held.keep({ id: 'w', restore: restore('Waits'), error: 'Mailbox full' });
   held.attach(6, 'w');
   assert.deepEqual(await held.opening(6), { id: 'w', record: held.get('w') });

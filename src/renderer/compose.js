@@ -12,14 +12,23 @@ function setTitle(text) {
 
 async function init() {
   const host = document.getElementById('app');
-  const [data, opts] = await Promise.all([api('state'), api('composeInit')]);
+  const asking = api('composeInit');
+  const data = await api('state');
   applyTheme(data.settings.theme);
+  // A window whose email is on its way to the server, as when its page loads again during a send, gets it once the
+  // server has answered, which can take up to a minute. Meanwhile it says what it waits for.
+  const slow = setTimeout(() => {
+    host.innerHTML = `<div class="compose-error"><p data-compose-waiting>${esc(t('composer.status.waitingServer'))}</p></div>`;
+  }, 300);
+  const opts = await asking.finally(() => clearTimeout(slow));
+  host.textContent = '';
   if (!opts) return api('composeClose');
   // The email this window had is done with, as when its page loads again after a crash: it went, waits in the outbox
-  // with its Undo notice, or main can't say. The window says so and has no editor to send it a second time.
+  // with its Undo notice, or main can't say. The window says so under the email's subject, and has no editor to send it
+  // a second time.
   if (opts.settled) {
     const said = { sent: 'composer.status.sent', queued: 'composer.undoSend.queued' }[opts.settled] || 'composer.errors.alreadyDone';
-    setTitle(t('composer.titles.new'));
+    setTitle(opts.subject || t('composer.titles.new'));
     host.innerHTML = `<div class="compose-error"><p data-compose-settled>${esc(t(said))}</p><button class="btn secondary">${esc(t('common.actions.close'))}</button></div>`;
     host.querySelector('button').addEventListener('click', () => api('composeClose'));
     return;
