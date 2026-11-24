@@ -1232,6 +1232,31 @@ test('a message longer than main takes is not sent, stays whole in the input and
   expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
 });
 
+// Undo after a failed send takes the returned text out in one step and then goes on through what was typed before, and
+// typing goes on where the caret was. Putting the text back used to reset the undo list and move the caret to the end.
+test("a message put back above newer text keeps that text's undo steps and caret", async () => {
+  await openChat('Call on Thursday');
+  await failFirstChat();
+  await say('Hello Hermes');
+  await expect.poll(inputValue).toBe('');
+  await input().fill('A second message');
+  for (let i = 0; i < 8; i++) await input().press('ArrowLeft');
+  await app.evaluate(() => global.__failCreate());
+  await expect.poll(inputValue).toBe('Hello Hermes\n\nA second message');
+  await expect(input()).toBeFocused();
+  await win.keyboard.type('X');
+  expect(await inputValue()).toBe('Hello Hermes\n\nA secondX message');
+  await win.keyboard.press('Control+z');
+  expect(await inputValue()).toBe('Hello Hermes\n\nA second message');
+  await win.keyboard.press('Control+z');
+  expect(await inputValue()).toBe('A second message');
+  await win.keyboard.press('Control+z');
+  expect(await inputValue()).toBe('');
+  await win.keyboard.press('Control+y');
+  await win.keyboard.press('Control+y');
+  expect(await inputValue()).toBe('Hello Hermes\n\nA second message');
+});
+
 test('a wide chat panel gives way, so the reader keeps its 420 px', async () => {
   await openChat('Call on Thursday');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1300, 900));

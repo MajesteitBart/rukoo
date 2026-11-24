@@ -2139,6 +2139,15 @@ export function chatComposer(opts = {}, handlers = {}) {
       resetHistory();
       updateSend();
     },
+    // Text put before what the input holds, as one step to undo. The selection stays on the same text.
+    prepend(text) {
+      const add = String(text ?? '');
+      if (!add) return;
+      const { anchor, focus } = selection();
+      render(reconcile(spliceParts(current(), 0, 0, add)), anchor + add.length, focus + add.length);
+      record('prepend');
+      updateSend();
+    },
     getValue() {
       return value();
     },

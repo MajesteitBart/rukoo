@@ -1302,11 +1302,11 @@ export function mountAgentPanel(ctx) {
       showAttachments();
     };
     // And the text, above anything written in the input since, after an empty line: all of it is on screen to edit
-    // before the next Send. A quick action's or skill's text is Rukoo's, not the person's.
+    // before the next Send, and undo takes it out again. A quick action's or skill's text is Rukoo's, not the person's.
     const giveBack = () => {
       if (action || skill || !chat || !body) return;
-      const since = chat.getValue();
-      chat.setValue(since.trim() ? `${body}\n\n${since}` : body);
+      if (chat.getValue().trim()) chat.prepend(`${body}\n\n`);
+      else chat.setValue(body);
     };
     try {
       const id = await ensureConversation(sent);
