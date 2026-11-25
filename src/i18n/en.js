@@ -12478,7 +12478,11 @@
   },
   "chat.agents.runsNote": {
     "message": "Next you choose who answers for it and copy a config for the runner, the program that connects the two.",
-    "description": "Add an agent: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
+    "description": "Add an agent, in the browser app, where the key step has Copy config: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.runsNoteSave": {
+    "message": "Next you choose who answers for it and save a config for the runner, the program that connects the two.",
+    "description": "Add an agent, on the computer where Rukoo can't run agents itself and the key step has Save config: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
   },
   "chat.agents.keyTitle": {
     "message": "Connect {name}",
@@ -12518,11 +12522,19 @@
   },
   "chat.agents.closeTitle": {
     "message": "Close without copying the config?",
-    "description": "Question when the key step closes before the config was copied: title. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Question when the key step closes before the config was copied, in the browser app, where the button is Copy config: title. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.closeBody": {
     "message": "You won't see this key again. Without it the agent can't connect, and you'd need a new key.",
-    "description": "Question when the key step closes before the config was copied: body. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Question when the key step closes before the config was copied, in the browser app: body. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeSaveTitle": {
+    "message": "Close without saving the config?",
+    "description": "Question when the key step closes before the config was saved, on the computer where Rukoo can't run the agent itself and the button is Save config: title. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeSaveBody": {
+    "message": "Rukoo lets go of this key when you close. Without it the agent can't connect, and you'd need a new key.",
+    "description": "Question when the key step closes before the agent runs on this computer or its config was saved, on the computer: body, under chat.agents.closeSaveTitle or chat.agents.closeRunTitle. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.useOwn": {
     "message": "A program of my own",
@@ -12594,7 +12606,7 @@
   },
   "chat.agents.closeRunTitle": {
     "message": "Close without connecting {name}?",
-    "description": "Question when the key step closes before the agent runs on this computer or its config was copied: title. {name}: the agent. The body is chat.agents.closeBody. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Question when the key step closes before the agent runs on this computer or its config was saved: title. {name}: the agent. The body is chat.agents.closeSaveBody. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.newKeyBodyHere": {
     "message": "The current key stops working at once, so a runner elsewhere that uses it disconnects. {name} keeps running on this computer with the new key.",

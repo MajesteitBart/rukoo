@@ -2544,7 +2544,7 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
         <label class="ch-check-row ch-agent-toggle"><input type="checkbox" name="agents"${editing && agent.agents ? ' checked' : ''}/><span class="ch-radio-text"><span class="ch-radio-label">${esc(
           t('chat.agents.answersAgentsOption')
         )}</span><span class="field-help">${esc(depth ? t('chat.agents.answersAgentsHelp', { count: depth }) : t('chat.agents.answersAgentsHelpPlain'))}</span></span></label>
-        ${editing ? '' : `<p class="field-help ch-agent-runs">${esc(t(runsHere ? 'chat.agents.runsNoteHere' : 'chat.agents.runsNote'))}</p>`}
+        ${editing ? '' : `<p class="field-help ch-agent-runs">${esc(t(runsHere ? 'chat.agents.runsNoteHere' : WEB ? 'chat.agents.runsNote' : 'chat.agents.runsNoteSave'))}</p>`}
         <p class="error" data-error="" hidden></p>
       </div>`;
       body.addEventListener('change', (e) => {
@@ -2699,8 +2699,9 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
   const leaveOk = () => {
     if (kept) return true;
     return dialog({
-      title: canRun ? t('chat.agents.closeRunTitle', { name: agent.name }) : t('chat.agents.closeTitle'),
-      body: `<p>${esc(t('chat.agents.closeBody'))}</p>`,
+      // On the computer the button is Save config, in the browser Copy config.
+      title: canRun ? t('chat.agents.closeRunTitle', { name: agent.name }) : t(desktop ? 'chat.agents.closeSaveTitle' : 'chat.agents.closeTitle'),
+      body: `<p>${esc(t(desktop ? 'chat.agents.closeSaveBody' : 'chat.agents.closeBody'))}</p>`,
       buttons: [
         { label: t('chat.invite.goBack'), value: false },
         { label: t('common.actions.close'), value: true }
