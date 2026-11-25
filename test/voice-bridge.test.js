@@ -144,6 +144,38 @@ test('a Mac Voice from before windows.hide always hides Rukoo, and Rukoo says so
   assert.deepEqual(voice.rukooWindows(), { hidden: [], shown: [4821] });
 });
 
+test("a Mac Rukoo reads in Voice's status whether the screen recording has its windows in it, and when an older screen recorder can't", async (t) => {
+  const { dir, file, voice } = await setup(t);
+  const report = (shown, canShow = true) => ({ recording: M1, dictating: false, screenDefault: 'frames', rukooWindows: { shown, canShow } });
+  voice.append('meeting.started', M1, { ...started('Demo'), screen: 'frames' });
+  voice.append('meeting.state', M1, { state: 'recording', at: 0 });
+  // A status in the replay is history: the welcome's status is what holds now.
+  voice.append('status', null, report([4821]));
+  voice.status = report([]);
+  voice.writeDiscovery();
+  const s = service(t, dir, file, { hide: () => false, bridge: MAC_BRIDGE }).init();
+  await until(() => s.connected, 'the connection');
+  assert.equal(s.state().inRecording, false);
+  assert.equal(s.state().meetingHidden, false);
+  // Voice's screen process confirms Rukoo is in the recording, then a reattached older one can't keep it in.
+  voice.append('status', null, report([77, 4821]));
+  await until(() => s.state().inRecording === true, 'inRecording');
+  voice.append('status', null, report([], false));
+  await until(() => s.state().meetingHidden, 'meetingHidden');
+  assert.equal(s.state().inRecording, false);
+  // An older Voice says nothing about it.
+  voice.append('status', null, { recording: M1, dictating: false });
+  await until(() => s.state().inRecording === null, 'no report');
+  assert.equal(s.state().meetingHidden, false);
+  // Disconnected, Rukoo knows nothing about the recording.
+  voice.append('status', null, report([4821]));
+  await until(() => s.state().inRecording === true, 'inRecording again');
+  voice.removeDiscovery();
+  voice.drop();
+  await until(() => !s.connected, 'the disconnect');
+  assert.equal(s.state().inRecording, null);
+});
+
 test('off a Mac Rukoo sends no pid, no hideWindows and no windows.hide: Voice there relies on content protection', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
@@ -155,6 +187,11 @@ test('off a Mac Rukoo sends no pid, no hideWindows and no windows.hide: Voice th
   assert.equal('hideWindows' in voice.hellos[0], false);
   assert.deepEqual(hideCommands(voice), []);
   assert.equal(s.state().alwaysHidden, false);
+  // A report in Voice's status is for a Mac Rukoo only.
+  voice.append('status', null, { recording: null, dictating: false, rukooWindows: { shown: [4821], canShow: false } });
+  await s.bridge.command('status.get');
+  assert.equal(s.state().inRecording, null);
+  assert.equal(s.state().meetingHidden, false);
 });
 
 test('the fake Voice refuses a page that names an Origin, as Voice does', async (t) => {
@@ -552,7 +589,7 @@ test('without a connection, meeting commands fail with offline', async (t) => {
     const err = await call().then(() => null, (e) => e);
     assert.equal(err.code, 'offline');
   }
-  assert.deepEqual(s.state(), { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null, alwaysHidden: false });
+  assert.deepEqual(s.state(), { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null, alwaysHidden: false, inRecording: null, meetingHidden: false });
 });
 
 test('a meeting Voice starts stays without a calendar event, even when exactly one fits; linking it by hand gives a 1:1 the guest\'s name', async (t) => {

@@ -14,6 +14,8 @@ const VOICE_MESSAGE_MAX = 8 * 1024 * 1024;
 const RUKOO_MESSAGE_MAX = 1024 * 1024;
 const DISCOVERY_MAX = 4096;
 const CONTEXT_MAX = 16 * 1024;
+// The most pids rukooWindows.shown in a status lists.
+const WINDOWS_PIDS_MAX = 64;
 const TITLE_MAX = 200;
 // A mark's label, like a title. PROTOCOL.md leaves it open; the shared vectors settle it.
 const LABEL_MAX = 200;
@@ -105,6 +107,13 @@ function status(o) {
   bool(o, 'dictating');
   // The screen a meeting gets when meeting.start leaves it out. An older Voice leaves it out.
   if (given(o, 'screenDefault')) oneOf(o, 'screenDefault', SCREENS);
+  // From a Mac Voice: which Rukoo the screen recording keeps in, as its screen process confirmed, and whether it can.
+  if (given(o, 'rukooWindows')) {
+    const w = o.rukooWindows;
+    check(isObj(w), 'rukooWindows');
+    check(Array.isArray(w.shown) && w.shown.length <= WINDOWS_PIDS_MAX && w.shown.every((pid) => Number.isInteger(pid) && pid >= 1), 'shown');
+    bool(w, 'canShow');
+  }
 }
 
 // ---------- messages from Rukoo ----------

@@ -16,7 +16,9 @@
 // On a Mac, content protection doesn't keep Rukoo out of a ScreenCaptureKit recording. There Voice's screen process
 // leaves Rukoo's process out, from the hello's pid, unless Rukoo says it wants its windows in: hideWindows in the
 // hello, and windows.hide after each welcome and whenever the user changes the setting. A Voice from before
-// windows.hide answers unknown_command and always leaves Rukoo out; alwaysHidden in state() says so.
+// windows.hide answers unknown_command and always leaves Rukoo out; alwaysHidden in state() says so. A Voice that knows
+// it says in its status which Rukoo its screen recording keeps in, as the screen process confirmed (inRecording), and
+// whether a screen process an older Voice started can't keep Rukoo in (meetingHidden).
 
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -179,6 +181,8 @@ class VoiceService extends EventEmitter {
     // The connected Voice leaves Rukoo out of its screen recordings whatever the setting says: a Mac Voice that
     // answered windows.hide with unknown_command.
     this.alwaysHidden = false;
+    // rukooWindows from Voice's newest status ({ shown, canShow }), or null when it sent none.
+    this.windows = null;
     this.closed = false;
   }
 
@@ -193,7 +197,9 @@ class VoiceService extends EventEmitter {
     this.bridge.on('welcome', (msg) => this.onWelcome(msg));
     this.bridge.on('event', (ev) => this.onEvent(ev));
     this.bridge.on('status', (status) => {
+      const windows = this.setWindows(status);
       if (this.store.setStatus(status)) this.statusChanged();
+      else if (windows) this.emit('state', this.state());
     });
     // The last thing Rukoo heard may be that a meeting records: protect before any window shows.
     this.refreshProtection();
@@ -206,7 +212,30 @@ class VoiceService extends EventEmitter {
   state() {
     const s = this.bridge.state();
     const status = this.store.status();
-    return { status: s.status, reason: s.reason, voiceVersion: s.voiceVersion, protocol: s.protocol, older: s.older, recording: status.recording, dictating: status.dictating, screenDefault: status.screenDefault, alwaysHidden: s.status === 'connected' && this.alwaysHidden };
+    // What a connected Mac Voice says its screen recording does with this Rukoo's windows. null when it says nothing.
+    const windows = s.status === 'connected' && this.bridge.platform === 'darwin' ? this.windows : null;
+    return {
+      status: s.status,
+      reason: s.reason,
+      voiceVersion: s.voiceVersion,
+      protocol: s.protocol,
+      older: s.older,
+      recording: status.recording,
+      dictating: status.dictating,
+      screenDefault: status.screenDefault,
+      alwaysHidden: s.status === 'connected' && this.alwaysHidden,
+      inRecording: windows ? windows.shown.includes(this.bridge.pid) : null,
+      meetingHidden: Boolean(windows && windows.canShow === false)
+    };
+  }
+
+  // Keeps rukooWindows from a status of Voice. Returns whether it changed.
+  setWindows(status) {
+    const w = status && status.rukooWindows;
+    const next = w && Array.isArray(w.shown) ? { shown: [...w.shown], canShow: w.canShow !== false } : null;
+    if (JSON.stringify(next) === JSON.stringify(this.windows)) return false;
+    this.windows = next;
+    return true;
   }
 
   recording() {
@@ -312,8 +341,9 @@ class VoiceService extends EventEmitter {
 
   onWelcome(msg) {
     this.clipChain = null;
-    // A new connection, maybe to another Voice: what it does with Rukoo's windows comes from its answer.
+    // A new connection, maybe to another Voice: what it does with Rukoo's windows comes from its answer and its status.
     this.alwaysHidden = false;
+    this.setWindows(msg.status);
     this.sendWindowsHide();
     const { reset, gap } = this.store.welcome(msg);
     this.screenKnown.clear();
@@ -391,6 +421,8 @@ class VoiceService extends EventEmitter {
   onEvent(ev) {
     const before = this.revOf(ev.meeting);
     const was = this.store.status();
+    // A live status says what the screen recording does with Rukoo's windows now; one in the replay is history.
+    if (ev.event === 'status' && !this.store.isReplay(ev.seq) && this.setWindows(ev.data)) this.emit('state', this.state());
     let change = null;
     try {
       change = this.store.apply(ev);
