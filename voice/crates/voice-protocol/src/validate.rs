@@ -282,12 +282,6 @@ fn passage(f: &Fields) -> Checked<Passage> {
     let revision = f.positive("revision")?;
     let dictation = f.boolean("dictation")?;
     let language = f.nullable_string("language")?.map(str::to_owned);
-    // Optional: this version wins whatever its revision (PROTOCOL.md, passage).
-    let replace = match f.0.get("replace") {
-        None => false,
-        Some(Value::Bool(replace)) => *replace,
-        Some(_) => return invalid("replace"),
-    };
     if end < start {
         return invalid("end");
     }
@@ -304,7 +298,6 @@ fn passage(f: &Fields) -> Checked<Passage> {
         revision,
         dictation,
         language,
-        replace,
     })
 }
 

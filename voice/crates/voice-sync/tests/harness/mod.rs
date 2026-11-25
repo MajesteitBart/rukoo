@@ -422,7 +422,6 @@ impl Meeting {
                 revision: 1,
                 dictation: false,
                 language: Some("en".into()),
-                replace: false,
             };
             t.commit_window(
                 track,

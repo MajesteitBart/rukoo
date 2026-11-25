@@ -1347,12 +1347,18 @@ fn changes_and_deletions_reach_the_other_computer() {
     }
     wait_long("B hears of the newer text", Duration::from_secs(60), || {
         let events = events_of(&b.data(), &id);
+        // Its revision is lower than the one B logged: it goes out after a removal, which any
+        // Rukoo takes.
         let last = events
             .iter()
-            .rev()
-            .find(|(e, d)| e == "passage" && d["id"] == kept.as_str());
-        let reworded = last.is_some_and(|(_, d)| {
-            d["text"] == "Reworded on the other computer" && d["replace"] == true
+            .rposition(|(e, d)| e == "passage" && d["id"] == kept.as_str());
+        let reworded = last.is_some_and(|i| {
+            events[i].1["text"] == "Reworded on the other computer"
+                && events[..i]
+                    .iter()
+                    .rev()
+                    .find(|(_, d)| d["id"] == kept.as_str())
+                    .is_some_and(|(e, _)| e == "passage.removed")
         });
         let removed = events
             .iter()
@@ -1367,6 +1373,18 @@ fn changes_and_deletions_reach_the_other_computer() {
         .map(|p| p["id"].as_str().unwrap())
         .collect();
     assert!(!ids.contains(&dropped.as_str()), "{snapshot}");
+    // A Rukoo that asks for the whole meeting gets the newer words too.
+    let words = snapshot["passages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == kept.as_str())
+        .map(|p| p["text"].clone());
+    assert_eq!(
+        words,
+        Some(json!("Reworded on the other computer")),
+        "{snapshot}"
+    );
     // What B followed doesn't go back: A's manifest stays at the generation A uploaded.
     let manifests = |fake: &FakeS3| {
         fake.log()

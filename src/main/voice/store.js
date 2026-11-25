@@ -476,9 +476,8 @@ class VoiceStore {
   passage(id, d) {
     const m = this.data(id, true);
     const old = m.passages[d.id];
-    // A higher revision replaces the passage Rukoo has; an older one that arrives late does not, unless Voice says it
-    // replaces it (newer text of the meeting from another computer, voice/PROTOCOL.md passage).
-    if (old && old.revision > d.revision && d.replace !== true) return null;
+    // A higher revision replaces the passage Rukoo has; an older one that arrives late does not.
+    if (old && old.revision > d.revision) return null;
     const next = { id: d.id, track: d.track, speaker: d.speaker, start: d.start, end: d.end, text: d.text, revision: d.revision, dictation: d.dictation, language: d.language };
     if (old && JSON.stringify({ ...old, changed: undefined, added: undefined }) === JSON.stringify({ ...next, changed: undefined, added: undefined })) return null;
     const tick = this.nextTick();

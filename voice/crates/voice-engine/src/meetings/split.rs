@@ -109,30 +109,35 @@ impl SplitService {
             .dir(id)
             .ok_or_else(|| ControlError::not_found(NO_MEETING))?;
         let key = (id.to_owned(), track);
-        if self
-            .replacing
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(id)
-        {
-            return Err(ControlError::busy(
-                id,
-                "Voice is taking newer text of the meeting from another computer.",
-            ));
-        }
         if let Some(answer) = self.known(&key) {
             return answer;
         }
         self.stopped(id)?;
-        // Split by this run or an earlier one: the events it still owes go out first.
-        if voice_meetings::split_voices(&dir)
-            .map_err(|e| split_error(id, e))?
-            .is_some()
         {
-            let voices =
-                voice_meetings::send_split(&dir, &self.log).map_err(|e| split_error(id, e))?;
-            self.lock().insert(key, Job::Done(voices));
-            return Ok(SplitResult::Done { voices }.to_value());
+            // Under the jobs lock, which a replacement takes to begin: newer text from another
+            // computer can't replace the transcript while this reads and writes it.
+            let mut jobs = self.lock();
+            if self
+                .replacing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(id)
+            {
+                return Err(ControlError::busy(
+                    id,
+                    "Voice is taking newer text of the meeting from another computer.",
+                ));
+            }
+            // Split by this run or an earlier one: the events it still owes go out first.
+            if voice_meetings::split_voices(&dir)
+                .map_err(|e| split_error(id, e))?
+                .is_some()
+            {
+                let voices =
+                    voice_meetings::send_split(&dir, &self.log).map_err(|e| split_error(id, e))?;
+                jobs.insert(key, Job::Done(voices));
+                return Ok(SplitResult::Done { voices }.to_value());
+            }
         }
         let diarizer = (self.diarizers)().map_err(|why| {
             ControlError::not_available(why.to_string()).with_reason(unavailable_reason(&why))

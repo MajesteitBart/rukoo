@@ -1790,7 +1790,6 @@ impl Worker {
                 text: draft.text,
                 revision: 1,
                 language,
-                replace: false,
             },
             tokens: draft.tokens,
         }

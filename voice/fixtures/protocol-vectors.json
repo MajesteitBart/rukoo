@@ -463,18 +463,12 @@
       "message": { "type": "event", "seq": 1201, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700100, "data": { "id": "mic-000081000", "track": "mic", "speaker": "mic-2", "start": 81000, "end": 84500, "text": "I can do that, I have the export open already.", "revision": 2, "dictation": false, "language": "en" } }
     },
     {
-      "name": "a passage another computer's text replaces whatever its revision",
-      "from": "voice",
-      "message": { "type": "event", "seq": 1202, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700200, "data": { "id": "call-000065320", "track": "call", "speaker": "call-2", "start": 65320, "end": 71880, "text": "Let's move the launch to Friday.", "revision": 2, "dictation": false, "language": "en", "replace": true } }
-    },
-    {
       "name": "look for meetings from the other computers",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-61", "command": "sync.pull", "args": {} }
     }
   ],
   "invalid": [
-    { "name": "a passage whose replace isn't true or false", "from": "voice", "reason": "replace", "message": { "type": "event", "seq": 1203, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700300, "data": { "id": "call-000065320", "track": "call", "speaker": "call-2", "start": 65320, "end": 71880, "text": "Friday.", "revision": 2, "dictation": false, "language": "en", "replace": "yes" } } },
     { "name": "split without a track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a" } } },
     { "name": "split of the call track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a", "track": "call" } } },
     { "name": "split without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "track": "mic" } } },

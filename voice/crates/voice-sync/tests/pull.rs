@@ -464,7 +464,13 @@ fn a_replacement_a_crash_cut_off_goes_on_at_the_next_start() {
         .unwrap();
         let newer = Meeting::passages(&n.dir);
         fs::remove_dir_all(&other).unwrap();
-        fs::write(tmp.join("install.json"), br#"["transcript.db"]"#).unwrap();
+        let journal = serde_json::json!({
+            "paths": ["transcript.db"],
+            "manifest": {"v": 1, "meeting": m.id, "gen": 2, "state": "done", "updatedAt": 0,
+                         "mediaRemovedAt": null, "files": []},
+            "manifestId": "0".repeat(64), "mhash": "0".repeat(32), "target": "elsewhere", "kid": "k"
+        });
+        fs::write(tmp.join("install.json"), journal.to_string()).unwrap();
         // The crash came after the old write-ahead log went.
         let _ = fs::remove_file(m.path("transcript.db-wal"));
         (m, newer)
@@ -521,7 +527,16 @@ fn newer_text_a_crash_left_unnoted_is_noted_and_never_sent_back() {
     fs::copy(m.path("transcript.db"), dir.join("transcript.db")).unwrap();
     let tmp = b.meetings().join(format!(".update-{}", m.id));
     fs::create_dir_all(tmp.join("files")).unwrap();
-    fs::write(tmp.join("install.json"), br#"["transcript.db"]"#).unwrap();
+    let key = a.key();
+    let journal = serde_json::json!({
+        "paths": ["transcript.db"],
+        "manifest": manifest(&fake, &key, &m.id).unwrap(),
+        "manifestId": "f".repeat(64),
+        "mhash": voice_sync::names::meeting_hash(&key.name_key(), &m.id),
+        "target": config(&fake.endpoint()).target(),
+        "kid": key.kid(),
+    });
+    fs::write(tmp.join("install.json"), journal.to_string()).unwrap();
     let before = puts(&fake).len();
     // The worker's scans leave it alone meanwhile.
     std::thread::sleep(Duration::from_millis(800));
@@ -562,4 +577,30 @@ fn a_deletion_that_stopped_halfway_goes_on() {
     assert!(!pending.exists());
     std::thread::sleep(Duration::from_millis(600));
     assert_eq!(hooks.restored().len(), 1, "it doesn't come back");
+}
+
+#[test]
+fn a_replacement_left_from_another_bucket_lets_the_meeting_go_up_to_this_one() {
+    let fake = fake();
+    let root = scratch("pull-elsewhere");
+    let _c = Cleanup(root.clone());
+    let a = Voice::open(&root.join("a"));
+    let (m, _) = finished(&a.meetings(), "Moved buckets", 3_600_000);
+    // A replacement for another bucket stopped before its version was noted.
+    let tmp = a.meetings().join(format!(".update-{}", m.id));
+    fs::create_dir_all(tmp.join("files")).unwrap();
+    let journal = serde_json::json!({
+        "paths": ["transcript.db"],
+        "manifest": {"v": 1, "meeting": m.id, "gen": 2, "state": "done", "updatedAt": 0,
+                     "mediaRemovedAt": null, "files": []},
+        "manifestId": "0".repeat(64), "mhash": "0".repeat(32), "target": "another bucket", "kid": "k"
+    });
+    fs::write(tmp.join("install.json"), journal.to_string()).unwrap();
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    assert!(!tmp.exists());
+    assert!(
+        manifest(&fake, &a.key(), &m.id).is_some(),
+        "it went up to this bucket"
+    );
 }

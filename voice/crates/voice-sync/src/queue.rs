@@ -790,6 +790,12 @@ impl Queue {
         })
     }
 
+    /// Writes what the queue committed into its database file and flushes it, so a power cut can't
+    /// take it back.
+    pub(crate) fn checkpoint(&self) -> Result<(), SyncError> {
+        self.with(|c| c.query_row("PRAGMA wal_checkpoint(FULL)", [], |_| Ok(())))
+    }
+
     pub(crate) fn meta_u64(&self, key: &str) -> Result<Option<u64>, SyncError> {
         Ok(self.meta(key)?.and_then(|v| v.parse().ok()))
     }

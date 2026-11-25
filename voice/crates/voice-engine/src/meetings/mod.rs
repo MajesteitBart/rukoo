@@ -182,39 +182,44 @@ impl Meetings {
         let Some(log) = &self.log else {
             return;
         };
-        let following: std::collections::HashSet<String> = self
-            .pipelines()
-            .into_iter()
-            .filter(|(_, state)| !state.is_final())
-            .map(|(id, _)| id)
-            .collect();
         for dir in self.library().dirs() {
             let marker = dir.path().join(voice_sync::pull::PULLED);
             if !marker.is_file() {
                 continue;
             }
             let id = dir.id().as_str();
-            if following.contains(id) || self.is_replacing(id) {
-                continue;
-            }
-            let followed = self
-                .followed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains(id);
-            let ended = log
-                .latest(id, voice_protocol::events::MEETING_STATE)
-                .ok()
-                .flatten()
-                .is_some_and(|s| matches!(s.data["state"].as_str(), Some("done" | "failed")));
-            if followed && ended {
-                if !self.reconcile_replaced(id) {
+            // Decided and done under the pipelines' lock, which a replacement takes to begin: it
+            // can't start in between.
+            let needs_follow = {
+                let pipelines = self.lock();
+                let following = pipelines
+                    .iter()
+                    .any(|p| p.meeting() == id && !p.state().is_final());
+                if following || self.is_replacing(id) {
                     continue;
                 }
-                if let Err(e) = std::fs::remove_file(&marker) {
-                    log::warn!("meeting: {id}: can't mark a pulled meeting as sent: {e}");
+                let followed = self
+                    .followed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .contains(id);
+                let ended = log
+                    .latest(id, voice_protocol::events::MEETING_STATE)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| matches!(s.data["state"].as_str(), Some("done" | "failed")));
+                if followed && ended {
+                    if self.reconcile_replaced(id) {
+                        if let Err(e) = std::fs::remove_file(&marker) {
+                            log::warn!("meeting: {id}: can't mark a pulled meeting as sent: {e}");
+                        }
+                    }
+                    false
+                } else {
+                    true
                 }
-            } else {
+            };
+            if needs_follow {
                 follow(id);
             }
         }
@@ -272,11 +277,11 @@ impl Meetings {
     }
 
     /// After newer text from another computer replaced a meeting's transcript, what Rukoo has of
-    /// its passages follows the transcript: a `passage.removed` for each passage the log has that
-    /// the transcript doesn't, and the transcript's version, with `replace`, of each passage whose
-    /// last logged version says something else. Two computers can have changed one passage to the
-    /// same revision with other words, or this one to a higher revision, so a plain revision
-    /// wouldn't win. True when the log holds all of it.
+    /// its passages follows the transcript. For each passage the log's latest version (after its
+    /// removals) is compared with the transcript's: one Rukoo lacks goes out, one with other words
+    /// goes out too, after a `passage.removed` when its revision isn't higher than the one Rukoo has
+    /// (two computers can have changed one passage to the same revision with other words), and one
+    /// the transcript lacks is removed. True when the log holds all of it.
     pub fn reconcile_replaced(&self, id: &str) -> bool {
         let (Some(log), Some(dir)) = (&self.log, self.library().dir(id)) else {
             return false;
@@ -309,39 +314,36 @@ impl Meetings {
             }
         };
         let mut ok = true;
+        let mut send = |event: &str, data: serde_json::Value| {
+            if let Err(e) = log.append(event, Some(id), data) {
+                log::warn!("meeting: {id}: can't send what newer text changed: {e}");
+                ok = false;
+            }
+        };
         let mut present = std::collections::HashSet::new();
         for stored in passages {
             let passage = stored.passage;
             present.insert(passage.id.clone());
-            let Some(last) = sent.get(&passage.id) else {
-                // Never sent: the pipeline sends it.
+            let Ok(data) = serde_json::to_value(&passage) else {
                 continue;
             };
-            let Ok(mut data) = serde_json::to_value(&passage) else {
-                continue;
-            };
-            let mut logged = last.clone();
-            if let Some(o) = logged.as_object_mut() {
-                o.remove("replace");
-            }
-            if logged == data {
-                continue;
-            }
-            data["replace"] = serde_json::Value::Bool(true);
-            if let Err(e) = log.append(voice_protocol::events::PASSAGE, Some(id), data) {
-                log::warn!("meeting: {id}: can't send a replaced passage: {e}");
-                ok = false;
+            match sent.get(&passage.id) {
+                Some(last) if *last == data => {}
+                Some(last) if last["revision"].as_u64().unwrap_or(0) >= passage.revision => {
+                    send(
+                        voice_protocol::events::PASSAGE_REMOVED,
+                        json!({ "id": passage.id }),
+                    );
+                    send(voice_protocol::events::PASSAGE, data);
+                }
+                _ => send(voice_protocol::events::PASSAGE, data),
             }
         }
         for passage in sent.keys().filter(|p| !present.contains(*p)) {
-            if let Err(e) = log.append(
+            send(
                 voice_protocol::events::PASSAGE_REMOVED,
-                Some(id),
                 json!({ "id": passage }),
-            ) {
-                log::warn!("meeting: {id}: can't send a removed passage: {e}");
-                ok = false;
-            }
+            );
         }
         ok
     }

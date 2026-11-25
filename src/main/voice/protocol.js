@@ -254,7 +254,6 @@ const EVENT_DATA = {
     int(d, 'revision', 1);
     bool(d, 'dictation');
     str(d, 'language', { nullable: true });
-    if (given(d, 'replace')) bool(d, 'replace');
   },
   'passage.removed': (d) => str(d, 'id', { min: 1 }),
   mark: (d) => {

@@ -80,8 +80,8 @@ pub(crate) struct Shared {
     /// Held while one meeting is restored: a pull and a restore from Settings would otherwise
     /// write the same `.restore-<id>` folder.
     pub(crate) restoring_one: Mutex<()>,
-    /// The worker's connection and the settings generation it was made for.
-    connected: Mutex<Option<(u64, Arc<Remote>)>>,
+    /// The worker's connection, with the settings generation and the place it was made for.
+    connected: Mutex<Option<Connected>>,
     notifier: Notifier,
 }
 
@@ -242,31 +242,19 @@ impl Shared {
         self.lock().stopping
     }
 
-    /// The worker's connection, for the settings generation it was made for.
-    pub(crate) fn connected(&self) -> Option<(u64, Arc<Remote>)> {
+    /// The worker's connection, with the settings generation and the place it was made for.
+    pub(crate) fn connected(&self) -> Option<Connected> {
         self.connected
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
-    fn set_connected(&self, connected: Option<(u64, Arc<Remote>)>) {
+    fn set_connected(&self, connected: Option<Connected>) {
         *self
             .connected
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = connected;
-    }
-
-    /// What reads through `remote` now are bound to: the bucket sync uses and the key `remote`
-    /// opens. `None` while sync is off.
-    pub(crate) fn binding(&self, remote: &Remote) -> Option<Binding> {
-        let st = self.lock();
-        let cfg = st.cfg.as_ref()?;
-        Some(Binding {
-            place: st.place,
-            target: cfg.target(),
-            kid: remote.kid.clone(),
-        })
     }
 
     /// Scan every meeting soon: one changed here.
@@ -490,6 +478,15 @@ impl Shared {
     }
 }
 
+/// The worker's connection, as the pull reads over it ([`crate::pull`]): made for settings
+/// `generation`, with the binding of the place and key it reads.
+#[derive(Clone)]
+pub(crate) struct Connected {
+    pub(crate) generation: u64,
+    pub(crate) remote: Arc<Remote>,
+    pub(crate) binding: Binding,
+}
+
 /// What a restore or a fetch reads with: the bucket sync was on for and the key, when it started.
 #[derive(Clone, Debug)]
 pub(crate) struct Binding {
@@ -498,6 +495,13 @@ pub(crate) struct Binding {
     /// [`SyncConfig::target`] of that bucket, endpoint and folder.
     pub(crate) target: String,
     pub(crate) kid: String,
+}
+
+impl Binding {
+    /// [`State::place`] when it was made.
+    pub(crate) fn place(&self) -> u64 {
+        self.place
+    }
 }
 
 /// A connection to the bucket with the key that opens it.
@@ -772,9 +776,9 @@ impl Worker {
     /// whether uploads may go. `unlocked` holds the key and the secret [`Worker::unlock`] read.
     fn prepare(&mut self, unlocked: Option<Unlocked>) -> Ready {
         let shared = self.shared.clone();
-        let (cfg, generation, blocked) = {
+        let (cfg, generation, blocked, place) = {
             let st = shared.lock();
-            (st.cfg.clone(), st.generation, st.blocked.clone())
+            (st.cfg.clone(), st.generation, st.blocked.clone(), st.place)
         };
         let Some(cfg) = cfg else {
             if self.cfg.take().is_some() {
@@ -822,7 +826,15 @@ impl Worker {
                 let remote = Arc::new(remote);
                 // The pull reads the bucket over this connection: the key and the secret were read
                 // once for these settings.
-                shared.set_connected(Some((generation, remote.clone())));
+                shared.set_connected(Some(Connected {
+                    generation,
+                    binding: Binding {
+                        place,
+                        target: cfg.target(),
+                        kid: remote.kid.clone(),
+                    },
+                    remote: remote.clone(),
+                }));
                 self.remote = Some(remote);
                 self.cfg = Some(cfg);
                 self.generation = Some(generation);
@@ -985,9 +997,17 @@ impl Worker {
                 continue;
             }
             // Newer text from the bucket is in place and its version not noted yet: it isn't a
-            // change of this computer's to send back.
+            // change of this computer's to send back, unless it came from a bucket or key sync no
+            // longer uses.
             if crate::pull::pending_install(&shared.opts.meetings_dir, &id) {
-                continue;
+                let target = shared.lock().target.clone();
+                if !crate::pull::release_elsewhere(
+                    &shared.opts.meetings_dir,
+                    &id,
+                    target.as_deref(),
+                ) {
+                    continue;
+                }
             }
             if !all
                 && row.is_some_and(|r| {
