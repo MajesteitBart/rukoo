@@ -580,7 +580,11 @@ fn a_deletion_that_stopped_halfway_goes_on() {
     // B's deletion renamed the folder and stopped there. On Windows a folder can't be renamed while
     // a file in it is open, as it is for a moment while B's sync reads it after the restore.
     let pending = b.meetings().join(format!(".deleted-{}", m.id));
-    assert!(wait_for(WAIT, || fs::rename(b.meetings().join(&m.id), &pending).is_ok()));
+    assert!(wait_for(WAIT, || fs::rename(
+        b.meetings().join(&m.id),
+        &pending
+    )
+    .is_ok()));
     a.sync.mark_deleted(&m.id, None).unwrap();
     fs::remove_dir_all(&m.dir).unwrap();
     assert!(
@@ -664,7 +668,11 @@ fn a_meeting_that_can_t_come_in_is_the_look_s_error_and_the_others_still_come() 
     // A folder with something else in it where the meeting's folder goes: that meeting can't come
     // in here, on every platform.
     fs::create_dir_all(b.meetings().join(&blocked.id)).unwrap();
-    fs::write(b.meetings().join(&blocked.id).join("in-the-way"), b"in the way").unwrap();
+    fs::write(
+        b.meetings().join(&blocked.id).join("in-the-way"),
+        b"in the way",
+    )
+    .unwrap();
     let hooks = Hooks::new(&b.meetings());
     b.sync.set_pull_hooks(hooks.clone());
     b.connect(&fake.endpoint());
