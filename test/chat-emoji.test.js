@@ -72,6 +72,24 @@ test('every emoji is fully qualified RGI, in both languages in the same order, w
   assert.equal(en.byChar('🇦'), null);
 });
 
+// Issue 377: a tab drawn with its group's first emoji was clicked as that emoji, and nothing went in. Every group's tab
+// has a line icon of its own instead.
+test('every group has a line icon of its own for its tab in the picker, in both languages', async () => {
+  const { icons, emojiGroupIcons } = await import(dataUrl(fs.readFileSync(path.join(__dirname, '../src/renderer/icons.js'), 'utf8')));
+  const { loadEmoji } = await loading;
+  for (const set of [await loadEmoji('en'), await loadEmoji('nl')]) {
+    for (const g of set.groups) {
+      const name = emojiGroupIcons?.[g.id];
+      assert.ok(name && icons[name], `${g.id} has an icon`);
+      assert.match(icons[name], /^<svg [^>]*stroke="currentColor"/, `${g.id}'s icon is a line icon`);
+      assert.doesNotMatch(icons[name], /\p{Extended_Pictographic}/u, `${g.id}'s icon holds no emoji`);
+    }
+  }
+  const names = Object.values(emojiGroupIcons);
+  assert.equal(new Set(names).size, names.length, 'no two groups share an icon');
+  assert.ok(!names.includes('clock'), 'Recently used keeps the clock to itself');
+});
+
 test('search: an exact short code first, then labels that start with the query, then word starts, then tags', async () => {
   const { loadEmoji } = await loading;
   const en = await loadEmoji('en');

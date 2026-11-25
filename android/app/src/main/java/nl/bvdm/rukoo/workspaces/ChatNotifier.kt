@@ -48,13 +48,25 @@ object ChatAlertRules {
     const val PREFIX = "chat:"
     fun workspacePrefix(ws: String) = "chat:$ws:"
 
-    /** A room asks for an alert: new messages past what an alert covered, and a DM with unread messages or a channel with mentions. */
+    /**
+     * A room asks for an alert: new messages past what an alert covered, and a DM with unread messages, or a channel
+     * with mentions or with unread messages that may hold a reply to the person (issue #376, [repliesOnly]).
+     */
     fun due(room: RoomRow): Boolean =
-        room.head > room.notified && (if (room.kind == RoomKind.DM.wire) room.unread > 0 else room.mentions > 0)
+        room.head > room.notified && (if (room.kind == RoomKind.DM.wire) room.unread > 0 else room.mentions > 0 || room.unread > 0)
+
+    /** A channel due only for what may be a reply to the person: unread messages without a mention. */
+    fun repliesOnly(room: RoomRow): Boolean = room.kind != RoomKind.DM.wire && room.mentions <= 0
+
+    /**
+     * Looked at since the person last read it: an alert or a look covered more than was read. Such a channel loads no
+     * second page for replies (one per stretch of unread messages, never one per message).
+     */
+    fun looked(room: RoomRow): Boolean = room.notified > maxOf(room.read, room.readLocal)
 
     /**
      * A due room still stays silent: chat notifications are off (Settings > Notifications), the person muted it, or it
-     * is on screen in the resumed app.
+     * is on screen in the resumed app. A reply for the person is silenced there too: the dot and the pill are the cue.
      */
     fun silenced(notifyChat: Boolean, muted: Boolean, onScreen: Boolean): Boolean = !notifyChat || muted || onScreen
 
@@ -68,10 +80,16 @@ object ChatAlertRules {
     /**
      * A message worth a line: someone else's, not removed, not from a person [blocked], and for a channel one that
      * mentions [me]. Every message of someone else counts in a DM.
+     *
+     * A reply (its [root] set) shows only in its thread (issue #376): in a channel it counts when it mentions [me] or
+     * when [rootActor], the author of its thread's first message, is [me]; null there means unknown, and doesn't count.
      */
-    fun qualifies(actor: String, text: String?, mentions: List<Mention>, redacted: Boolean, dm: Boolean, me: String, blocked: Set<String>): Boolean {
+    fun qualifies(
+        actor: String, text: String?, mentions: List<Mention>, redacted: Boolean, dm: Boolean, me: String, blocked: Set<String>,
+        root: String? = null, rootActor: String? = null,
+    ): Boolean {
         if (actor == me || actor in blocked || redacted || text.isNullOrEmpty()) return false
-        return dm || mentions.any { it.actor == me }
+        return dm || mentions.any { it.actor == me } || (root != null && rootActor == me)
     }
 
     /**
@@ -100,8 +118,11 @@ object ChatAlertRules {
     private val WHITE = Regex("\\s+")
 }
 
-/** One line of an alert: who wrote it, its text as [ChatAlertRules.alertText] gives it, and when. */
-data class AlertLine(val message: String, val seq: Long, val at: Long, val author: String, val text: String)
+/**
+ * One line of an alert: who wrote it, its text as [ChatAlertRules.alertText] gives it, and when. [reply]: a reply in a
+ * thread, which reads "Name replied: text" (issue #376).
+ */
+data class AlertLine(val message: String, val seq: Long, val at: Long, val author: String, val text: String, val reply: Boolean = false)
 
 /**
  * An alert as the engine decided it, worded and ready to post. [key] is its notification tag. A tap opens [room] of
@@ -156,6 +177,15 @@ interface ChatAlertSink {
 interface ChatAlertWords {
     val names: ChatNames
     fun line(name: String, text: String): String
+
+    /** A reply's line, "Name replied: text" (issue #376). */
+    fun reply(name: String, text: String): String = line(name, text)
+
+    /**
+     * A reply's sender in MessagingStyle, "Name replied", so the collapsed notification reads "Name replied: text" with
+     * the style's own colon, and the expanded one the text under it.
+     */
+    fun replier(name: String): String = name
     fun summaryTitle(): String
     fun summaryBody(count: Int): String
 }
@@ -169,10 +199,20 @@ interface ChatAlertWords {
  * alerts nothing; a later pass alerts as usual.
  *
  * An alert shows up to three of the newest messages after `max(read, readLocal, notified)`: for a channel the ones
- * that mention the person, for a DM every message of someone else, never removed ones or those of people the person
- * blocked. The cache gives them when it covers that range, else `events?before=<head + 1>&limit=20` loads them, for
- * at most three rooms per run. Three rooms alert per run, newest activity first; a fourth or more make one summary.
- * After an alert, `notified = head` and a notice row for each message shown, so a read or a removal can take it back.
+ * that mention the person and the replies to the person's own messages, for a DM every message of someone else, never
+ * removed ones or those of people the person blocked. The cache gives them when it covers that range, else
+ * `events?before=<head + 1>&limit=20` loads them, for at most three rooms per run. Three rooms alert per run, newest
+ * activity first; a fourth or more make one summary. After an alert, `notified = head` and a notice row for each
+ * message shown, so a read or a removal can take it back.
+ *
+ * Replies (issue #376) show only in their thread, and the server counts them as unread for everyone without saying
+ * whose thread they are in. A reply is for the person when its thread's first message is theirs, by the cache or by
+ * the page it came in; a first message in neither is unknown and its replies don't alert, with no request for it. A
+ * channel with unread messages and no mention loads its page only when it wasn't looked at since the person last read
+ * it ([ChatAlertRules.looked]): one page per stretch of unread messages, within the run's three, after the DMs and
+ * mention channels of the run. Such a channel never goes into the summary on what it couldn't tell. A reply for the
+ * person alerts exactly when a message for them would: not while its room is on screen, where the dot and the pill
+ * are the cue. Desktop's notify.js does the same.
  *
  * Where the contract is silent this follows desktop: a due room that is silenced, or whose new messages hold nothing
  * to show, gets `notified = head` without an alert, so unmuting doesn't bring old messages back; one whose messages
@@ -200,7 +240,10 @@ class ChatAlertEngine(
     // process started.
     private val settled = HashSet<String>()
 
-    private class Context(val me: String, val myName: String, val members: Map<String, Member>, val blocked: Set<String>, val suffix: String?)
+    private class Context(val me: String, val myName: String, val members: Map<String, Member>, val blocked: Set<String>, val suffix: String?) {
+        /** The same with the block list as it stands now, after a page that was on its way. */
+        fun withBlocks(now: Set<String>) = Context(me, myName, members, now, suffix)
+    }
 
     // The newest message a fetch for a DM's alert loaded, by "ws/room": the DM row's preview while the cache doesn't
     // hold it yet (§7.4). It stays out of the cache, whose range the room loader owns.
@@ -264,10 +307,15 @@ class ChatAlertEngine(
         settleSummary(ws, store)
         val me = row.me ?: return
         if (row.state != FeedApplier.STATE_OK || row.fresh) return
+        // DMs and channels with mentions first, then channels that may hold a reply to the person, so those never take
+        // a page or an alert from the others; each the most recent activity first.
         val due = store.read { listRooms(ws).filter(ChatAlertRules::due) }
-            .sortedWith(compareByDescending<RoomRow> { it.lastAt ?: 0 }.thenByDescending { it.head }.thenBy { it.id })
+            .sortedWith(
+                compareBy<RoomRow> { if (ChatAlertRules.repliesOnly(it)) 1 else 0 }
+                    .thenByDescending { it.lastAt ?: 0 }.thenByDescending { it.head }.thenBy { it.id },
+            )
         if (due.isEmpty()) return
-        val ctx = store.read {
+        var ctx = store.read {
             val members = listMembers(ws).associateBy { it.id }
             Context(
                 me = me,
@@ -288,6 +336,7 @@ class ChatAlertEngine(
                 mark(store, ws, room.id, room.head, rev)
                 continue
             }
+            val only = ChatAlertRules.repliesOnly(room)
             val after = maxOf(room.read, room.readLocal, room.notified)
             // The cache first, also for the rooms beyond three: one it shows to hold nothing new to show isn't due.
             var messages = cached(store, ws, room, after, ctx)
@@ -295,13 +344,19 @@ class ChatAlertEngine(
                 mark(store, ws, room.id, room.head, rev)
                 continue
             }
+            // A channel looked at since it was last read loads no second page.
+            if (messages == null && only && ChatAlertRules.looked(room)) {
+                mark(store, ws, room.id, room.head, rev)
+                continue
+            }
             if (slots <= 0) {
-                rest += room
+                // What may be a reply waits for a run with room for it, rather than going into the summary unseen.
+                if (!only || messages != null) rest += room
                 continue
             }
             if (messages == null) {
                 if (fetches <= 0) {
-                    rest += room
+                    if (!only) rest += room
                     continue
                 }
                 fetches -= 1
@@ -310,23 +365,32 @@ class ChatAlertEngine(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // A refusal from before a reset says nothing of the cache now: the run's alerts end.
-                    if (store.revision(ws) != rev) return
-                    // Not now: the room stays due for the next run.
-                    continue
+                    null
                 }
-                // The page belongs to the cache as it stood: after a reset or restore it may hold removed messages.
+                // The page, or a refusal, belongs to the cache as it stood: after a reset or restore it may hold removed
+                // messages, and the run's alerts end.
                 if (store.revision(ws) != rev) return
+                // The people blocked while the page was on its way stay out, of this room and of the rooms after it, also
+                // when the page failed.
+                ctx = ctx.withBlocks(store.read { listBlocks(ws).mapTo(HashSet()) { it.member } })
+                // Not now: the room stays due for the next run.
+                if (page == null) continue
                 if (room.kind == RoomKind.DM.wire) keepNewest(store, ws, room, page, rev)
-                // Meanwhile the person may have read it, muted it or opened it.
+                // Meanwhile the person may have read it, muted it or opened it: the room and its read position are read
+                // again.
                 room = store.read { getRoom(ws, d.id) } ?: continue
                 if (!ChatAlertRules.due(room)) continue
                 if (silenced(ws, room)) {
                     mark(store, ws, room.id, room.head, rev)
                     continue
                 }
-                messages = fetched(store, ws, page, room, after, ctx)
-                // The page didn't reach back to after + 1 and showed nothing: what's new may be older than the page.
+                messages = fetched(store, ws, page, room, maxOf(room.read, room.readLocal, room.notified), ctx)
+                // The page didn't reach back to after + 1 and showed nothing: what's new may be older than the page. A
+                // mention goes into the summary; a reply to the person older than the page goes without an alert.
+                if (messages == null && ChatAlertRules.repliesOnly(room)) {
+                    mark(store, ws, room.id, room.head, rev)
+                    continue
+                }
                 if (messages == null) {
                     rest += room
                     continue
@@ -439,8 +503,23 @@ class ChatAlertEngine(
 
     private fun silenced(ws: String, room: RoomRow) = ChatAlertRules.silenced(enabled(), room.muted, onScreen(ws, room.id))
 
-    private fun qualifies(e: Event, room: RoomRow, ctx: Context) =
-        e.isMessage && ChatAlertRules.qualifies(e.actor, e.text, e.mentions, e.redacted, room.kind == RoomKind.DM.wire, ctx.me, ctx.blocked)
+    // The author of a thread's first message: from the page it came in ([roots], id to actor), else the cache, else
+    // null (unknown).
+    private suspend fun rootActor(store: WorkspaceStore, ws: String, room: String, root: String, roots: Map<String, String>): String? =
+        roots[root] ?: store.read {
+            sql.query("SELECT actor FROM event WHERE ws = ? AND id = ? AND room = ? AND root IS NULL", ws, root, room) { it.text(0) }.firstOrNull()
+        }
+
+    private suspend fun qualifies(
+        store: WorkspaceStore, ws: String, e: Event, room: RoomRow, ctx: Context, roots: Map<String, String> = emptyMap(),
+    ): Boolean {
+        if (!e.isMessage) return false
+        val dm = room.kind == RoomKind.DM.wire
+        // Who wrote the first message matters only for a channel's reply that doesn't mention the person.
+        val needsRoot = e.root != null && !dm && e.actor != ctx.me && e.mentions.none { it.actor == ctx.me }
+        val rootActor = if (needsRoot) rootActor(store, ws, room.id, e.root, roots) else null
+        return ChatAlertRules.qualifies(e.actor, e.text, e.mentions, e.redacted, dm, ctx.me, ctx.blocked, e.root, rootActor)
+    }
 
     /**
      * The messages to show from the cache: up to three of the newest after [after]; empty when it holds every event
@@ -451,7 +530,7 @@ class ChatAlertEngine(
         val hi = room.hi ?: return null
         if (hi < room.head) return null
         val rows = store.read { eventsFrom(ws, room.id, after + 1, Int.MAX_VALUE) }
-            .filter { it.seq <= room.head && qualifies(it, room, ctx) }
+            .filter { it.seq <= room.head && qualifies(store, ws, it, room, ctx) }
         if (rows.isNotEmpty()) return rows.takeLast(ChatAlertRules.LINES)
         val lo = room.lo ?: return null
         return if (lo <= maxOf(after + 1, room.floor)) emptyList() else null
@@ -462,12 +541,16 @@ class ChatAlertEngine(
      * range. Empty only when the page saw every event after [after]: it held the oldest there are or reached back to
      * after + 1. A full page of other events that stops short of that gives null.
      */
-    private suspend fun fetched(store: WorkspaceStore, ws: String, page: EventPage, room: RoomRow, after: Long, ctx: Context): List<Event>? {
+    private suspend fun fetched(
+        store: WorkspaceStore, ws: String, page: EventPage, room: RoomRow, after: Long, ctx: Context,
+    ): List<Event>? {
         val gone = store.read { page.events.filter { it.isMessage && hasTombstone(ws, it.id) }.mapTo(HashSet()) { it.id } }
+        // The page's own first messages tell whose thread a reply in it is in.
+        val roots = page.events.filter { it.kind == WireEvent.MESSAGE_POSTED && it.root == null }.associate { it.id to it.actor }
         val shownEvents = page.events
             .filter { it.seq > after && it.seq <= room.head && it.id !in gone }
             .map { Event(it.seq, it.id, it.kind, it.actor, it.at, it.root, it.text, it.mentions, it.redacted) }
-            .filter { qualifies(it, room, ctx) }
+            .filter { qualifies(store, ws, it, room, ctx, roots = roots) }
             .takeLast(ChatAlertRules.LINES)
         if (shownEvents.isNotEmpty()) return shownEvents
         val reached = !page.more || (page.events.isNotEmpty() && page.events.first().seq <= after + 1)
@@ -523,7 +606,7 @@ class ChatAlertEngine(
         if (!current) return false
         synchronized(lock) { shown[key] = Shown(ws, room.id, messages.mapTo(HashSet()) { it.id }, HashSet()) }
         val lines = messages.map { m ->
-            AlertLine(m.id, m.seq, m.at, w.names.display(ctx.members[m.actor]), ChatAlertRules.alertText(m.text.orEmpty(), m.mentions))
+            AlertLine(m.id, m.seq, m.at, w.names.display(ctx.members[m.actor]), ChatAlertRules.alertText(m.text.orEmpty(), m.mentions), reply = m.root != null)
         }
         sink.show(
             ChatAlert(
@@ -535,7 +618,7 @@ class ChatAlertEngine(
                 me = ctx.myName,
                 group = room.kind != RoomKind.DM.wire || (room.participants?.distinct()?.size ?: 0) > 2,
                 lines = lines,
-                body = lines.joinToString("\n") { w.line(it.author, it.text) },
+                body = lines.joinToString("\n") { if (it.reply) w.reply(it.author, it.text) else w.line(it.author, it.text) },
                 workspace = ctx.suffix,
             ),
         )
@@ -668,6 +751,10 @@ class ChatNotifier(context: Context) : ChatAlertSink, ChatAlertWords {
 
     override fun line(name: String, text: String): String = context.getString(R.string.chat_notify_body, name, text)
 
+    override fun reply(name: String, text: String): String = context.getString(R.string.chat_notify_reply, name, text)
+
+    override fun replier(name: String): String = context.getString(R.string.chat_notify_replied, name)
+
     override fun summaryTitle(): String = context.getString(R.string.chat_notify_summary_title)
 
     override fun summaryBody(count: Int): String = context.resources.getQuantityString(R.plurals.chat_notify_summary_body, count, count)
@@ -698,7 +785,8 @@ class ChatNotifier(context: Context) : ChatAlertSink, ChatAlertWords {
                 .setConversationTitle(spec.conversationTitle)
                 .setGroupConversation(spec.group)
             if (spec.subText != null) builder.setSubText(spec.subText)
-            for (l in alert.lines) style.addMessage(l.text, l.at, Person.Builder().setName(l.author).build())
+            // A reply's sender reads "Name replied", so the collapsed line is "Name replied: text" (issue #376).
+            for (l in alert.lines) style.addMessage(l.text, l.at, Person.Builder().setName(if (l.reply) replier(l.author) else l.author).build())
             builder.setStyle(style)
         }
         try {

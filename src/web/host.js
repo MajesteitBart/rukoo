@@ -456,16 +456,21 @@ function createHost(page) {
     }
   }
 
-  // main.js openChatNotice (442-453): the page comes forward on Chat, at that conversation and message.
-  function openChatNotice(open) {
+  // main.js chatNoticeTarget: where a notification opens, checked.
+  function chatNoticeTarget(open) {
     const o = plainObject(open);
     const id = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
-    const payload = {
+    return {
       kind: 'open',
       ws: id(o.ws, WORKSPACE_ID),
       conversation: id(o.conversation, CONVERSATION_ID),
       seq: Number.isSafeInteger(o.seq) && o.seq >= 0 ? o.seq : null
     };
+  }
+
+  // main.js openChatNotice: the page comes forward on Chat, at that conversation and message.
+  function openChatNotice(open) {
+    const payload = chatNoticeTarget(open);
     try {
       page.focus();
     } catch (_) {
@@ -474,15 +479,16 @@ function createHost(page) {
     if (payload.ws && payload.conversation) emit('chat', payload);
   }
 
-  // main.js showChatNotification (457-485): a toast while the page is in front with focus; else a browser
-  // notification when chat notifications are on and the browser allows them. The tab's title shows the unread count
-  // meanwhile (web-shell.js, from chat.modeBadge()). Permission is never asked for here: the page asks when the user
-  // turns notifications on.
+  // main.js showChatNotification: a toast while the page is in front with focus, whose Open goes where the alert
+  // opens; else a browser notification when chat notifications are on and the browser allows them. The tab's title
+  // shows the unread count meanwhile (web-shell.js, from chat.modeBadge()). Permission is never asked for here: the
+  // page asks when the user turns notifications on.
   function showChatNotification(notice) {
     const { id, title, body, open } = plainObject(notice);
     const key = String(id || '').slice(0, 200);
     if (pageFocused()) {
-      emit('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
+      const target = chatNoticeTarget(open);
+      emit('chat-toast', { id: key, body: String(body || '').slice(0, 200), open: target.ws && target.conversation ? target : null });
       return;
     }
     const N = page.Notification;
