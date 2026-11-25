@@ -328,6 +328,10 @@ const DEFAULTS = {
   'status.get'() {
     return this.status;
   },
+  // Voice looks in the bucket on its own; what it finds arrives as ordinary events.
+  'sync.pull'() {
+    return {};
+  },
   'meeting.get'(args) {
     const snap = this.snapshot(args.meeting);
     if (!snap) return { error: { code: 'not_found', message: 'No such meeting.' } };

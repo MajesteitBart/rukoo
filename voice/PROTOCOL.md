@@ -204,7 +204,7 @@ A stretch of transcript.
 { "id": "call-000065320" }
 ```
 
-Voice removed a passage, for example when it transcribed a stretch again with other boundaries.
+Voice removed a passage, for example when it transcribed a stretch again with other boundaries, or when newer text of the meeting from another computer replaced its transcript.
 
 ### `mark`
 
@@ -286,6 +286,7 @@ Rukoo sends commands; Voice answers each with one reply.
 | `media.open` | `meeting`, `kind`, `start`, `end`? | `{ "media", "ready", … }` | `not_found`, `not_available`, `bad_request`, `failed` |
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `speakers.split` | `meeting`, `track` | `{ "state", … }` | `not_found`, `not_available`, `busy`, `failed` |
+| `sync.pull` | | `{}` | |
 | `status.get` | | the `status` object | |
 
 - `meeting.start` uses the Settings default for every argument left out. `title` is at most 200 characters, `tracks` a non-empty list of `mic` and `call`, `screen` one of the values of `meeting.started`, and `context` an object of at most 16 KiB.
@@ -311,6 +312,8 @@ Rukoo sends commands; Voice answers each with one reply.
   - A finished split gives `{ "state": "done", "voices" }`, the number of voices on the track, at least 1. Before Voice answers `done` it has sent the split's events: a `speaker` for each new voice, a new revision of each passage that moved or was cut, and each new passage a cut made. With `voices` 1 nothing moved.
   - Voice splits a track once and remembers it: every later `speakers.split` of that meeting and track answers `done` with the same `voices`. A split that stopped, because Voice quit or the speaker worker failed, starts over at the next `speakers.split`. When Voice quit after it stored a split but before it sent all of the split's events, it sends the rest when it starts again, and before it answers the next `done`.
   - `not_available` comes with a `reason`: `cpu`, `runtime` or `model` when speaker labels can't run on this computer, as in Settings › Speaker labels, and `audio` when the track's audio is gone from this computer. `failed` means the speaker worker failed this time.
+
+- `sync.pull` asks Voice to look in the user's bucket for meetings from their other computers now; Rukoo sends it when its meetings open, at most once a minute. Voice answers at once and looks on its own thread. What it finds reaches Rukoo as ordinary events: a meeting that finished on another computer arrives like a meeting Voice transcribes, newer text of a meeting as new passage revisions and `passage.removed`, and a meeting deleted on another computer as `meeting.removed` with reason `user`. Without bucket sync nothing happens. An older Voice answers `unknown_command`, which Rukoo ignores.
 
 Errors carry a `code` and an English `message` for logs. Rukoo shows its own text for a code.
 

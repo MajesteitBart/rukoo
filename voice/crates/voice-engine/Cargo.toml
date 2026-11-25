@@ -77,6 +77,8 @@ objc2-service-management = { version = "=0.3.2", features = ["SMAppService", "SM
 # the recorder.
 voice-screen = { path = "../voice-screen" }
 voice-s3-fake = { path = "../voice-s3-fake" }
+# Tests change a transcript the way another computer's newer text would.
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
 
 # The controller tests run the recorder from this test binary (it calls the same
 # `voice_recorder::run` as `rukoo-voice-recorder`), so the test needs its own main.

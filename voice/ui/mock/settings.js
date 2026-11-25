@@ -16,7 +16,8 @@
 //   (the bucket refuses, three files lost), paused (a new secret or field waits for Test connection, with files still
 //   waiting), unavailable (the switch is on but the sync store didn't open), key (the encryption key can't be opened),
 //   key-denied (macOS refused Voice the keychain item, with Try again), unlocking (waiting for the system to open the
-//   key, the keychain dialog on macOS), restore (two meetings to restore), restore-failed (a restore that stopped).
+//   key, the keychain dialog on macOS), restore (two meetings to restore), restore-failed (a restore that stopped),
+//   pulled, pulling and pull-failed (the last look for meetings from the other computers).
 //   1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
@@ -202,7 +203,8 @@ function baseState() {
       screenRecording: false,
       key: { exists: false, id: null, exported: false },
       restore: { state: 'idle', available: 0, done: 0, total: 0, error: null },
-      otherKeys: 0
+      otherKeys: 0,
+      pull: { at: null, running: false, error: null }
     }
   };
 }
@@ -319,6 +321,22 @@ const SYNC_SCENARIOS = {
   'restore-failed': (s) => {
     SYNC_SCENARIOS.restore(s);
     s.sync.restore = { state: 'failed', available: 1, done: 1, total: 2, error: 'The disk has less room than Voice keeps free, so it stopped before "Weekly".' };
+    return false;
+  },
+  // Meetings from the other computers: the last look a few minutes ago, one running, one that stopped.
+  pulled: (s) => {
+    SYNC_SCENARIOS.on(s);
+    s.sync.pull = { at: NOW - 4 * MIN, running: false, error: null };
+    return false;
+  },
+  pulling: (s) => {
+    SYNC_SCENARIOS.on(s);
+    s.sync.pull = { at: NOW - 6 * MIN, running: true, error: null };
+    return false;
+  },
+  'pull-failed': (s) => {
+    SYNC_SCENARIOS.on(s);
+    s.sync.pull = { at: NOW - 9 * MIN, running: false, error: 'The bucket answered with 503 Service Unavailable.' };
     return false;
   }
 };

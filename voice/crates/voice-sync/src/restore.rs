@@ -374,7 +374,10 @@ pub(crate) fn clear_partial(meetings: &Path) {
         let name = entry.file_name();
         let partial = name
             .to_str()
-            .and_then(|n| n.strip_prefix(RESTORE_PREFIX))
+            .and_then(|n| {
+                n.strip_prefix(RESTORE_PREFIX)
+                    .or_else(|| n.strip_prefix(crate::pull::UPDATE_PREFIX))
+            })
             .is_some_and(|id| MeetingId::parse(id).is_some());
         if partial && entry.path().is_dir() {
             if let Err(e) = fs::remove_dir_all(entry.path()) {
@@ -384,14 +387,12 @@ pub(crate) fn clear_partial(meetings: &Path) {
     }
 }
 
-/// The bucket's meetings that aren't on this computer, newest first: every index under
-/// `rkv1/<kid>/index/` merged, deleted ones and ids that don't parse left out. `check` runs before
-/// every request; its error stops the listing.
-pub(crate) fn list_remote(
-    shared: &Shared,
+/// Every index under `rkv1/<kid>/index/`, one per data folder that synced to this bucket with this
+/// key. An unreadable one is left out. `check` runs before every request.
+pub(crate) fn read_indexes(
     remote: &Remote,
     check: &dyn Fn() -> Result<(), SyncError>,
-) -> Result<Vec<RemoteMeeting>, SyncError> {
+) -> Result<Vec<Index>, SyncError> {
     let listing = remote
         .bucket
         .list_checked(&names::index_prefix(&remote.kid), None, check)?;
@@ -408,6 +409,18 @@ pub(crate) fn list_remote(
             Err(_) => log::warn!("sync: an index in the bucket is unreadable"),
         }
     }
+    Ok(indexes)
+}
+
+/// The bucket's meetings that aren't on this computer, newest first: every index under
+/// `rkv1/<kid>/index/` merged, deleted ones and ids that don't parse left out. `check` runs before
+/// every request; its error stops the listing.
+pub(crate) fn list_remote(
+    shared: &Shared,
+    remote: &Remote,
+    check: &dyn Fn() -> Result<(), SyncError>,
+) -> Result<Vec<RemoteMeeting>, SyncError> {
+    let indexes = read_indexes(remote, check)?;
     let mut local: HashSet<String> = crate::worker::meeting_dirs(&shared.opts.meetings_dir)
         .into_iter()
         .map(|d| d.id().as_str().to_owned())
@@ -544,6 +557,10 @@ pub(crate) fn restore_one(
     }
     let meetings = &shared.opts.meetings_dir;
     let target = meetings.join(id);
+    let _one = shared
+        .restoring_one
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     if target.join(voice_meetings::MEETING_FILE).is_file() {
         return Ok(false);
     }
@@ -576,7 +593,12 @@ pub(crate) fn restore_one(
 
 /// Refuses a manifest with another meeting's id, a path outside the meeting folder's files, a
 /// file twice, or an object outside this meeting's folder in the bucket.
-fn check_manifest(manifest: &Manifest, id: &str, kid: &str, mhash: &str) -> Result<(), SyncError> {
+pub(crate) fn check_manifest(
+    manifest: &Manifest,
+    id: &str,
+    kid: &str,
+    mhash: &str,
+) -> Result<(), SyncError> {
     if manifest.meeting != id || MeetingId::parse(&manifest.meeting).is_none() {
         return Err(crypto(BAD_MANIFEST));
     }
@@ -639,28 +661,10 @@ fn restore_into(
     {
         fetch(file)?;
     }
-    let meeting_file: MeetingFile = fs::read(tmp.join(voice_meetings::MEETING_FILE))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .ok_or_else(|| crypto(BAD_MANIFEST))?;
-    if meeting_file.id.as_str() != id {
-        return Err(crypto(BAD_MANIFEST));
-    }
+    let meeting_file = check_meeting_file(&tmp.join(voice_meetings::MEETING_FILE), id)?;
     let has_timeline = manifest.files.iter().any(|f| f.path == timeline::FILE_NAME);
     if has_timeline {
-        // The timeline comes back byte for byte, and its segment lines name the files that media
-        // links and transcription read: each must be the segment's own file in this folder.
-        let lines = timeline::read(&tmp.join(timeline::FILE_NAME))
-            .map_err(|e| local("Voice can't read a restored timeline", &e))?;
-        let foreign = lines.iter().any(|line| match line {
-            Line::Segment {
-                track, seq, file, ..
-            } => !is_segment_file(track, *seq, file),
-            _ => false,
-        });
-        if foreign {
-            return Err(crypto(BAD_MANIFEST));
-        }
+        check_timeline(&tmp.join(timeline::FILE_NAME))?;
     } else {
         let text = synthesize_timeline(meeting_file.created_at, &manifest.files);
         fs::write(tmp.join(timeline::FILE_NAME), text)
@@ -697,13 +701,56 @@ fn restore_into(
         now: shared.now(),
         target: &binding.target,
         kid: &binding.kid,
+        update: false,
     };
     let media: Vec<&str> = audio
         .iter()
         .filter(|f| MEDIA_KINDS.contains(&f.kind.as_str()))
         .map(|f| f.path.as_str())
         .collect();
+    // What the transcript says, so following the meeting here doesn't count as a change to upload.
+    let digest = manifest
+        .files
+        .iter()
+        .find(|f| f.path == voice_meetings::transcript::FILE_NAME)
+        .and_then(|f| {
+            let digest = crate::digest::transcript_digest(&tmp.join(&f.path)).ok()?;
+            Some((f.sha256.clone(), digest))
+        });
+    // Noted before the rows: the worker may scan the meeting as soon as it is in place.
+    if let Some((sha, digest)) = digest {
+        shared.queue.set_transcript_digest(id, &sha, &digest)?;
+    }
     put_in_place(shared, binding, &import, tmp, target, &media)
+}
+
+/// The timeline comes back byte for byte, and its segment lines name the files that media links
+/// and transcription read: each must be the segment's own file in this folder.
+pub(crate) fn check_timeline(path: &Path) -> Result<(), SyncError> {
+    let lines =
+        timeline::read(path).map_err(|e| local("Voice can't read a restored timeline", &e))?;
+    let foreign = lines.iter().any(|line| match line {
+        Line::Segment {
+            track, seq, file, ..
+        } => !is_segment_file(track, *seq, file),
+        _ => false,
+    });
+    if foreign {
+        return Err(crypto(BAD_MANIFEST));
+    }
+    Ok(())
+}
+
+/// The meeting file at `path`, when it names meeting `id`.
+pub(crate) fn check_meeting_file(path: &Path, id: &str) -> Result<MeetingFile, SyncError> {
+    let meeting_file: MeetingFile = fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| crypto(BAD_MANIFEST))?;
+    if meeting_file.id.as_str() != id {
+        return Err(crypto(BAD_MANIFEST));
+    }
+    Ok(meeting_file)
 }
 
 /// Imports the meeting's rows and renames its folder into place, under the worker's lock and only
@@ -812,6 +859,7 @@ mod tests {
             now: 1,
             target,
             kid,
+            update: false,
         }
     }
 

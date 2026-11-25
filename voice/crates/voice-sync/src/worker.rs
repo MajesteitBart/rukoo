@@ -25,6 +25,7 @@ use crate::format::{cipher_len, Header, Sealer};
 use crate::keys::{KeyStore, MasterKey};
 use crate::manifest::{manifest_for, Index, IndexEntry, Manifest};
 use crate::names;
+use crate::pull::{PullHooks, PullInfo};
 use crate::queue::{hex, MeetingRow, NewRow, Progress, Queue, Row, MEDIA_KINDS};
 use crate::s3::Bucket;
 use crate::scan::{self, Found};
@@ -74,6 +75,11 @@ pub(crate) struct Shared {
     /// Counts saves and removals of the bucket secret, so a Test connection can tell whether the
     /// secret it read is still the saved one when its result is stored.
     pub(crate) secret_generation: AtomicU64,
+    /// What the engine does with pulled meetings; no pull runs before it says.
+    pull_hooks: Mutex<Option<Arc<dyn PullHooks>>>,
+    /// Held while one meeting is restored: a pull and a restore from Settings would otherwise
+    /// write the same `.restore-<id>` folder.
+    pub(crate) restoring_one: Mutex<()>,
     notifier: Notifier,
 }
 
@@ -113,6 +119,9 @@ pub(crate) struct State {
     /// to another bucket, endpoint or folder, or got another key. A restore made before reads
     /// from a place or with a key sync no longer uses ([`Binding`]).
     pub(crate) place: u64,
+    /// Pull meetings from the other computers at the next chance ([`crate::pull`]).
+    pub(crate) pull_requested: bool,
+    pub(crate) pull: PullInfo,
 }
 
 impl State {
@@ -165,6 +174,8 @@ impl Shared {
             fetched: Condvar::new(),
             key_lock: Mutex::new(()),
             secret_generation: AtomicU64::new(0),
+            pull_hooks: Mutex::new(None),
+            restoring_one: Mutex::new(()),
             notifier: Notifier {
                 inner: Mutex::new((None, false)),
             },
@@ -226,6 +237,21 @@ impl Shared {
 
     pub(crate) fn stopping(&self) -> bool {
         self.lock().stopping
+    }
+
+    pub(crate) fn pull_hooks(&self) -> Option<Arc<dyn PullHooks>> {
+        self.pull_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_pull_hooks(&self, hooks: Arc<dyn PullHooks>) {
+        *self
+            .pull_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hooks);
+        self.poke();
     }
 
     /// The configuration, the secret or the key changed.
@@ -1135,11 +1161,39 @@ impl Worker {
             shared.queue.set_mtime(id, &found.path, &sha, found.mtime)?;
             return Ok(Queued::Known);
         }
-        let added = self.insert(id, mhash, found, size, sha, Some(staged.clone()), now)?;
+        // The same transcript in other bytes: this computer followed a meeting it pulled, and its
+        // pipeline noted what its own event log holds. Uploading that would make the computer it
+        // came from pull it back.
+        let digest = match crate::digest::transcript_digest(&staged) {
+            Ok(digest) => digest,
+            Err(e) => {
+                let _ = fs::remove_file(&staged);
+                return Err(e);
+            }
+        };
+        if let Some(known_sha) = known_sha.as_deref() {
+            if shared.queue.transcript_digest(id, known_sha)?.as_deref() == Some(digest.as_str()) {
+                let _ = fs::remove_file(&staged);
+                shared
+                    .queue
+                    .set_mtime(id, &found.path, known_sha, found.mtime)?;
+                return Ok(Queued::Known);
+            }
+        }
+        let added = self.insert(
+            id,
+            mhash,
+            found,
+            size,
+            sha.clone(),
+            Some(staged.clone()),
+            now,
+        )?;
         if !added {
             let _ = fs::remove_file(&staged);
             return Ok(Queued::Known);
         }
+        shared.queue.set_transcript_digest(id, &sha, &digest)?;
         Ok(Queued::Added)
     }
 

@@ -164,6 +164,10 @@ pub trait MeetingControl: Send + Sync {
         ))
     }
 
+    /// `sync.pull`: look in the bucket for meetings from the user's other computers now. Nothing
+    /// happens without bucket sync.
+    fn pull_meetings(&self) {}
+
     fn status(&self) -> Status;
 }
 

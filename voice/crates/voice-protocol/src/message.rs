@@ -61,6 +61,7 @@ pub mod commands {
     pub const MEDIA_OPEN: &str = "media.open";
     pub const MEDIA_READ: &str = "media.read";
     pub const SPEAKERS_SPLIT: &str = "speakers.split";
+    pub const SYNC_PULL: &str = "sync.pull";
 }
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
@@ -668,6 +669,8 @@ pub enum CommandBody {
         at: u64,
     },
     StatusGet,
+    /// Look in the bucket for meetings from the user's other computers now.
+    SyncPull,
     /// Cuts the meeting's video between `start` and `end` (meeting ms, `end >= start`).
     ClipGet {
         meeting: MeetingId,
@@ -726,6 +729,7 @@ impl CommandBody {
             CommandBody::MeetingGet { .. } => commands::MEETING_GET,
             CommandBody::FrameGet { .. } => commands::FRAME_GET,
             CommandBody::StatusGet => commands::STATUS_GET,
+            CommandBody::SyncPull => commands::SYNC_PULL,
             CommandBody::ClipGet { .. } => commands::CLIP_GET,
             CommandBody::MeetingProtected { .. } => commands::MEETING_PROTECTED,
             CommandBody::ScreenGet { .. } => commands::SCREEN_GET,
@@ -783,7 +787,7 @@ impl CommandBody {
                 args.insert("meeting".into(), meeting.as_str().into());
                 args.insert("at".into(), (*at).into());
             }
-            CommandBody::StatusGet => {}
+            CommandBody::StatusGet | CommandBody::SyncPull => {}
             CommandBody::ClipGet {
                 meeting,
                 start,

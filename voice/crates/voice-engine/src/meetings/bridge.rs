@@ -81,7 +81,7 @@ impl Control {
         }
     }
 
-    fn delete_meeting(&self, id: &str) -> Result<(), ControlError> {
+    pub(crate) fn delete_meeting(&self, id: &str) -> Result<(), ControlError> {
         let _deleting = self.deleting.lock().unwrap_or_else(PoisonError::into_inner);
         if MeetingId::parse(id).is_none() {
             return Err(ControlError::not_found("There is no meeting with that id."));
@@ -186,6 +186,11 @@ fn media_error(error: MediaError) -> ControlError {
 impl MeetingControl for Control {
     fn delete(&self, id: &str) -> Result<(), ControlError> {
         self.delete_meeting(id)
+    }
+    fn pull_meetings(&self) {
+        if let Some(sync) = self.media.bucket_sync() {
+            sync.pull_now();
+        }
     }
     fn start(&self, args: StartArgs) -> Result<String, ControlError> {
         self.controller.start(args, StartedBy::Rukoo)

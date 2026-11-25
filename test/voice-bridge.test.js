@@ -362,6 +362,30 @@ test('a missing file, a damaged one and a Voice that speaks only newer versions 
   assert.deepEqual([none.state().status, none.state().reason], ['absent', 'none']);
 });
 
+test('opening the meetings asks Voice to look for meetings from the other computers, at most once a minute', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  let now = 1_000_000;
+  const s = service(t, dir, file, { now: () => now });
+  assert.equal(s.pull(), false, 'nothing to ask before Voice is connected');
+  s.init();
+  await until(() => s.connected, 'the connection');
+  assert.equal(s.pull(), true);
+  await until(() => voice.commands.some((c) => c.command === 'sync.pull'), 'sync.pull');
+  assert.deepEqual(voice.commands.find((c) => c.command === 'sync.pull').args, {});
+  now += 30_000;
+  assert.equal(s.pull(), false);
+  now += 31_000;
+  assert.equal(s.pull(), true);
+  await until(() => voice.commands.filter((c) => c.command === 'sync.pull').length === 2, 'the second sync.pull');
+  // An older Voice doesn't know the command: nothing breaks.
+  voice.handlers['sync.pull'] = () => ({ error: { code: 'unknown_command', message: 'sync.pull' } });
+  now += 61_000;
+  assert.equal(s.pull(), true);
+  await until(() => voice.commands.filter((c) => c.command === 'sync.pull').length === 3, 'the third sync.pull');
+  assert.equal(s.connected, true);
+});
+
 test('a bad event is skipped and the ones after it still apply', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();

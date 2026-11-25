@@ -4860,6 +4860,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-io-kit",
  "objc2-service-management",
+ "rusqlite",
  "serde",
  "serde_json",
  "voice-audio",

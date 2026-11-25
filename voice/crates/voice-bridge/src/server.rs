@@ -1052,6 +1052,10 @@ fn dispatch(
             control.split_speakers(meeting.as_str(), track)?
         }
         CommandBody::StatusGet => json!(control.status()),
+        CommandBody::SyncPull => {
+            control.pull_meetings();
+            json!({})
+        }
         CommandBody::ClipGet {
             meeting,
             start,

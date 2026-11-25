@@ -88,6 +88,8 @@ const AUDIO_CLIP_BYTES_MAX = Math.ceil((AUDIO_CLIP_MAX_MS / 1000) * 32000) + 409
 // How long Rukoo waits for Voice to prepare a clip, for instance while it fetches the audio back from the bucket.
 const AUDIO_PREPARE_MS = 30000;
 const SPLIT_REASONS = new Set(['cpu', 'runtime', 'model', 'audio']);
+// Opening the meetings asks Voice to look for meetings from the other computers at most this often.
+const PULL_EVERY_MS = 60000;
 
 // speakers.split's answer, checked: {state: 'running', at, end} or {state: 'done', voices}.
 function checkSplit(r) {
@@ -504,6 +506,18 @@ class VoiceService extends EventEmitter {
   freshCount(id, since = 0) {
     const full = this.store.meeting(id);
     return full ? full.passages.filter((p) => p.changed > since).length : 0;
+  }
+
+  // Asks Voice to look in the bucket for meetings from the user's other computers, at most once a minute. What it
+  // finds arrives as ordinary events. Voice without bucket sync, or an older Voice that doesn't know the command,
+  // answers without bringing anything.
+  pull() {
+    if (!this.connected) return false;
+    const now = this.now();
+    if (this.pulledAt && now - this.pulledAt < PULL_EVERY_MS) return false;
+    this.pulledAt = now;
+    this.bridge.command('sync.pull', {}).catch(() => {});
+    return true;
   }
 
   mustConnect() {

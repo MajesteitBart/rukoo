@@ -145,6 +145,7 @@ const COMMAND_ARGS = {
     int(a, 'at', 0);
   },
   'status.get': () => {},
+  'sync.pull': () => {},
   'clip.get': (a) => {
     pattern(a, 'meeting', MEETING_ID);
     const start = int(a, 'start', 0);

@@ -1187,6 +1187,7 @@ pub fn fast_sync() -> SyncTiming {
         index_debounce: Duration::from_millis(500),
         connect_timeout: Duration::from_secs(2),
         request_timeout: Duration::from_secs(5),
+        pull_every: Duration::from_millis(500),
         ..SyncTiming::default()
     }
 }

@@ -150,6 +150,72 @@ impl Meetings {
         pipelines.push(Pipeline::start(dir, log.clone(), opts));
     }
 
+    /// Stops following a meeting, and waits until its pipeline let go of its transcript.
+    pub fn stop_following(&self, id: &str) {
+        let stopping: Vec<PipelineHandle> = {
+            let mut pipelines = self.lock();
+            let (stop, keep) = std::mem::take(&mut *pipelines)
+                .into_iter()
+                .partition(|p| p.meeting() == id);
+            *pipelines = keep;
+            stop
+        };
+        shutdown_all(stopping);
+    }
+
+    /// Whether something writes the meeting's transcript now: it records, or a split of it runs.
+    pub fn writing(&self, id: &str) -> bool {
+        self.controller.current().is_some_and(|r| r.id == id)
+            || self
+                .control
+                .as_ref()
+                .is_some_and(|control| control.split.running_for(id))
+    }
+
+    /// After newer text from another computer replaced a meeting's transcript: a `passage.removed`
+    /// for each passage Rukoo has that the transcript doesn't. The pipeline that follows the
+    /// meeting again sends the passages that changed.
+    pub fn send_removed_passages(&self, id: &str) {
+        let (Some(log), Some(dir)) = (&self.log, self.library().dir(id)) else {
+            return;
+        };
+        let Ok((_, stored)) = log.meeting_events(id) else {
+            return;
+        };
+        let mut sent = std::collections::BTreeSet::new();
+        for event in &stored {
+            let Some(passage) = event.data["id"].as_str() else {
+                continue;
+            };
+            match event.event.as_str() {
+                voice_protocol::events::PASSAGE => {
+                    sent.insert(passage.to_owned());
+                }
+                voice_protocol::events::PASSAGE_REMOVED => {
+                    sent.remove(passage);
+                }
+                _ => {}
+            }
+        }
+        let present: std::collections::HashSet<String> =
+            match voice_meetings::Transcript::open(dir.path()).and_then(|t| t.passages()) {
+                Ok(passages) => passages.into_iter().map(|p| p.passage.id).collect(),
+                Err(e) => {
+                    log::warn!("meeting: {id}: can't read the newer transcript: {e}");
+                    return;
+                }
+            };
+        for passage in sent.into_iter().filter(|p| !present.contains(p)) {
+            if let Err(e) = log.append(
+                voice_protocol::events::PASSAGE_REMOVED,
+                Some(id),
+                json!({ "id": passage }),
+            ) {
+                log::warn!("meeting: {id}: can't send a removed passage: {e}");
+            }
+        }
+    }
+
     /// Meetings that stopped but aren't transcribed: the app quit while they were processing,
     /// or their transcription failed. The next start tries again.
     pub fn unfinished(&self) -> Vec<String> {

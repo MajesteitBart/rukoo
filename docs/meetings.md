@@ -32,7 +32,7 @@ Voice keeps recording when Rukoo quits or loses the connection. When Rukoo comes
 
 Use the edit button beside the title, or **Rename meeting** in the sidebar's right-click menu, to rename a meeting. Enter saves, Escape cancels; titles have 1 to 200 characters. Rukoo keeps the title across restarts and uses it in meeting search and transcript tools. Voice and the bucket retain their original title.
 
-The header menu and sidebar offer **Delete meeting** once recording and processing have finished. The confirmation names the data being removed: audio, screen recordings, transcript, notes, speaker names and corrections. Deletion is permanent on this computer. Voice queues a bucket index tombstone, including while offline, so the meeting cannot be restored after the next connection; encrypted objects remain subject to the bucket's lifecycle rules. Chats stay and show **Meeting deleted**. An older Voice needs an update before it can delete a meeting.
+The header menu and sidebar offer **Delete meeting** once recording and processing have finished. The confirmation names the data being removed: audio, screen recordings, transcript, notes, speaker names and corrections. Deletion is permanent on this computer. Voice queues a bucket index tombstone, including while offline, so the meeting cannot be restored after the next connection, and your other computers that sync to the bucket delete it too the next time they look; encrypted objects remain subject to the bucket's lifecycle rules. Chats stay and show **Meeting deleted**. An older Voice needs an update before it can delete a meeting.
 
 While recording or paused, **Screen** in the header and the pill's screen button offer **Off**, **Frames**, **Video** and a monitor. These choices affect the current meeting. Off stops screen capture while audio continues; selecting Frames or Video starts it again, including in a meeting that began with audio only. The transcript marks each change. Before capture starts, every connected Rukoo must confirm its windows are protected. A failed confirmation leaves the previous mode unchanged. Live mode controls require the updated Voice; older Voice keeps the existing recording behavior.
 
@@ -70,6 +70,12 @@ The agent reads the meeting through [Rukoo's meeting tools](agents.md#rukoos-too
 
 The agent can also get a link to the meeting's audio, one frame or up to five minutes of its video, which works for five minutes and only from where it asked. Agents on another computer, such as Clark, get video this way. Rukoo Voice serves the media, so it must be running; with bucket sync on, Voice fetches media back from your bucket when this computer no longer has it.
 
+## Your other computers
+
+With bucket sync on in Rukoo Voice, every computer that syncs to the same bucket with the same encryption key shows the meetings the others recorded. A meeting appears once it finished on its own computer: Voice looks every 5 minutes, and at once when you open the meetings here. It opens like any other meeting, with its transcript, the text on its screen and its speakers. Its audio, frames and video stay in your bucket until you play a voice or open a frame, so those need Voice running and the bucket reachable.
+
+When another computer changes a meeting's transcript, for instance by splitting its microphone into voices, the change reaches this computer too. A meeting deleted on one computer is deleted on the others. Your notes, the names you gave speakers, your corrections and a renamed title stay on the computer where you made them.
+
 ## Settings
 
 Settings → Meetings shows whether Rukoo Voice is connected, and has two switches, both on by default:
@@ -86,7 +92,7 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 
 ## Limits
 
-- Rukoo shows the meetings of the Rukoo Voice on this computer. The phone has no meetings.
+- Rukoo shows the meetings of the Rukoo Voice on this computer. With bucket sync on in Voice, those include the finished meetings of your other computers that sync to the same bucket with the same encryption key ([Voice's storage](../voice/README.md#storage)). The phone has no meetings.
 - Speaker labels tell voices apart, not people. Voice can hear one person as two voices or two similar voices as one. It labels the people who share your microphone only when you split it, after the meeting.
 - Without headphones your microphone also hears the call, so a split can show someone on the call as a voice at your microphone too.
 - Rukoo keeps a copy of each transcript in its profile, so the view and the tools work while Voice is closed. Voice's automatic media retention leaves transcripts and notes intact. An explicit meeting deletion also removes your notes and other owned data.

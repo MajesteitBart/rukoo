@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::keys::{KeyStore, SECRET_FILE};
 use crate::protect::Protector;
+use crate::pull::PullInfo;
 use crate::queue::Queue;
 use crate::s3::Bucket;
 use crate::worker::{self, Shared};
@@ -40,6 +41,8 @@ pub struct SyncTiming {
     pub part_size: u64,
     /// Larger ciphertexts upload in parts.
     pub single_max: u64,
+    /// How often the indexes are read for meetings from the other computers ([`crate::pull`]).
+    pub pull_every: Duration,
 }
 
 impl Default for SyncTiming {
@@ -58,6 +61,7 @@ impl Default for SyncTiming {
             request_timeout: Duration::from_secs(120),
             part_size: 8 << 20,
             single_max: 16 << 20,
+            pull_every: Duration::from_secs(5 * 60),
         }
     }
 }
@@ -96,6 +100,8 @@ pub struct SyncStatus {
     pub key: KeyInfo,
     pub restore: RestoreState,
     pub other_keys: u32,
+    /// Meetings from the other computers ([`crate::pull`]).
+    pub pull: PullInfo,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -196,7 +202,31 @@ impl BucketSync {
         let shared = Arc::new(Shared::new(opts, sync_dir, queue, keys));
         worker::spawn(shared.clone())
             .map_err(|e| worker::local("Voice can't start the sync worker", &e))?;
+        crate::pull::spawn(shared.clone())
+            .map_err(|e| worker::local("Voice can't start pulling meetings", &e))?;
         Ok(BucketSync { shared })
+    }
+
+    /// Lets the `sync-pull` thread bring meetings from the other computers: until the engine says
+    /// what to do with them, none come.
+    pub fn set_pull_hooks(&self, hooks: Arc<dyn crate::PullHooks>) {
+        self.shared.set_pull_hooks(hooks);
+    }
+
+    /// Look for meetings from the other computers now, for instance because Rukoo opened its
+    /// meetings. A pull that runs already counts.
+    pub fn pull_now(&self) {
+        let shared = &self.shared;
+        let running = {
+            let mut st = shared.lock();
+            if !st.pull.running {
+                st.pull_requested = true;
+            }
+            st.pull.running
+        };
+        if !running {
+            shared.poke();
+        }
     }
 
     /// The state the worker shares, for this crate's unit tests.
@@ -408,7 +438,7 @@ impl BucketSync {
 
     pub fn status(&self) -> SyncStatus {
         let shared = &self.shared;
-        let (on, blocked, failures, last_error, restore, unlocking, key_unreadable) = {
+        let (on, blocked, failures, last_error, restore, unlocking, key_unreadable, pull) = {
             let st = shared.lock();
             (
                 st.cfg.is_some(),
@@ -418,6 +448,7 @@ impl BucketSync {
                 st.restore.clone(),
                 st.unlocking,
                 st.key_unreadable,
+                st.pull.clone(),
             )
         };
         let queue = &shared.queue;
@@ -473,6 +504,7 @@ impl BucketSync {
                 .flatten()
                 .and_then(|n| u32::try_from(n).ok())
                 .unwrap_or(0),
+            pull,
         }
     }
 

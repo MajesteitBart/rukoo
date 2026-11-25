@@ -215,6 +215,13 @@ impl SplitService {
         }
     }
 
+    /// Whether a split of this meeting runs now: its transcript is being written.
+    pub fn running_for(&self, meeting: &str) -> bool {
+        self.lock()
+            .iter()
+            .any(|((m, _), job)| m == meeting && matches!(job, Job::Running(_)))
+    }
+
     /// Whether a split runs now, so the speaker model stays.
     pub fn running(&self) -> bool {
         self.lock()

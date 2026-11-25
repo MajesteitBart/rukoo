@@ -246,6 +246,9 @@ pub(crate) struct Import<'a> {
     /// the key id the files were read with: the rows describe objects there.
     pub(crate) target: &'a str,
     pub(crate) kid: &'a str,
+    /// A newer version of a meeting this computer has: its phase stays, so a meeting recorded here
+    /// still counts as synced from here.
+    pub(crate) update: bool,
 }
 
 impl Queue {
@@ -791,6 +794,25 @@ impl Queue {
         Ok(self.meta(key)?.and_then(|v| v.parse().ok()))
     }
 
+    /// The content digest ([`crate::digest`]) of the version of a meeting's `transcript.db` whose
+    /// file has `sha256`, when this computer read it.
+    pub(crate) fn transcript_digest(
+        &self,
+        meeting: &str,
+        sha256: &str,
+    ) -> Result<Option<String>, SyncError> {
+        self.meta(&digest_key(meeting, sha256))
+    }
+
+    pub(crate) fn set_transcript_digest(
+        &self,
+        meeting: &str,
+        sha256: &str,
+        digest: &str,
+    ) -> Result<(), SyncError> {
+        self.set_meta(&digest_key(meeting, sha256), Some(digest))
+    }
+
     /// The rows were made with `kid`. With another key every row is useless: object names and
     /// headers come from the key, so the queue starts again. True when it did.
     pub(crate) fn adopt_kid(&self, kid: &str) -> Result<bool, SyncError> {
@@ -804,7 +826,10 @@ impl Queue {
             }
             let reset = old.is_some();
             if reset {
-                tx.execute_batch("DELETE FROM parts; DELETE FROM files; DELETE FROM meetings;")?;
+                tx.execute_batch(
+                    "DELETE FROM parts; DELETE FROM files; DELETE FROM meetings; \
+                     DELETE FROM meta WHERE key LIKE 'digest:%';",
+                )?;
             }
             tx.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('kid', ?1)",
@@ -1262,7 +1287,8 @@ impl Queue {
                 "INSERT INTO meetings (id, mhash, phase, title, created_at, duration_ms, \
                    manifest_gen, media_removed_at, state, uploaded_gen) \
                  VALUES (?1, ?2, 'restored', ?3, ?4, ?5, ?6, ?7, ?8, ?6) \
-                 ON CONFLICT (id) DO UPDATE SET mhash = excluded.mhash, phase = 'restored', \
+                 ON CONFLICT (id) DO UPDATE SET mhash = excluded.mhash, \
+                   phase = CASE WHEN ?9 THEN phase ELSE 'restored' END, \
                    title = excluded.title, created_at = excluded.created_at, \
                    duration_ms = excluded.duration_ms, \
                    manifest_gen = MAX(manifest_gen, excluded.manifest_gen), \
@@ -1277,6 +1303,7 @@ impl Queue {
                     to_i64(m.gen),
                     m.media_removed_at.map(to_i64),
                     m.state,
+                    m.update,
                 ],
             )?;
             for f in m.files {
@@ -1330,6 +1357,10 @@ impl Queue {
             )?;
             tx.execute("DELETE FROM files WHERE meeting = ?1", [meeting])?;
             tx.execute("DELETE FROM restored WHERE meeting = ?1", [meeting])?;
+            tx.execute(
+                "DELETE FROM meta WHERE key LIKE ?1",
+                [format!("{}%", digest_key(meeting, ""))],
+            )?;
             if tombstone {
                 tx.execute(
                     "UPDATE meetings SET phase = 'forgotten', manifest_dirty = 0 WHERE id = ?1",
@@ -1400,6 +1431,11 @@ fn db(e: rusqlite::Error) -> SyncError {
 
 fn local(what: &str, e: &std::io::Error) -> SyncError {
     SyncError::new(SyncErrorKind::Local, format!("{what}: {e}"))
+}
+
+/// `digest:<meeting>:<sha256>` in `meta`.
+fn digest_key(meeting: &str, sha256: &str) -> String {
+    format!("digest:{meeting}:{sha256}")
 }
 
 /// `bytes` random bytes as lowercase hex.

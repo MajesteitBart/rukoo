@@ -378,6 +378,7 @@ fn command(f: &Fields) -> Checked<Command> {
             at: a.uint("at")?,
         },
         commands::STATUS_GET => CommandBody::StatusGet,
+        commands::SYNC_PULL => CommandBody::SyncPull,
         commands::CLIP_GET => {
             let meeting = a.meeting("meeting")?;
             let start = a.uint("start")?;
