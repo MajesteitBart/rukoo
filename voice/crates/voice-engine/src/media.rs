@@ -538,10 +538,15 @@ impl MediaService {
                     })?
                     .ok_or_else(|| ControlError::not_found("There is no frame at that time."))?;
                 let file = dir.path().join(&path);
-                if let Ok(meta) = fs::metadata(&file) {
-                    self.used(args.meeting.as_str(), std::slice::from_ref(&path));
+                let meeting = args.meeting.as_str().to_owned();
+                // Read where it is, checked and registered as read under the claim the cache
+                // limit takes to remove it: the limit either removed it before, and the check
+                // finds it gone, or sees the reader afterwards and leaves the file alone.
+                let serve = || {
+                    let meta = fs::metadata(&file).ok().filter(|m| m.is_file())?;
+                    self.used(&meeting, std::slice::from_ref(&path));
                     let ready = Ready {
-                        path: file,
+                        path: file.clone(),
                         kind: "image/jpeg",
                         size: meta.len(),
                         start: at,
@@ -550,10 +555,23 @@ impl MediaService {
                         clip: false,
                         more: false,
                     };
-                    return self.insert_ready(key, ready, link, vec![path]);
+                    Some(self.insert_ready(key.clone(), ready, link, vec![path.clone()]))
+                };
+                let mut claimed = false;
+                if file.is_file() {
+                    let held = match &self.sync {
+                        Some(sync) => sync.try_hold(&meeting, &path, serve),
+                        None => Some(serve()),
+                    };
+                    match held {
+                        Some(Some(answer)) => return answer,
+                        Some(None) => {}
+                        // A fetch or the cache limit has it now: the job below waits for the
+                        // claim, then reads the file where it is or fetches it again.
+                        None => claimed = true,
+                    }
                 }
-                let meeting = args.meeting.as_str().to_owned();
-                if !self.can_fetch(&meeting, std::slice::from_ref(&path)) {
+                if !claimed && !self.can_fetch(&meeting, std::slice::from_ref(&path)) {
                     return Err(ControlError::not_available(
                         "This frame is no longer on this computer and isn't in a synced bucket.",
                     ));

@@ -388,6 +388,51 @@ fn ensure_local_fetches_a_file_once_and_keeps_text_on_disk() {
     assert_eq!(m.read("timeline.jsonl"), local);
 }
 
+/// The claim a reader takes with `try_hold` is the one the cache limit and a fetch take: the
+/// limit leaves a held file alone, and nobody gets the claim while a fetch has it.
+#[test]
+fn a_held_file_stays_through_the_cache_limit_and_waits_for_a_fetch() {
+    let fake = fake();
+    let data = scratch("restore-hold");
+    let _c = Cleanup(data.clone());
+    let a = Voice::open(&data);
+    let (m, segments) = finished(&a.meetings(), "Held", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    fs::remove_dir_all(m.path("audio")).unwrap();
+    let never = AtomicBool::new(false);
+    a.sync.ensure_local(&m.id, &segments, &never).unwrap();
+
+    // A limit of nothing, while a reader holds the first segment: the others go, it stays.
+    let nobody = |_: &str, _: &str| false;
+    let held = a.sync.try_hold(&m.id, &segments[0], || {
+        a.sync.trim_cache(0, &nobody);
+        m.path(&segments[0]).is_file()
+    });
+    assert_eq!(held, Some(true));
+    for s in &segments[1..] {
+        assert!(!m.path(s).exists(), "{s} went");
+    }
+    // Once the reader let go, the limit can remove it too.
+    a.sync.trim_cache(0, &nobody);
+    assert!(!m.path(&segments[0]).exists());
+
+    // A fetch holds the claim until the file is in place: a reader doesn't get it meanwhile.
+    fake.faults().stall = Some(Duration::from_millis(1_500));
+    std::thread::scope(|scope| {
+        let fetch = scope.spawn(|| a.sync.ensure_local(&m.id, &segments[..1], &never));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(a.sync.try_hold(&m.id, &segments[0], || ()), None);
+        fetch.join().unwrap().unwrap();
+    });
+    fake.faults().stall = None;
+    assert_eq!(
+        a.sync
+            .try_hold(&m.id, &segments[0], || m.path(&segments[0]).is_file()),
+        Some(true)
+    );
+}
+
 #[test]
 fn the_shown_key_is_the_key_uploads_use() {
     let root = scratch("restore-key-race");

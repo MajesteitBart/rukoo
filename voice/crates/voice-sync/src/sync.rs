@@ -607,6 +607,17 @@ impl BucketSync {
         crate::restore::ensure_local(&self.shared, meeting, paths, cancel)
     }
 
+    /// Runs `f` under the claim a fetch of the meeting's file and the cache limit's removal of it
+    /// take, without waiting: `None`, without running `f`, while another holds it. What `f` finds
+    /// on disk stays until it returns, and a reader it registers is one the cache limit's
+    /// `in_use` sees before it can remove the file. Take no lock in `f` that a holder of the
+    /// claim waits for; the media service's and the queue's are fine.
+    pub fn try_hold<R>(&self, meeting: &str, path: &str, f: impl FnOnce() -> R) -> Option<R> {
+        let file = self.shared.meeting_dir(meeting).join(path);
+        let _claim = crate::restore::Claim::try_take(&self.shared, &file)?;
+        Some(f())
+    }
+
     /// The meeting's audio, frames and video that reached the bucket: each file's path and size,
     /// in path order. Empty while sync moves to another bucket.
     pub fn media_in_bucket(&self, meeting: &str) -> Vec<(String, u64)> {
