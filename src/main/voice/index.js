@@ -12,6 +12,11 @@
 // captures the screen: Rukoo protects the same way, waits, and answers meeting.protected (voice/PROTOCOL.md). From
 // that event on the meeting records as far as Rukoo knows, as after a start from Rukoo, so a connection that drops
 // before Voice's status arrives keeps the windows hidden.
+//
+// On a Mac, content protection doesn't keep Rukoo out of a ScreenCaptureKit recording. There Voice's screen process
+// leaves Rukoo's process out, from the hello's pid, unless Rukoo says it wants its windows in: hideWindows in the
+// hello, and windows.hide after each welcome and whenever the user changes the setting. A Voice from before
+// windows.hide answers unknown_command and always leaves Rukoo out; alwaysHidden in state() says so.
 
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -136,7 +141,7 @@ class VoiceService extends EventEmitter {
     this.store = new VoiceStore({ dataDir, now, log });
     // A meeting file found damaged when a meeting is read: Voice sends the meeting again while it is connected.
     this.store.onDamaged = () => this.recoverDamaged();
-    this.bridge = new VoiceBridge({ file: discovery, clientVersion: appVersion, cursor: () => this.store.cursor(), WebSocket, log, ...bridge });
+    this.bridge = new VoiceBridge({ file: discovery, clientVersion: appVersion, cursor: () => this.store.cursor(), hideWindows: () => this.hide(), WebSocket, log, ...bridge });
     this.hide = hide;
     this.protect = protect;
     this.calendars = calendars;
@@ -171,6 +176,9 @@ class VoiceService extends EventEmitter {
     // The microphone splits Rukoo follows, by meeting (splitMic): {state: 'running', at, end} or {state: 'error', code,
     // reason}. A finished split lives in the store.
     this.splits = new Map();
+    // The connected Voice leaves Rukoo out of its screen recordings whatever the setting says: a Mac Voice that
+    // answered windows.hide with unknown_command.
+    this.alwaysHidden = false;
     this.closed = false;
   }
 
@@ -198,7 +206,7 @@ class VoiceService extends EventEmitter {
   state() {
     const s = this.bridge.state();
     const status = this.store.status();
-    return { status: s.status, reason: s.reason, voiceVersion: s.voiceVersion, protocol: s.protocol, older: s.older, recording: status.recording, dictating: status.dictating, screenDefault: status.screenDefault };
+    return { status: s.status, reason: s.reason, voiceVersion: s.voiceVersion, protocol: s.protocol, older: s.older, recording: status.recording, dictating: status.dictating, screenDefault: status.screenDefault, alwaysHidden: s.status === 'connected' && this.alwaysHidden };
   }
 
   recording() {
@@ -230,6 +238,33 @@ class VoiceService extends EventEmitter {
 
   shouldProtect() {
     return Boolean(this.hide()) && (Boolean(this.recording()) || this.starting > 0);
+  }
+
+  // main calls it when the user changes the setting: the windows follow at once, and on a Mac Voice hears it too, so a
+  // meeting that records the screen leaves Rukoo out or keeps it in from now on.
+  hideChanged() {
+    this.refreshProtection();
+    this.sendWindowsHide();
+  }
+
+  // Tells a Mac Voice whether the user wants Rukoo's windows out of its screen recording. Elsewhere Voice can't leave
+  // a process out, so Rukoo says nothing. After a welcome it also finds out whether Voice can keep Rukoo in at all.
+  sendWindowsHide() {
+    if (this.bridge.platform !== 'darwin' || !this.connected) return;
+    const hide = Boolean(this.hide());
+    this.bridge
+      .command('windows.hide', { hide })
+      .then(() => this.setAlwaysHidden(false))
+      .catch((err) => {
+        if (err.code === 'unknown_command') this.setAlwaysHidden(true);
+        else this.log('voice', `windows.hide failed: ${err.message}`);
+      });
+  }
+
+  setAlwaysHidden(on) {
+    if (this.alwaysHidden === on) return;
+    this.alwaysHidden = on;
+    this.emit('state', this.state());
   }
 
   // Also for main when the user changes the setting. Returns whether the windows are as they should be. protect(on)
@@ -277,6 +312,9 @@ class VoiceService extends EventEmitter {
 
   onWelcome(msg) {
     this.clipChain = null;
+    // A new connection, maybe to another Voice: what it does with Rukoo's windows comes from its answer.
+    this.alwaysHidden = false;
+    this.sendWindowsHide();
     const { reset, gap } = this.store.welcome(msg);
     this.screenKnown.clear();
     const id = this.recording();

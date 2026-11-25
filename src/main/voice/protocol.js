@@ -116,8 +116,9 @@ function hello(m) {
   pattern(m, 'instance', INSTANCE, { nullable: true });
   int(m, 'after', 0);
   if (given(m, 'clientVersion')) str(m, 'clientVersion');
-  // Rukoo's process id, so Voice can leave its windows out of a screen recording.
+  // Rukoo's process id, so a Mac Voice can leave its windows out of a screen recording, and whether it should.
   if (given(m, 'pid')) int(m, 'pid', 1);
+  if (given(m, 'hideWindows')) bool(m, 'hideWindows');
 }
 
 const COMMAND_ARGS = {
@@ -184,7 +185,8 @@ const COMMAND_ARGS = {
   'speakers.split': (a) => {
     pattern(a, 'meeting', MEETING_ID);
     oneOf(a, 'track', SPLIT_TRACKS);
-  }
+  },
+  'windows.hide': (a) => bool(a, 'hide')
 };
 
 function command(m) {

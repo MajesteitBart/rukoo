@@ -20,6 +20,8 @@
 //! - `{"op":"split","reason":"cpu"}` makes the next `speakers.split` answer `not_available` with
 //!   that reason (`cpu`, `runtime`, `model` or `audio`); `"reason":"failed"` makes it answer
 //!   `failed`.
+//! - `{"op":"windows"}` answers the connected Rukoo clients' pids as the macOS screen process
+//!   would get them: `{"hidden":[…],"shown":[…]}`.
 //! - `{"op":"quit"}`, or the end of stdin, stops it.
 //!
 //! Rukoo's commands reach a small scripted Voice that starts, pauses, marks and stops meetings by
@@ -102,6 +104,13 @@ fn main() {
             }
             "media" => voice.fail_next_media(&request),
             "split" => voice.fail_next_split(&request),
+            "windows" => {
+                let windows = server
+                    .as_ref()
+                    .map(Handle::rukoo_windows)
+                    .unwrap_or_default();
+                Ok(json!({ "hidden": windows.hidden, "shown": windows.shown }))
+            }
             "quit" => break,
             other => Err(format!("unknown op {other:?}")),
         };

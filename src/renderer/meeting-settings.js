@@ -48,8 +48,11 @@ export function meetingSettingsPages({ row, go, rerender, current }) {
     const status = statusOf(voice);
     const platform = window.mail.platform;
     const canHide = platform === 'win32' || platform === 'darwin';
+    // A Mac Voice older than windows.hide leaves Rukoo out of its recordings whatever the switch says: the switch's
+    // own description says so, in the warning colour.
+    const voiceHides = platform === 'darwin' && voice && voice.alwaysHidden ? `<span class="mtset-warn">${esc(t('settings.meetings.hideOldVoice'))}</span>` : '';
     const hide = canHide
-      ? row({ title: esc(t('settings.meetings.hide')), desc: esc(hideHelp(platform)), action: 'toggle:meetingHideWindow', toggle: s.meetingHideWindow !== false })
+      ? row({ title: esc(t('settings.meetings.hide')), desc: `${esc(hideHelp(platform))}${voiceHides}`, action: 'toggle:meetingHideWindow', toggle: s.meetingHideWindow !== false })
       : `<div class="row static"><div class="text"><div class="title">${esc(t('settings.meetings.hide'))}</div><div class="desc">${esc(hideHelp(platform))}</div></div></div>`;
     const hiddenNow = voice && voice.hidden ? `<p class="settings-text">${esc(t('settings.meetings.hiddenNow'))}</p>` : '';
     return {

@@ -36,8 +36,9 @@ const FRAME_MARGIN = `${FRAME_MARGIN_PX}px 0px`;
 const M = {
   open: false,
   // What main says about Rukoo Voice (voiceState in main.js). screenDefault: the screen a meeting records when
-  // Rukoo doesn't choose, from Voice's Settings, or null when Voice didn't say.
-  voice: { status: 'absent', reason: 'none', voiceVersion: null, older: null, recording: null, dictating: false, hidden: false, canHide: false, screenDefault: null },
+  // Rukoo doesn't choose, from Voice's Settings, or null when Voice didn't say. alwaysHidden: the connected Mac Voice
+  // leaves Rukoo out of its recording whatever the setting says, because it is older than windows.hide.
+  voice: { status: 'absent', reason: 'none', voiceVersion: null, older: null, recording: null, dictating: false, hidden: false, canHide: false, alwaysHidden: false, screenDefault: null },
   // Summaries, newest first (meetingList).
   list: [],
   listLoaded: false,
@@ -644,6 +645,12 @@ function stateHtml(s) {
   return `<span class="mt-state ${cls}"${title}><i aria-hidden="true"></i>${esc(t(`meeting.state.${s.state}`))}</span>`;
 }
 
+// What hiding Rukoo covers here: on a Mac, Rukoo Voice and older screen recorders, but not other apps' screen shares
+// on macOS 15 and later.
+function hiddenHelp() {
+  return t(window.mail.platform === 'darwin' ? 'meeting.head.hiddenHelpMac' : 'meeting.head.hiddenHelp');
+}
+
 function renderHead() {
   const head = $('.meeting .mt-head');
   const d = M.data;
@@ -655,14 +662,17 @@ function renderHead() {
   const ms = elapsed(s);
   const when = Number.isFinite(s.startedAt) ? readerDate(s.startedAt) : '';
   const screen = screenOf(s);
-  // Rukoo shows in the frames when it isn't hidden from capture, where it could be.
-  const visible = live(s) && screen && M.voice.canHide && !M.voice.hidden;
+  // An older Mac Voice leaves Rukoo out of the frames even with hiding off. Otherwise Rukoo shows in the frames when
+  // it isn't hidden from capture, where it could be.
+  const voiceHides = live(s) && screen && M.voice.alwaysHidden && !M.voice.hidden;
+  const hidden = live(s) && (M.voice.hidden || voiceHides);
+  const visible = live(s) && screen && M.voice.canHide && !M.voice.hidden && !M.voice.alwaysHidden;
   const meta = [
     stateHtml(s),
     ms !== null ? `<span class="mt-elapsed" title="${esc(t('meeting.head.length'))}">${esc(live(s) ? clock(ms) : length(ms))}</span>` : '',
     when ? `<span class="mt-when">${esc(when)}</span>` : '',
     screen ? `<span class="mt-screen">${icons.monitor}<span>${esc(t('meeting.head.screen', { mode: screenMode(screen) }))}</span></span>` : '',
-    live(s) && M.voice.hidden ? `<span class="mt-hidden" title="${esc(t('meeting.head.hiddenHelp'))}">${icons.eyeOff}<span>${esc(t('meeting.head.hidden'))}</span></span>` : '',
+    hidden ? `<span class="mt-hidden" title="${esc(voiceHides ? t('meeting.head.hiddenByVoiceHelp') : hiddenHelp())}">${icons.eyeOff}<span>${esc(t('meeting.head.hidden'))}</span></span>` : '',
     visible ? `<span class="mt-visible" title="${esc(t('meeting.head.visibleHelp'))}">${icons.eye}<span>${esc(t('meeting.head.visible'))}</span></span>` : ''
   ]
     .filter(Boolean)
@@ -2374,7 +2384,7 @@ export function renderIndicator() {
   b.querySelector('.rec-time').textContent = ms === null ? t('meeting.indicator.short') : clock(ms);
   const label = t(paused ? 'meeting.indicator.paused' : 'meeting.indicator.recording', { title });
   // The clock goes in the tooltip as well: the smallest title bar leaves it out of the button (styles.css).
-  b.title = [label, ms === null ? '' : clock(ms), M.voice.hidden ? t('meeting.head.hiddenHelp') : ''].filter(Boolean).join('\n');
+  b.title = [label, ms === null ? '' : clock(ms), M.voice.hidden ? hiddenHelp() : ''].filter(Boolean).join('\n');
   b.setAttribute('aria-label', label);
 }
 

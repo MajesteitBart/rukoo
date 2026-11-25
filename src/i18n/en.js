@@ -10190,7 +10190,15 @@
   },
   "meeting.head.hiddenHelp": {
     "message": "Rukoo's windows stay out of screen recordings and screen shares until the meeting ends.",
-    "description": "Meeting view header and title bar indicator: tooltip explaining Hidden from screen recordings. src/renderer/meeting.js (renderHead, renderIndicator)"
+    "description": "Meeting view header and title bar indicator on Windows: tooltip explaining Hidden from screen recordings. src/renderer/meeting.js (hiddenHelp)"
+  },
+  "meeting.head.hiddenHelpMac": {
+    "message": "Rukoo Voice and older screen recorders leave Rukoo's windows out until the meeting ends. On macOS 15 and later, other apps' screen shares still show them.",
+    "description": "Meeting view header and title bar indicator on macOS: tooltip explaining Hidden from screen recordings, and what it doesn't cover. src/renderer/meeting.js (hiddenHelp)"
+  },
+  "meeting.head.hiddenByVoiceHelp": {
+    "message": "This version of Rukoo Voice always leaves Rukoo's windows out of its recording, even with hiding turned off. Update Rukoo Voice to show them.",
+    "description": "Meeting view header on macOS: tooltip of Hidden from screen recordings when the connected Rukoo Voice is too old to show Rukoo in its recording. src/renderer/meeting.js (renderHead)"
   },
   "meeting.head.screen": {
     "message": "Screen: {mode}",
@@ -10563,6 +10571,10 @@
   "settings.meetings.hiddenNow": {
     "message": "Rukoo is hidden from screen recordings now, because a meeting is recording.",
     "description": "Settings > Meetings: note under the switches while the windows are hidden. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hideOldVoice": {
+    "message": "This version of Rukoo Voice always leaves Rukoo out of its recordings, even with this switch off. Update Rukoo Voice to show Rukoo in them.",
+    "description": "Settings > Meetings on macOS: second line of the hide switch's description when the connected Rukoo Voice is too old to show Rukoo in its screen recording. src/renderer/meeting-settings.js"
   },
   "settings.meetings.agents": {
     "message": "Agents can read meetings",

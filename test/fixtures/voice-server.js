@@ -203,6 +203,8 @@ class FakeVoice {
         return peer.close(4002);
       }
       peer.hello = message;
+      // A hello without hideWindows hides the windows of its pid, as an older Rukoo's did.
+      peer.hideWindows = message.hideWindows !== false;
       const oldest = this.oldest();
       const plan = replayPlan(message.instance, message.after, this.instance, this.head, oldest);
       peer.send({ type: 'welcome', protocol: message.protocol, voiceVersion: '0.1.0', instance: this.instance, head: this.head, oldest, replay: plan.replay, status: this.status });
@@ -230,6 +232,21 @@ class FakeVoice {
 
   oldest() {
     return this.events.length ? this.events[0].seq : this.head + 1;
+  }
+
+  // What a Mac Voice's screen process would leave out and keep in from the connected Rukoo clients: their pids, split
+  // by hideWindows, with a pid that one connection hides and another shows hidden (Handle::rukoo_windows in
+  // voice-bridge).
+  rukooWindows() {
+    const hidden = new Set();
+    const shown = new Set();
+    for (const p of this.peers) {
+      if (!p.hello || p.closed || p.hello.client !== 'rukoo' || !Number.isInteger(p.hello.pid)) continue;
+      (p.hideWindows ? hidden : shown).add(p.hello.pid);
+    }
+    for (const pid of hidden) shown.delete(pid);
+    const sorted = (set) => [...set].sort((a, b) => a - b);
+    return { hidden: sorted(hidden), shown: sorted(shown) };
   }
 
   // Stores an event and pushes it to every client that said hello.
@@ -376,6 +393,11 @@ const DEFAULTS = {
     return { error: { code: 'not_available', message: "The meeting didn't record video." } };
   },
   'meeting.protected'() {
+    return {};
+  },
+  // This connection's hideWindows changes, as in Voice's bridge server.
+  'windows.hide'(args, peer) {
+    peer.hideWindows = args.hide;
     return {};
   },
   'screen.get'() {

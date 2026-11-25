@@ -10754,6 +10754,15 @@ button.mt-person:disabled {
 .mtset-pill.is-error i {
   background: var(--danger);
 }
+/* A second line in the hide switch's description: an older Mac Voice leaves Rukoo out whatever the switch says. */
+.mtset-warn {
+  display: block;
+  margin-top: 4px;
+  color: var(--warn);
+}
+:root.light .mtset-warn {
+  color: color-mix(in srgb, var(--warn) 55%, var(--text));
+}
 
 /* ---------- team chat ---------- */
 
