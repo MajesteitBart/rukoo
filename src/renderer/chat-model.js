@@ -612,6 +612,45 @@ export function soleManager(roomMembers, me) {
   return list.some((m) => m.member !== me) && !list.some((m) => m.member !== me && m.role === 'manager');
 }
 
+// Whether leaving room may take agents of me's with it, so the confirmation needs the channel's members to say so: the
+// directory holds an active agent me made, the channel may hold agents, and it is private or me is the last person in
+// it. This follows the server's #endGrant (server/src/workspace.js): a private channel keeps someone's agents only
+// while they are in it, archived or not, and the last person's leaving archives a channel of either kind and takes
+// every agent out.
+export function mayTakeAgents(room, members, me) {
+  if (!room || room.kind !== 'channel' || !(room.visibility === 'private' || room.members <= 1)) return false;
+  if (room.agents !== undefined && !(room.agents > 0)) return false;
+  return [...asMap(members).values()].some((m) => isAgent(m) && m.state === 'active' && Boolean(me) && m.agent?.sponsor === me);
+}
+
+// The agents that leave room with me: the active agents me made among the channel's members ([{ member, role }]), by
+// name. Empty for a channel leaving doesn't take agents out of; null when it may and the members didn't load.
+// A channel everyone can see keeps its agents while another person is in it, and the room's own count can be older
+// than that: the members just loaded decide, and so does others, for a caller that knows someone else is in it (the
+// server asked for a successor).
+export function agentsLeavingWith(room, roomMembers, members, me, collator, t, { others = false } = {}) {
+  if (!mayTakeAgents(room, members, me)) return [];
+  const open = room.visibility !== 'private';
+  if (open && others) return [];
+  if (!roomMembers) return null;
+  const map = asMap(members);
+  if (open && roomMembers.some((m) => m.member !== me && !isAgent(map.get(m.member)))) return [];
+  return [...new Set(roomMembers.map((m) => m.member))]
+    .map((id) => map.get(id))
+    .filter((m) => isAgent(m) && m.state === 'active' && m.agent?.sponsor === me)
+    .sort((a, b) => collator.compare(displayName(a, t), displayName(b, t)));
+}
+
+// The line a leave confirmation adds for agents: "Your agent Clark leaves with you.", up to three names, past that
+// how many. Null for none. agents null means they didn't load: the line then says what holds without their names.
+export function leavingAgentsText(agents, { t, listFormat = new Intl.ListFormat(undefined, { type: 'conjunction' }) } = {}) {
+  if (agents === null) return t('chat.channel.leaveAgentsUnknown');
+  if (!agents || !agents.length) return null;
+  if (agents.length > 3) return t('chat.channel.leaveAgentsMany', { count: agents.length });
+  if (agents.length === 1) return t('chat.channel.leaveAgent', { name: displayName(agents[0], t) });
+  return t('chat.channel.leaveAgents', { names: listFormat.format(agents.map((m) => displayName(m, t))) });
+}
+
 // Who can take a channel over: its active full members other than you, by name. Never an agent. ids: the channel's
 // member IDs.
 export function successors(ids, members, me, collator, t) {

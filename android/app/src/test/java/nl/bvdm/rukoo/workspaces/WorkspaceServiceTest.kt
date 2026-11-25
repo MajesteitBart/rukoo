@@ -28,6 +28,7 @@ import nl.bvdm.rukoo.account.ServerInfo
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.ui.ScreenState
+import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -90,28 +91,41 @@ class WorkspaceServiceTest {
         }
     }
 
+    /** A socket that opens when started and, like the real one, never again once closed. */
     class FakeSocket(val url: String, val listener: WorkspaceSocket.Listener) : ChatSocket {
         override val state = MutableStateFlow(SocketState.OFF)
         @Volatile var starts = 0
-        @Volatile var stops = 0
+        @Volatile var closes = 0
+        @Volatile var checks = 0
 
         override fun start() {
             starts += 1
-            state.value = SocketState.OPEN
-        }
-
-        override fun stop() {
-            stops += 1
-            state.value = SocketState.OFF
+            if (closes == 0) state.value = SocketState.OPEN
         }
 
         override fun nudge() {}
+
+        override fun check() {
+            checks += 1
+        }
+
+        override fun close() {
+            closes += 1
+            state.value = SocketState.OFF
+        }
     }
 
     class FakeSockets : ChatSockets {
         val opened = CopyOnWriteArrayList<FakeSocket>()
-        override fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope): ChatSocket =
+        override fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope, pacing: SocketPacing): ChatSocket =
             FakeSocket(url, listener).also { opened += it }
+    }
+
+    /** Real [WorkspaceSocket]s, each kept as the service got it, so a test can call one the service let go of. */
+    class RecordingSockets(private val real: ChatSockets) : ChatSockets {
+        val opened = CopyOnWriteArrayList<ChatSocket>()
+        override fun open(url: String, ticket: suspend () -> SocketTicket, listener: WorkspaceSocket.Listener, scope: CoroutineScope, pacing: SocketPacing): ChatSocket =
+            real.open(url, ticket, listener, scope, pacing).also { opened += it }
     }
 
     internal class Harness(val scope: TestScope, val db: TestDb, info: ServerInfo? = CHAT_INFO) {
@@ -122,9 +136,12 @@ class WorkspaceServiceTest {
         val settings = MutableStateFlow(AppSettings())
         val screen = ScreenState(clock)
         val sockets = FakeSockets()
+        /** Other sockets than [sockets], such as [RecordingSockets]. */
+        var chatSockets: ChatSockets? = null
         lateinit var service: WorkspaceService
         /** The app's GET /v1/info while signed out too (WorkspaceService autoInfo). */
         var autoInfo = false
+        var timing = ChatTiming()
 
         /** What GET /v1/workspaces lists: IDs, with the names and roles below. */
         @Volatile var listing: List<String> = emptyList()
@@ -146,14 +163,14 @@ class WorkspaceServiceTest {
                 http = http,
                 file = db.file,
                 driver = db.driver,
-                sockets = sockets,
+                sockets = chatSockets ?: sockets,
                 scope = scope.backgroundScope,
                 settings = settings,
                 screen = screen,
                 sink = sink,
                 words = { ChatAlertRulesTest.Words },
                 clock = clock,
-                timing = ChatTiming(),
+                timing = timing,
                 io = Dispatchers.Unconfined,
                 random = { 0.5 },
                 autoInfo = autoInfo,
@@ -962,13 +979,13 @@ class WorkspaceServiceTest {
 
         s.onScreen(Ids.WS2, null, null)
         runCurrent()
-        assertEquals(1, first.stops)
+        assertEquals(1, first.closes)
         assertEquals(2, h.sockets.opened.size)
         assertTrue(h.sockets.opened[1].url.endsWith("/${Ids.WS2}/socket"))
 
         s.paused()
         runCurrent()
-        assertEquals(1, h.sockets.opened[1].stops)
+        assertEquals(1, h.sockets.opened[1].closes)
         s.onScreen(null, null, null)
         s.resumed()
         runCurrent()
@@ -1214,6 +1231,424 @@ class WorkspaceServiceTest {
         advanceTimeBy(1_000)
         assertTrue("the foreground runs it", h.http.calls("GET", h.route(ws, "/changes")).size > feeds)
         s.paused()
+    }
+
+    // ---- Phone tools' window (stayConnected) ----
+
+    private fun FakeSocket.ws() = url.substringAfter("/workspaces/").substringBefore("/")
+
+    private fun Harness.feeds(w: String = Ids.WS) = http.calls("GET", route(w, "/changes")).size
+
+    @Test
+    fun `while Phone tools runs, every workspace keeps a socket in the background and runs every five minutes`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs(); syncedWs(Ids.WS2, "Other") }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        advanceTimeBy(ChatTiming.HOUR)
+        assertTrue("no socket in the background without the window", h.sockets.opened.isEmpty())
+        assertEquals(0, h.feeds())
+
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        assertTrue(s.windowOpen)
+        assertEquals(setOf(ws, Ids.WS2), h.sockets.opened.map { it.ws() }.toSet())
+        assertTrue(h.sockets.opened.all { it.state.value == SocketState.OPEN })
+        val first = h.feeds()
+        assertTrue("the window runs every workspace when it opens", first >= 1 && h.feeds(Ids.WS2) >= 1)
+
+        advanceTimeBy(ChatTiming.MINUTE)
+        assertEquals("no minute runs in the background", first, h.feeds())
+        advanceTimeBy(4 * ChatTiming.MINUTE + 1_000)
+        assertEquals("a run five minutes on", first + 1, h.feeds())
+
+        // A wake runs that workspace's feed at once, as in the foreground.
+        h.sockets.opened.single { it.ws() == ws }.listener.wake()
+        advanceTimeBy(1_000)
+        assertEquals(first + 2, h.feeds())
+
+        s.stayConnected(false)
+        advanceTimeBy(1_000)
+        assertFalse(s.windowOpen)
+        assertTrue("closing the window closes its sockets", h.sockets.opened.all { it.closes == 1 && it.state.value == SocketState.OFF })
+        val closed = h.feeds()
+        advanceTimeBy(ChatTiming.HOUR)
+        assertEquals("no runs after the window closed", closed, h.feeds())
+        // A wake that comes in late on a socket that closed does nothing.
+        h.sockets.opened.first().listener.wake()
+        advanceTimeBy(1_000)
+        assertEquals(closed, h.feeds())
+    }
+
+    @Test
+    fun `the window needs team chat notifications on`() = runTest {
+        val h = Harness(this, db)
+        h.settings.value = AppSettings(notifyChat = false)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.stayConnected(true)
+        advanceTimeBy(10 * ChatTiming.MINUTE)
+        assertFalse(s.windowOpen)
+        assertTrue(h.sockets.opened.isEmpty())
+        assertEquals(0, h.feeds())
+
+        h.settings.value = AppSettings(notifyChat = true)
+        advanceTimeBy(1_000)
+        assertTrue(s.windowOpen)
+        assertEquals(listOf(ws), h.sockets.opened.map { it.ws() })
+
+        h.settings.value = AppSettings(notifyChat = false)
+        advanceTimeBy(1_000)
+        assertFalse(s.windowOpen)
+        assertEquals(1, h.sockets.opened.single().closes)
+    }
+
+    @Test
+    fun `the window keeps sockets for the most recently active workspaces only`() = runTest {
+        val h = Harness(this, db)
+        h.timing = ChatTiming(windowSockets = 1)
+        h.seed {
+            syncedWs()
+            syncedWs(Ids.WS2, "Other")
+            updateWs(Ids.WS2, mapOf("activeAt" to TestDb.NOW))
+        }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        assertEquals(listOf(Ids.WS2), h.sockets.opened.map { it.ws() })
+        assertTrue("the one without a socket still runs", h.feeds(ws) >= 1)
+
+        // In the foreground the workspace on screen gets its socket as well.
+        s.onScreen(ws, null, null)
+        s.resumed()
+        advanceTimeBy(1_000)
+        assertEquals(setOf(ws, Ids.WS2), h.sockets.opened.filter { it.state.value == SocketState.OPEN }.map { it.ws() }.toSet())
+        // Back in the background, the window's own choice is left.
+        s.paused()
+        advanceTimeBy(1_000)
+        assertEquals(listOf(Ids.WS2), h.sockets.opened.filter { it.state.value == SocketState.OPEN }.map { it.ws() })
+    }
+
+    @Test
+    fun `signing out in the window closes its sockets and stops its runs`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        val socket = h.sockets.opened.single()
+
+        h.account.signOut()
+        s.state.until { !it.signedIn }
+        advanceTimeBy(1_000)
+        assertEquals(1, socket.closes)
+        val feeds = h.feeds()
+        advanceTimeBy(ChatTiming.HOUR)
+        assertEquals("no runs signed out", feeds, h.feeds())
+        assertEquals("no new socket signed out", 1, h.sockets.opened.size)
+    }
+
+    private fun Harness.tickets(w: String = Ids.WS) = http.calls("POST", route(w, "/socket-ticket")).size
+
+    /** A workspace in the window with real sockets whose `POST /socket-ticket` answers [ticket]; returns the sockets. */
+    private suspend fun TestScope.windowWithRealSockets(h: Harness, ticket: suspend (ScriptedHttp.Call) -> WorkspaceAnswer): RecordingSockets {
+        // On the test's clock, so Retry-After and the backoff run on virtual time.
+        val real = RecordingSockets(OkHttpChatSockets(OkHttpClient(), now = h.clock::now))
+        h.chatSockets = real
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws)
+        h.http.on("POST", h.route(ws, "/socket-ticket"), ticket)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        return real
+    }
+
+    // The review's interleaving: a nudge (or a 4003 recheck) takes the socket out of the map, reconciliation then
+    // removes and closes it, and the nudge goes on to start or nudge it. Whatever reaches a closed socket afterwards, it
+    // stays closed, and the workspace never has two.
+    @Test
+    fun `a socket the window closed never starts again, whatever reaches it later`() = runTest {
+        val h = Harness(this, db)
+        // Every ticket fails on the server, so each attempt is one POST /socket-ticket and nothing reaches the network.
+        val real = windowWithRealSockets(h) { throw WorkspaceError("server", 503) }
+        val first = real.opened.single()
+        assertTrue(h.tickets() >= 1)
+
+        h.service.stayConnected(false)
+        advanceTimeBy(1_000)
+        assertEquals(SocketState.OFF, first.state.value)
+        val tickets = h.tickets()
+        first.start()
+        first.nudge()
+        advanceTimeBy(10 * ChatTiming.MINUTE)
+        assertEquals("the closed socket stays closed", SocketState.OFF, first.state.value)
+        assertEquals("and asks for no ticket", tickets, h.tickets())
+
+        h.service.stayConnected(true)
+        advanceTimeBy(1_000)
+        assertEquals("one new socket when the window opens again", 2, real.opened.size)
+        assertEquals("never two at once for one workspace", 1, real.opened.count { it.state.value != SocketState.OFF })
+        h.service.stayConnected(false)
+        advanceTimeBy(1_000)
+        assertTrue(real.opened.all { it.state.value == SocketState.OFF })
+    }
+
+    @Test
+    fun `a ticket 429's Retry-After holds for the workspace while the window closes and opens`() = runTest {
+        val h = Harness(this, db)
+        windowWithRealSockets(h) { throw refusal(429, "rate_limited", retryAfter = "120") }
+        assertEquals(1, h.tickets())
+        // The network comes and goes: each time the window closes and opens again, with a new socket.
+        repeat(5) {
+            h.service.stayConnected(false)
+            advanceTimeBy(2_000)
+            h.service.stayConnected(true)
+            advanceTimeBy(2_000)
+        }
+        assertEquals("no ticket before Retry-After", 1, h.tickets())
+        advanceTimeBy(120_000)
+        assertEquals("one ticket once it passed", 2, h.tickets())
+        h.service.stayConnected(false)
+    }
+
+    @Test
+    fun `network flaps while a ticket hangs ask for a few tickets, not one per flap`() = runTest {
+        val h = Harness(this, db)
+        windowWithRealSockets(h) { kotlinx.coroutines.awaitCancellation() }
+        assertEquals(1, h.tickets())
+        repeat(20) {
+            h.service.stayConnected(false)
+            advanceTimeBy(100)
+            h.service.stayConnected(true)
+            advanceTimeBy(100)
+        }
+        assertTrue("20 flaps in 4 s asked ${h.tickets()} tickets", h.tickets() <= 4)
+        h.service.stayConnected(false)
+    }
+
+    @Test
+    fun `a network handoff in the window pings the open sockets and runs every workspace once`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs(); syncedWs(Ids.WS2, "Other") }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        s.networkMoved()
+        advanceTimeBy(1_000)
+        assertEquals("nothing outside the window", 0, h.feeds())
+
+        s.stayConnected(true)
+        advanceTimeBy(1_000)
+        val feeds = h.feeds()
+        val other = h.feeds(Ids.WS2)
+        s.networkMoved()
+        advanceTimeBy(1_000)
+        assertTrue(h.sockets.opened.all { it.checks == 1 })
+        assertEquals(feeds + 1, h.feeds())
+        assertEquals(other + 1, h.feeds(Ids.WS2))
+
+        s.stayConnected(false)
+        advanceTimeBy(1_000)
+        s.networkMoved()
+        advanceTimeBy(1_000)
+        assertTrue("closed sockets aren't pinged", h.sockets.opened.all { it.checks == 1 })
+        assertEquals(feeds + 1, h.feeds())
+    }
+
+    /**
+     * Two workspaces whose tickets answer [ticket], with real sockets whose backoff takes the low end of each step: 0.5,
+     * 1, 2, 4, 8, 16 and then 30 s.
+     */
+    private suspend fun TestScope.twoWithRealSockets(h: Harness, foreground: Boolean, ticket: suspend (ScriptedHttp.Call) -> WorkspaceAnswer): WorkspaceService {
+        h.chatSockets = OkHttpChatSockets(OkHttpClient(), now = h.clock::now, random = { 0.0 })
+        h.seed { syncedWs(); syncedWs(Ids.WS2, "Other") }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.http.on("POST", h.route(ws, "/socket-ticket"), ticket)
+        h.http.on("POST", h.route(Ids.WS2, "/socket-ticket"), ticket)
+        h.account.signIn("mine")
+        val s = h.start(foreground)
+        assertTrue(s.awaitReady())
+        return s
+    }
+
+    @Test
+    fun `the socket of the workspace on screen tries at once when the person returns to it, whatever backoff it met`() = runTest {
+        val h = Harness(this, db)
+        val s = twoWithRealSockets(h, foreground = true) { throw WorkspaceError("server", 503) }
+        s.onScreen(ws, null, null)
+        // Tickets at 0, 0.5, 1.5, 3.5, 7.5, 15.5 and 31.5 s; the next waits until 61.5 s.
+        advanceTimeBy(40_000)
+        val before = h.tickets()
+        assertEquals(7, before)
+
+        s.onScreen(Ids.WS2, null, null)
+        advanceTimeBy(100)
+        s.onScreen(ws, null, null)
+        advanceTimeBy(100)
+        assertEquals("a ticket at once for the workspace the person came back to", before + 1, h.tickets())
+    }
+
+    @Test
+    fun `a foreground nudge leaves the backoff of Phone tools' other sockets alone`() = runTest {
+        val h = Harness(this, db)
+        val s = twoWithRealSockets(h, foreground = false) { throw WorkspaceError("server", 503) }
+        s.stayConnected(true)
+        advanceTimeBy(40_000)
+        val mine = h.tickets()
+        val other = h.tickets(Ids.WS2)
+        assertEquals(7, other)
+
+        s.onScreen(ws, null, null)
+        s.resumed()
+        advanceTimeBy(100)
+        assertTrue("the workspace on screen tries at once", h.tickets() > mine)
+        assertEquals("the other keeps its wait", other, h.tickets(Ids.WS2))
+
+        // A network that comes back in the foreground nudges too.
+        s.nudge()
+        advanceTimeBy(100)
+        assertEquals(other, h.tickets(Ids.WS2))
+        s.stayConnected(false)
+    }
+
+    @Test
+    fun `Retry-After holds for the workspace on screen when the person returns to it`() = runTest {
+        val h = Harness(this, db)
+        val s = twoWithRealSockets(h, foreground = true) { throw refusal(429, "rate_limited", retryAfter = "120") }
+        s.onScreen(ws, null, null)
+        advanceTimeBy(1_000)
+        assertEquals(1, h.tickets())
+        s.onScreen(Ids.WS2, null, null)
+        advanceTimeBy(100)
+        s.onScreen(ws, null, null)
+        s.nudge()
+        advanceTimeBy(100)
+        assertEquals("no ticket before Retry-After", 1, h.tickets())
+        advanceTimeBy(120_000)
+        assertEquals(2, h.tickets())
+    }
+
+    // The review's interleaving: reconciliation has listed the workspace, and the removal path runs before it makes
+    // the socket, either before it looks at the workspace again ([rechecked] false) or after ([rechecked] true).
+    // Returns the service once the dust settled.
+    private suspend fun TestScope.removedWhileReconciling(h: Harness, rechecked: Boolean): WorkspaceService {
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws, room())
+        h.http.on("DELETE", h.route(ws, "/members/me")) { WorkspaceAnswer(204, null) }
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
+        h.list()
+        var ran = false
+        s.beforeSocketInstall = { w, after ->
+            if (w == ws && after == rechecked && !ran) {
+                ran = true
+                backgroundScope.launch { s.leaveWorkspace(ws) }
+                // Until the removal reached the sockets: it took back the workspace's alerts just before.
+                while (ChatAlertRules.workspacePrefix(ws) !in h.sink.cleared) delay(10)
+            }
+        }
+        s.onScreen(ws, null, null)
+        advanceTimeBy(5_000)
+        assertTrue("the removal ran in between", ran)
+        return s
+    }
+
+    @Test
+    fun `a workspace removed while reconciliation holds it in its list gets no socket`() = runTest {
+        val h = Harness(this, db)
+        val s = removedWhileReconciling(h, rechecked = false)
+        assertEquals("no socket made for the removed workspace", 0, h.sockets.opened.count { it.ws() == ws })
+        assertFalse("no socket left", ws in s.socketWorkspaces())
+        assertFalse("no waits left", ws in s.pacedWorkspaces())
+    }
+
+    @Test
+    fun `a workspace removed just as reconciliation makes its socket keeps no socket and no waits`() = runTest {
+        val h = Harness(this, db)
+        val s = removedWhileReconciling(h, rechecked = true)
+        assertEquals("its socket was made before the removal reached the sockets", 1, h.sockets.opened.count { it.ws() == ws })
+        assertTrue("the socket made before the removal is closed", h.sockets.opened.filter { it.ws() == ws }.all { it.closes == 1 })
+        assertFalse("no socket left", ws in s.socketWorkspaces())
+        assertFalse("no waits left", ws in s.pacedWorkspaces())
+    }
+
+    @Test
+    fun `in the window a message notifies from the background, also in the room that was on screen`() = runTest {
+        val h = Harness(this, db)
+        h.seed {
+            syncedWs()
+            replaceMembers(ws, listOf(Member(Ids.ME, name = "Me", role = "member", state = "active"), Member(Ids.OLGA, name = "Olga", role = "member", state = "active")))
+            upsertRoom(ws, room(Ids.DM, dm = true, head = 1))
+            appendEvents(ws, Ids.DM, listOf(msg(1, room = 4)))
+        }
+        h.list(ws)
+        h.http.on("GET", h.route(ws)) { ok(WorkspaceDetails.serializer(), details()) }
+        h.http.on("GET", h.route(ws, "/changes")) {
+            ok(FeedPage.serializer(), feed(room(Ids.DM, dm = true, head = 2, unread = 1), inline = emptyList(), next = "c1"))
+        }
+        h.http.on("GET", h.route(ws, "/conversations/${Ids.DM}/events")) {
+            ok(EventPage.serializer(), EventPage(listOf(msg(1, room = 4), msg(2, text = "still there?", room = 4)), head = 2, floor = 1))
+        }
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        // The DM was on screen when the app went to the background; in the background it isn't on screen any more.
+        s.onScreen(ws, Ids.DM, null)
+        advanceTimeBy(ChatTiming.HOUR)
+        assertTrue("nothing runs before the window", h.sink.shown.isEmpty())
+
+        s.stayConnected(true)
+        withTimeout(10_000) { while (h.sink.shown.isEmpty()) delay(100) }
+        assertEquals("Olga: still there?", h.sink.shown.single().lines.last().let { "${it.author}: ${it.text}" })
+    }
+
+    @Test
+    fun `the window's runs come five minutes apart, give or take 30 seconds`() {
+        val t = ChatTiming()
+        assertEquals(5 * ChatTiming.MINUTE - 30_000, WorkspaceService.windowCatchUpDelay(t, 0.0))
+        assertEquals(5 * ChatTiming.MINUTE, WorkspaceService.windowCatchUpDelay(t, 0.5))
+        assertEquals(5 * ChatTiming.MINUTE + 30_000, WorkspaceService.windowCatchUpDelay(t, 1.0))
+        assertEquals(5 * ChatTiming.MINUTE + 30_000, WorkspaceService.windowCatchUpDelay(t, 7.0))
+    }
+
+    @Test
+    fun `sockets go to the workspace on screen, then the most recently active, up to the cap`() {
+        val c = listOf(SocketCandidate("a", 10), SocketCandidate("b", 30), SocketCandidate("c", null), SocketCandidate("d", 20))
+        assertEquals(emptySet<String>(), WorkspaceService.socketsFor(c, null, 0))
+        assertEquals(setOf("c"), WorkspaceService.socketsFor(c, "c", 0))
+        assertEquals(listOf("b", "d"), WorkspaceService.socketsFor(c, null, 2).toList())
+        assertEquals(listOf("c", "b", "d"), WorkspaceService.socketsFor(c, "c", 2).toList())
+        assertEquals(listOf("b", "d", "a", "c"), WorkspaceService.socketsFor(c, null, 9).toList())
+        assertEquals("a workspace not in a good state gets none", emptySet<String>(), WorkspaceService.socketsFor(c, "gone", 0))
+        assertEquals(emptySet<String>(), WorkspaceService.socketsFor(c, null, -1))
     }
 
     @Test

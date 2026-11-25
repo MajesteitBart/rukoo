@@ -633,6 +633,69 @@ test('leaving: the only owner, the channels that may need a successor, and who c
   assert.equal(SUCCESSOR_SEARCH_FROM, 6);
 });
 
+test('leaving a private channel names the agents you made that leave it with you', async () => {
+  const { mayTakeAgents, agentsLeavingWith, leavingAgentsText } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const nl = (key, params) => i18n.translate('nl', key, params);
+  const lf = (lang) => new Intl.ListFormat(lang, { type: 'conjunction' });
+  const collator = new Intl.Collator('en', { sensitivity: 'base' });
+  const agent = (label, sponsor, state = 'active') => ({ id: id('u', label), kind: 'agent', name: label, role: 'member', state, joinedAt: 0, agent: { sponsor, answers: 'sponsor', members: [], agents: false } });
+  const clark = agent('Clark', ME);
+  const bee = agent('Bee', ME);
+  const robs = agent('Robbot', ROB);
+  const gone = agent('Gone', ME, 'removed');
+  const dir = new Map([...members, ...[clark, bee, robs, gone].map((a) => [a.id, a])]);
+  const room = { id: 'c1', kind: 'channel', visibility: 'private', role: 'member', archived: false, members: 3, agents: 3 };
+  const inside = [ME, SANNE, ROB, clark.id, bee.id, robs.id].map((member) => ({ member, role: 'member' }));
+
+  // As the server's #endGrant: a private channel takes your agents with you, archived or not and also as its last
+  // person; any channel takes them as its last person, since that archives it and every agent goes.
+  const open = { ...room, visibility: 'workspace' };
+  assert.equal(mayTakeAgents(room, dir, ME), true);
+  assert.equal(mayTakeAgents(open, dir, ME), false, 'an open channel with others in it keeps them');
+  assert.equal(mayTakeAgents({ ...room, members: 1 }, dir, ME), true, 'the last person in a private channel');
+  assert.equal(mayTakeAgents({ ...open, members: 1 }, dir, ME), true, 'the last person in an open channel archives it');
+  assert.equal(mayTakeAgents({ ...room, archived: true }, dir, ME), true, 'an archived private channel');
+  assert.equal(mayTakeAgents({ ...room, archived: true, members: 1 }, dir, ME), true);
+  assert.equal(mayTakeAgents({ ...open, archived: true }, dir, ME), false, 'an archived open channel with others in it');
+  assert.equal(mayTakeAgents({ ...room, agents: 0 }, dir, ME), false, 'no agents in it');
+  assert.equal(mayTakeAgents({ ...room, agents: undefined }, dir, ME), true, 'a row without the count may hold some');
+  assert.equal(mayTakeAgents({ ...room, kind: 'dm' }, dir, ME), false);
+  assert.equal(mayTakeAgents(room, members, ME), false, 'you made no agent');
+  assert.equal(mayTakeAgents(room, dir, SANNE), false);
+
+  // Yours, active and in the channel, by name; not someone else's, not a removed one, not one outside the channel.
+  assert.deepEqual(agentsLeavingWith(room, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
+  assert.deepEqual(agentsLeavingWith(room, inside, dir, ROB, collator, en).map((m) => m.name), ['Robbot']);
+  assert.deepEqual(agentsLeavingWith({ ...room, archived: true }, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
+  const alone = [ME, clark.id, bee.id, robs.id].map((member) => ({ member, role: 'member' }));
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, alone, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark']);
+  // The members just loaded outrank the room's count: someone who joined an open channel since keeps the agents in.
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, inside, dir, ME, collator, en), [], 'another person is in it by now');
+  assert.deepEqual(agentsLeavingWith({ ...room, members: 1 }, inside, dir, ME, collator, en).map((m) => m.name), ['Bee', 'Clark'], 'a private channel takes them either way');
+  // A channel that needs a successor has someone else in it: an open one then says nothing, loaded or not.
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, null, dir, ME, collator, en, { others: true }), []);
+  assert.deepEqual(agentsLeavingWith({ ...open, members: 1 }, alone, dir, ME, collator, en, { others: true }), []);
+  assert.equal(agentsLeavingWith(room, null, dir, ME, collator, en, { others: true }), null, 'a private one still does');
+  assert.equal(agentsLeavingWith({ ...open, members: 1 }, null, dir, ME, collator, en), null, "the last person, and the members didn't load");
+  assert.equal(agentsLeavingWith(room, null, dir, ME, collator, en), null, "the members didn't load");
+  assert.deepEqual(agentsLeavingWith(open, inside, dir, ME, collator, en), []);
+  assert.deepEqual(agentsLeavingWith(open, null, dir, ME, collator, en), [], 'nothing to say, loaded or not');
+
+  const line = (list, t, lang) => leavingAgentsText(list, { t, listFormat: lf(lang) });
+  assert.equal(line([clark], en, 'en'), 'Your agent Clark leaves with you.');
+  assert.equal(line([bee, clark], en, 'en'), 'Your agents Bee and Clark leave with you.');
+  assert.equal(line([bee, clark], nl, 'nl'), 'Je agents Bee en Clark vertrekken met je mee.');
+  assert.equal(line([clark], nl, 'nl'), 'Je agent Clark vertrekt met je mee.');
+  const four = [bee, clark, gone, robs];
+  assert.equal(line(four, en, 'en'), 'Your 4 agents in this channel leave with you.');
+  assert.equal(line(four, nl, 'nl'), 'Je 4 agents in dit kanaal vertrekken met je mee.');
+  assert.equal(line([], en, 'en'), null);
+  // Without the channel's members, a line that holds without names.
+  assert.equal(line(null, en, 'en'), 'Any agents of yours in this channel leave with you.');
+  assert.equal(line(null, nl, 'nl'), 'Agents van jou in dit kanaal vertrekken met je mee.');
+});
+
 test("a closed DM's bar names the person you blocked and offers a new conversation only where the server takes one", async () => {
   const { closedBar } = await loading;
   const en = (key, params) => i18n.translate('en', key, params);

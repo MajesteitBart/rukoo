@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { simpleParser } = require('mailparser');
 const MailComposer = require('nodemailer/lib/mail-composer');
+const { t } = require('../i18n');
 const util = require('./mailutil');
 const { mailSignals } = require('./categories/signals');
 
@@ -401,6 +402,12 @@ class DemoAccount {
     return box;
   }
 
+  // A folder whose state has readOnly turns changes down, as a server does a shared folder you may only read: flags,
+  // moving mail in or out, and deleting. The errors are ImapAccount's for the same refusals. The Electron tests set it.
+  refuse(key, ...paths) {
+    if (paths.some((p) => this.box(p).readOnly)) throw Object.assign(new Error(t(key)), { refused: true });
+  }
+
   find(p, uid) {
     const msg = this.box(p).messages.find((m) => m.uid === Number(uid));
     if (!msg) throw new Error('Bericht niet gevonden.');
@@ -515,6 +522,7 @@ class DemoAccount {
   // The flags of many messages in folder p at once, saved once, as ImapAccount.setFlagsMany. Like a server's UID
   // STORE, it skips a uid the folder no longer has.
   async setFlagsMany(p, uids, { unread, starred, answered }) {
+    this.refuse('errors.flags.refused', p);
     const want = new Set(uids.map(Number));
     for (const m of this.box(p).messages) {
       if (!want.has(m.uid)) continue;
@@ -533,8 +541,9 @@ class DemoAccount {
     const src = this.box(p);
     const dest = this.box(destination);
     if (expectUidValidity && String(src.uidValidity) !== String(expectUidValidity)) {
-      throw Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY' });
+      throw Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY', unsent: true });
     }
+    this.refuse('errors.move.refused', p, destination);
     const idx = src.messages.findIndex((m) => m.uid === Number(uid));
     if (idx < 0) throw new Error('Bericht niet gevonden.');
     const [m] = src.messages.splice(idx, 1);
@@ -546,9 +555,42 @@ class DemoAccount {
   }
 
   async deleteForever(p, uid) {
+    this.refuse('errors.delete.refused', p);
     const box = this.box(p);
     box.messages = box.messages.filter((m) => m.uid !== Number(uid));
     this.persist();
+  }
+
+  // What ImapAccount.moveMany and deleteMany answer: a Map uid → the result of move() or deleteForever() for that
+  // email, or { error }. They go one email at a time through those two, which the Electron tests replace to act out a
+  // server's answers.
+  async moveMany(p, uids, destination, { stopped = null, ...opts } = {}) {
+    return this.each(uids, (uid) => this.move(p, uid, destination, opts), stopped);
+  }
+
+  async deleteMany(p, uids, { expectUidValidity = null, stopped = null } = {}) {
+    if (expectUidValidity && String(this.box(p).uidValidity) !== String(expectUidValidity)) {
+      const error = Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY', unsent: true });
+      return new Map(uids.map((uid) => [Number(uid), { error }]));
+    }
+    return this.each(uids, async (uid) => (await this.deleteForever(p, uid)) || {}, stopped);
+  }
+
+  // stopped(): as for ImapAccount.inTurns, the rest of a batch is unsent once it says so.
+  async each(uids, fn, stopped = null) {
+    const out = new Map();
+    for (const uid of uids) {
+      if (stopped && stopped()) {
+        out.set(Number(uid), { error: Object.assign(new Error(t('errors.connection.closed')), { unsent: true }) });
+        continue;
+      }
+      try {
+        out.set(Number(uid), await fn(uid));
+      } catch (error) {
+        out.set(Number(uid), { error });
+      }
+    }
+    return out;
   }
 
   async append(p, raw, flags = []) {

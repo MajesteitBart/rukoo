@@ -620,14 +620,15 @@ test('reading or moving older unread mail found on the server while a sync runs 
 });
 
 // The demo answers the commands named in outcomes in the order they are sent, each with the next outcome listed for
-// that command: true goes through, a string is the error it fails with. gate: a promise every command waits for first.
+// that command: true goes through, a string is the error the server turns it down with, having changed nothing (a
+// refusal, as ImapAccount reports one once it has read that back). gate: a promise every command waits for first.
 function answerInTurn(demo, outcomes, gate = null) {
   for (const [name, list] of Object.entries(outcomes)) {
     const real = demo[name].bind(demo);
     demo[name] = async (...args) => {
       await gate;
       const outcome = list.shift();
-      if (outcome !== true) throw new Error(outcome);
+      if (outcome !== true) throw Object.assign(new Error(outcome), { refused: true });
       return real(...args);
     };
   }

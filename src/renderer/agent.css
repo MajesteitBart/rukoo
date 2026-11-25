@@ -1758,8 +1758,22 @@
   gap: 8px;
   padding: 0 10px 10px;
 }
+/* A button never gets wider than the card: "Chat with {name}" for a 40-character custom agent ends in an ellipsis
+   (the button's title and accessible name keep the whole label). */
 .bui-rec__foot .bui-btn {
+  max-width: 100%;
+  min-width: 0;
   font-size: 12.5px;
+}
+.bui-rec__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Under way (Try again while the check runs): still focusable, so the keyboard stays on it. */
+.bui-rec__foot .bui-btn[aria-busy='true'] {
+  opacity: 0.55;
+  cursor: progress;
 }
 
 /* ---------- draft card ---------- */
@@ -1974,6 +1988,14 @@
 }
 .bui-pb.is-disabled .bui-pb__box {
   background: var(--inset);
+}
+/* An input that is off but keeps its text readable (setDisabled's readable): shown only while it holds text, and
+   selectable to copy, which the page's text otherwise isn't. */
+.bui-pb.is-disabled .bui-pb__ta {
+  user-select: text;
+}
+.bui-pb.is-disabled .bui-pb__ta.is-empty {
+  display: none;
 }
 .bui-pb__files {
   display: flex;

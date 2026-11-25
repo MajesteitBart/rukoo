@@ -15,8 +15,9 @@ let app;
 let win;
 let dataDir;
 
-async function launch() {
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5' };
+// extra: more environment, such as SEM_AGENT_FAKE_STATUS for agents that aren't ready (fake.js).
+async function launch(extra = {}) {
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5', ...extra };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
@@ -35,6 +36,18 @@ test.afterEach(async () => {
   await closeApp(app);
   removeDir(dataDir);
 });
+
+// Starts again on a fresh profile with the demo account, where the agents have these states (SEM_AGENT_FAKE_STATUS
+// in fake.js, such as 'clark=unconfigured'), as main reports them from the first status on.
+async function freshProfile(states) {
+  await closeApp(app);
+  removeDir(dataDir);
+  dataDir = tempDir('rukoo-agent-e2e-');
+  await launch({ SEM_AGENT_FAKE_STATUS: states });
+  await win.waitForSelector('.provider-grid');
+  await win.click('[data-s="demo"]');
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+}
 
 const item = (text) => win.locator('.item', { hasText: text }).first();
 const pane = () => win.locator('.agentpane');
@@ -810,13 +823,438 @@ test('a new default agent applies at once, and Ctrl+J still closes a panel whose
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
   await expect(input()).toHaveAttribute('data-placeholder', 'Ask Claude about this email...');
   await win.evaluate(() => window.mail.call('agentUpdateConfig', { claude: { enabled: false } }));
+  // A default that is turned off gives way to the first ready agent; Settings keeps Claude as the default.
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Codex');
+  expect(await win.evaluate(() => window.mail.call('agentConfig').then((c) => c.defaultAgent))).toBe('claude');
+  // Picked in the agent menu, the agent that is off stays, with the way to turn it on.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: /^Claude$/ }) }).click();
   await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText('Claude is turned off.');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('Set up Claude to start');
   await win.keyboard.press('Control+j');
   await expect(pane()).toBeHidden();
   await win.keyboard.press('Control+j');
   await expect(pane()).toBeVisible();
   await win.keyboard.press('Control+j');
   await expect(pane()).toBeHidden();
+});
+
+// The menu row of an agent under the chat input, by its name alone.
+const agentRow = (name) => win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: new RegExp(`^${name}$`) }) });
+const recButton = (label) => win.locator('.agentpane .bui-rec__foot .bui-btn', { hasText: label });
+
+test('a fresh profile without Hermes starts a new chat on Claude Code; Settings keeps Hermes as the default and says why', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('What should Claude do with this email?');
+  await expect(chip('Draft a reply')).toBeVisible();
+  await expect(input()).toHaveAttribute('data-placeholder', 'Ask Claude about this email...');
+  await say('Hello there');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['claude']);
+  // Rukoo didn't change the default; Settings shows it with its status.
+  expect(await win.evaluate(() => window.mail.call('agentConfig').then((c) => c.defaultAgent))).toBe('clark');
+  await win.click('[data-action="settings"]');
+  await win.locator('.page.settings .row', { hasText: 'Claude Code, Codex and OpenClaw' }).click();
+  await expect(win.locator('[data-agent-default]')).toHaveText('Hermes · Not set up');
+});
+
+test('the setup card offers the ready agents, and Set up opens the agent\'s card in Settings', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
+  // Hermes picked in the agent menu stays, with its setup card: Set up Hermes, and Chat with for two ready agents.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Hermes').click();
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('Set up Hermes to start');
+  await expect(win.locator('.agentpane .bui-rec__foot .bui-btn')).toHaveText(['Chat with Claude', 'Chat with Codex', 'Set up Hermes']);
+  await expect(chip('Draft a reply')).toHaveCount(0);
+  // Chat with Codex switches this chat, as the agent menu does.
+  await recButton('Chat with Codex').click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Codex');
+  await expect(input()).toBeFocused();
+  await expect(chip('Draft a reply')).toBeVisible();
+  // A status update keeps the agent the user picked.
+  await win.evaluate(() => window.mail.call('agentTest', 'claude'));
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Codex');
+
+  // Set up Hermes lands on the Hermes card, with the address field in focus.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Hermes').click();
+  await recButton('Set up Hermes').click();
+  await expect(win.locator('.page.settings h1')).toHaveText('Agents');
+  await expect(win.locator('[data-agent-field="clark.url"]')).toBeFocused();
+  await expect(win.locator('[data-agent-status="clark"]')).toBeInViewport();
+  await win.keyboard.press('Escape');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.page.settings')).toHaveCount(0);
+  // The link above the disabled input goes there too.
+  await win.click('.agentpane [data-ap="setup"]');
+  await expect(win.locator('[data-agent-field="clark.url"]')).toBeFocused();
+});
+
+test('an agent that can\'t be reached gets Try again instead of the shortcuts', async () => {
+  await freshProfile('clark=offline');
+  await openChat('Call on Thursday');
+  // Offline isn't blocked: the default stays and the input takes a message.
+  await expect(win.locator('.agentpane .ap-title')).toHaveText("Can't be reached");
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Hermes');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText("Hermes can't be reached");
+  await expect(win.locator('.agentpane .bui-rec__foot .bui-btn')).toHaveText(['Chat with Claude', 'Check settings', 'Try again']);
+  await expect(chip('Draft a reply')).toHaveCount(0);
+  await expect(input()).toBeEditable();
+  // Back up: Try again brings the shortcuts.
+  await app.evaluate(() => (process.env.SEM_AGENT_FAKE_STATUS = ''));
+  await recButton('Try again').click();
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('What should Hermes do with this email?');
+  await expect(chip('Draft a reply')).toBeVisible();
+});
+
+const headAgent = () => win.locator('.agentpane .ap-agent');
+const recButtons = () => win.locator('.agentpane .bui-rec__foot .bui-btn');
+// The agents' states as fake.js reports them from now on, and a status update that brings them to the panel.
+async function fakeStates(states) {
+  await app.evaluate((_e, s) => (process.env.SEM_AGENT_FAKE_STATUS = s), states);
+  await win.evaluate(() => window.mail.call('agentTest', 'claude'));
+}
+
+test('a draft with text keeps its agent when that agent stops taking messages, and the person picks another', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Claude');
+  await input().fill('Keep this for Claude');
+  // Claude Code goes missing while Codex is ready. The draft was written for Claude: it stays there, and says why.
+  await fakeStates('clark=unconfigured,claude=missing');
+  await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText("Claude isn't installed on this computer.");
+  await expect(headAgent()).toHaveText('Claude');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('Set up Claude to start');
+  await expect(win.locator('.agentpane .bui-rec__body')).toHaveText('Rukoo needs a few details before it can reach Claude. Your message stays here until you set up Claude or pick another agent.');
+  await expect(recButtons()).toHaveText(['Chat with Codex', 'Chat with OpenClaw', 'Set up Claude']);
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
+  // The person picks Codex: the text comes along and goes there.
+  await recButton('Chat with Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  expect(await inputValue()).toBe('Keep this for Claude');
+  await input().press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['codex']);
+  // A fresh draft, untouched, follows the rule: Hermes isn't set up and Claude Code is missing, so Codex.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(headAgent()).toHaveText('Codex');
+  await fakeStates('clark=unconfigured');
+  await expect(headAgent()).toHaveText('Claude');
+});
+
+test('a picked agent lasts as long as its draft: kept over a new default, and the next draft starts on the rule', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Claude');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  await say('Hello there');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['codex']);
+  // Sent: New chat starts on the rule again, not on the agent picked for the last one.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(headAgent()).toHaveText('Claude');
+
+  // Picked for an unsent draft: a new default in Settings and status updates keep it.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  // The new name shows that the panel has the new config.
+  await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'openclaw', clark: { name: 'Hermes Two' } }));
+  await win.evaluate(() => window.mail.call('agentTest', 'codex'));
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await expect(agentRow('Hermes Two')).toBeVisible();
+  await win.keyboard.press('Escape');
+  await expect(headAgent()).toHaveText('Codex');
+  // A fresh draft takes the new default.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(headAgent()).toHaveText('OpenClaw');
+});
+
+test('Set up on an agent whose saved key was refused puts the keyboard on Replace', async () => {
+  await freshProfile('clark=unauthorized');
+  // The key goes into a reversible stand-in for the system keyring, as in custom-agents.spec.js.
+  await app.evaluate(() => {
+    global.__semAgents.cfg.secrets = { encrypt: (s) => `test:${Buffer.from(s).toString('hex')}`, decrypt: (s) => Buffer.from(String(s).slice(5), 'hex').toString() };
+  });
+  await win.evaluate(async () => {
+    await window.mail.call('agentUpdateConfig', { clark: { url: 'http://100.64.0.9:8642' } });
+    await window.mail.call('agentSetSecret', 'clark', 'refused-key');
+  });
+  await openChat('Call on Thursday');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Hermes').click();
+  await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText("Hermes didn't accept the API key.");
+  await recButton('Set up Hermes').click();
+  await expect(win.locator('.page.settings h1')).toHaveText('Agents');
+  await expect(win.locator('[data-a="agent-key-replace:clark"]')).toBeFocused();
+});
+
+test('Try again keeps the keyboard on it while the check runs, and hands it to the input when the card goes', async () => {
+  await freshProfile('clark=offline');
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText("Hermes can't be reached");
+  // Every time the panel draws its empty state again: what has the keyboard focus right after.
+  await win.evaluate(() => {
+    window.__focusLog = [];
+    new MutationObserver(() => {
+      const el = document.activeElement;
+      window.__focusLog.push(!el || el === document.body ? 'body' : `${el.dataset.action || el.className}|${el.textContent}`);
+    }).observe(document.querySelector('.agentpane .ap-transcript'), { childList: true });
+  });
+  await recButton('Try again').focus();
+  await win.keyboard.press('Enter');
+  await expect.poll(() => win.evaluate(() => window.__focusLog)).toContain('retry|Checking...');
+  await expect(recButton('Try again')).toBeFocused();
+  const log = await win.evaluate(() => window.__focusLog);
+  expect(log.filter((x) => !x.startsWith('retry|'))).toEqual([]);
+  // Back up: the card loses its buttons, and the keyboard goes to the input.
+  await app.evaluate(() => (process.env.SEM_AGENT_FAKE_STATUS = ''));
+  await win.keyboard.press('Space');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('What should Hermes do with this email?');
+  await expect(input()).toBeFocused();
+});
+
+// Pasted into the chat input the way the system clipboard does: a paste event whose DataTransfer holds the text or a
+// file. The input cancels the browser's own paste and fires no input event.
+const pasteInto = ({ text = '', file = '' }) =>
+  input().evaluate(
+    (ta, { text, file }) => {
+      const dt = new DataTransfer();
+      if (text) dt.setData('text/plain', text);
+      if (file) dt.items.add(new File([file], 'note.txt', { type: 'text/plain' }));
+      ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    },
+    { text, file }
+  );
+// What is attached to the message being written, files and emails alike.
+const attachedChips = () => win.locator('.agentpane .bui-pb__files .bui-entity--attached:not(.is-pending)');
+
+// Each way something gets into a new draft. The paste and the undo fire no input event.
+const INSERTS = {
+  'pasted text': async () => {
+    await pasteInto({ text: 'Pasted for Claude' });
+    await expect.poll(inputValue).toBe('Pasted for Claude');
+  },
+  'a pasted file': async () => {
+    await pasteInto({ file: 'Notes for Claude' });
+    await expect(attachedChips()).toHaveCount(1);
+  },
+  'a dropped file': async () => {
+    await dropFiles([{ name: 'notes.txt', type: 'text/plain', data: Buffer.from('Notes for Claude') }]);
+    await expect(attachedChips()).toHaveCount(1);
+  },
+  'a dropped email': async () => {
+    await win.evaluate(() => {
+      const ids = [...document.querySelectorAll('.list-scroll .item')].filter((el) => el.textContent.includes('Your parcel is on its way')).map((el) => el.dataset.id);
+      const dt = new DataTransfer();
+      dt.setData('application/x-rukoo-ids', JSON.stringify(ids));
+      const target = document.querySelector('.agentpane .ap-transcript');
+      for (const type of ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+    });
+    await expect(attachedChips()).toHaveCount(1);
+  },
+  'text brought back by undo': async () => {
+    await input().fill('Written for Claude');
+    await input().press('Control+a');
+    await input().press('Delete');
+    await expect.poll(inputValue).toBe('');
+    // New chat starts an untouched draft; undo brings the text back into it.
+    await win.click('.agentpane [data-ap="new"]');
+    await expect(input()).toBeFocused();
+    await input().press('Control+z');
+    await expect.poll(inputValue).toBe('Written for Claude');
+  }
+};
+
+for (const [what, put] of Object.entries(INSERTS)) {
+  test(`a draft with ${what} keeps its agent when that agent stops taking messages`, async () => {
+    await freshProfile('clark=unconfigured');
+    await openChat('Call on Thursday');
+    await expect(headAgent()).toHaveText('Claude');
+    await put();
+    // Claude Code goes missing while Codex is ready: the draft stays on Claude, and says why.
+    await fakeStates('clark=unconfigured,claude=missing');
+    await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText("Claude isn't installed on this computer.");
+    await expect(headAgent()).toHaveText('Claude');
+    await expect(win.locator('.agentpane .bui-rec__body')).toContainText('Your message stays here until you set up Claude or pick another agent.');
+    expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
+  });
+}
+
+// Write in an untouched draft, change the default, empty the draft, undo: the text was written for Claude and comes
+// back under Claude, since emptying the draft does not let it follow the rule again.
+test('a draft the person emptied again keeps its agent, so undo brings the text back under that agent', async () => {
+  await freshProfile('clark=unconfigured');
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Claude');
+  await input().fill('Written for Claude');
+  // A new default in Settings; the new name shows that the panel has the new config.
+  await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'codex', clark: { name: 'Hermes Two' } }));
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await expect(agentRow('Hermes Two')).toBeVisible();
+  await win.keyboard.press('Escape');
+  await expect(headAgent()).toHaveText('Claude');
+  // Emptied, and a status update after: still Claude.
+  await input().press('Control+a');
+  await input().press('Delete');
+  await expect.poll(inputValue).toBe('');
+  await win.evaluate(() => window.mail.call('agentTest', 'claude'));
+  await expect(headAgent()).toHaveText('Claude');
+  await input().press('Control+z');
+  await expect.poll(inputValue).toBe('Written for Claude');
+  await expect(headAgent()).toHaveText('Claude');
+  await input().press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['claude']);
+  // Sent: the next draft starts on the rule, which is the new default.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(headAgent()).toHaveText('Codex');
+});
+
+// The newest chat's status in main, for waiting until its turn is over.
+const chatStatus = () => app.evaluate(() => (global.__semAgents.list()[0] || {}).status || null);
+
+test('choosing the agent an open chat already has changes nothing, and the next new chat starts on the default', async () => {
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Hermes');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await say('Hello Codex');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => c.agent))).toEqual(['codex']);
+  await expect.poll(chatStatus, { timeout: 15000 }).toBe('idle');
+  // The checked row in the open Codex chat, then another message in that chat.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  await say('Once more');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.conversations.get(global.__semAgents.list()[0].id).items.filter((i) => i.type === 'user').length)).toBe(2);
+  // An email without a chat: its new chat starts on the default, not on Codex.
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await expect(headAgent()).toHaveText('Hermes');
+});
+
+const agentsOfChats = () => app.evaluate(() => global.__semAgents.list().map((c) => c.agent).sort());
+
+// A new draft held on Codex, then a Hermes chat opened from the list: picking Codex in that chat did nothing, because
+// the draft already held Codex.
+test('picking another agent in an open chat starts a new chat on it, also when the held draft has that agent', async () => {
+  await openChat('Call on Thursday');
+  await expect(headAgent()).toHaveText('Hermes');
+  await say('Hello Hermes');
+  await expect.poll(agentsOfChats).toEqual(['clark']);
+  await expect.poll(chatStatus, { timeout: 15000 }).toBe('idle');
+  await win.click('.agentpane [data-ap="new"]');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  // The Hermes chat from the list.
+  await win.click('.agentpane [data-ap="history"]');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Call on Thursday' }).click();
+  await expect(headAgent()).toHaveText('Hermes');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Hermes']);
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await expect(headAgent()).toHaveText('Codex');
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await say('Hello Codex');
+  await expect.poll(agentsOfChats).toEqual(['clark', 'codex']);
+});
+
+// A Codex chat is on screen when the person opens an email without a chat and types before main has looked. The
+// lookup finds nothing: the text stays under Codex, where it was typed, and no longer moves to the default.
+test('text typed while an email is looked up keeps the agent it was typed under when the email has no chat', async () => {
+  await openChat('Call on Thursday');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await agentRow('Codex').click();
+  await say('Hello Codex');
+  await expect.poll(agentsOfChats).toEqual(['codex']);
+  await expect.poll(chatStatus, { timeout: 15000 }).toBe('idle');
+  // Main's lookup of an email's saved chat waits until the test lets it answer.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    const find = hub.findFor.bind(hub);
+    global.__lookup = new Promise((resolve) => (global.__answerLookup = resolve));
+    hub.findFor = (ref) => global.__lookup.then(() => find(ref));
+  });
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Codex']);
+  await input().fill('For Codex');
+  await app.evaluate(() => global.__answerLookup());
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await expect(headAgent()).toHaveText('Codex');
+  expect(await inputValue()).toBe('For Codex');
+  // Held like any draft with text: a status update keeps it on Codex.
+  await win.evaluate(() => window.mail.call('agentTest', 'clark'));
+  await expect(headAgent()).toHaveText('Codex');
+  await input().press('Enter');
+  await expect.poll(agentsOfChats).toEqual(['codex', 'codex']);
+});
+
+// Main holds the first new chat until the test lets it fail; the chats after it are made as usual. The names of the
+// agents asked for are in global.__asked.
+const failFirstChat = () =>
+  app.evaluate(() => {
+    const hub = global.__semAgents;
+    const create = hub.create.bind(hub);
+    global.__asked = [];
+    global.__create = new Promise((resolve) => (global.__failCreate = resolve));
+    hub.create = (req) => {
+      global.__asked.push(req.agent);
+      if (global.__asked.length > 1) return create(req);
+      return global.__create.then(() => {
+        throw new Error('offline');
+      });
+    };
+  });
+
+// A long message whose send fails comes back above the one written meanwhile, and the two together are longer than main
+// takes. Send used to clear the input and main cut the text, so the end of the newer message was lost.
+test('a message longer than main takes is not sent, stays whole in the input and says how much too long it is', async () => {
+  await openChat('Call on Thursday');
+  await failFirstChat();
+  const first = 'A'.repeat(19000);
+  const second = 'B'.repeat(2000);
+  await say(first);
+  await expect.poll(inputValue).toBe('');
+  await input().fill(second);
+  await app.evaluate(() => global.__failCreate());
+  const both = `${first}\n\n${second}`;
+  await expect.poll(inputValue).toBe(both);
+  await input().press('Enter');
+  await expect(win.locator('#toast')).toContainText('This message is 1,002 characters too long. Shorten it or send it in parts.');
+  expect(await inputValue()).toBe(both);
+  expect(await app.evaluate(() => global.__asked)).toEqual(['clark']);
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(0);
+});
+
+// Undo after a failed send takes the returned text out in one step and then goes on through what was typed before, and
+// typing goes on where the caret was. Putting the text back used to reset the undo list and move the caret to the end.
+test("a message put back above newer text keeps that text's undo steps and caret", async () => {
+  await openChat('Call on Thursday');
+  await failFirstChat();
+  await say('Hello Hermes');
+  await expect.poll(inputValue).toBe('');
+  await input().fill('A second message');
+  for (let i = 0; i < 8; i++) await input().press('ArrowLeft');
+  await app.evaluate(() => global.__failCreate());
+  await expect.poll(inputValue).toBe('Hello Hermes\n\nA second message');
+  await expect(input()).toBeFocused();
+  await win.keyboard.type('X');
+  expect(await inputValue()).toBe('Hello Hermes\n\nA secondX message');
+  await win.keyboard.press('Control+z');
+  expect(await inputValue()).toBe('Hello Hermes\n\nA second message');
+  await win.keyboard.press('Control+z');
+  expect(await inputValue()).toBe('A second message');
+  await win.keyboard.press('Control+z');
+  expect(await inputValue()).toBe('');
+  await win.keyboard.press('Control+y');
+  await win.keyboard.press('Control+y');
+  expect(await inputValue()).toBe('Hello Hermes\n\nA second message');
 });
 
 test('a wide chat panel gives way, so the reader keeps its 420 px', async () => {
@@ -1386,8 +1824,8 @@ test('Settings has an Agents page with status and a way back', async () => {
   await win.locator('[data-agent-field="clark.name"]').fill('Clark');
   await win.locator('[data-agent-field="clark.name"]').press('Enter');
   await expect(win.locator('[data-agent-name="clark"]').first()).toHaveText('Clark');
-  // Clark is the default agent, so that row follows the new name too.
-  await expect(win.locator('[data-agent-default]')).toHaveText('Clark');
+  // Clark is the default agent, so that row follows the new name too, with its status.
+  await expect(win.locator('[data-agent-default]')).toHaveText('Clark · Ready');
   // Copy Hermes setup starts with the download of the bridge from this Rukoo's own release, so the two speak the
   // same bridge protocol. Recorded in main rather than put on the desktop's own clipboard.
   await app.evaluate(() => {

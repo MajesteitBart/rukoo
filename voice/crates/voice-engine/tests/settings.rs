@@ -256,14 +256,25 @@ fn bad_values_same_keys_and_dev_mode_are_refused() {
     let h = Harness::new("refuse");
     h.config(json!({}));
     let engine = h.start();
-    assert_eq!(
-        code(engine.settings_set("dictation.hotkey", json!("f14"))),
-        "same_key"
-    );
-    assert_eq!(
-        code(engine.settings_set("meetings.stopKey", json!("f13"))),
-        "same_key"
-    );
+    // A Mac doesn't offer the harness' F13 and F14 (#360), so it refuses them before it looks for
+    // a clash; `settings::keys` checks the clash with a Mac's own keys.
+    if cfg!(target_os = "macos") {
+        for (key, value) in [("dictation.hotkey", "f14"), ("meetings.stopKey", "f13")] {
+            assert_eq!(
+                code(engine.settings_set(key, json!(value))),
+                "invalid_value"
+            );
+        }
+    } else {
+        assert_eq!(
+            code(engine.settings_set("dictation.hotkey", json!("f14"))),
+            "same_key"
+        );
+        assert_eq!(
+            code(engine.settings_set("meetings.stopKey", json!("f13"))),
+            "same_key"
+        );
+    }
     assert_eq!(
         code(engine.settings_set("local.idleMinutes", json!(5000))),
         "invalid_value"
