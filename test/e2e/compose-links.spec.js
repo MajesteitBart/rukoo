@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { END_OF_TEXT } = require('./keys');
 
 let app;
 let win;
@@ -367,7 +368,7 @@ for (const surface of SURFACES) {
     expect(await editor(page).locator('a *').evaluateAll((els) => els.some((el) => Number(getComputedStyle(el).fontWeight) >= 600))).toBe(true);
 
     // At a caret with the Text field empty, the address is the text. An email address becomes a mailto: link.
-    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press(END_OF_TEXT);
     await page.keyboard.type(' or ');
     await page.keyboard.press('ControlOrMeta+k');
     await expect(field(page, 'text')).toHaveValue('');
@@ -482,7 +483,7 @@ for (const surface of SURFACES) {
     await expect.poll(async () => (await links(page)).length).toBe(2);
 
     // Scrolling the text closes the bubble.
-    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press(END_OF_TEXT);
     for (let i = 0; i < 45; i++) await page.keyboard.press('Enter');
     await page.locator('.composer-scroll').evaluate((el) => (el.scrollTop = 0));
     await docs.click();

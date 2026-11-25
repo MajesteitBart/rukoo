@@ -70,7 +70,7 @@ test('turning categories on puts them under Inbox, and each shows its mail', asy
   await expect(promotions.filter({ hasText: 'Sanne de Vries' })).toHaveCount(0);
 
   // A selection stays with its category: switching clears it, so no action reaches emails out of sight.
-  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
+  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['ControlOrMeta'] });
   await expect(win.locator('.list-tools.selecting')).toBeVisible();
   await win.locator('.nav-item.nav-sub', { hasText: 'To read' }).click();
   await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
@@ -182,7 +182,7 @@ test('an email moves to another category, and its sender follows on request', as
 
   // Several selected and moved away: the selection doesn't keep them out of sight.
   await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
-  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
+  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['ControlOrMeta'] });
   await win.locator('[data-bulk="more"]').click();
   await win.locator('.menu button', { hasText: 'Move to category' }).click();
   await win.locator('.scrim .radio-row', { hasText: 'Updates' }).click();
@@ -203,8 +203,8 @@ test('moving a selection to another category clears it from the reader too', asy
   await turnOn();
   await closeSettings();
   await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
-  await win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' }).click({ modifiers: ['Control'] });
-  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
+  await win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' }).click({ modifiers: ['ControlOrMeta'] });
+  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['ControlOrMeta'] });
   await expect(win.locator('.reader .multi')).toBeVisible();
   await win.locator('[data-bulk="more"]').click();
   await win.locator('.menu button', { hasText: 'Move to category' }).click();
@@ -597,7 +597,7 @@ test('an email open in the reading pane leaves it when Inbox stops listing it, b
   // Open and checked: its row, the selection and the reading pane all let it go.
   await row('ANWB Newsletter').click();
   await expect(reader()).toBeVisible();
-  await row('ANWB Newsletter').click({ modifiers: ['Control'] });
+  await row('ANWB Newsletter').click({ modifiers: ['ControlOrMeta'] });
   await expect(win.locator('.list-tools.selecting')).toBeVisible();
   await showInInbox('promotions', false);
   await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);

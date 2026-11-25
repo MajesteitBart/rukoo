@@ -40,6 +40,7 @@ Few people have used Rukoo on a real Mac so far, and Mac builds are only notariz
 - Every email has its own row, and the reading pane lists its related emails, such as your answer in Sent. Newsletters get an Unsubscribe button.
 - You write in the reading pane or in a separate window. Drafts save to the server while you type, and each account can have its own formatted signature.
 - You can undo a delete, archive or move with `Ctrl+Z`, and take an email back for a few seconds after Send. The keyboard shortcuts can follow Gmail, Outlook, Apple Mail or Thunderbird, and on a touch screen you choose what a swipe does.
+- New mail and team chat notify you while Rukoo runs, also with its window closed to the tray. On Windows and macOS, Settings → General → Open when you sign in starts the installed app hidden when you sign in to the computer, so nothing waits until you open it. It's off until you turn it on.
 
 More in [Mail](docs/mail.md) and [Inbox categories](docs/categories.md).
 

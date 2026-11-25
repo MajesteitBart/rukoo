@@ -1018,11 +1018,11 @@
   },
   "settings.rewriting.key": {
     "message": "Rewrite key",
-    "description": "Settings > Rewriting: row and choice dialog title for the key the user holds over selected text to edit it by voice. voice/ui/settings.js (rewritingPage)."
+    "description": "Settings > Dictation and Settings > Rewriting: row and choice dialog title for the key the user holds over selected text to edit it by voice. voice/ui/settings.js (rewriteKeyRow)."
   },
   "settings.rewriting.keyHelp": {
     "message": "Select text, hold this key, and say what should change. Must differ from the dictation key.",
-    "description": "Settings > Rewriting: description of Rewrite key. voice/ui/settings.js (rewritingPage)."
+    "description": "Settings > Dictation and Settings > Rewriting: description of Rewrite key. voice/ui/settings.js (rewriteKeyRow)."
   },
   "settings.rewriting.sameKey": {
     "message": "Choose a key other than the dictation key.",

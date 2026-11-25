@@ -50,6 +50,7 @@ const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
+const { LoginItem, loginTarget, electronLogin, memoryLogin, whenRenderedAndShown } = require('./loginitem');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
 const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
@@ -124,6 +125,13 @@ let updates = null;
 let installer = null;
 // The user chose Restart to update: the quit installs the new version and starts it.
 let restartForUpdate = false;
+// Settings > General > Open when you sign in (loginitem.js). startHidden: this start came from it, so the main window
+// stays hidden until someone opens it, and the tray icon is there to open it with.
+let loginItem = null;
+let startHidden = false;
+// After such a start: what opens the mail the last run left (recover in app.whenReady), once a main window has both
+// rendered and shown. A main window that closes unseen, as in a quit that is called off, leaves it to the next one.
+let recoverLater = null;
 let syncTimer = null;
 // The emails that came in since the main window last had focus, by id; badgeCount() counts the ones still new.
 let newSinceFocus = new Set();
@@ -284,9 +292,11 @@ function refreshBadge(count = badgeCount()) {
   refreshTray(count);
 }
 
-// The tray icon is there while closing or minimizing hides the main window, so the window can always come back.
+// The tray icon is there while closing or minimizing hides the main window, so the window can always come back. A start
+// from the login item hides the window too, so its icon stays for that run, also with both settings off; closing the
+// window then quits as those settings say. A Mac has the Dock for that.
 function updateTray() {
-  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray;
+  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray || (startHidden && process.platform !== 'darwin');
   if (wanted && !tray) {
     tray = new TrayIcon({
       icon: ICON,
@@ -633,6 +643,24 @@ function mailClient() {
 async function refreshMailClient() {
   const client = mailClient();
   if (client) await client.refresh({ portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE) });
+}
+
+// The login item (loginitem.js). Only an installed app on Windows or macOS gets the system's own; a run from a
+// checkout, a development or test profile, a portable or unpacked copy and Linux get none (loginTarget). Test mode
+// never touches the system: the login item lives in memory and a spec reads it through global.__semLoginItem. It plays
+// this platform, or the one SEM_LOGIN_ITEM names (win32, darwin), so a Linux test machine checks both; Linux itself has
+// no switch. SEM_LOGIN_OPENED=1 says the start came from the login item on a Mac.
+const TEST_LOGIN_EXE = { win32: 'C:\\Program Files\\Rukoo Mail\\Rukoo Mail.exe', darwin: '/Applications/Rukoo Mail.app/Contents/MacOS/Rukoo Mail' };
+function makeLoginItem() {
+  if (process.env.SEM_HIDDEN) {
+    const platform = TEST_LOGIN_EXE[process.env.SEM_LOGIN_ITEM] ? process.env.SEM_LOGIN_ITEM : process.platform;
+    const exe = TEST_LOGIN_EXE[platform];
+    const system = memoryLogin({ platform, execPath: exe, opened: process.env.SEM_LOGIN_OPENED === '1' });
+    return new LoginItem({ platform, target: exe ? { exe } : null, system });
+  }
+  const platform = process.platform;
+  const target = loginTarget({ platform, packaged: app.isPackaged, inApplications: () => app.isInApplicationsFolder() });
+  return new LoginItem({ platform, target, system: target ? electronLogin(app) : null });
 }
 
 // Links never navigate an app window; they open in the browser or, for mailto:, in a compose window.
@@ -1026,6 +1054,30 @@ const unsent = [];
 const unsentFile = () => path.join(app.getPath('userData'), 'data', 'unsent.json');
 // Whether this run wrote the file, so a later write with nothing left removes only its own.
 let unsentWritten = false;
+// What unsent.json had at the start, until reopenUnsent() opens it: after a start from the login item, only when the
+// window first shows. Every write keeps it, so a quit before that loses none of it.
+let unsentBefore = [];
+
+// unsent.json with own, this run's emails, and unsentBefore, merged by id. Written to a file beside it and moved over
+// it, as held.json is; no file when both are empty.
+function writeUnsent(own) {
+  const ids = new Set(own.map((u) => u.id));
+  const all = [...unsentBefore.filter((u) => !ids.has(u.id)), ...own];
+  const file = unsentFile();
+  if (!all.length) return fs.rmSync(file, { force: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(all));
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+function readUnsent() {
+  try {
+    const list = JSON.parse(fs.readFileSync(unsentFile(), 'utf8'));
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
 
 // Refused emails that wait for the main window's reading pane: { id, restore, error }. 'send-failed' only says that
 // one is here; the window asks for them (sendFailures) once it listens and has drawn its first state, so a main
@@ -1062,24 +1114,21 @@ function keepUnsent() {
   const waiting = refused.list().map(({ id, restore, error }) => ({ id, restore, error }));
   const list = [...unsent, ...waiting].filter((u) => u.restore);
   try {
-    if (list.length) {
-      fs.writeFileSync(unsentFile(), JSON.stringify(list));
-      unsentWritten = true;
-    } else if (unsentWritten) {
-      fs.rmSync(unsentFile(), { force: true });
-      unsentWritten = false;
+    if (list.length || unsentWritten) {
+      writeUnsent(list);
+      unsentWritten = list.length > 0;
     }
   } catch (_) {
     // A profile that can't be written to keeps nothing.
   }
 }
 
-// A quit that wrote unsent.json was called off, and what it listed is open again: the file goes, so the next start
-// doesn't open those emails a second time.
+// A quit that wrote unsent.json was called off, and what it listed is open again: those go from the file, so the next
+// start doesn't open them a second time.
 function forgetUnsent() {
   if (!unsentWritten) return;
   try {
-    fs.rmSync(unsentFile(), { force: true });
+    writeUnsent([]);
     unsentWritten = false;
   } catch (_) {
     // Left for the next start, which opens what it lists.
@@ -1098,14 +1147,18 @@ function openUnsent(list) {
 }
 
 function reopenUnsent() {
-  let list;
+  const list = unsentBefore;
+  if (!list.length) return new Set();
+  unsentBefore = [];
   try {
-    list = JSON.parse(fs.readFileSync(unsentFile(), 'utf8'));
-    fs.rmSync(unsentFile(), { force: true });
+    // A quit that is on keeps what it wrote there for the next start.
+    if (unsentWritten) keepUnsent();
+    else fs.rmSync(unsentFile(), { force: true });
   } catch (_) {
+    unsentBefore = list;
     return new Set();
   }
-  return openUnsent(Array.isArray(list) ? list : []);
+  return openUnsent(list);
 }
 
 // The emails in the outbox, written to held.json in the profile at every change (the outbox's changed()), so a crash
@@ -1513,6 +1566,16 @@ const api = {
     await client.register();
     await shell.openExternal(SETTINGS_URL);
     return true;
+  },
+  // Settings > General > Open when you sign in: what the system has now (loginitem.js status()), and the switch.
+  openAtLoginState: () => loginItem.status(),
+  setOpenAtLogin: (on) => {
+    if (!loginItem.status().available) throw new Error(t('settings.general.openAtLoginUnavailable'));
+    try {
+      return loginItem.set(on === true);
+    } catch (_) {
+      throw new Error(t('settings.general.openAtLoginFailed'));
+    }
   },
   print: (html) => printHtml(html),
   setBadge: (dataUrl, count) => {
@@ -2229,6 +2292,14 @@ function createWindow({ hidden = false } = {}) {
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
   reveal(win, b.maximized, hidden);
+  // Before anything can show it: a second start, the tray, an .ics file.
+  if (recoverLater) {
+    whenRenderedAndShown(win, () => {
+      const run = recoverLater;
+      recoverLater = null;
+      if (run) run();
+    });
+  }
   win.loadFile(path.join(RENDERER, 'index.html'));
 }
 
@@ -2275,13 +2346,14 @@ app.on('activate', () => {
 });
 
 // Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
-// the main window stays where it was, in the tray too.
+// the main window stays where it was, in the tray too. The login item starting a Rukoo that already runs changes
+// nothing.
 app.on('second-instance', (e, argv, workingDirectory) => {
   const link = mailto.fromArgs(argv);
   const file = link ? null : icsFromArgs(argv, workingDirectory);
   if (link) mailtoQueue.accept(link);
   else if (file) icsQueue.accept(file);
-  else if (engine && windowState) showWindow();
+  else if (engine && windowState && !(loginItem && loginItem.fromLogin(argv))) showWindow();
 });
 
 app.whenReady().then(() => {
@@ -2300,6 +2372,7 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   // What the last run still held, read before anything can be queued and write held.json anew.
   heldBefore = readHeld();
+  unsentBefore = readUnsent();
   outbox = new Outbox({
     send: (payload) => engine.send(payload),
     sent: (entry) => mailSent(entry.payload, entry.id),
@@ -2394,6 +2467,11 @@ app.whenReady().then(() => {
   // After every check, so a download that failed tries again with the next one.
   updates.on('checked', (state) => installer.download(state.available).catch(() => {}));
   installer.on('changed', () => broadcast('updates', updatesState()));
+  loginItem = makeLoginItem();
+  if (process.env.SEM_HIDDEN) global.__semLoginItem = loginItem;
+  // A start from the login item stays hidden, unless the profile has neither a mail account nor a signed-in Rukoo
+  // account: nothing would notify then, and the person needs the setup page.
+  startHidden = loginItem.fromLogin(process.argv, { first: true }) && (engine.accounts.length > 0 || account.signedIn);
   // ---- voice ----
   // Before the hub, whose meeting tools use it, and before the first window, which it may have to hide. A development
   // or test profile (SEM_DATA_DIR) only finds a Voice paired through RUKOO_VOICE_BRIDGE, never the installed one.
@@ -2450,13 +2528,17 @@ app.whenReady().then(() => {
     broadcast('theme');
   });
   applyTheme();
-  createWindow();
+  // From the login item the window starts in the tray, without taking the focus; opening Rukoo shows it.
+  // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json). After a start
+  // from the login item they stay on disk until the person first shows the window, so no editor takes the focus.
+  const recover = () => reopenHeld(reopenUnsent());
+  if (startHidden) recoverLater = recover;
+  createWindow({ hidden: startHidden });
   // After the main window shows, so the compose window comes up in front of it.
   win.once('ready-to-show', () => {
     mailtoQueue.start();
     icsQueue.start();
-    // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json).
-    reopenHeld(reopenUnsent());
+    if (!startHidden) recover();
   });
   refreshMailClient().catch(() => {});
   updateTray();
