@@ -2333,7 +2333,9 @@ export async function addAgent() {
   const runs = WEB ? null : await loadRuns();
   const made = await agentForm(null, { runsHere: Boolean(runs && runs.available) });
   if (made && (made.key || made.held)) {
-    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices, room: channelToJoin(made.agent, ws) });
+    // The choices can still be waiting on a status check: the session is checked once they are in.
+    const picked = await choices;
+    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: picked, room: channelToJoin(made.agent, ws) });
     else keyLost(made.agent);
   }
   return made ? made.agent : null;
@@ -2366,7 +2368,8 @@ export async function newAgentKey(agent, { runHere = false } = {}) {
     // asked for it holds. An agent set up here took the new key in main (runsHere): the step shows it running, without
     // the key, and nothing is lost when the step can't show.
     if (made && (made.key || made.held || made.runsHere)) {
-      if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices });
+      const picked = await choices;
+      if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: picked });
       else if (!made.runsHere) keyLost(made.agent || agent);
     }
     return made ? made.agent : null;
