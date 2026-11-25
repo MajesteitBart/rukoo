@@ -6,14 +6,14 @@ const NAMED = /^(?:Enter|Return|Esc|Escape|Tab|Space|Up|Down|Left|Right|Delete|B
 const KEY = (key) => MODIFIER.test(key) || NAMED.test(key) || /^[A-Z0-9]$/.test(key);
 
 /**
- * The keys of a shortcut, or null when the text isn't one. A single key is a named key or a letter (`Enter`, `F5`,
- * `X`); a bare digit could be a value. A combination starts with a modifier (`Ctrl+Shift+R`) and may end in a mouse
+ * The keys of a shortcut, or null when the text isn't one. A single key is a modifier, a named key or a letter
+ * (`Shift`, `Enter`, `F5`, `X`); a bare digit could be a value. A combination starts with a modifier (`Ctrl+Shift+R`) and may end in a mouse
  * click (`Shift+click`).
  */
 export function shortcutKeys(text) {
   if (typeof text !== 'string' || text !== text.trim() || !text) return null;
   const parts = text.split('+');
-  if (parts.length === 1) return NAMED.test(text) || /^[A-Z]$/.test(text) ? parts : null;
+  if (parts.length === 1) return MODIFIER.test(text) || NAMED.test(text) || /^[A-Z]$/.test(text) ? parts : null;
   const keys = parts.at(-1) === 'click' ? parts.slice(0, -1) : parts;
   return MODIFIER.test(keys[0]) && keys.every(KEY) ? parts : null;
 }

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { markdownKeys, shortcutKeys, shortcutNodes } from './markdown-keys.mjs';
 
 test('shortcuts are recognised; file names, commands, values and typed characters are not', () => {
-  for (const s of ['Ctrl+N', 'Ctrl+Shift+R', 'Command+Down', 'Control+Space', 'Alt+Enter', 'Shift+Esc', 'Ctrl+1', 'Enter', 'Tab', 'Esc', 'F5', 'X', 'A', 'Shift+click', 'Ctrl+click']) {
+  for (const s of ['Ctrl+N', 'Ctrl+Shift+R', 'Command+Down', 'Control+Space', 'Alt+Enter', 'Shift+Esc', 'Ctrl+1', 'Shift', 'Ctrl', 'Enter', 'Tab', 'Esc', 'F5', 'X', 'A', 'Shift+click', 'Ctrl+click']) {
     assert.ok(shortcutKeys(s), s);
   }
   for (const s of ['@', '/', '$', '.deb', 'SKILL.md', 'PATH', 'name', 'openclaw mcp set', 'click', 'Ctrl+', '+N', 'ctrl+n', ' Enter', 'a', 'Ctrl+click+N', '7', 'A+B', 'Enter+Ctrl', 'N+click']) {
