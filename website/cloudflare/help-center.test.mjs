@@ -7,11 +7,14 @@ import { helpPolicy } from './help-center.js';
 // What site/_headers puts on every site file; /help must not keep it.
 const SITE_POLICY = "default-src 'self'; script-src 'self' 'sha256-x'";
 
+const TYPES = { js: 'text/javascript; charset=utf-8', svg: 'image/svg+xml' };
+
 function env({ notFoundPage = true } = {}) {
   const files = new Map([
     ['/help/', 'help home'],
     ['/help/mail/write/', 'write mail'],
     ['/help/pagefind/pagefind.js', 'search'],
+    ['/help/favicon.svg', '<svg/>'],
     ...(notFoundPage ? [['/help/404', 'help 404 page']] : []),
     ['/', 'landing page']
   ]);
@@ -27,7 +30,7 @@ function env({ notFoundPage = true } = {}) {
         const found = files.has(path);
         return new Response(found && req.method === 'GET' ? files.get(path) : null, {
           status: found ? 200 : 404,
-          headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': SITE_POLICY, 'X-Content-Type-Options': 'nosniff' }
+          headers: { 'Content-Type': TYPES[path.split('.').at(-1)] ?? 'text/html; charset=utf-8', 'Content-Security-Policy': SITE_POLICY, 'X-Content-Type-Options': 'nosniff' }
         });
       }
     },
@@ -51,22 +54,31 @@ test('/help redirects to /help/, keeping the query', async () => {
   assert.deepEqual(bindings.calls, { assets: [], account: [] });
 });
 
-test('help pages come from the site files, with the help policy in place of the site one', async () => {
+test('help files come from the site files, with the help policy in place of the site one', async () => {
   const bindings = env();
-  for (const [path, body] of [['/help/', 'help home'], ['/help/mail/write/', 'write mail'], ['/help/pagefind/pagefind.js', 'search']]) {
-    const page = await get(path, bindings);
-    assert.equal(page.status, 200, path);
-    assert.equal(await page.text(), body, path);
-    assert.equal(page.headers.get('Content-Security-Policy'), helpPolicy(), path);
+  const files = [
+    ['/help/', 'help home', helpPolicy({ page: true })],
+    ['/help/mail/write/', 'write mail', helpPolicy({ page: true })],
+    ['/help/pagefind/pagefind.js', 'search', helpPolicy({ page: false })],
+    ['/help/favicon.svg', '<svg/>', helpPolicy({ page: false })]
+  ];
+  for (const [path, body, policy] of files) {
+    const file = await get(path, bindings);
+    assert.equal(file.status, 200, path);
+    assert.equal(await file.text(), body, path);
+    assert.equal(file.headers.get('Content-Security-Policy'), policy, path);
     // Headers the help center has no opinion on stay as the site set them.
-    assert.equal(page.headers.get('X-Content-Type-Options'), 'nosniff', path);
+    assert.equal(file.headers.get('X-Content-Type-Options'), 'nosniff', path);
   }
-  assert.match(helpPolicy(), /script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';/);
+  // Only HTML pages, which narrow it with their own <meta> policy, may run inline scripts.
+  assert.match(helpPolicy({ page: true }), /script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';/);
+  assert.match(helpPolicy({ page: false }), /script-src 'self' 'wasm-unsafe-eval';/);
+  assert.doesNotMatch(helpPolicy({ page: false }), /unsafe-inline' 'wasm|script-src[^;]*unsafe-inline/);
   assert.match(helpPolicy(), /frame-ancestors 'none'$/);
   const slashless = await get('/help/mail/write', bindings);
   assert.equal(slashless.status, 307);
   assert.equal(slashless.headers.get('Location'), '/help/mail/write/');
-  assert.equal(slashless.headers.get('Content-Security-Policy'), helpPolicy());
+  assert.equal(slashless.headers.get('Content-Security-Policy'), helpPolicy({ page: false }));
   assert.deepEqual(bindings.calls.account, []);
 });
 

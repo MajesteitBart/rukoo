@@ -10,12 +10,13 @@ export function isHelpPath(pathname) {
 }
 
 // Starlight puts small inline scripts on every page (theme, sidebar, search shortcut), and Pagefind's search runs
-// WebAssembly. help-center/scripts/publish.mjs gives each page a <meta> policy that allows only the hashes of its own
-// inline scripts; the browser enforces that one and this one, so 'unsafe-inline' here lets nothing else through.
-export function helpPolicy() {
+// WebAssembly. help-center/scripts/publish.mjs gives each HTML page a <meta> policy that allows only the hashes of its
+// own inline scripts; the browser enforces that one and this one, so 'unsafe-inline' on a page lets nothing else
+// through. Every other file has no such <meta>, so an SVG opened on its own gets no inline scripts at all.
+export function helpPolicy({ page = true } = {}) {
   return [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+    page ? "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'" : "script-src 'self' 'wasm-unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self'",
@@ -43,6 +44,7 @@ export async function helpResponse(request, env, url) {
     response = new Response(response.body, response);
   }
   // site/_headers gives every site file the landing page's policy; both would be enforced, so this one replaces it.
-  response.headers.set('Content-Security-Policy', helpPolicy());
+  const page = /^text\/html\b/i.test(response.headers.get('Content-Type') || '');
+  response.headers.set('Content-Security-Policy', helpPolicy({ page }));
   return response;
 }
