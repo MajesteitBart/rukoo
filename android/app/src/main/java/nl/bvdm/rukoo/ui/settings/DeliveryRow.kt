@@ -48,6 +48,7 @@ object DeliveryTexts {
             "ACTION_REQUIRED" -> R.string.settings_notifications_delivery_help_action
             "TEMP_UNAVAILABLE" -> R.string.settings_notifications_delivery_help_unavailable
             "REFUSED" -> R.string.settings_notifications_delivery_help_refused
+            "NOT_ALLOWED" -> R.string.settings_notifications_delivery_help_not_allowed
             else -> R.string.settings_notifications_delivery_help_failed
         }
     }

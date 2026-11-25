@@ -1168,9 +1168,10 @@ class WorkspaceService internal constructor(
      * workspaces, at most [ChatTiming.workerWorkspaces], each run until its feed has no more pages, then the outbox, all
      * within [budgetMs]. Alerts follow each run. Returns how many workspaces ran, or null when signed out, team chat is
      * off or there is no cache. Runs nobody waits for, and the feed's retries, may start only within this window: once
-     * it closes, a retry a failed run scheduled waits for the next worker or the foreground.
+     * it closes, a retry a failed run scheduled waits for the next worker or the foreground. [first]: workspaces a push
+     * wake named (ChatPush), which run before the others and whether or not they are among the most recently active.
      */
-    suspend fun backgroundCatchUp(budgetMs: Long): Int? {
+    suspend fun backgroundCatchUp(budgetMs: Long, first: Set<String> = emptySet()): Int? {
         awaitReady()
         val l = live ?: return null
         if (!isLive()) return null
@@ -1180,10 +1181,9 @@ class WorkspaceService internal constructor(
         try {
             withTimeoutOrNull(budgetMs) {
                 quietly { list() }
-                val rows = quietly { l.store.read { listWs() } }.orEmpty()
-                    .filter { it.state == FeedApplier.STATE_OK }
-                    .sortedByDescending { it.activeAt ?: 0 }
-                    .take(timing.workerWorkspaces)
+                val ok = quietly { l.store.read { listWs() } }.orEmpty().filter { it.state == FeedApplier.STATE_OK }
+                val named = ok.filter { it.id in first }
+                val rows = named + ok.filter { it.id !in first }.sortedByDescending { it.activeAt ?: 0 }.take(timing.workerWorkspaces)
                 for (row in rows) {
                     val s = l.sync(row.id) ?: continue
                     var runs = 0

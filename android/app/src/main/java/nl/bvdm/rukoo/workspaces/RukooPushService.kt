@@ -30,13 +30,13 @@ class RukooPushService : PushService() {
     }
 
     override fun onMessage(message: PushMessage, instance: String) {
-        // The wake says nothing more than that there is something new, so its content isn't read. One that the
-        // connector couldn't decrypt didn't come from this server's key, and wakes nothing.
+        // A wake says that there is something new and in which workspaces, which the catch-up runs first. One that the
+        // connector couldn't decrypt with Rukoo's keys didn't come from the server, and wakes nothing.
         if (!message.decrypted) {
             AppLog.w(TAG, "A push message that wasn't encrypted for this phone")
             return
         }
-        push.message()
+        push.message(PushPlan.wakeWorkspaces(message.content))
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {

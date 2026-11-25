@@ -10,6 +10,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,15 +41,18 @@ import nl.bvdm.rukoo.settings.Density
 import nl.bvdm.rukoo.settings.Language
 import nl.bvdm.rukoo.settings.SwipeAction
 import nl.bvdm.rukoo.settings.ThemeMode
+import nl.bvdm.rukoo.ui.components.RkBottomSheet
 import nl.bvdm.rukoo.ui.components.SectionTitle
 import nl.bvdm.rukoo.ui.components.SettingsCard
 import nl.bvdm.rukoo.ui.components.SettingsRow
 import nl.bvdm.rukoo.ui.components.SettingsSwitchRow
 import nl.bvdm.rukoo.ui.components.SettingsTrailingValue
+import nl.bvdm.rukoo.ui.components.SheetRow
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.theme.Rk
+import nl.bvdm.rukoo.ui.theme.tabular
 import nl.bvdm.rukoo.workspaces.ChatDelivery
 
 /**
@@ -125,7 +133,8 @@ fun NotificationsPage(app: AppViewModel) {
             val pushState = push?.state?.collectAsStateWithLifecycle()?.value
             if (push != null && pushState != null && chatAvailable && settings.notifyChat && DeliveryTexts.shows(pushState.delivery)) {
                 // A distributor installed or removed while Rukoo was in the background shows when the page comes back.
-                LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { push.check() } }
+                // Returning from the distributor's own app, as after ACTION_REQUIRED, tries a failed registration again.
+                LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { push.check(force = true) } }
                 DeliveryRow(push, pushState)
             }
             // How soon a message notifies with Rukoo in the background: Android's battery setting, and Phone tools.
@@ -251,10 +260,14 @@ fun LanguagePage(app: AppViewModel) {
     }
 }
 
-/** A library Rukoo ships, with its license and where to read it. */
-private data class License(val name: String, val license: String, val url: String)
+/**
+ * A library Rukoo ships, with its license and where to read it. [text]: a license text bundled in the app's assets,
+ * which the About page shows with a link to [url], the library's source.
+ */
+internal data class License(val name: String, val license: String, val url: String, val text: String? = null)
 
-private val LICENSES = listOf(
+/** The libraries the About page lists, in the order it lists them. */
+internal val LICENSES = listOf(
     License("Rukoo Mail", "MIT", "https://github.com/MajesteitBart/rukoo"),
     License("Inter", "SIL Open Font License 1.1", "https://github.com/rsms/inter"),
     License("JetBrains Mono", "SIL Open Font License 1.1", "https://github.com/JetBrains/JetBrainsMono"),
@@ -267,15 +280,25 @@ private val LICENSES = listOf(
     License("OkHttp", "Apache 2.0", "https://square.github.io/okhttp/"),
     License("Bouncy Castle", "MIT", "https://www.bouncycastle.org/about/license/"),
     License("UnifiedPush connector", "Apache 2.0", "https://codeberg.org/UnifiedPush/android-connector"),
-    License("UnifiedPush embedded FCM distributor", "Apache 2.0", "https://codeberg.org/UnifiedPush/android-embedded_fcm_distributor"),
     License("Tink", "Apache 2.0", "https://github.com/tink-crypto/tink-java"),
     License("AndroidX, Jetpack Compose, Kotlin", "Apache 2.0", "https://developer.android.com/jetpack/androidx"),
+) + listOfNotNull(
+    // UnifiedPush's embedded FCM distributor, in builds that have it (-Prukoo.fcm=off leaves it out). Its Maven POM for
+    // 3.1.0 says Apache 2.0, but the LICENSE file in its repository at tag 3.1.0 is the LGPL 2.1, so Rukoo treats it as
+    // LGPL 2.1: the About page shows that license's text and links to the library's source at that tag.
+    License(
+        "UnifiedPush embedded FCM distributor 3.1.0",
+        "LGPL 2.1",
+        "https://codeberg.org/UnifiedPush/android-embedded_fcm_distributor/src/tag/3.1.0",
+        text = "licenses/LGPL-2.1.txt",
+    ).takeIf { BuildConfig.EMBEDDED_FCM },
 )
 
 /** Version, what the app stores on this phone, and the open-source licenses. */
 @Composable
 fun AboutPage() {
     val context = LocalContext.current
+    var shown by remember { mutableStateOf<License?>(null) }
     val size by produceState<Long?>(null) { value = withContext(Dispatchers.IO) { folderSize(context.dataDir) + folderSize(context.externalCacheDir) } }
     SettingsPageBody {
         Spacer(Modifier.height(12.dp))
@@ -297,11 +320,46 @@ fun AboutPage() {
                 SettingsRow(
                     title = l.name,
                     description = l.license,
-                    trailing = { RowIcon(PanelIcons.ArrowOut, Rk.colors.text3) },
-                    onClick = { openWebPage(context, l.url) },
+                    trailing = { RowIcon(if (l.text != null) RukooIcons.ChevronRight else PanelIcons.ArrowOut, Rk.colors.text3) },
+                    onClick = { if (l.text != null) shown = l else openWebPage(context, l.url) },
                 )
             }
         }
+    }
+    shown?.let { l -> LicenseSheet(l, onDismiss = { shown = null }) }
+}
+
+/**
+ * A license text written for 80 columns, as paragraphs a phone wraps itself: the lines of each paragraph joined. The
+ * file in the app stays as the library ships it.
+ */
+internal fun reflow(text: String): String =
+    text.replace("\r\n", "\n").split(Regex("\n\\s*\n")).joinToString("\n\n") { paragraph ->
+        paragraph.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+    }.trim()
+
+/** A license text bundled with the app, and the library's source. */
+@Composable
+private fun LicenseSheet(license: License, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val text by produceState<String?>(null, license.text) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { reflow(context.assets.open(license.text!!).bufferedReader().use { it.readText() }) }.getOrNull()
+        }
+    }
+    RkBottomSheet(onDismissRequest = onDismiss, title = license.name) {
+        SheetRow(
+            label = stringResource(R.string.settings_about_license_source),
+            icon = PanelIcons.ArrowOut,
+            hint = license.license,
+            onClick = { openWebPage(context, license.url) },
+        )
+        Text(
+            text.orEmpty(),
+            style = Rk.type.text12_5.tabular,
+            color = Rk.colors.text2,
+            modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+        )
     }
 }
 

@@ -264,7 +264,8 @@
     <string name="settings_notifications_delivery_help_failed">%1$s kon geen verbinding maken.</string>
     <string name="settings_notifications_delivery_help_action">Open %1$s: die heeft je nodig voordat hij verbinding kan maken.</string>
     <string name="settings_notifications_delivery_help_unavailable">De server van %1$s is nu niet bereikbaar.</string>
-    <string name="settings_notifications_delivery_help_refused">Je Rukoo-server kan niet naar de server van %1$s sturen.</string>
+    <string name="settings_notifications_delivery_help_refused">Je Rukoo-server nam het adres van %1$s niet aan. Rukoo probeert het morgen opnieuw.</string>
+    <string name="settings_notifications_delivery_help_not_allowed">Je Rukoo-server levert niet via de server van %1$s.</string>
     <string name="settings_notifications_delivery_choose">Ontvangen via</string>
     <string name="settings_notifications_chat_battery_help_push">Komen berichten laat, zet Rukoo en %1$s dan allebei op Onbeperkt.</string>
     <!-- The distributor built into Rukoo, which receives wakes through Google's FCM. -->
@@ -297,6 +298,7 @@
     <string name="settings_about_storage">Opslag</string>
     <string name="settings_about_storage_help">Mail, chats en instellingen op deze telefoon</string>
     <string name="settings_about_licenses">Opensourcelicenties</string>
+    <string name="settings_about_license_source">Broncode</string>
 
     <string name="onboarding_connect">Verbinden met Rukoo op je computer</string>
     <string name="onboarding_connect_help">Koppel met de code in de instellingen van Rukoo en zet daarna je accounts en agents over.</string>

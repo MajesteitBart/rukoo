@@ -1208,6 +1208,32 @@ class WorkspaceServiceTest {
     }
 
     @Test
+    fun `a wake's workspaces run first in the background, also beyond the most recently active`() = runTest {
+        val h = Harness(this, db)
+        h.timing = ChatTiming(workerWorkspaces = 1)
+        h.seed {
+            syncedWs()
+            syncedWs(Ids.WS2, "Other")
+            sql.exec("UPDATE ws SET activeAt = 200 WHERE id = '${ws}'")
+            sql.exec("UPDATE ws SET activeAt = 100 WHERE id = '${Ids.WS2}'")
+        }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+
+        assertEquals(1, s.backgroundCatchUp(60_000))
+        assertTrue("the older workspace waits without a wake", h.http.calls("GET", h.route(Ids.WS2, "/changes")).isEmpty())
+
+        assertEquals(2, s.backgroundCatchUp(60_000, first = setOf(Ids.WS2)))
+        assertEquals(1, h.http.calls("GET", h.route(Ids.WS2, "/changes")).size)
+        val order = h.http.calls.filter { it.route.endsWith("/changes") }.map { it.route }
+        assertEquals("the named workspace goes first", h.route(Ids.WS2, "/changes"), order[order.size - 2])
+    }
+
+    @Test
     fun `a process started in the background syncs only inside the worker's window, and its retries end with it`() = runTest {
         val h = Harness(this, db)
         h.seed { syncedWs() }

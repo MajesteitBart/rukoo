@@ -26,9 +26,13 @@ import nl.bvdm.rukoo.core.AppLog
 class ChatSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         try {
-            val ran = applicationContext.appContainer.workspaces.backgroundCatchUp(BUDGET_MS)
-            AppLog.i(TAG, if (ran == null) "Chat catch-up skipped: no team chat session" else "Chat catch-up ran $ran workspaces")
-            applicationContext.appContainer.push.run()
+            val container = applicationContext.appContainer
+            // Workspaces a push wake named run first, and a wake that comes in meanwhile makes it run once more.
+            container.push.catchUpRounds { first ->
+                val ran = container.workspaces.backgroundCatchUp(BUDGET_MS, first)
+                AppLog.i(TAG, if (ran == null) "Chat catch-up skipped: no team chat session" else "Chat catch-up ran $ran workspaces")
+            }
+            container.push.run()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -51,8 +55,9 @@ class ChatSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
         /**
          * Runs the catch-up now, for a push wake: expedited while Android gives Rukoo the quota, as it does for a few
-         * seconds after a distributor delivered a high-priority message, else as soon as it can. A newer wake replaces
-         * a run that is still going, so the run that goes on has seen the latest.
+         * seconds after a distributor delivered a high-priority message, else as soon as it can. A run that is going
+         * on is never cancelled: a newer wake queues one more run after it, and the run going on sees the wake too
+         * (ChatPush.catchUpRounds).
          */
         fun runNow(context: Context) {
             val request = OneTimeWorkRequestBuilder<ChatSyncWorker>()
@@ -60,7 +65,7 @@ class ChatSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
             try {
-                WorkManager.getInstance(context).enqueueUniqueWork(PUSH_WORK, ExistingWorkPolicy.REPLACE, request)
+                WorkManager.getInstance(context).enqueueUniqueWork(PUSH_WORK, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
             } catch (e: IllegalStateException) {
                 AppLog.w(TAG, "WorkManager unavailable for a push wake", e)
             }

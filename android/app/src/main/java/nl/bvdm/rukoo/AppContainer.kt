@@ -267,13 +267,13 @@ class AppContainer(context: Context) : AppServices {
         }
         // Team chat follows the account and runs while the app is in the foreground or Phone tools' foreground service
         // runs; ChatSyncWorker in the background.
-        ChatBackground(appContext, appScope, { workspaces }, mcp.status.map { it.running }).start()
+        ChatBackground(appContext, appScope, { workspaces }, mcp.status.map { it.running }, networkBack = { push.check(force = true) }).start()
         // Push wakes follow the account from the start, and look again for a distributor whenever Rukoo comes to the
         // foreground, as someone who just installed ntfy does.
         if (!BuildConfig.USE_PREVIEW_MAIL) {
             appScope.launch(Dispatchers.IO) { push.start() }
             appScope.launch(Dispatchers.Main) {
-                ProcessLifecycleOwner.get().lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { push.check() }
+                ProcessLifecycleOwner.get().lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { push.check(force = true) }
             }
         }
         // The language the user picks in Rukoo; LocaleManager keeps it, so only changes are applied.

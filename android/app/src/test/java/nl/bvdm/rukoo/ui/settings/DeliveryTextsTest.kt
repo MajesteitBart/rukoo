@@ -29,6 +29,7 @@ class DeliveryTextsTest {
         assertEquals(R.string.settings_notifications_delivery_help_action, DeliveryTexts.help(ChatDelivery.Failed(ntfy, "ACTION_REQUIRED")))
         assertEquals(R.string.settings_notifications_delivery_help_unavailable, DeliveryTexts.help(ChatDelivery.Failed(ntfy, "TEMP_UNAVAILABLE")))
         assertEquals(R.string.settings_notifications_delivery_help_refused, DeliveryTexts.help(ChatDelivery.Failed(ntfy, "REFUSED")))
+        assertEquals(R.string.settings_notifications_delivery_help_not_allowed, DeliveryTexts.help(ChatDelivery.Failed(ntfy, "NOT_ALLOWED")))
         assertEquals(R.string.settings_notifications_delivery_help_failed, DeliveryTexts.help(ChatDelivery.Failed(ntfy, "INTERNAL_ERROR")))
         assertEquals(ntfy, DeliveryTexts.distributor(ChatDelivery.Failed(ntfy, "NETWORK")))
         assertNull(DeliveryTexts.distributor(ChatDelivery.NoDistributor))
@@ -41,6 +42,8 @@ class DeliveryTextsTest {
         assertEquals(DeliveryTexts.Tap.CHOOSE, DeliveryTexts.tap(ChatDelivery.Instant(ntfy), 2))
         assertEquals(DeliveryTexts.Tap.OPEN_DISTRIBUTOR, DeliveryTexts.tap(ChatDelivery.Failed(ntfy, "ACTION_REQUIRED"), 1))
         assertEquals(DeliveryTexts.Tap.NONE, DeliveryTexts.tap(ChatDelivery.ServerWithout, 2))
+        // A push service the server doesn't post to: with another distributor on the phone, the tap picks it.
+        assertEquals(DeliveryTexts.Tap.CHOOSE, DeliveryTexts.tap(ChatDelivery.Failed(ntfy, "NOT_ALLOWED"), 2))
         // Rukoo's own embedded distributor has no app to open.
         assertEquals(DeliveryTexts.Tap.NONE, DeliveryTexts.tap(ChatDelivery.Failed("nl.bvdm.rukoo", "ACTION_REQUIRED"), 1, own = "nl.bvdm.rukoo"))
     }

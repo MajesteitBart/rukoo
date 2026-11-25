@@ -1,6 +1,8 @@
 package nl.bvdm.rukoo.workspaces
 
 import java.io.File
+import java.security.MessageDigest
+import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,32 +14,43 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import nl.bvdm.rukoo.account.AccountError
 import nl.bvdm.rukoo.account.AccountHttp
 import nl.bvdm.rukoo.account.AccountStatus
 import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.JsonFiles
+import nl.bvdm.rukoo.core.RukooJson
 import nl.bvdm.rukoo.settings.AppSettings
 
 /*
  * Push wakes for team chat (server/WORKSPACES.md "Push wakes", docs/android.md "Team chat in the background"). With a
- * UnifiedPush distributor on the phone, such as ntfy, the server posts an encrypted wake to the endpoint the
- * distributor gave Rukoo whenever something comes that notifies, and Rukoo runs ChatSyncWorker's catch-up at once
- * instead of waiting for Android's next 15-minute window. Without a distributor, or with a server that sends no wakes,
- * ChatSyncWorker's periodic check is the only way, and it stays the fallback either way.
+ * push service, a UnifiedPush distributor app such as ntfy or the FCM distributor built into Rukoo, the server posts an
+ * encrypted wake to the endpoint the distributor gave Rukoo whenever something comes that notifies, and Rukoo runs
+ * ChatSyncWorker's catch-up at once instead of waiting for Android's next 15-minute window. Delivery is best effort:
+ * ChatSyncWorker's periodic check stays the fallback.
  *
  * ChatPush keeps three things in step: the distributor Rukoo registered with (UnifiedPush.register, with the server's
- * VAPID key), the endpoint the distributor gave, and the server's copy of that endpoint for this session (PUT
+ * VAPID key), the endpoint and keys the distributor gave, and the server's copy of them for this session (PUT
  * /v1/push-endpoint). PushPlan decides the steps from what is wanted and what was done, without Android, so it is
  * unit-tested; ChatPush runs them, and RukooPushService hands it what the distributor answers.
  */
 
 /** The registration a distributor gave: its endpoint and the keys the server encrypts with, in base64url. */
 @Serializable
-data class PushEndpoint(val url: String, val p256dh: String, val auth: String)
+data class PushEndpoint(val url: String, val p256dh: String, val auth: String) {
+    /** The whole registration, address and keys, hashed: a registration made again with new keys is another. */
+    val fingerprint: String
+        get() {
+            val digest = MessageDigest.getInstance("SHA-256").digest("$url\n$p256dh\n$auth".toByteArray())
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(digest.copyOf(16))
+        }
+}
 
 /**
  * How team chat reaches this phone while Rukoo is in the background, for Settings > Notifications. A distributor is
@@ -62,7 +75,7 @@ sealed interface ChatDelivery {
     /**
      * [distributor] couldn't register Rukoo, or the server refused its endpoint. [reason] is UnifiedPush's FailedReason
      * name (INTERNAL_ERROR, NETWORK, ACTION_REQUIRED, VAPID_REQUIRED), [PushPlan.UNAVAILABLE] while its server is down,
-     * or [PushPlan.REFUSED].
+     * [PushPlan.NOT_ALLOWED] when the server doesn't post to that push service, or [PushPlan.REFUSED].
      */
     data class Failed(val distributor: String, val reason: String) : ChatDelivery
 }
@@ -70,12 +83,15 @@ sealed interface ChatDelivery {
 /** What Settings shows: the [delivery], and the distributors on the phone to choose from. */
 data class PushState(val delivery: ChatDelivery = ChatDelivery.Off, val distributors: List<String> = emptyList())
 
-/** What Settings reaches of ChatPush. */
+/** What Settings and the app's lifecycle reach of ChatPush. */
 interface ChatPushControl {
     val state: StateFlow<PushState>
 
-    /** Looks again, for a distributor installed or removed meanwhile. */
-    fun check()
+    /**
+     * Looks again, for a distributor installed or removed meanwhile. [force]: Rukoo came back to the foreground or the
+     * network came back, which is when a registration that failed tries again without waiting out its backoff.
+     */
+    fun check(force: Boolean = false)
 
     /** The distributor to receive wakes through, when there are several. */
     fun choose(distributor: String)
@@ -95,6 +111,14 @@ interface PushDistributors {
     fun unregister()
 }
 
+/** The server's 400 for a registration: [key] is the session and fingerprint, [reason] REFUSED or NOT_ALLOWED. */
+@Serializable
+internal data class PushRefusal(val key: String, val reason: String, val distributor: String, val server: String, val at: Long)
+
+/** Wakes not caught up with yet: [seq] counts every wake, [workspaces] are the ones they named. */
+@Serializable
+internal data class PendingWake(val seq: Long = 0, val workspaces: Set<String> = emptySet())
+
 /** What ChatPush keeps between runs (chat-push.json). */
 @Serializable
 internal data class PushRecord(
@@ -103,26 +127,45 @@ internal data class PushRecord(
     /** The distributor Rukoo registered with, and the VAPID key it gave. */
     val distributor: String? = null,
     val vapid: String? = null,
-    /** The distributor's answer: an endpoint, or a failure. */
+    /** The distributor's answer: an endpoint, and the failure it reported last, if any. */
     val endpoint: PushEndpoint? = null,
     val failure: String? = null,
-    /** The session tag and endpoint the server took last ([PushPlan.key]), and when. */
+    /** Registrations in a row that failed or got no answer, and when the last one was sent: the backoff. */
+    val failures: Int = 0,
+    val attemptAt: Long = 0,
+    /** The session and registration the server took last ([PushPlan.key]), and when. */
     val sentFor: String? = null,
     val sentAt: Long = 0,
-    /** The key the server refused with 400: an endpoint it won't post to, such as one on a private network. */
-    val refused: String? = null,
+    /** The server's 400 for a registration, tried again when anything about it changes, or a day later. */
+    val refused: PushRefusal? = null,
+    val wake: PendingWake = PendingWake(),
 )
 
 /** The steps from what is wanted to what was done, and what Settings says meanwhile. */
 internal object PushPlan {
-    /** How long the server's copy of an endpoint counts as current: once a day it is sent again, in case it got lost. */
+    /** How long the server's copy of a registration counts as current: once a day it is sent again, in case it got lost. */
     const val RESEND = 24 * 60 * 60 * 1000L
+
+    /** How long a refusal (400) holds before the same registration is sent again. */
+    const val RETRY_REFUSED = 24 * 60 * 60 * 1000L
+
+    /** How long a distributor may take to answer a registration before it is sent again. */
+    const val ANSWER_TIME = 60 * 1000L
+
+    /** The longest backoff between registrations that fail. */
+    const val BACKOFF_MAX = 60 * 60 * 1000L
+
+    /** Returning to Rukoo or the network coming back tries a failed registration again, at most this often. */
+    const val FORCE_GAP = 30 * 1000L
 
     /** A failure of the distributor's server, which it says with TEMP_UNAVAILABLE. */
     const val UNAVAILABLE = "TEMP_UNAVAILABLE"
 
-    /** The server refused the endpoint (400): not public https, or its host doesn't lead to a public address. */
+    /** The server refused the endpoint as malformed (400 invalid). */
     const val REFUSED = "REFUSED"
+
+    /** The server doesn't post to that push service (400 push_not_allowed). */
+    const val NOT_ALLOWED = "NOT_ALLOWED"
 
     /** The capability `GET /v1/info` lists while the server sends push wakes, with `workspace.push.vapid`. */
     const val CAPABILITY = "push-wake"
@@ -132,7 +175,9 @@ internal object PushPlan {
     /**
      * [wanted]: signed in, the server has team chat and Team chat notifications are on. [vapid]: the server's key while
      * it sends push wakes. [session]: the session's tag. [installed]: the distributors on the phone, [own] this app's
-     * package. [registered]: this process registered once already, which UnifiedPush asks apps to do at each start.
+     * package. [server]: the server's version, a new one of which may take what an older one refused. [attempted]: this
+     * process sent a registration, which UnifiedPush asks for at each start; [confirmed]: the distributor answered it
+     * with an endpoint. [force]: a moment to try a failed registration again now (ChatPushControl.check).
      */
     data class Inputs(
         val wanted: Boolean,
@@ -140,7 +185,10 @@ internal object PushPlan {
         val session: String?,
         val installed: List<String>,
         val own: String,
-        val registered: Boolean,
+        val server: String = "",
+        val attempted: Boolean = true,
+        val confirmed: Boolean = true,
+        val force: Boolean = false,
     )
 
     sealed interface Step {
@@ -162,7 +210,11 @@ internal object PushPlan {
         return workspace.push?.vapid?.takeIf { VAPID.matches(it) }
     }
 
-    fun key(session: String, endpoint: PushEndpoint): String = "$session\n${endpoint.url}"
+    /** What the server's copy is known by: the session and the whole registration. */
+    fun key(session: String, endpoint: PushEndpoint): String = "$session\n${endpoint.fingerprint}"
+
+    /** The wait after [failures] registrations in a row failed: a minute, doubling, at most an hour. */
+    fun backoff(failures: Int): Long = if (failures <= 0) ANSWER_TIME else minOf(ANSWER_TIME shl minOf(failures - 1, 6), BACKOFF_MAX)
 
     /**
      * The distributor to use: the one picked in Settings while installed; else an app the person installed for it, the
@@ -175,6 +227,20 @@ internal object PushPlan {
             ?: record.distributor?.takeIf { it in installed && it != inputs.own }
             ?: installed.firstOrNull { it != inputs.own }
             ?: inputs.own.takeIf { it in installed }
+    }
+
+    /** Whether the server's refusal still holds for this registration: same session, keys, distributor and server, and less than a day old. */
+    fun refusalHolds(inputs: Inputs, record: PushRecord, pick: String, key: String, now: Long): Boolean {
+        val r = record.refused ?: return false
+        return r.key == key && r.distributor == pick && r.server == inputs.server && now - r.at < RETRY_REFUSED
+    }
+
+    /** When a registration that hasn't been answered with an endpoint is due again. */
+    fun registerDue(inputs: Inputs, record: PushRecord, now: Long): Boolean = when {
+        inputs.confirmed -> false
+        !inputs.attempted -> true
+        now - record.attemptAt >= backoff(record.failures) -> true
+        else -> inputs.force && record.failure != null && now - record.attemptAt >= FORCE_GAP
     }
 
     fun steps(inputs: Inputs, record: PushRecord, now: Long): List<Step> {
@@ -190,15 +256,17 @@ internal object PushPlan {
         // A new distributor or key: register, and wait for its endpoint.
         if (pick != record.distributor || vapid != record.vapid) return listOf(Step.Register(pick, vapid))
         val steps = mutableListOf<Step>()
-        if (!inputs.registered) steps += Step.Register(pick, vapid)
+        if (registerDue(inputs, record, now)) steps += Step.Register(pick, vapid)
         val endpoint = record.endpoint ?: return steps
         val session = inputs.session ?: return steps
         val key = key(session, endpoint)
-        if (record.refused != key && (record.sentFor != key || now - record.sentAt >= RESEND)) steps += Step.Send(session, endpoint)
+        if (!refusalHolds(inputs, record, pick, key, now) && (record.sentFor != key || now - record.sentAt >= RESEND)) {
+            steps += Step.Send(session, endpoint)
+        }
         return steps
     }
 
-    fun delivery(inputs: Inputs, record: PushRecord): ChatDelivery {
+    fun delivery(inputs: Inputs, record: PushRecord, now: Long): ChatDelivery {
         if (!inputs.wanted) return ChatDelivery.Off
         if (inputs.vapid == null) return ChatDelivery.ServerWithout
         val pick = pick(inputs, record) ?: return ChatDelivery.NoDistributor
@@ -206,17 +274,34 @@ internal object PushPlan {
         record.failure?.let { return ChatDelivery.Failed(pick, it) }
         val endpoint = record.endpoint ?: return ChatDelivery.Connecting(pick)
         val session = inputs.session ?: return ChatDelivery.Connecting(pick)
-        return when (key(session, endpoint)) {
-            record.refused -> ChatDelivery.Failed(pick, REFUSED)
-            record.sentFor -> ChatDelivery.Instant(pick)
+        val key = key(session, endpoint)
+        return when {
+            refusalHolds(inputs, record, pick, key, now) -> ChatDelivery.Failed(pick, record.refused!!.reason)
+            record.sentFor == key -> ChatDelivery.Instant(pick)
             else -> ChatDelivery.Connecting(pick)
         }
+    }
+
+    /**
+     * The workspaces a decrypted wake names: `{"t":"wake","w":["w_…"]}`, at most ten valid workspace IDs. An older
+     * server's `{"t":"wake"}`, and anything that isn't a wake, name none.
+     */
+    fun wakeWorkspaces(content: ByteArray): Set<String> = try {
+        val obj = RukooJson.parseToJsonElement(content.decodeToString()) as? JsonObject
+        val list = obj?.get("w") as? JsonArray
+        list.orEmpty()
+            .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.contentOrNull }
+            .filter { WorkspaceIds.WORKSPACE.matches(it) }
+            .take(10)
+            .toSet()
+    } catch (e: Exception) {
+        emptySet()
     }
 }
 
 /**
  * Runs [PushPlan] for the account and Team chat notifications as they are, one run at a time, and keeps its record in
- * [file]. [catchUp] runs ChatSyncWorker's catch-up at once: a push wake asks for it.
+ * [file]. [catchUp] starts ChatSyncWorker's catch-up: a push wake asks for it.
  */
 internal class ChatPush(
     private val account: ChatAccount,
@@ -230,7 +315,10 @@ internal class ChatPush(
 ) : ChatPushControl {
     private val lock = Mutex()
     private var record: PushRecord = JsonFiles.read(file, PushRecord.serializer(), PushRecord(), clock)
-    private var registered = false
+
+    // This process sent a registration, and the distributor answered it with an endpoint.
+    private var attempted = false
+    private var confirmed = false
     private val _state = MutableStateFlow(PushState())
     override val state: StateFlow<PushState> = _state.asStateFlow()
 
@@ -241,8 +329,8 @@ internal class ChatPush(
             .collect { run() }
     }
 
-    override fun check() {
-        scope.launch { run() }
+    override fun check(force: Boolean) {
+        scope.launch { run(force) }
     }
 
     override fun choose(distributor: String) {
@@ -254,12 +342,14 @@ internal class ChatPush(
 
     /**
      * Takes the plan's steps until it has none left. Each pass changes the record, so the passes end: a step that
-     * fails stops the run, and the next check tries again.
+     * fails stops the run, and the next check tries again. A registration waiting for its answer or its backoff is
+     * tried again at the next check after that, which comes with the foreground, a network coming back, a process start
+     * and every ChatSyncWorker run.
      */
-    suspend fun run() {
+    suspend fun run(force: Boolean = false) {
         lock.withLock {
             for (pass in 0 until 4) {
-                val inputs = inputs()
+                val inputs = inputs(force && pass == 0)
                 val steps = PushPlan.steps(inputs, record, clock.now())
                 if (steps.isEmpty() || !steps.all { take(it) }) break
             }
@@ -267,7 +357,7 @@ internal class ChatPush(
         }
     }
 
-    private fun inputs(): PushPlan.Inputs {
+    private fun inputs(force: Boolean = false): PushPlan.Inputs {
         val status = account.status.value
         val session = if (status.signedIn) account.borrowSession() else null
         val installed = runCatching { distributors.installed() }.getOrElse {
@@ -280,7 +370,10 @@ internal class ChatPush(
             session = session?.tag,
             installed = installed,
             own = distributors.own,
-            registered = registered,
+            server = status.info?.version.orEmpty(),
+            attempted = attempted,
+            confirmed = confirmed,
+            force = force,
         )
     }
 
@@ -288,21 +381,35 @@ internal class ChatPush(
     private suspend fun take(step: PushPlan.Step): Boolean = when (step) {
         is PushPlan.Step.Register -> {
             val changed = step.distributor != record.distributor || step.vapid != record.vapid
-            registered = true
+            // A registration sent again without an answer to the last one counts toward the backoff.
+            val unanswered = attempted && !confirmed && !changed && record.failure == null
+            attempted = true
+            confirmed = false
+            val now = clock.now()
             try {
                 distributors.register(step.distributor, step.vapid)
-                if (changed) update { it.copy(distributor = step.distributor, vapid = step.vapid, endpoint = null, failure = null, refused = null) }
+                update {
+                    if (changed) {
+                        it.copy(distributor = step.distributor, vapid = step.vapid, endpoint = null, failure = null, failures = 0, attemptAt = now)
+                    } else {
+                        it.copy(attemptAt = now, failures = it.failures + if (unanswered) 1 else 0)
+                    }
+                }
                 true
             } catch (e: Exception) {
                 AppLog.w(TAG, "Could not register with the UnifiedPush distributor", e)
-                update { it.copy(distributor = step.distributor, vapid = step.vapid, endpoint = null, failure = "INTERNAL_ERROR") }
+                update {
+                    val base = if (changed) it.copy(distributor = step.distributor, vapid = step.vapid, endpoint = null) else it
+                    base.copy(failure = "INTERNAL_ERROR", failures = base.failures + 1, attemptAt = now)
+                }
                 false
             }
         }
         PushPlan.Step.Unregister -> {
             runCatching { distributors.unregister() }.onFailure { AppLog.w(TAG, "Could not unregister from the distributor", it) }
-            registered = false
-            update { it.copy(distributor = null, vapid = null, endpoint = null, failure = null) }
+            attempted = false
+            confirmed = false
+            update { it.copy(distributor = null, vapid = null, endpoint = null, failure = null, failures = 0) }
             true
         }
         is PushPlan.Step.Send -> send(step)
@@ -322,10 +429,16 @@ internal class ChatPush(
             update { it.copy(sentFor = key, sentAt = clock.now(), refused = null) }
             true
         } catch (e: AccountError) {
-            when (e.status) {
-                401 -> account.sessionRefused(session)
-                400 -> update { it.copy(refused = key) }
-                else -> AppLog.w(TAG, "The server didn't take the push endpoint: ${e.code} (${e.status})")
+            when {
+                e.status == 401 -> account.sessionRefused(session)
+                // A 400 is about this registration: kept until anything about it changes, or a day passed.
+                e.status == 400 -> {
+                    val reason = if (e.code == NOT_ALLOWED_CODE) PushPlan.NOT_ALLOWED else PushPlan.REFUSED
+                    val server = account.status.value.info?.version.orEmpty()
+                    update { it.copy(refused = PushRefusal(key, reason, record.distributor.orEmpty(), server, clock.now())) }
+                }
+                // 429, 503 and the like pass: the next check tries again.
+                else -> AppLog.w(TAG, "The server didn't take the push endpoint now: ${e.code} (${e.status})")
             }
             false
         } catch (e: Exception) {
@@ -334,15 +447,19 @@ internal class ChatPush(
         }
     }
 
+    /**
+     * DELETE /v1/push-endpoint. Until the server confirms it, the record keeps [PushRecord.sentFor], so every later run
+     * tries again while the same session is signed in.
+     */
     private suspend fun withdraw(): Boolean {
         val session = account.borrowSession()
         if (session != null) {
             try {
                 http.request(session.server, "DELETE", ENDPOINT_PATH, null, session.token, null)
             } catch (e: AccountError) {
-                // 401: the session is gone, and its endpoint with it. 404: a server without push wakes keeps none.
+                // 401: the session is gone on the server, and its endpoint with it.
                 if (e.status == 401) account.sessionRefused(session)
-                else if (e.status != 404) {
+                else {
                     AppLog.w(TAG, "Could not take the push endpoint back: ${e.code} (${e.status})")
                     return false
                 }
@@ -359,15 +476,25 @@ internal class ChatPush(
 
     fun newEndpoint(endpoint: PushEndpoint) {
         scope.launch {
-            lock.withLock { update { it.copy(endpoint = endpoint, failure = null) } }
+            lock.withLock {
+                confirmed = true
+                attempted = true
+                update { it.copy(endpoint = endpoint, failure = null, failures = 0) }
+            }
             run()
         }
     }
 
+    /**
+     * The distributor couldn't register Rukoo. The endpoint it gave before stays, as it may still work; the
+     * registration is tried again after the backoff, or sooner when Rukoo returns to the foreground or the network
+     * comes back (check with force), as UnifiedPush's specification says for NETWORK and ACTION_REQUIRED.
+     */
     fun registrationFailed(reason: String) {
         scope.launch {
             lock.withLock {
-                update { it.copy(endpoint = null, failure = reason) }
+                confirmed = false
+                update { it.copy(failure = reason, failures = it.failures + 1) }
                 publish()
             }
         }
@@ -390,8 +517,9 @@ internal class ChatPush(
     fun unregistered() {
         scope.launch {
             lock.withLock {
-                registered = false
-                update { it.copy(distributor = null, vapid = null, endpoint = null, failure = null) }
+                attempted = false
+                confirmed = false
+                update { it.copy(distributor = null, vapid = null, endpoint = null, failure = null, failures = 0) }
                 val tag = account.borrowSession()?.tag
                 if (tag != null && record.sentFor?.startsWith("$tag\n") == true) withdraw()
             }
@@ -399,9 +527,35 @@ internal class ChatPush(
         }
     }
 
-    /** A push wake: the catch-up runs now. */
-    fun message() {
-        catchUp()
+    /**
+     * A push wake, which named [workspaces]: they are kept for the catch-up to take first, the wake is counted, and the
+     * catch-up starts. A catch-up already running sees the count change and runs once more ([catchUpRounds]).
+     */
+    fun message(workspaces: Set<String> = emptySet()) {
+        scope.launch {
+            lock.withLock {
+                update { it.copy(wake = PendingWake(it.wake.seq + 1, (it.wake.workspaces + workspaces).take(MAX_PENDING).toSet())) }
+            }
+            catchUp()
+        }
+    }
+
+    /**
+     * Runs [run] with the workspaces the wakes so far named, and again while wakes came in during it, at most [rounds]
+     * times. ChatSyncWorker runs its catch-up through this, so a wake that comes while one runs is never lost and never
+     * cancels it.
+     */
+    suspend fun catchUpRounds(rounds: Int = 3, run: suspend (Set<String>) -> Unit) {
+        repeat(rounds) {
+            val wake = lock.withLock {
+                val taken = record.wake
+                update { it.copy(wake = it.wake.copy(workspaces = emptySet())) }
+                taken
+            }
+            run(wake.workspaces)
+            val since = lock.withLock { record.wake.seq }
+            if (since <= wake.seq) return
+        }
     }
 
     private fun update(change: (PushRecord) -> PushRecord) {
@@ -417,12 +571,18 @@ internal class ChatPush(
 
     private fun publish() {
         val inputs = inputs()
-        _state.value = PushState(PushPlan.delivery(inputs, record), inputs.installed)
+        _state.value = PushState(PushPlan.delivery(inputs, record, clock.now()), inputs.installed)
     }
 
     companion object {
         private const val TAG = "ChatPush"
         const val ENDPOINT_PATH = "/v1/push-endpoint"
         const val FILE_NAME = "chat-push.json"
+
+        /** The server's error code for an endpoint on a push service it doesn't post to. */
+        const val NOT_ALLOWED_CODE = "push_not_allowed"
+
+        /** Workspaces kept for the next catch-up, at most. */
+        private const val MAX_PENDING = 50
     }
 }

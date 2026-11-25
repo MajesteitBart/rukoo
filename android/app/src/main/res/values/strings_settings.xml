@@ -279,7 +279,8 @@
     <string name="settings_notifications_delivery_help_failed">%1$s couldn\'t connect.</string>
     <string name="settings_notifications_delivery_help_action">Open %1$s: it needs you before it can connect.</string>
     <string name="settings_notifications_delivery_help_unavailable">%1$s\'s server can\'t be reached right now.</string>
-    <string name="settings_notifications_delivery_help_refused">Your Rukoo server can\'t send to %1$s\'s server.</string>
+    <string name="settings_notifications_delivery_help_refused">Your Rukoo server didn\'t accept %1$s\'s address. Rukoo tries again tomorrow.</string>
+    <string name="settings_notifications_delivery_help_not_allowed">Your Rukoo server doesn\'t deliver through %1$s\'s server.</string>
     <string name="settings_notifications_delivery_choose">Receive through</string>
     <string name="settings_notifications_chat_battery_help_push">If messages come late, set both Rukoo and %1$s to Unrestricted.</string>
     <!-- The distributor built into Rukoo, which receives wakes through Google's FCM. -->
@@ -317,6 +318,7 @@
     <string name="settings_about_storage">Storage</string>
     <string name="settings_about_storage_help">Mail, chats and settings kept on this phone</string>
     <string name="settings_about_licenses">Open-source licenses</string>
+    <string name="settings_about_license_source">Source code</string>
 
     <!-- First run -->
     <string name="onboarding_connect">Connect to Rukoo on your computer</string>
