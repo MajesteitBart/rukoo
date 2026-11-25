@@ -698,6 +698,40 @@ test('the key step goes when its session signs out elsewhere, and says the key w
   await expect(toast()).toHaveText(keyLostText('Ghost'));
 });
 
+test('a session that ends while the runner choices are still coming never shows the key step', async () => {
+  const { bart } = await twoPeople(server);
+  await ready(bart, { fake: true });
+  // Main holds the agents of Settings, which the choices are made from, until the test lets them go.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    const real = hub.config.bind(hub);
+    const hold = {};
+    hold.released = new Promise((resolve) => (hold.release = resolve));
+    global.__semHold = hold;
+    hub.config = (...args) => hold.released.then(() => real(...args));
+  });
+  // Counts every time the window draws a Connect step, however briefly.
+  await win.evaluate(() => {
+    window.__semSteps = 0;
+    new MutationObserver(() => {
+      if ([...document.querySelectorAll('.scrim .dialog h2')].some((h) => /^Connect /.test(h.textContent))) window.__semSteps++;
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+  await workspaceMenu(win, 'Agents');
+  await dialogBox(win).locator('[data-add-agent]').click();
+  await dialogBox(win).locator('[name="name"]').fill('Late');
+  await dialogBox(win).locator('.buttons button').last().click();
+  // The agent is made and its form closed: the key waits only for the choices. Then the session ends.
+  await expect(win.locator('.scrim .dialog h2', { hasText: 'Add an agent' })).toHaveCount(0, { timeout: 15000 });
+  await win.evaluate(() => window.mail.call('accountSignOut'));
+  await expect.poll(() => win.evaluate(async () => Boolean((await import('./chat.js')).CH.state?.signedIn)), { timeout: 15000 }).toBe(false);
+  await app.evaluate(() => global.__semHold.release());
+  await expect(toast()).toHaveText(keyLostText('Late'), { timeout: 15000 });
+  await settle();
+  expect(await win.evaluate(() => window.__semSteps)).toBe(0);
+  await expect(stepTitles()).toHaveCount(0);
+});
+
 test('the key step goes when its person is removed from the workspace, quietly once the config was copied, and a key that comes back after that never shows', async () => {
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   const beta = await server.seedWorkspace(olga, { name: 'Beta', displayName: 'Olga Owner' });

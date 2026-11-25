@@ -2211,7 +2211,9 @@ export async function addAgent() {
   const choices = askRunnerChoices();
   const made = await agentForm(null);
   if (made && made.key) {
-    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices, room: channelToJoin(made.agent, ws) });
+    // The choices can still be waiting on a status check: the session is checked once they are in.
+    const picked = await choices;
+    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: picked, room: channelToJoin(made.agent, ws) });
     else keyLost(made.agent);
   }
   return made ? made.agent : null;
@@ -2238,7 +2240,8 @@ export async function newAgentKey(agent) {
     // The old key stopped: the new one shows, for this workspace, whatever is on screen by now, while the session that
     // asked for it holds.
     if (made && made.key) {
-      if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: await choices });
+      const picked = await choices;
+      if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: picked });
       else keyLost(made.agent || agent);
     }
     return made ? made.agent : null;
