@@ -45,6 +45,7 @@ import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.theme.Rk
+import nl.bvdm.rukoo.workspaces.ChatDelivery
 
 /**
  * Notifications for new mail, agent replies and team chat, Android 13's permission they need, and the battery setting
@@ -118,11 +119,21 @@ fun NotificationsPage(app: AppViewModel) {
                     },
                 )
             }
+            // How a message reaches the phone with Rukoo in the background: through a UnifiedPush distributor at once, or
+            // at Android's next 15-minute check. Only while the switch is on: with it off nothing is delivered.
+            val push = s.chatPush
+            val pushState = push?.state?.collectAsStateWithLifecycle()?.value
+            if (push != null && pushState != null && chatAvailable && settings.notifyChat && DeliveryTexts.shows(pushState.delivery)) {
+                // A distributor installed or removed while Rukoo was in the background shows when the page comes back.
+                LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { push.check() } }
+                DeliveryRow(push, pushState)
+            }
             // How soon a message notifies with Rukoo in the background: Android's battery setting, and Phone tools.
             // It shows with the switch on or off, while someone is signed in; its line says what the switch's state means.
             if (BatteryTexts.showUnderChat(chatAvailable, signedIn = chatState?.signedIn == true)) {
                 val phoneTools = s.mcp.status.collectAsStateWithLifecycle().value.running
-                BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools, notifyChat = settings.notifyChat)
+                val through = (pushState?.delivery as? ChatDelivery.Instant)?.let { distributorLabel(context, it.distributor) }
+                BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools, notifyChat = settings.notifyChat, pushThrough = through)
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -249,6 +260,8 @@ private val LICENSES = listOf(
     License("autolink-java", "MIT", "https://github.com/robinst/autolink-java"),
     License("OkHttp", "Apache 2.0", "https://square.github.io/okhttp/"),
     License("Bouncy Castle", "MIT", "https://www.bouncycastle.org/about/license/"),
+    License("UnifiedPush connector", "Apache 2.0", "https://codeberg.org/UnifiedPush/android-connector"),
+    License("Tink", "Apache 2.0", "https://github.com/tink-crypto/tink-java"),
     License("AndroidX, Jetpack Compose, Kotlin", "Apache 2.0", "https://developer.android.com/jetpack/androidx"),
 )
 

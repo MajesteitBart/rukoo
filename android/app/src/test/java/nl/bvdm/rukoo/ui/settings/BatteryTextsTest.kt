@@ -44,6 +44,22 @@ class BatteryTextsTest {
     }
 
     @Test
+    fun `with push wakes through a distributor, it says both apps want Unrestricted`() {
+        for (phoneTools in listOf(true, false)) {
+            assertEquals(
+                R.string.settings_notifications_chat_battery_help_push,
+                BatteryTexts.help(BatteryPlace.TeamChat, samsung = true, phoneTools = phoneTools, push = true),
+            )
+        }
+        // Off is off, whatever came before.
+        assertEquals(
+            R.string.settings_notifications_chat_battery_help_off,
+            BatteryTexts.help(BatteryPlace.TeamChat, samsung = true, phoneTools = false, notifyChat = false, push = true),
+        )
+        assertEquals(R.string.settings_phone_tools_battery_help, BatteryTexts.help(BatteryPlace.PhoneTools, samsung = true, phoneTools = false, push = true))
+    }
+
+    @Test
     fun `Notifications shows the row with the team chat notifications switch while someone is signed in`() {
         assertTrue(BatteryTexts.showUnderChat(chatAvailable = true, signedIn = true))
         assertFalse(BatteryTexts.showUnderChat(chatAvailable = false, signedIn = true))

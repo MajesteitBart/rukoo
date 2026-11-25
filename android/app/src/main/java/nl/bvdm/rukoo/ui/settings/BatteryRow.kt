@@ -37,13 +37,15 @@ object BatteryTexts {
      * The line under the row. Under Phone tools it says agents can't reach a stopped app, naming Samsung on a Samsung
      * phone. Under Team chat notifications it says how often Rukoo checks in the background, or, while Phone tools'
      * foreground service runs ([phoneTools]), that team chat can notify sooner though Android can hold it back; with
-     * the switch off ([notifyChat] false), what turning it on gives.
+     * the switch off ([notifyChat] false), what turning it on gives. While push wakes come through a distributor
+     * ([push]), it says both apps want Unrestricted, and takes the distributor's name as its argument.
      */
     @StringRes
-    fun help(place: BatteryPlace, samsung: Boolean, phoneTools: Boolean, notifyChat: Boolean = true): Int = when (place) {
+    fun help(place: BatteryPlace, samsung: Boolean, phoneTools: Boolean, notifyChat: Boolean = true, push: Boolean = false): Int = when (place) {
         BatteryPlace.PhoneTools -> if (samsung) R.string.settings_phone_tools_battery_help else R.string.settings_phone_tools_battery_help_other
         BatteryPlace.TeamChat -> when {
             !notifyChat -> R.string.settings_notifications_chat_battery_help_off
+            push -> R.string.settings_notifications_chat_battery_help_push
             phoneTools -> R.string.settings_notifications_chat_battery_help_phone_tools
             else -> R.string.settings_notifications_chat_battery_help
         }
@@ -62,7 +64,7 @@ object BatteryTexts {
  * again each time the page comes back, so the value follows what the person chose there.
  */
 @Composable
-fun BatteryRow(place: BatteryPlace, phoneTools: Boolean = false, notifyChat: Boolean = true) {
+fun BatteryRow(place: BatteryPlace, phoneTools: Boolean = false, notifyChat: Boolean = true, pushThrough: String? = null) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var unrestricted by remember { mutableStateOf(isUnrestricted(context)) }
@@ -71,7 +73,9 @@ fun BatteryRow(place: BatteryPlace, phoneTools: Boolean = false, notifyChat: Boo
     }
     SettingsRow(
         title = stringResource(R.string.settings_phone_tools_battery_row),
-        description = stringResource(BatteryTexts.help(place, isSamsung(), phoneTools, notifyChat)),
+        description = BatteryTexts.help(place, isSamsung(), phoneTools, notifyChat, push = pushThrough != null).let { res ->
+            if (pushThrough != null && res == R.string.settings_notifications_chat_battery_help_push) stringResource(res, pushThrough) else stringResource(res)
+        },
         value = stringResource(BatteryTexts.value(unrestricted)),
         leading = { RowIcon(PanelIcons.Bolt) },
         onClick = { openBatterySettings(context) },

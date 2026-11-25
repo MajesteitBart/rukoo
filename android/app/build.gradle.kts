@@ -167,6 +167,8 @@ dependencies {
     implementation(libs.jsoup)
     // Argon2id for the Rukoo account's password key (account/AccountKeys.kt).
     implementation(libs.bouncycastle.prov)
+    // Push wakes for team chat through a UnifiedPush distributor such as ntfy (workspaces/ChatPush.kt).
+    implementation(libs.unifiedpush.connector)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
