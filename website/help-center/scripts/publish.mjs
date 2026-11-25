@@ -28,14 +28,19 @@ export function pagePolicy(html) {
   return ["script-src 'self' 'wasm-unsafe-eval'", ...hashes].join(' ');
 }
 
-/** The page with its policy as the first element in <head>, before any script, replacing an older one. */
+/**
+ * The page with its policy at the start of its head, before any script, replacing an older one. Astro's redirect pages
+ * (a `redirects` entry in astro.config.mjs) have no <head> tag; there the policy goes right after the doctype, where
+ * the browser still puts it in the head.
+ */
 export function withPolicy(html) {
   const page = html.replace(META, '');
   const meta = `<meta http-equiv="Content-Security-Policy" content="${pagePolicy(page)}">`;
   const charset = page.match(/<head>\s*<meta charset="[^"]*"\s*\/?>/i);
   if (charset) return page.replace(charset[0], charset[0] + meta);
-  if (!/<head>/i.test(page)) throw new Error('A page without <head>');
-  return page.replace(/<head>/i, (head) => head + meta);
+  if (/<head>/i.test(page)) return page.replace(/<head>/i, (head) => head + meta);
+  const doctype = page.match(/^\s*<!doctype html>/i);
+  return doctype ? page.replace(doctype[0], doctype[0] + meta) : meta + page;
 }
 
 /** The policies a page carries, for check-output.mjs. */
@@ -44,9 +49,10 @@ export const pagePolicies = (html) => [...html.matchAll(META)].map((m) => m[1]);
 if (path.resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
   const dist = path.resolve('dist');
   if (!fs.existsSync(path.join(dist, 'index.html'))) throw new Error('No build in dist/. Run astro build first.');
+  // Every page gets its policy before ../site/help/ is touched, so a page that fails leaves the last copy as it was.
+  const pages = walk(dist).filter((f) => f.endsWith('.html')).map((f) => [path.relative(dist, f), withPolicy(fs.readFileSync(f, 'utf8'))]);
   fs.rmSync(out, { recursive: true, force: true });
   fs.cpSync(dist, out, { recursive: true });
-  const pages = walk(out).filter((f) => f.endsWith('.html'));
-  for (const file of pages) fs.writeFileSync(file, withPolicy(fs.readFileSync(file, 'utf8')));
+  for (const [file, html] of pages) fs.writeFileSync(path.join(out, file), html);
   console.log(`PASS: copied dist/ to ${path.relative(process.cwd(), out)}; ${pages.length} pages carry their script policy.`);
 }

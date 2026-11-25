@@ -27,5 +27,15 @@ test('the policy goes right after <meta charset>, before every script, and a reb
   assert.deepEqual(pagePolicies(once), [pagePolicy(page)]);
   assert.equal(withPolicy(once), once);
   assert.match(withPolicy('<html><head><title>T</title></head></html>'), /^<html><head><meta http-equiv="Content-Security-Policy"/);
-  assert.throws(() => withPolicy('<html><body></body></html>'), /without <head>/);
+});
+
+test("Astro's redirect pages, which have no <head> tag, get the policy right after the doctype", () => {
+  // The shape of redirectTemplate() in astro/dist/core/routing/3xx.js, which a `redirects` entry in astro.config.mjs uses.
+  const redirect = '<!doctype html>\n<title>Redirecting to: /help/mail/write/</title>\n'
+    + '<meta http-equiv="refresh" content="0;url=/help/mail/write/">\n<link rel="canonical" href="https://rukoo.io/help/mail/write/">\n'
+    + '<body>\n\t<a href="/help/mail/write/">Redirecting to <code>/help/mail/write/</code></a>\n</body>';
+  const out = withPolicy(redirect);
+  assert.ok(out.startsWith(`<!doctype html><meta http-equiv="Content-Security-Policy" content="script-src 'self' 'wasm-unsafe-eval'">\n<title>`));
+  assert.equal(withPolicy(out), out);
+  assert.match(withPolicy('<p>No doctype</p>'), /^<meta http-equiv="Content-Security-Policy"[^>]*><p>/);
 });

@@ -14,7 +14,8 @@ for(const f of html){
  const text=fs.readFileSync(f,'utf8');assertPublic(text.replace(/\bplaceholder=/g, 'inputhint='),f);
  // One script policy per page, ahead of its first script, with the hash of each inline script (publish.mjs).
  const policies=pagePolicies(text);if(policies.length!==1)throw new Error(`${policies.length} script policies in ${f}`);
- if(text.indexOf('<script')<text.indexOf('http-equiv="Content-Security-Policy"'))throw new Error(`Script before the policy in ${f}`);
+ const firstScript=text.indexOf('<script');
+ if(firstScript!==-1&&firstScript<text.indexOf('http-equiv="Content-Security-Policy"'))throw new Error(`Script before the policy in ${f}`);
  const unhashed=inlineScripts(text).map(scriptHash).filter(h=>!policies[0].includes(h));
  if(unhashed.length)throw new Error(`Inline script without its hash in ${f}: ${unhashed.join(' ')}`);
  const page=base+path.relative(out,f).split(path.sep).join('/').replace(/index\.html$/,'');

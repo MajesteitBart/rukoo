@@ -42,7 +42,7 @@ Use REVIEW.md to follow the instructions on the released apps and record the res
 
 ## URL policy
 
-A title edit never changes pageId or slug. New pages add one registry entry. Treat published URLs as permanent. Page URLs in the registry, the navigation and the Markdown leave out the `/help` base; the build adds it, so `/mail/write/` is published as https://rukoo.io/help/mail/write/. A necessary URL move needs an explicit old-to-new redirect, a retained registry history and a reviewed link migration. Put the redirect in `../site/_redirects` (an HTTP redirect, with the full `/help/...` paths) or in astro.config.mjs (an HTML redirect).
+A title edit never changes pageId or slug. New pages add one registry entry. Treat published URLs as permanent. Page URLs in the registry, the navigation and the Markdown leave out the `/help` base; the build adds it, so `/mail/write/` is published as https://rukoo.io/help/mail/write/. A necessary URL move needs an explicit old-to-new redirect, a retained registry history and a reviewed link migration. Put the redirect in `../site/_redirects` (an HTTP redirect, with the full `/help/...` paths) or under `redirects` in astro.config.mjs (an HTML redirect page). Astro adds the base to the old path there but not to the new one, so write `'/old-page/': '/help/new-page/'`.
 
 ## Checks and packaging
 
