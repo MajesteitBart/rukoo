@@ -969,9 +969,9 @@ test('the shared editor formats text and inserts links inline and in a compose w
   const format = async (page, text, command, href) => {
     const editor = page.locator('.composer .editor');
     await editor.fill(text);
-    await editor.press('Control+a');
+    await editor.press('ControlOrMeta+a');
     await page.locator(`.float-bar [data-cmd="${command}"]`).click();
-    await editor.press('Control+k');
+    await editor.press('ControlOrMeta+k');
     await page.locator('.link-pop [data-f="url"]').fill(href);
     await page.locator('.link-pop [data-a="apply"]').click();
     await expect(editor.locator('a')).toHaveAttribute('href', href);
