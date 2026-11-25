@@ -180,7 +180,9 @@ test('a chat toast in the focused window goes when its alert is taken back', asy
   await expect(title()).toHaveText('general', { timeout: 15000 });
   await expect(dmRow('Olga Owner')).toBeVisible({ timeout: 15000 });
   const posted = await server.post(olga, ws.id, dm.conversation, 'Can you call me?');
-  await expect(toast()).toHaveText('Olga Owner: Can you call me?', { timeout: 20000 });
+  // The alert's text, and Open, which goes where a click on the notification would.
+  await expect(toast()).toHaveText('Olga Owner: Can you call me?Open', { timeout: 20000 });
+  await expect(toast().locator('button')).toHaveText('Open');
   await expect(toast()).toHaveClass(/show/);
   expect(await notices(app)).toEqual([]);
   // The pointer on the toast keeps it up, so only taking the alert back can take it down: Bart reads the
@@ -195,7 +197,8 @@ test("a notification clicked while history can't load opens the conversation at 
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   const dm = await server.seedDm(olga, ws.id, [bartMe.id]);
   for (let i = 1; i <= 10; i++) await server.post(olga, ws.id, dm.conversation, `Earlier note ${i}`);
-  // The newest cached message is a reply, which an open at it as the notified message would open the thread for.
+  // The newest cached message is a reply, which an open at it as the notified message would open the thread for. It
+  // shows only in its thread (issue #376), so the log ends on its first message.
   const root = await server.post(olga, ws.id, dm.conversation, 'The plan');
   const reply = await server.post(olga, ws.id, dm.conversation, 'A reply in the plan', { root: root.messageId });
   await ready(bart, { focus: false });
@@ -203,9 +206,9 @@ test("a notification clicked while history can't load opens the conversation at 
   // Bart reads the conversation once, so it is cached through the reply, and goes back to general.
   await dmRow('Olga Owner').click();
   await expect(title()).toHaveText('Olga Owner', { timeout: 15000 });
-  const newest = pane().locator(`.ch-main .ch-log li.ch-msg[data-seq="${reply.seq}"]`);
+  const newest = pane().locator(`.ch-main .ch-log li.ch-msg[data-seq="${root.seq}"]`);
   await expect(newest).toBeVisible({ timeout: 15000 });
-  await expect(newest).toHaveAttribute('data-root', root.messageId);
+  await expect(newest.locator('.ch-replies-n')).toHaveText('1 reply');
   await roomRow(win, 'general').click();
   await expect(title()).toHaveText('general', { timeout: 15000 });
   await app.evaluate(({ BrowserWindow }) => {

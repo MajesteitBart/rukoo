@@ -23,7 +23,10 @@ import {
   canAddAgent,
   canRemoveAgent,
   canManageAgent,
-  canRenewAgentKey
+  canRenewAgentKey,
+  mayTakeAgents,
+  agentsLeavingWith,
+  leavingAgentsText
 } from './chat-model.js';
 import { runnerChoices, askedRunnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, sinceText, runStateText, ranElsewhere, useName, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL, KEY_MASK, keepsTools } from './chat-agents.js';
 import { seenOf, loadSeen, rememberAgents, forgetSeen } from './chat-agent-seen.js';
@@ -1280,6 +1283,11 @@ async function roomMembersOrNull(ws, id) {
 // Who can take a channel over, from its members.
 const successorsFrom = (roomMembers) => successors((roomMembers || []).map((m) => m.member), K.CH.members, K.me(), collator(), t);
 
+// What leaving room says about the person's agents among its members (roomMembers), or null: leaving a private
+// channel takes them out of it too. others: someone else is known to be in the channel, as when it needs a successor.
+const leavingAgentsLine = (room, roomMembers, others = false) =>
+  leavingAgentsText(agentsLeavingWith(room, roomMembers, K.CH.members, K.me(), collator(), t, { others }), { t, listFormat: listFormat() });
+
 // A successor picker: a search field above more than six people, then a radio row per person with none checked, so
 // nobody gets a channel the person didn't choose. group names the radios, so a dialog can hold one per channel.
 function successorPicker(people, group, label) {
@@ -1341,19 +1349,25 @@ function redrawPicker(box, html) {
 
 // Leave a channel (desktop-ui 6.9). The only manager of a channel with others in it picks a successor at once,
 // without a confirmation first; anyone else is asked. When the members don't load, the server's last_manager decides.
+// Leaving a private channel, or any channel as its last person, takes the person's agents out of it too, and both
+// dialogs name them; the channel's members load for that only when the directory holds an agent of theirs. When they
+// don't load, the line says so without names.
 export async function leaveChannel(room) {
   const ws = K.CH.ws;
   if (!ws || !room) return false;
-  if (sharedManaged([room]).length) {
-    const inside = await roomMembersOrNull(ws, room.id);
+  const managed = sharedManaged([room]).length > 0;
+  let inside = null;
+  if (managed || mayTakeAgents(room, K.CH.members, K.me())) {
+    inside = await roomMembersOrNull(ws, room.id);
     if (ws !== K.CH.ws) return false;
-    if (inside && soleManager(inside, K.me())) {
+    if (managed && inside && soleManager(inside, K.me())) {
       K.expectLeave(room.id);
       return chooseSuccessor(room, inside);
     }
   }
   const body = room.members <= 1 ? t('chat.channel.leaveBodyLast', { name: room.name || '' }) : room.visibility === 'private' ? t('chat.channel.leaveBodyPrivate') : t('chat.channel.leaveBodyPublic');
-  const ok = await confirmDialog(t('chat.channel.leaveTitle', { name: room.name || '' }), body, t('chat.channel.leave'), true);
+  const agents = leavingAgentsLine(room, inside);
+  const ok = await confirmDialog(t('chat.channel.leaveTitle', { name: room.name || '' }), agents ? [body, agents] : body, t('chat.channel.leave'), true);
   if (!ok || ws !== K.CH.ws) return false;
   K.expectLeave(room.id);
   try {
@@ -1374,6 +1388,8 @@ async function chooseSuccessor(room, inside = null) {
   const ws = K.CH.ws;
   let finish = null;
   let busy = false;
+  // Whether the members failed to load: the agents line then speaks without names.
+  let failed = false;
   const label = t('chat.channel.successorTitle', { name: room.name || '' });
   const primary = (scrim) => scrim?.querySelector('.buttons button:last-child');
   const pickOf = (body) => body.querySelector('[name="successor"]:checked');
@@ -1382,6 +1398,10 @@ async function chooseSuccessor(room, inside = null) {
     box.removeAttribute('aria-busy');
     box.className = 'ch-picker';
     redrawPicker(box, successorPicker(successorsFrom(inside), 'successor', label));
+    const agents = body.querySelector('[data-agents]');
+    const line = leavingAgentsLine(room, failed ? null : inside, true);
+    agents.textContent = line || '';
+    agents.hidden = !line;
     // The person picked may have gone with the directory.
     if (!busy) primary(body.closest('.scrim')).disabled = !pickOf(body);
   };
@@ -1417,7 +1437,7 @@ async function chooseSuccessor(room, inside = null) {
         if (!busy) primary(scrim).disabled = !pickOf(body);
       });
       filterPickers(body);
-      body.innerHTML = `<p>${esc(t('chat.channel.successorBody'))}</p><div class="ch-picker ch-successors" data-picker aria-busy="true"><span class="spinner"></span></div><p class="error" data-error="" hidden></p>`;
+      body.innerHTML = `<p>${esc(t('chat.channel.successorBody'))}</p><p data-agents hidden></p><div class="ch-picker ch-successors" data-picker aria-busy="true"><span class="spinner"></span></div><p class="error" data-error="" hidden></p>`;
       if (inside) return fill(body);
       api('chatRoomMembers', ws, room.id)
         .then((r) => {
@@ -1426,6 +1446,7 @@ async function chooseSuccessor(room, inside = null) {
         })
         .catch((err) => {
           inside = [];
+          failed = true;
           fill(body);
           showError(body, '', K.errorText(err));
         });

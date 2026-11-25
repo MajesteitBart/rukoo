@@ -40,6 +40,7 @@ Few people have used Rukoo on a real Mac so far, and Mac builds are only notariz
 - Every email has its own row, and the reading pane lists its related emails, such as your answer in Sent. Newsletters get an Unsubscribe button.
 - You write in the reading pane or in a separate window. Drafts save to the server while you type, and each account can have its own formatted signature.
 - You can undo a delete, archive or move with `Ctrl+Z`, and take an email back for a few seconds after Send. The keyboard shortcuts can follow Gmail, Outlook, Apple Mail or Thunderbird, and on a touch screen you choose what a swipe does.
+- New mail and team chat notify you while Rukoo runs, also with its window closed to the tray. On Windows and macOS, Settings → General → Open when you sign in starts the installed app hidden when you sign in to the computer, so nothing waits until you open it. It's off until you turn it on.
 
 More in [Mail](docs/mail.md) and [Inbox categories](docs/categories.md).
 
@@ -87,6 +88,8 @@ More in [Team chat](docs/chat.md).
 - Rukoo for Android does mail and agent chat on the phone. Paired with your computer, it runs its Claude Code and Codex chats on that computer. See [Rukoo for Android](docs/android.md).
 
 The interface is in English and Dutch. You choose during setup or in Settings → General → Language.
+
+Use only what you need: Settings → General → Tabs turns Mail, Calendar, Meet and Chat on or off. A tab you turn off takes its shortcut, notifications, sounds and badges with it, while its accounts, data, sync and agent tools stay as they are. See [Tabs](docs/tabs.md).
 
 Every six hours Rukoo asks GitHub whether a newer release exists. That request shows GitHub your IP address. The Windows installer and the Linux AppImage download the new version, check it against the SHA-512 hash in the release's `latest.yml` and install it when you quit Rukoo; the Restart to update button does that right away. The portable Windows app, the `.deb` package and the Mac app show an Update button that opens the release page. Settings → About turns the check off and picks the update channel: Stable gets releases, Nightly also gets the daily builds of `main` (pre-releases on GitHub). Switching from Nightly back to Stable keeps the installed build until the next release.
 

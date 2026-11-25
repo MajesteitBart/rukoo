@@ -563,6 +563,13 @@ body.no-accounts .titlebar-modes,
 body:has(.page) .titlebar-modes {
   display: none;
 }
+/* Settings > General > Tabs turned a mode off (app.js modesChanged): its ways in from the other modes go with its
+ * tab. Meet: the recording clock in the title bar and Record on a calendar event. Calendar's go in invite.js and
+ * composer.js, which draw the invitation card and the calendar button without them. */
+body.hides-meeting .rec-indicator,
+body.hides-meeting .cal-record {
+  display: none !important;
+}
 .mode-tabs {
   -webkit-app-region: no-drag;
   position: relative;
@@ -3356,6 +3363,17 @@ body:has(.composer .composer-bar) .toast {
 .row:not(.static):hover {
   background: var(--hover);
 }
+/* A switch that can't change now, such as the last tab that shows in Settings > General > Tabs: it keeps its state,
+ * dimmed, and the help under it says why. */
+.row:disabled {
+  cursor: default;
+}
+.row:disabled:hover {
+  background: none;
+}
+.row:disabled .switch {
+  opacity: 0.45;
+}
 .row + .row::before {
   content: '';
   position: absolute;
@@ -3731,6 +3749,12 @@ body:has(.composer .composer-bar) .toast {
 .setup-back {
   position: fixed;
   left: 14px;
+  top: 50px;
+}
+/* The first-run page's way to Settings, for a profile that has some (setup.js): opposite the back button's place. */
+.setup-settings {
+  position: fixed;
+  right: 14px;
   top: 50px;
 }
 .login-head {
@@ -4964,14 +4988,22 @@ body.compose-window {
   padding: 0 10px 10px;
 }
 /* In the input while the agent cannot take a message: why, and the way to Settings. */
+/* A long custom agent name (up to 40 characters) wraps the sentence and ends the link in an ellipsis, inside the input. */
 .agentpane .ap-setup {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   flex-wrap: wrap;
   gap: 2px 6px;
   color: var(--text-2);
+  overflow-wrap: anywhere;
 }
 .agentpane .ap-setup .link-btn {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: inherit;
   padding: 1px 2px;
 }
@@ -11285,8 +11317,7 @@ body.chat-mode .titlebar-search {
 .ch-msg > .ch-time.is-gutter {
   grid-column: 1;
 }
-.ch-msg > .ch-body,
-.ch-msg > .ch-context {
+.ch-msg > .ch-body {
   grid-column: 2;
   min-width: 0;
 }
@@ -11403,38 +11434,7 @@ body.chat-mode .titlebar-search {
 .ch-msg.is-pending .ch-text {
   color: var(--text-2);
 }
-/* A reply in the main log: "replied to …" above it opens the thread. */
-.ch-context {
-  justify-self: start;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  min-height: 24px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  text-align: left;
-}
-.ch-context svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  color: var(--text-3);
-}
-.ch-context span {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-button.ch-context:hover {
-  color: var(--text);
-}
-button.ch-context:hover span {
-  text-decoration: underline;
-}
-/* A thread's summary under its first message. */
+/* A thread's summary under its first message. Replies show only in their thread; the dot marks new ones. */
 .ch-replies {
   display: inline-flex;
   align-items: center;
@@ -11474,12 +11474,52 @@ button.ch-replies:hover {
 button.ch-replies .ch-replies-n {
   color: var(--link);
 }
+/* The middle dot between the line's parts; the line's gap spaces it. */
+.ch-replies-sep {
+  flex: none;
+  margin: 0 -2px;
+  color: var(--text-3);
+}
 .ch-replies-at {
   min-width: 0;
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Replies of yours that wait or were refused: they show in the thread, with Retry and Discard. */
+.ch-replies-unsent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ch-replies.has-failed .ch-replies-unsent {
+  color: var(--danger);
+  font-weight: 500;
+}
+.ch-replies-unsent svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+/* A thread whose first message has no row: retention took it, or it is further up. Its icon sits in the avatar column. */
+.ch-msg.is-thread-row {
+  padding-top: 8px;
+}
+.ch-thread-row-ic {
+  grid-column: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 24px;
+  color: var(--text-3);
+}
+.ch-thread-row-ic svg {
+  width: 16px;
+  height: 16px;
 }
 /* A notification's message, outlined for two seconds after it opened. */
 .ch-msg.is-target {
@@ -11562,6 +11602,16 @@ button.ch-replies .ch-replies-n {
 }
 .ch-jump.is-down {
   bottom: 8px;
+}
+/* New replies in threads out of view: at the top, under the unread pill when that shows too. */
+.ch-jump.is-thread {
+  top: 8px;
+}
+.ch-jump.is-up:not([hidden]) + .ch-jump.is-thread {
+  top: 44px;
+}
+.ch-jump.is-thread svg {
+  color: var(--accent);
 }
 /* The hover bar (RUK-211 contract 5.2): React, Reply in thread and More as round buttons in a floating pill at the
    message's top right. It rides up over the row's top edge, as the first line of a row is its name or its bubble. Tab
@@ -13852,7 +13902,6 @@ button.ch-replies .ch-replies-n {
   width: 32px;
   height: 30px;
   border-radius: 6px;
-  font-size: 17px;
   color: var(--text-2);
 }
 .ch-emoji-tab svg {
@@ -13861,6 +13910,12 @@ button.ch-replies .ch-replies-n {
 }
 .ch-emoji-tab:hover {
   background: var(--hover);
+  color: var(--text);
+}
+/* The group at the top of the list: its tab is grey like a selected row, its icon in the content ink. */
+.ch-emoji-tab[aria-selected='true'] {
+  background: var(--sel);
+  color: var(--text);
 }
 /* Positioned, so a group's offsetTop is its place in the list its tab scrolls to. */
 .ch-emoji-grid {

@@ -620,14 +620,15 @@ test('reading or moving older unread mail found on the server while a sync runs 
 });
 
 // The demo answers the commands named in outcomes in the order they are sent, each with the next outcome listed for
-// that command: true goes through, a string is the error it fails with. gate: a promise every command waits for first.
+// that command: true goes through, a string is the error the server turns it down with, having changed nothing (a
+// refusal, as ImapAccount reports one once it has read that back). gate: a promise every command waits for first.
 function answerInTurn(demo, outcomes, gate = null) {
   for (const [name, list] of Object.entries(outcomes)) {
     const real = demo[name].bind(demo);
     demo[name] = async (...args) => {
       await gate;
       const outcome = list.shift();
-      if (outcome !== true) throw new Error(outcome);
+      if (outcome !== true) throw Object.assign(new Error(outcome), { refused: true });
       return real(...args);
     };
   }
@@ -1776,5 +1777,39 @@ test('user folders sync on open', async () => {
   const list = engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Invoices' });
   assert.equal(list.length, 1);
   assert.equal(decodeId(list[0].id).folder, 'Invoices');
+  await engine.close();
+});
+
+// Settings > General > Tabs: an email asked for while Mail is off opens after Turn on. Its id names a uid, which a
+// folder whose UIDVALIDITY changed can give to another email; the identity taken at the click finds the email itself.
+test('an email identity finds the same email after its folder gave the uids out again, and nothing once it is gone', async () => {
+  const { engine, acc } = await freshEngine();
+  const inbox = () => engine.listMessages({ scope: acc.id, view: 'inbox' });
+  const [target, other] = inbox();
+  const ident = engine.messageIdentity(target.id);
+  assert.equal(ident.id, target.id);
+  assert.equal(engine.resolveMessage(ident), target.id, 'unchanged: the same id');
+
+  // The server gives the uids out again: the target's old uid now holds the other email.
+  const demo = engine.session(engine.account(acc.id));
+  const box = demo.box('INBOX');
+  const a = box.messages.find((m) => m.uid === target.uid);
+  const b = box.messages.find((m) => m.uid === other.uid);
+  [a.uid, b.uid] = [b.uid, a.uid];
+  box.uidValidity = '2';
+  demo.persist();
+  await engine.syncAccount(acc.id);
+  assert.equal(engine.locate(target.id).msg.subject, other.subject, 'the old id points at another email now');
+  const now = engine.resolveMessage(ident);
+  assert.notEqual(now, target.id);
+  assert.equal(engine.locate(now).msg.subject, target.subject);
+
+  // Deleted on the server: nothing to open.
+  box.messages = box.messages.filter((m) => m !== a);
+  demo.persist();
+  await engine.syncAccount(acc.id);
+  assert.equal(engine.resolveMessage(ident), null);
+  assert.equal(engine.messageIdentity('demo:INBOX:999999'), null, 'no identity for an email that is not there');
+  assert.equal(engine.resolveMessage(null), null);
   await engine.close();
 });

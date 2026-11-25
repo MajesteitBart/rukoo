@@ -4783,7 +4783,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voice-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "block2",
  "libc",
@@ -4808,7 +4808,7 @@ dependencies = [
 
 [[package]]
 name = "voice-audio"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hound",
  "libc",
@@ -4816,7 +4816,7 @@ dependencies = [
 
 [[package]]
 name = "voice-bridge"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures-util",
  "rusqlite",
@@ -4831,7 +4831,7 @@ dependencies = [
 
 [[package]]
 name = "voice-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "bzip2 0.6.1",
@@ -4847,7 +4847,7 @@ dependencies = [
 
 [[package]]
 name = "voice-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "cpal",
@@ -4878,7 +4878,7 @@ dependencies = [
 
 [[package]]
 name = "voice-input"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "objc2",
  "objc2-app-kit",
@@ -4891,7 +4891,7 @@ dependencies = [
 
 [[package]]
 name = "voice-local"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "serde",
@@ -4901,7 +4901,7 @@ dependencies = [
 
 [[package]]
 name = "voice-meetings"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusqlite",
  "serde",
@@ -4917,7 +4917,7 @@ dependencies = [
 
 [[package]]
 name = "voice-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -4927,7 +4927,7 @@ dependencies = [
 
 [[package]]
 name = "voice-recorder"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cpal",
  "hound",
@@ -4944,14 +4944,14 @@ dependencies = [
 
 [[package]]
 name = "voice-s3-fake"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ureq 3.5.0",
 ]
 
 [[package]]
 name = "voice-screen"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "block2",
  "dispatch2",
@@ -4976,7 +4976,7 @@ dependencies = [
 
 [[package]]
 name = "voice-screen-files"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -4989,7 +4989,7 @@ dependencies = [
 
 [[package]]
 name = "voice-speakers"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -5000,7 +5000,7 @@ dependencies = [
 
 [[package]]
 name = "voice-sync"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chacha20poly1305",
  "getrandom 0.4.3",

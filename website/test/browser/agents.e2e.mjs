@@ -3,8 +3,9 @@
 // the server's API, with an agent of his own that answers only him. Olga makes an agent in the Agents dialog and gets
 // a runner config with its key, which in a browser answers with Claude Code or Codex, not the agents of Settings,
 // Agents, which a browser doesn't have (a). She adds the agent to general through Add people, mentions it with the picker, which says Piet's agent
-// answers only him, and the agent's reply, posted with its key as a runner does, shows with the Agent tag (b). The same
-// in Dutch on a phone (c). Each test fails on a console or page error and on horizontal overflow.
+// answers only him, and the agent's reply, posted with its key as a runner does, shows in the thread of the question
+// with the Agent tag, and only there (b, issue #376). The same in Dutch on a phone (c). Each test fails on a console or
+// page error and on horizontal overflow.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { clean, expect, makeAccount, message, openPage, openRoom, shot, signIn, startWorkers, tr } from './harness.mjs';
@@ -181,7 +182,13 @@ test('b: Add people adds the agent to general, the mention list tags both agents
   const trigger = await asked.getAttribute('data-id');
 
   await env.seed.agentReply(clark.key, ws.id, ws.general, { trigger, text: 'Piet asked Revy for the release notes.' });
-  const reply = message(p, 'Piet asked Revy for the release notes.');
+  // The question counts the answer, new to Olga, who asked; the answer shows in the thread only.
+  const summary = asked.locator('.ch-replies');
+  await expect(summary.locator('.ch-replies-n')).toHaveText('1 reply', { timeout: LIVE_MS });
+  await expect(summary).toHaveClass(/has-new/);
+  await expect(message(p, 'Piet asked Revy for the release notes.')).toHaveCount(0);
+  await summary.click();
+  const reply = message(p, 'Piet asked Revy for the release notes.', '.ch-thread-log');
   await expect(reply).toBeVisible({ timeout: LIVE_MS });
   await expect(reply.locator('.ch-name')).toHaveText('Clark');
   await expect(reply.locator('.ch-tag')).toHaveText('Agent');
@@ -210,7 +217,8 @@ test('c: in Dutch on a phone the Agents dialog and the agent tag fit', async () 
   await list.locator('.buttons button').last().click();
   await expect(p.locator('.scrim')).toHaveCount(0);
   await openRoom(p, 'general');
-  await expect(message(p, 'Piet asked Revy for the release notes.').locator('.ch-tag')).toHaveText('Agent', { timeout: LIVE_MS });
+  await message(p, 'summarise the morning').locator('.ch-replies').click({ timeout: LIVE_MS });
+  await expect(message(p, 'Piet asked Revy for the release notes.', '.ch-thread-log').locator('.ch-tag')).toHaveText('Agent', { timeout: LIVE_MS });
   await shot(p, 'agents-c2-reply-nl-phone');
   clean(phone);
 });

@@ -190,6 +190,20 @@ let toastWaits = false;
 let toastWaiting = null;
 // The tag of the toast on screen (opts.tag), such as a chat alert's id, which dropTaggedToast takes down.
 let toastTag = null;
+// What to do once the toast on screen goes without its action (opts.onGone).
+let toastGone = null;
+
+function toastWent() {
+  const gone = toastGone;
+  toastGone = null;
+  if (gone) {
+    try {
+      gone();
+    } catch (_) {
+      // The toast is gone either way.
+    }
+  }
+}
 
 function showWaiting() {
   const next = toastWaiting;
@@ -198,6 +212,7 @@ function showWaiting() {
 }
 
 function hideToast({ next = true } = {}) {
+  toastWent();
   document.getElementById('toast')?.classList.remove('show');
   toastAction = null;
   toastTag = null;
@@ -207,7 +222,8 @@ function hideToast({ next = true } = {}) {
 // opts: a duration in ms, or { ms, action: { label, run, shortcut }, wait }. A toast with an action stays longer
 // and its action also runs on Ctrl+Z (see runToastAction), unless shortcut is false. wait: while a toast with an
 // action is up, such as Undo, this one waits until the toasts before it have gone, instead of taking their place. It
-// does replace a toast that waited itself. tag: a name dropTaggedToast takes the toast down by.
+// does replace a toast that waited itself. tag: a name dropTaggedToast takes the toast down by. onGone: called once
+// when the toast goes without its action having run, by its time, by a newer toast or by dropTaggedToast.
 // It stays while the pointer is on it, and goes 2.5 s after the pointer leaves, or at ms after it showed when that is
 // later.
 export function toast(message, opts = {}) {
@@ -218,6 +234,9 @@ export function toast(message, opts = {}) {
     toastWaiting = toastAction && !toastWaits ? { message, opts } : null;
     if (toastWaiting) return;
   }
+  // A toast on screen that this one replaces goes now.
+  if (el.classList.contains('show')) toastWent();
+  toastGone = opts.onGone || null;
   toastWaits = Boolean(opts.wait);
   toastTag = opts.tag ?? null;
   const ms = opts.ms || (opts.action ? 8000 : 2600);
@@ -256,11 +275,13 @@ export function dropToast(action) {
   hideToast();
 }
 
-// Takes the toast with that tag down while it still shows, and drops it from the wait when it waits there.
+// Takes the toast with that tag down while it still shows, and drops it from the wait when it waits there. tag may
+// also be a function that says which tags go, such as every toast of a mode turned off.
 export function dropTaggedToast(tag) {
   if (tag === null || tag === undefined) return;
-  if (toastWaiting && toastWaiting.opts.tag === tag) toastWaiting = null;
-  if (toastTag !== tag || !document.getElementById('toast')?.classList.contains('show')) return;
+  const matches = (x) => x !== null && x !== undefined && (typeof tag === 'function' ? Boolean(tag(String(x))) : x === tag);
+  if (toastWaiting && matches(toastWaiting.opts.tag)) toastWaiting = null;
+  if (!matches(toastTag) || !document.getElementById('toast')?.classList.contains('show')) return;
   clearTimeout(toastTimer);
   hideToast();
 }
@@ -270,6 +291,8 @@ export function dropTaggedToast(tag) {
 export function runToastAction({ click = false } = {}) {
   const action = toastAction;
   if (!action || (!click && action.shortcut === false)) return false;
+  // The action uses what the toast was for: it didn't go unused.
+  toastGone = null;
   hideToast({ next: false });
   const done = () => {
     if (!document.getElementById('toast')?.classList.contains('show')) showWaiting();
@@ -334,6 +357,12 @@ export function closeMenu({ refocus = false } = {}) {
 
 export const menuOpen = () => Boolean(openMenu);
 export const menuCount = () => menusOpened;
+
+// Closes the menu that opened as number n (menuCount() right after its showMenu) while it is still the one open, such as
+// a calendar menu when Calendar is turned off; a newer menu stays.
+export function closeMenuNumber(n) {
+  if (n && openMenu && menusOpened === n) closeMenu();
+}
 
 // items: [{ label, sub, action, icon, shortcut, danger, checked, disabled }] or { separator: true } or { heading }.
 // sub is an optional quieter second line under the label, such as an account's address under its name.
@@ -534,10 +563,11 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
   });
 }
 
+// message: one paragraph, or a list of them.
 export function confirmDialog(title, message, okLabel = t('common.actions.ok'), danger = false) {
   return dialog({
     title,
-    body: `<p>${esc(message)}</p>`,
+    body: [].concat(message).map((p) => `<p>${esc(p)}</p>`).join(''),
     buttons: [
       { get label() { return t('common.actions.cancel'); }, value: false },
       { label: okLabel, value: true, danger, primary: !danger }

@@ -346,7 +346,7 @@ data class Pending(
     val text: String,
     val mentions: List<Mention>,
     val state: PendingState,
-    /** null | lookup | stale_grant | unknown | conflict | archived | quota | mentions | invalid | no_access */
+    /** null | lookup | stale_grant | unknown | conflict | archived | quota | mentions | root_removed | invalid | no_access */
     val reason: String?,
     val nextAt: Long,
     val createdAt: Long,

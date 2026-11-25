@@ -150,8 +150,30 @@ export const icons = {
   fileSlides: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/><rect x="8" y="11" width="7.5" height="5" rx="1"/><path d="M11.75 16v2"/>'),
   filePdf: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/><path d="M8.5 17.5c1.6-1 3.4-3.6 3.7-6 .2-1.6-1.4-1.6-1.3 0 .2 2.6 2.4 4.6 4.6 4.8 1 .1 1.1-.9.2-1.1-2-.4-5.2.4-7.2 2.3z"/>'),
   // The skin tone choice in the emoji picker: a raised hand.
-  hand: p('<path d="M8.5 12.5V6a1.5 1.5 0 0 1 3 0v5M11.5 10.5V4.8a1.5 1.5 0 0 1 3 0v5.7M14.5 10.5V6.3a1.5 1.5 0 0 1 3 0v7.2a7 7 0 0 1-7 7h-.6a6 6 0 0 1-4.6-2.2l-2.5-3.1a1.5 1.5 0 0 1 2.3-1.9l1.4 1.7"/>')
+  hand: p('<path d="M8.5 12.5V6a1.5 1.5 0 0 1 3 0v5M11.5 10.5V4.8a1.5 1.5 0 0 1 3 0v5.7M14.5 10.5V6.3a1.5 1.5 0 0 1 3 0v7.2a7 7 0 0 1-7 7h-.6a6 6 0 0 1-4.6-2.2l-2.5-3.1a1.5 1.5 0 0 1 2.3-1.9l1.4 1.7"/>'),
+  // The emoji picker's group tabs (emojiGroupIcons below): nature, food and drink, travel, activities, objects and
+  // symbols.
+  leaf: p('<path d="M5.5 18.5C5 10.5 10 5.3 19 5c.4 9-4.6 14-13.5 13.5z"/><path d="M5 19l8-8"/>'),
+  cup: p('<path d="M5 9.5h11v4a5.5 5.5 0 0 1-5.5 5.5A5.5 5.5 0 0 1 5 13.5z"/><path d="M16 10.5h1.3a2.5 2.5 0 0 1 0 5H16"/><path d="M8.5 3.5v3M12.5 3.5v3"/>'),
+  car: p('<rect x="3.5" y="11.5" width="17" height="5.5" rx="1.5"/><path d="m5.5 11.5 1.6-4a2 2 0 0 1 1.9-1.3h6a2 2 0 0 1 1.9 1.3l1.6 4M6.5 17v2M17.5 17v2"/><path d="M7 14.2h.01M17 14.2h.01" stroke-width="2.2"/>'),
+  ball: p('<circle cx="12" cy="12" r="8.5"/><path d="M6.2 5.8c2.4 3.4 2.4 9 0 12.4M17.8 5.8c-2.4 3.4-2.4 9 0 12.4"/>'),
+  bulb: p('<path d="M9.5 17.5h5M10.3 20.5h3.4"/><path d="M8.7 14.3a5.5 5.5 0 1 1 6.6 0c-.5.4-.8 1-.8 1.7v1.5h-5V16c0-.7-.3-1.3-.8-1.7z"/>'),
+  heart: p('<path d="M12 19.5s-7.5-4.5-7.5-10A4 4 0 0 1 12 7.3a4 4 0 0 1 7.5 2.2c0 5.5-7.5 10-7.5 10z"/>')
 };
+
+// The icon on each emoji group's tab in the picker (chat-rich.js), by the group IDs of emoji/data-*.js. A tab shows a
+// line icon, not the group's first emoji: a tab that looks like an emoji gets clicked as one, and then nothing goes in.
+export const emojiGroupIcons = Object.freeze({
+  'smileys-emotion': 'smile',
+  'people-body': 'person',
+  'animals-nature': 'leaf',
+  'food-drink': 'cup',
+  'travel-places': 'car',
+  activities: 'ball',
+  objects: 'bulb',
+  symbols: 'heart',
+  flags: 'flag'
+});
 
 // Provider tiles on the setup screen.
 export const providerLogos = {

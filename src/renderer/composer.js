@@ -4,8 +4,9 @@ import { t, localize, translate, getLanguage } from './i18n.js';
 import { formatButtons, mountRichEditor } from './rich-editor.js';
 import { soleImage } from './editor-images.js';
 import { icons } from './icons.js';
-import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN, afterDrag } from './ui.js';
+import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, menuCount, closeMenuNumber, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN, afterDrag } from './ui.js';
 import { fillFrame } from './mailframe.js';
+import { modeShownNow } from './mode-check.js';
 import { editMenu } from './editmenu.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
 import { FREE_LENGTHS, FREE_RANGES, pcZone, freeRange, zoneOptions, duration } from './calendar-shared.js';
@@ -139,6 +140,13 @@ export function safeBookingUrl(url) {
 function withLink(text, url) {
   const link = `<a href="${esc(url)}">${esc(url)}</a>`;
   return String(text).split('{url}').map(esc).join(link);
+}
+
+// Calendar turned off in Settings > General > Tabs: the composer's calendar button (the booking link and free times)
+// goes with it. A composer has a mail account, so Calendar shows exactly when it isn't turned off (modes.js).
+function calendarOff(data) {
+  const hidden = data && data.settings && data.settings.hiddenModes;
+  return Array.isArray(hidden) && hidden.includes('calendar');
 }
 
 // The booking link under the signature (contracts f): on in the account, or in the general settings when the account
@@ -440,7 +448,7 @@ function template(data, st, inline) {
     <div class="composer-bar">
       <button class="icon-btn" data-c="attach" data-i18n-title="composer.attachments.pick" title="${esc(t('composer.attachments.pick'))}">${icons.clip}</button>
       <button class="icon-btn" data-c="image" data-i18n-title="composer.attachments.image" title="${esc(t('composer.attachments.image'))}">${icons.image}</button>
-      <button class="icon-btn" data-c="calendar" data-i18n-title="composer.booking.button" title="${esc(t('composer.booking.button'))}" aria-haspopup="menu">${icons.calendar}</button>
+      <button class="icon-btn" data-c="calendar" data-i18n-title="composer.booking.button" title="${esc(t('composer.booking.button'))}" aria-haspopup="menu" ${calendarOff(data) ? 'hidden' : ''}>${icons.calendar}</button>
       <button class="icon-btn" data-c="format" data-i18n-title="composer.format.label" title="${esc(t('composer.format.label'))}" aria-pressed="false">${icons.textFormat}</button>
       <button class="icon-btn" data-c="discard" data-i18n-title="composer.actions.discard" title="${esc(t('composer.actions.discard'))}">${icons.trash}</button>
       <button class="icon-btn" data-c="more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>
@@ -797,20 +805,49 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     changed();
   }
 
+  // What the calendar button opened and is still open: its menu (menuCount) and the free-times dialog (its close).
+  let calendarMenuNumber = 0;
+  let closeFreeTimes = null;
+
+  // The calendar button shows while Calendar does (calendarOff). Calendar turned off closes its menu and the
+  // free-times dialog, which then insert nothing.
+  function showModes() {
+    const b = page.querySelector('[data-c="calendar"]');
+    const off = calendarOff(data);
+    if (b) b.hidden = off;
+    if (!off) return;
+    closeMenuNumber(calendarMenuNumber);
+    calendarMenuNumber = 0;
+    if (closeFreeTimes) closeFreeTimes();
+  }
+
+  // Calendar still shows, here and as main has it now: asked after an await, before the text changes.
+  const calendarStillOn = async () => !calendarOff(data) && (await modeShownNow('calendar')) && !calendarOff(data);
+
   // The calendar button: the booking link while the booking page is on, and free times. The compose window's copy
   // of main's state is from when it opened, so the link is asked for again.
   async function calendarMenu(b) {
     const range = editorRange();
     const fresh = await api('state').catch(() => data);
+    if (calendarOff(fresh) || !(await calendarStillOn())) return;
     const url = safeBookingUrl(fresh && fresh.bookingUrl);
     showMenu(
       b,
       [
-        url ? { icon: 'link', get label() { return t('composer.booking.insertLink'); }, action: () => insertHtml(range, `<a href="${esc(url)}">${esc(url)}</a>`) } : null,
+        url
+          ? {
+              icon: 'link',
+              get label() {
+                return t('composer.booking.insertLink');
+              },
+              action: () => !calendarOff(data) && insertHtml(range, `<a href="${esc(url)}">${esc(url)}</a>`)
+            }
+          : null,
         { icon: 'clock', get label() { return t('composer.booking.insertTimes'); }, action: () => freeTimes(range, fresh || data) }
       ],
       { above: true }
     );
+    calendarMenuNumber = menuCount();
   }
 
   // The free-times dialog: length, period, hours and zone, with the lines main formats (calendarFree) as a preview,
@@ -819,6 +856,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // so the page can offer fewer times than the list.
   async function freeTimes(range, state) {
     const booking = await api('bookingState').catch(() => null);
+    if (!(await calendarStillOn())) return restoreRange(range);
     const url = booking && booking.status === 'on' ? safeBookingUrl(booking.url) : null;
     const types = url && booking.settings && Array.isArray(booking.settings.types) ? booking.settings.types.filter((x) => !x.hidden) : [];
     const calendar = state && state.settings && state.settings.calendar;
@@ -846,7 +884,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         { get label() { return t('common.actions.cancel'); }, value: null },
         { get label() { return t('composer.booking.insert'); }, primary: true, value: () => html() || KEEP_OPEN }
       ],
-      render(body) {
+      render(body, done) {
+        closeFreeTimes = () => done(null);
         const rangeLabel = { week: t('calendar.free.rangeThisWeek'), next: t('calendar.free.rangeNextWeek'), days14: t('calendar.free.range14') };
         const draw = () => {
           const lengthField =
@@ -930,7 +969,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         setTimeout(() => body.querySelector('select')?.focus(), 0);
       }
     });
-    if (picked) insertHtml(range, picked);
+    closeFreeTimes = null;
+    if (picked && (await calendarStillOn())) insertHtml(range, picked);
     else restoreRange(range);
   }
 
@@ -1027,6 +1067,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return;
       }
       case 'calendar':
+        if (calendarOff(data)) return;
         return calendarMenu(b);
       case 'cc':
       case 'bcc': {
@@ -1361,6 +1402,16 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     return saving;
   }
 
+  // Deletes the saved draft and returns the notice for it. A draft the server refuses to delete stays in Drafts, and
+  // the notice says why.
+  function dropDraft() {
+    if (!st.draftId) return null;
+    return api('discardDraft', st.draftId).then(
+      () => t('composer.status.deleted'),
+      (err) => err.message
+    );
+  }
+
   let closed = false;
   let closing = false;
   function finish(message) {
@@ -1478,8 +1529,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     closed = true;
     gone = true;
     await saving;
-    if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
-    finish(st.draftId ? t('composer.status.deleted') : null);
+    finish(await dropDraft());
   }
 
   let asking = false;
@@ -1524,8 +1574,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       closed = true;
       gone = true;
       await saving;
-      if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
-      finish(st.draftId ? t('composer.status.deleted') : null);
+      finish(await dropDraft());
       return true;
     }
     return false;
@@ -1806,6 +1855,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     },
     leave,
     close,
+    popOut,
     focus: focusStart,
     setContent,
     getDraft,
@@ -1816,6 +1866,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     accountsChanged(next) {
       data = next;
       syncDefault(next.accounts);
+      showModes();
+    },
+    // Settings > General > Tabs changed: the calendar button comes or goes with Calendar.
+    modesChanged(next) {
+      if (next) data = next;
+      showModes();
     },
     retheme(next) {
       if (next) {

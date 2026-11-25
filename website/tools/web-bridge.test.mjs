@@ -672,10 +672,15 @@ test('notifications: a toast while the page is in front, else a browser notifica
   const open = { ws: W('A'), conversation: C('D'), seq: 7 };
   const id = `chat:${W('A')}:${C('D')}`;
 
-  // In front, with focus: the tagged toast (main.js showChatNotification).
+  // In front, with focus: the tagged toast (main.js showChatNotification), with where its Open goes, as a click on the
+  // notification would: a reply's thread (web-shell.js chatToastAction). A target that isn't valid gives none.
   svc.show({ id, title: 'Olga', body: 'Olga: hi', open });
   await until(() => page.eventsOf('chat-toast').length, 2000, 'the toast');
-  assert.deepEqual({ ...page.eventsOf('chat-toast')[0].payload }, { id, body: 'Olga: hi' });
+  const toasted = page.eventsOf('chat-toast')[0].payload;
+  assert.deepEqual({ ...toasted, open: { ...toasted.open } }, { id, body: 'Olga: hi', open: { kind: 'open', ws: W('A'), conversation: C('D'), seq: 7 } });
+  svc.show({ id: 'chat:summary', title: 'Rukoo', body: 'New messages', open: { ws: 'nope' } });
+  await until(() => page.eventsOf('chat-toast').length > 1, 2000, 'the second toast');
+  assert.equal(page.eventsOf('chat-toast')[1].payload.open, null);
   assert.equal(page.record.notifications.length, 0);
 
   // Visible but another window has focus: a browser notification, tagged with the alert's id.

@@ -90,8 +90,8 @@ object AgentRules {
     /** Whom the agent answers, its sponsor first, or null when it answers everyone. An unknown choice reads as its sponsor only. */
     fun answered(settings: AgentSettings): List<String>? = when (settings.answers) {
         EVERYONE -> null
-        MEMBERS -> (listOf(settings.sponsor) + settings.members).distinct()
-        else -> listOf(settings.sponsor)
+        MEMBERS -> (listOfNotNull(settings.sponsor) + settings.members).distinct()
+        else -> listOfNotNull(settings.sponsor)
     }
 
     /**
@@ -119,11 +119,15 @@ object AgentRules {
     /** Whether [me] has agents of their own to bring into a channel: an active one, while the server has agents [on]. */
     fun ownAgents(members: List<Member>, me: String?, on: Boolean): Boolean = on && sponsors(members, me)
 
-    /** An agent as the directory has it, for its form: null for a person or settings this phone can't read. */
+    /**
+     * An agent as the directory has it, for its form: null for a person, settings this phone can't read, or a sponsor
+     * the directory leaves out (only a guest's or an agent's, and neither manages agents).
+     */
     fun agentOf(member: Member): Agent? {
         val s = member.agent ?: return null
         if (!member.isAgent) return null
-        return Agent(member.id, member.name, s.sponsor, s.answers, s.members, s.agents)
+        val sponsor = s.sponsor ?: return null
+        return Agent(member.id, member.name, sponsor, s.answers, s.members, s.agents)
     }
 
     /**
@@ -276,7 +280,7 @@ internal fun agentAnswersText(settings: AgentSettings?, members: Map<String, Mem
 internal fun agentNote(settings: AgentSettings?, members: Map<String, Member>): String? {
     if (settings == null) return null
     val names = rememberChatNames()
-    val by = members[settings.sponsor]?.let { stringResource(R.string.chat_agents_made_by, names.display(it)) }
+    val by = settings.sponsor?.let { members[it] }?.let { stringResource(R.string.chat_agents_made_by, names.display(it)) }
     val agents = if (settings.agents) stringResource(R.string.chat_agents_answers_agents) else null
     return listOfNotNull(by, agentAnswersText(settings, members), agents).joinToString(" · ")
 }

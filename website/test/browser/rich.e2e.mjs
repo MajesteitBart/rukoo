@@ -818,3 +818,60 @@ test('k: a picture that left the download cache loads again, in the viewer and i
     await small.context.close();
   }
 });
+
+// Issue 377: the picker's group tabs looked like emoji, and a click on one put nothing in. The page runs the same
+// picker: its tabs are line icons that only jump, and a picked emoji goes in at the caret of the composer that opened it.
+test('l: an emoji picked from a composer goes in at its caret, in the channel and in a thread, and a group tab only jumps', async () => {
+  const p = view.page;
+  await openRoom(p, 'general');
+  const main = composer(p);
+  const reply = p.locator('section.chat .ch-thread .ch-input');
+  const value = (input) => input.evaluate((el) => el.value);
+  const picker = p.locator('.ch-emoji');
+  const tabs = picker.locator('.ch-emoji-tab');
+  async function openPicker(scope) {
+    await p.locator(`section.chat ${scope} [data-ch-compose="emoji"]`).click();
+    await expect(picker.locator('.ch-emoji-cell').first()).toBeVisible({ timeout: LIVE_MS });
+  }
+
+  await main.click();
+  await p.keyboard.type('Hello world');
+  for (let i = 0; i < 6; i++) await p.keyboard.press('ArrowLeft');
+  await openPicker('.ch-main');
+  assert.equal(await tabs.locator('svg').count(), await tabs.count(), 'every tab is an icon');
+  assert.doesNotMatch(await picker.locator('.ch-emoji-tabs').textContent(), /\p{Extended_Pictographic}/u);
+  const people = picker.locator('.ch-emoji-tab[data-group="people-body"]');
+  await people.click();
+  await expect(people).toHaveAttribute('aria-selected', 'true');
+  await expect(picker).toBeVisible();
+  assert.equal(await value(main), 'Hello world', 'a tab puts nothing in');
+  await picker.locator('.ch-emoji-sec[data-group="people-body"] .ch-emoji-cell').first().click();
+  await expect(picker).toHaveCount(0);
+  await expect(main).toBeFocused();
+  await p.keyboard.type('!');
+  assert.equal(await value(main), 'Hello\u{1F44B}! world');
+  await shot(p, 'rich-l1-emoji-main');
+
+  await (await hoverTool(message(p, 'The plan for the launch'), 'reply')).click();
+  await expect(reply).toBeFocused();
+  await p.keyboard.type('On it ');
+  await openPicker('.ch-thread');
+  await p.keyboard.type('tada');
+  await p.keyboard.press('Enter');
+  await expect(picker).toHaveCount(0);
+  await expect(reply).toBeFocused();
+  await p.keyboard.type('!');
+  assert.equal(await value(reply), 'On it \u{1F389}!');
+  assert.equal(await value(main), 'Hello\u{1F44B}! world', 'the channel composer kept its text');
+  await shot(p, 'rich-l2-emoji-thread');
+
+  // Leave both composers empty: the thread closes with Escape, the channel's text goes.
+  await p.keyboard.press('ControlOrMeta+A');
+  await p.keyboard.press('Backspace');
+  await p.keyboard.press('Escape');
+  await main.click();
+  await p.keyboard.press('ControlOrMeta+A');
+  await p.keyboard.press('Backspace');
+  assert.equal(await value(main), '');
+  clean(view);
+});

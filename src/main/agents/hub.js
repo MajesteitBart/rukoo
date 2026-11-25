@@ -982,8 +982,11 @@ class AgentHub extends EventEmitter {
   }
 
   // meeting: {id, title, eventId} for a chat about a Rukoo Voice meeting, which has no email.
+  // agent: the agent the chat is for. Without one it is the default; one Rukoo doesn't have (a custom agent removed in
+  // the meantime) is refused, never swapped for another, so a message only reaches the agent the person saw.
   create({ agent, message = null, meeting = null, origin = 'panel', title = '', model = null, effort = null, permission = null } = {}) {
-    const id = this.cfg.hasAgent(agent) ? agent : this.cfg.data.defaultAgent;
+    if (agent && !this.cfg.hasAgent(agent)) throw new AgentError('removed', `no agent ${clip(agent, 40)}`);
+    const id = agent || this.cfg.data.defaultAgent;
     if (!this.cfg.enabled(id)) throw new AgentError('disabled', `${id} is turned off`);
     const about = meetingRef(meeting);
     const ref = about ? null : this.messageRef(message);

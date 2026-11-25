@@ -7,7 +7,9 @@ import java.net.SocketTimeoutException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -77,10 +79,11 @@ class WorkspaceSocketTest {
     }
 
     /** The server's end of each upgraded socket: it records what the phone sends and answers `ping` unless told not to. */
-    private class ServerSide(val pong: Boolean = true) : WebSocketListener() {
+    private class ServerSide(val pong: Boolean = true, val answerClose: Boolean = true) : WebSocketListener() {
         val sockets = LinkedBlockingQueue<WebSocket>()
         val received = CopyOnWriteArrayList<String>()
         val closes = CopyOnWriteArrayList<Int>()
+        val failures = AtomicInteger()
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             sockets += webSocket
@@ -93,7 +96,11 @@ class WorkspaceSocketTest {
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             closes += code
-            webSocket.close(code, null)
+            if (answerClose) webSocket.close(code, null)
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            failures.incrementAndGet()
         }
 
         fun next(): WebSocket = sockets.poll(5, TimeUnit.SECONDS) ?: throw AssertionError("no socket opened")
@@ -387,6 +394,142 @@ class WorkspaceSocketTest {
         Thread.sleep(300)
         assertEquals(SocketState.DOWN, s.state.value)
         assertEquals("no second ticket before Retry-After", 1, tickets())
+    }
+
+    @Test
+    fun `a 429 to the upgrade waits its Retry-After, and a nudge doesn't cut it short`() {
+        server.answer("ticket")
+        server.answerWith(MockResponse().setResponseCode(429).setHeader("Retry-After", "1"))
+        server.answer("ticket")
+        upgrade(ServerSide())
+        val s = socket()
+        s.start()
+        await("the wait") { s.lastDelay == 1_000L }
+        assertEquals(SocketState.DOWN, s.state.value)
+        s.nudge()
+        Thread.sleep(500)
+        assertEquals("no second ticket before Retry-After", 1, tickets())
+        await("open after Retry-After") { opened.get() == 1 }
+        server.verify()
+    }
+
+    @Test
+    fun `close is final, so its waiting retry never fires and start, nudge and check do nothing`() {
+        server.answerWith(MockResponse().setResponseCode(503))
+        val s = socket(quick.copy(backoff = listOf(300L)))
+        s.start()
+        await("the backoff") { s.state.value == SocketState.DOWN }
+        s.close()
+        s.start()
+        s.nudge()
+        s.check()
+        Thread.sleep(700)
+        assertEquals(SocketState.OFF, s.state.value)
+        assertEquals("no second ticket", 1, tickets())
+    }
+
+    @Test
+    fun `a new socket on the same pacing waits out the backoff of the one closed before it`() {
+        repeat(2) { server.answerWith(MockResponse().setResponseCode(503)) }
+        val pacing = SocketPacing()
+        fun paced() = WorkspaceSocket(
+            okhttp, WorkspaceSocket.socketUrl(server.url, w), { client.socketTicket(w) }, listener, scope,
+            timing = quick.copy(backoff = listOf(600L)), random = { 1.0 }, pacing = pacing,
+        ).also { sockets += it }
+        val first = paced()
+        first.start()
+        await("the backoff") { first.state.value == SocketState.DOWN }
+        first.close()
+        val second = paced()
+        second.start()
+        assertEquals("it waits instead of asking at once", SocketState.DOWN, second.state.value)
+        Thread.sleep(200)
+        assertEquals(1, tickets())
+        await("the ticket once the wait is over") { tickets() == 2 }
+    }
+
+    @Test
+    fun `a saved Retry-After runs on the socket's own clock`() {
+        // The clock the socket is given, standing in for a monotonic one; the wall clock plays no part.
+        val clock = AtomicLong(5_000_000)
+        server.answerWith(refusal("start dm too fast", retryAfter = "60"))
+        server.answer("ticket")
+        upgrade(ServerSide())
+        val pacing = SocketPacing()
+        fun paced() = WorkspaceSocket(
+            okhttp, WorkspaceSocket.socketUrl(server.url, w), { client.socketTicket(w) }, listener, scope,
+            timing = quick, now = clock::get, pacing = pacing,
+        ).also { sockets += it }
+        val first = paced()
+        first.start()
+        await("the wait") { first.lastDelay == 60_000L }
+        first.close()
+
+        clock.addAndGet(59_000)
+        val second = paced()
+        second.start()
+        assertEquals("what is left on its clock", 1_000L, second.lastDelay)
+        second.close()
+
+        clock.addAndGet(1_000)
+        val third = paced()
+        third.start()
+        await("a ticket once its clock says the wait is over") { opened.get() == 1 }
+        assertEquals(2, tickets())
+    }
+
+    // The review's interleaving: the retry timer's delay ends while another call holds the socket's lock, and a newer
+    // Retry-After arrives under that lock. Cancelling the timer then can't stop it; it must look again.
+    @Test
+    fun `a retry timer that fired while the lock was held doesn't connect past a newer Retry-After`() {
+        server.answerWith(MockResponse().setResponseCode(503))
+        val pacing = SocketPacing()
+        val hold = AtomicBoolean(false)
+        val clock = {
+            if (hold.compareAndSet(true, false)) {
+                // Called under the socket's lock by the nudge below: wait until the timer is past its delay.
+                Thread.sleep(600)
+                pacing.limit(System.currentTimeMillis() + 60_000)
+            }
+            System.currentTimeMillis()
+        }
+        val s = WorkspaceSocket(
+            okhttp, WorkspaceSocket.socketUrl(server.url, w), { client.socketTicket(w) }, listener, scope,
+            timing = quick.copy(backoff = listOf(200L)), now = clock, random = { 1.0 }, pacing = pacing,
+        ).also { sockets += it }
+        s.start()
+        await("the backoff") { s.state.value == SocketState.DOWN }
+        hold.set(true)
+        s.nudge()
+        Thread.sleep(600)
+        assertEquals("no ticket before the newer Retry-After", 1, tickets())
+        assertEquals(SocketState.DOWN, s.state.value)
+    }
+
+    @Test
+    fun `closing for good drops the connection at once, also when the peer never answers the close`() {
+        val side = ServerSide(answerClose = false)
+        server.answer("ticket")
+        upgrade(side)
+        val s = socket()
+        s.start()
+        side.next()
+        await("open") { s.state.value == SocketState.OPEN }
+        s.close()
+        await("the connection ended", timeoutMs = 3_000) { side.failures.get() > 0 }
+    }
+
+    @Test
+    fun `check pings an open socket at once`() {
+        val side = ServerSide()
+        server.answer("ticket")
+        upgrade(side)
+        val s = socket(quick.copy(pingEvery = 60_000))
+        s.start()
+        side.next()
+        await("open") { s.state.value == SocketState.OPEN }
+        s.check()
+        await("a ping") { side.received.contains("ping") }
     }
 
     /** A listener on 127.0.0.1 that reads the upgrade request and never answers it. */

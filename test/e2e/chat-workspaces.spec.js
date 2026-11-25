@@ -336,7 +336,7 @@ test("joining Olga's workspace with a link from the Join dialog opens its first 
   await expect(dialog.locator('[data-other]')).toBeHidden();
   await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), `Join Acme here: ${link}.`);
   await dialog.locator('[name="link"]').focus();
-  await win.keyboard.press('Control+V');
+  await win.keyboard.press('ControlOrMeta+v');
   const card = dialog.locator('[data-preview]');
   await expect(card.locator('.ch-join-ws')).toHaveText('Acme', { timeout: 15000 });
   await expect(dialog.locator('[name="link"]')).toHaveValue(link);
@@ -772,9 +772,11 @@ test('Settings has the team chat notifications switch, and the account page coun
   const row = page.locator('[data-a="toggle:chatNotifications"]');
   await expect(row).toContainText('Team chat notifications', { timeout: 15000 });
   await expect(row).toContainText('Direct messages and mentions in your workspaces.');
-  await expect(row.locator('.switch')).toHaveAttribute('aria-checked', 'true');
+  // The row is the switch: the focusable button carries the role and its state.
+  await expect(row).toHaveAttribute('role', 'switch');
+  await expect(row).toHaveAttribute('aria-checked', 'true');
   await row.click();
-  await expect(page.locator('[data-a="toggle:chatNotifications"] .switch')).toHaveAttribute('aria-checked', 'false');
+  await expect(page.locator('[data-a="toggle:chatNotifications"]')).toHaveAttribute('aria-checked', 'false');
   await expect.poll(() => win.evaluate(() => window.mail.call('chatState').then((s) => s.notifications))).toBe(false);
 
   await page.locator('[data-a="rukoo"]').click();

@@ -403,11 +403,47 @@
   },
   "agent.empty.setupBody": {
     "message": "Rukoo needs a few details before it can reach {name}.",
-    "description": "Chat panel empty state line when the agent is not set up; the setup link is below."
+    "description": "Chat panel empty state line when the agent is not set up; Set up {name} and Chat with buttons for ready agents are below it (renderEmpty in agent/panel.js)."
   },
   "agent.empty.setupTitle": {
     "message": "Set up {name} to start",
     "description": "Chat panel empty state heading when the agent is not set up or installed."
+  },
+  "agent.empty.setupBodyDraft": {
+    "message": "Rukoo needs a few details before it can reach {name}. Your message stays here until you set up {name} or pick another agent.",
+    "description": "Chat panel empty state line instead of agent.empty.setupBody when the person already wrote or attached something for this agent and it then stopped taking messages; the input is hidden meanwhile, and the message is not sent anywhere else. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.removedTitle": {
+    "message": "{name} was removed",
+    "description": "Chat panel empty state heading when the agent of the chat being written was removed in Settings > Agents (a custom agent). name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.removedBody": {
+    "message": "{name} is no longer in Settings → Agents. Pick another agent for this chat. Anything you wrote stays here.",
+    "description": "Chat panel empty state line under agent.empty.removedTitle; Chat with buttons for ready agents are below it. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.chatWith": {
+    "message": "Chat with {name}",
+    "description": "Chat panel empty state: button on the card of an agent that isn't set up or can't be reached; it switches this new chat to another agent that is ready, as the agent menu under the input does. name: that agent's name, e.g. Claude (emptyActions in agent/panel.js)."
+  },
+  "agent.empty.offlineTitle": {
+    "message": "{name} can't be reached",
+    "description": "Chat panel empty state heading when Rukoo couldn't reach the agent's server or program the last time it checked. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.offlineBody": {
+    "message": "Rukoo couldn't reach {name} the last time it checked. The shortcuts come back once it answers.",
+    "description": "Chat panel empty state line under agent.empty.offlineTitle; the quick action chips are hidden while the agent can't be reached. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.tryAgain": {
+    "message": "Try again",
+    "description": "Chat panel empty state: primary button on the card of an agent that can't be reached; Rukoo tests the connection again (checkAgain in agent/panel.js)."
+  },
+  "agent.empty.checking": {
+    "message": "Checking...",
+    "description": "Chat panel empty state: the Try again button while Rukoo tests the agent's connection (emptyActions in agent/panel.js)."
+  },
+  "agent.empty.checkSettings": {
+    "message": "Check settings",
+    "description": "Chat panel empty state: button on the card of an agent that can't be reached; it opens Settings > Agents at that agent's card (emptyActions in agent/panel.js)."
   },
   "agent.empty.title": {
     "message": "What should {name} do with this email?",
@@ -476,6 +512,10 @@
   "agent.errors.disabled": {
     "message": "{name} is turned off in Settings.",
     "description": "Chat panel error: the agent is switched off."
+  },
+  "agent.errors.removed": {
+    "message": "{name} is no longer in Settings, so your message wasn't sent. Pick another agent.",
+    "description": "Chat panel error: Rukoo refused to start a chat with an agent that was removed in Settings > Agents (a custom agent), instead of sending the message to another agent. The message stays in the input. name: the agent's name."
   },
   "agent.errors.not-configured": {
     "message": "{name} isn't set up yet.",
@@ -861,7 +901,7 @@
   },
   "agent.panel.setUp": {
     "message": "Set up {name}",
-    "description": "Chat panel: link-style button that opens Settings, Agents; name is the agent name."
+    "description": "Chat panel: link-style button above the disabled input and primary button on the empty state's card; it opens Settings, Agents at that agent's card. name is the agent name."
   },
   "agent.panel.show": {
     "message": "Show",
@@ -934,6 +974,13 @@
   "agent.panel.toggle": {
     "message": "Chat with an agent (Ctrl+J)",
     "description": "Title bar button tooltip that opens or closes the chat panel."
+  },
+  "agent.panel.tooLong": {
+    "message": {
+      "one": "This message is {shown} character too long. Shorten it or send it in parts.",
+      "other": "This message is {shown} characters too long. Shorten it or send it in parts."
+    },
+    "description": "Chat panel notice when you press Send on a message longer than a chat takes (20,000 characters). Nothing is sent and the text stays in the input. count: how many characters too many; shown: that number, formatted (send in agent/panel.js)."
   },
   "agent.panel.transcript": {
     "message": "Conversation",
@@ -1023,6 +1070,10 @@
     "message": "{name} isn't installed on this computer.",
     "description": "Chat panel, above the disabled input: the agent program was not found."
   },
+  "agent.setup.removed": {
+    "message": "{name} was removed in Settings.",
+    "description": "Chat panel, above the disabled input: the agent of the chat being written was removed in Settings > Agents; the agent menu beside it picks another. name: the agent's name (setupNote in agent/panel.js)."
+  },
   "agent.setup.unauthorized": {
     "message": "{name} didn't accept the API key.",
     "description": "Chat panel, above the disabled input: the agent rejected the key."
@@ -1046,6 +1097,10 @@
   "agent.status.ready": {
     "message": "Ready",
     "description": "Chat panel and Settings: agent status when it can take a message."
+  },
+  "agent.status.removed": {
+    "message": "Removed",
+    "description": "Chat panel: status of an agent that was removed in Settings > Agents (a custom agent), shown in the panel header for a chat being written for it or a chat with it."
   },
   "agent.status.starting": {
     "message": "Starting...",
@@ -3155,6 +3210,22 @@
     "message": "Yahoo didn't accept this password. Yahoo Mail only works here with an app password, not your normal Yahoo password. Create one and try again.",
     "description": "errors > connection. Shown in the setup form and under Server settings when Yahoo turns down the password of an account. The setup form shows a Create app password link under it. src/main/imap.js (friendlyError, verifyError)"
   },
+  "errors.delete.noUidExpunge": {
+    "message": "This mail server can't delete a single email for good.",
+    "description": "errors > delete. The IMAP server lacks UIDPLUS, so it has no UID EXPUNGE: its only expunge removes every email in the folder marked for deletion, also ones another mail app marked. Rukoo then sends nothing, the email stays without a deletion mark and its row comes back. Shown in a notice after Delete forever, Empty Trash or a draft discard, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteMany)"
+  },
+  "errors.delete.refused": {
+    "message": "The mail server didn't delete the email.",
+    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft, and the email is still there without a deletion mark. The email stays and its row comes back. Shown in a notice, also when the editor closes after Delete draft, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteMany); src/main/demo.js (refuse); src/renderer/composer.js (dropDraft)"
+  },
+  "errors.delete.stillMarked": {
+    "message": "The mail server didn't finish deleting the email. It's still marked for deletion.",
+    "description": "errors > delete. The IMAP server didn't finish deleting an email for good, and the email still carries the \\Deleted flag, so another mail app may still expunge it. Rukoo takes that flag off only when the server shows (CONDSTORE) that this delete set it and nothing changed the email since; another mail app may have set it. The email's row comes back. Shown in a notice, and after mailbox.outcome.stayed when several emails were deleted. src/main/imap.js (deleteMany, deleteOne)"
+  },
+  "errors.delete.unknown": {
+    "message": "Rukoo couldn't confirm whether the mail server deleted the email.",
+    "description": "errors > delete. The IMAP server didn't confirm deleting an email for good, and Rukoo couldn't read the email back to see whether it is gone, for example because the connection closed. The email's row comes back and the folder syncs, which shows what happened. Shown in a notice. src/main/imap.js (deleteMany)"
+  },
   "errors.flags.refused": {
     "message": "The mail server didn't save the change.",
     "description": "errors > flags. The IMAP server turned down marking emails read, unread, starred or answered, or the command didn't reach it. The emails go back to how they were. Shown in a notice, and after Mark all as read as the {error} of mailbox.actions.readSome. src/main/imap.js (setFlagsMany)"
@@ -3511,6 +3582,22 @@
     "message": "Message not found on the server.",
     "description": "errors > message. src/main/imap.js"
   },
+  "errors.move.copied": {
+    "message": "The mail server copied the email but didn't confirm removing the original. Check both folders before trying again.",
+    "description": "errors > move. A server without the IMAP MOVE command copied the email but didn't confirm removing the original. Rukoo keeps the copy, so the email may be in both folders; both folders sync. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (moveTurn)"
+  },
+  "errors.move.noUidExpunge": {
+    "message": "This mail server can't move a single email on its own.",
+    "description": "errors > move. The IMAP server has neither MOVE nor UIDPLUS, so moving one email would mean a copy and an expunge that removes every email in the folder marked for deletion, also ones another mail app marked. Rukoo then sends nothing, the email stays where it was and its row comes back. Shown in a notice after Move, Archive, Delete to Trash, Mark as spam or Empty Spam, and after mailbox.outcome.stayed when several emails were moved. src/main/imap.js (moveTurn)"
+  },
+  "errors.move.refused": {
+    "message": "The mail server didn't move the email.",
+    "description": "errors > move. The IMAP server turned down moving an email to another folder: Move, Archive, Delete to Trash, Mark as spam, or Undo of one of those. Rukoo says this only after reading back that the email is still in its folder by its UID and the destination took nothing in, both in the folder generation (UIDVALIDITY) the move used. The email stays where it was and its row comes back; after a refused Undo the notice offers Undo again. Shown in a notice, and after mailbox.outcome.stayed when several emails were moved. src/main/imap.js (moveTurn); src/main/demo.js (refuse)"
+  },
+  "errors.move.unknown": {
+    "message": "Rukoo couldn't confirm whether the mail server moved the email. Check both folders before trying again.",
+    "description": "errors > move. The IMAP server didn't confirm moving an email, and Rukoo can't tell whether it did: the connection closed before the answer, or the server answered NO after it may have copied the email. The email's row comes back while both folders sync, which shows where it is, and Undo isn't offered. Shown in a notice after Move, Archive, Delete or Undo. src/main/imap.js (moveTurn)"
+  },
   "errors.network.privateHost": {
     "message": "{hostname} is not a public address",
     "description": "errors > network. src/main/net.js (publicLookup)"
@@ -3533,7 +3620,7 @@
   },
   "errors.undo.rebuilt": {
     "message": "This action can no longer be undone: the folder was rebuilt on the server.",
-    "description": "errors > undo. src/main/engine.js"
+    "description": "errors > undo. Undo after a move, archive or delete, when the folder the email went to was rebuilt on the server since (its UIDVALIDITY changed), so Rukoo can no longer say which email it is. Nothing is sent and the folder syncs. Shown in a notice; when several emails were undone, after mailbox.outcome.unsure, which counts this one. src/main/engine.js (undoAll); src/renderer/app.js (outcomes)"
   },
   "errors.unsubscribe.missing": {
     "message": "This email has no unsubscribe link.",
@@ -3995,6 +4082,48 @@
   "mailbox.older.searching": {
     "message": "Searching older mail on the server…",
     "description": "Message list, under search results or in place of an empty result: Rukoo is searching the server for older mail than it keeps. src/renderer/app.js (olderHtml, listHtml)"
+  },
+  "mailbox.outcome.deleted": {
+    "message": {
+      "one": "{count} email deleted for good.",
+      "other": "{count} emails deleted for good."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails deleted for good, from Trash, from an account without Trash, or by Empty Trash. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.moved": {
+    "message": {
+      "one": "{count} email moved to {folder}.",
+      "other": "{count} emails moved to {folder}."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails moved or archived, {folder}: the folder's name. Its Undo button (and Ctrl+Z) moves them back. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.restored": {
+    "message": {
+      "one": "{count} email restored.",
+      "other": "{count} emails restored."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. After Undo. {count}: emails moved back to where they were. The notice's Undo button (and Ctrl+Z) tries the others again. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.stayed": {
+    "message": {
+      "one": "{count} email stayed where it was.",
+      "other": "{count} emails stayed where they were."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails the mail server turned down, which are back in the list. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.trashed": {
+    "message": {
+      "one": "{count} email moved to Trash.",
+      "other": "{count} emails moved to Trash."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails moved to Trash by Delete or Empty Spam. After Delete, its Undo button (and Ctrl+Z) moves them back. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
+  },
+  "mailbox.outcome.unsure": {
+    "message": {
+      "one": "Rukoo couldn't confirm what happened to {count} email. Check where it is before trying again.",
+      "other": "Rukoo couldn't confirm what happened to {count} emails. Check where they are before trying again."
+    },
+    "description": "One sentence of the notice after an action on several emails of which some went one way and some another, or some didn't go: the notice names each outcome that happened with its own count, then gives the mail server's reason for the ones that didn't go. {count}: emails whose result the mail server didn't confirm, for example because the connection closed, and emails whose Undo can't be done because the folder was rebuilt on the server. Rukoo syncs the folders involved, which shows where they are, and offers no Undo for them. The notice gives no reason for these, except errors.undo.rebuilt after this sentence for a rebuilt folder. src/renderer/app.js (outcomes, removeMessages, moveMessages, undoMoves, emptyCurrent)"
   },
   "mailbox.saved.save": {
     "message": "Save to Saved emails",
@@ -4944,7 +5073,11 @@
   },
   "settings.agents.default": {
     "message": "Default agent",
-    "description": "Settings, Agents page: which agent a new chat goes to."
+    "description": "Settings, Agents page: which agent a new chat goes to. While it can't take a message, a new chat starts on the first agent that is ready."
+  },
+  "settings.agents.defaultValue": {
+    "message": "{name} · {status}",
+    "description": "Settings, Agents page: value of the Default agent row, the agent and its status, e.g. \"Hermes · Not set up\", so you see why a new chat starts on another agent. status is one of the agent.status texts (defaultAgentText in settings.js)."
   },
   "settings.agents.enabled": {
     "message": "Use {name}",
@@ -5408,6 +5541,70 @@
     "message": "Show or hide email folders.",
     "description": "settings > general. src/renderer/settings.js (render)"
   },
+  "settings.general.tabs": {
+    "message": "Tabs",
+    "description": "Settings > General: row that opens the page where the user turns the title bar's mode tabs (Mail, Calendar, Meet, Chat) on or off. src/renderer/settings.js (render)"
+  },
+  "settings.general.tabsHelp": {
+    "message": "Turn {modes} on or off.",
+    "description": "Settings > General: help under the Tabs row. {modes}: the tab names joined as a list in the interface language, such as \"Mail, Calendar, Meet and Chat\"; Chat is left out while team chat isn't available. src/renderer/settings.js (render)"
+  },
+  "settings.modes.show": {
+    "message": "Show in Rukoo",
+    "description": "Settings > General > Tabs: heading above the switches for Mail, Calendar, Meet and Chat. src/renderer/settings.js (render)"
+  },
+  "settings.modes.help": {
+    "message": "A tab you turn off leaves the title bar, and its shortcut, notifications, sounds and badges go with it. Your accounts, data and sync stay as they are, and agents keep their tools, so turning it back on picks up where you left off. At least one tab stays on.",
+    "description": "Settings > General > Tabs: text under the switches. Says what turning a mode off does and what it leaves alone (hiding is not disconnecting). src/renderer/settings.js (render)"
+  },
+  "settings.modes.lastOn": {
+    "message": "The only tab that shows, so it stays on.",
+    "description": "Settings > General > Tabs: help under the one switch that can't be turned off, because every other tab is off or unavailable. src/renderer/settings.js (render)"
+  },
+  "settings.modes.chatAway": {
+    "message": "Shows when team chat is available.",
+    "description": "Settings > General > Tabs: help under the Chat switch while the server of the user's Rukoo account has no team chat, or the user is signed out; the switch then only says whether Chat shows once it is there. src/renderer/settings.js (render)"
+  },
+  "settings.modes.turnOn": {
+    "message": "Turn on",
+    "description": "Button in the notice that a mode is turned off (settings.modes.off*): turns that mode back on in Settings > General > Tabs. Short. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.offMail": {
+    "message": "Mail is turned off, so Rukoo didn't start a new email.",
+    "description": "Notice in the main window when an email link (mailto:) was opened with Rukoo while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Mail on and then starts the email. src/renderer/app.js (modeOffNotice), src/main/main.js (openMailto)"
+  },
+  "settings.modes.offMailOpen": {
+    "message": "Mail is turned off, so Rukoo can't open this email.",
+    "description": "Notice in the main window when the user opens an email or a draft from the chat panel or from the inbox sorting panel while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Mail on and then opens it. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.goneMail": {
+    "message": "That email is no longer in Rukoo, so there is nothing to open.",
+    "description": "Notice in the main window after Turn on (settings.modes.turnOn) in the notice settings.modes.offMailOpen: Mail is on again, but the email or draft the user asked for while Mail was off was deleted or moved meanwhile, so nothing opens. src/renderer/app.js (offerMail), src/renderer/agent/panel.js (showDraftLater)"
+  },
+  "settings.modes.chatNeeded": {
+    "message": "Without a mail account, Chat is the tab you can use, so it stays on.",
+    "description": "Settings > General > Tabs: help under the Chat switch, which can't be turned off, for someone who uses Rukoo with a Rukoo account and no mail account. Mail, Calendar and Meet need a mail account. src/renderer/settings.js (render)"
+  },
+  "settings.modes.offCalendar": {
+    "message": "Calendar is turned off, so Rukoo can't show this.",
+    "description": "Notice in the main window when the user opens a calendar file or an event while Calendar is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Calendar on and then opens the file or the event. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.offMeeting": {
+    "message": "Meet is turned off, so Rukoo can't show this meeting.",
+    "description": "Notice in the main window when the user opens a meeting, such as from a chat about it, while Meet is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Meet on and then opens that meeting. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.offChat": {
+    "message": "Chat is turned off, so Rukoo can't open your invitation.",
+    "description": "Notice in the main window when a team chat invitation waits to be joined while Chat is turned off in Settings > General > Tabs. Followed by a Turn on button, after which the Join dialog opens. src/renderer/app.js (modeOffNotice)"
+  },
+  "setup.chatOnly.action": {
+    "message": "Use Chat only, without email",
+    "description": "Setup page, opened from the Mail, Calendar or Meet tab by someone who uses team chat without a mail account: link that turns Mail, Calendar and Meet off in Settings > General > Tabs and closes the page. src/renderer/setup.js (showGrid)"
+  },
+  "setup.chatOnly.done": {
+    "message": "Mail, Calendar and Meet are off. Settings > General > Tabs turns them back on.",
+    "description": "Notice after the user chose setup.chatOnly.action on the setup page. Names the place in Settings where the tabs come back. src/renderer/setup.js"
+  },
   "settings.general.language": {
     "message": "Language",
     "description": "settings > general. Settings > General: opens the interface language picker."
@@ -5475,6 +5672,42 @@
   "settings.general.minimizeToTrayHelp": {
     "message": "Minimizing puts the window in the tray instead of on the taskbar.",
     "description": "settings > general. Settings > General: explanation below Minimize to the tray. src/renderer/settings.js (render)"
+  },
+  "settings.general.openAtLogin": {
+    "message": "Open when you sign in",
+    "description": "settings > general. Settings > General on Windows and Linux: title of the switch that makes Rukoo start, hidden in the tray, when the person signs in to the computer. Off by default; it shows what the system has now. After Minimize to the tray. On Linux the row has no switch and says the desktop's own settings do this (openAtLoginLinux). src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginHelp": {
+    "message": "Rukoo starts hidden in the tray when you sign in to the computer, so new mail and team chat notify you without opening Rukoo first.",
+    "description": "settings > general. Settings > General on Windows: explanation below Open when you sign in, saying what it is for. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginUnavailable": {
+    "message": "Only the installed app can open when you sign in.",
+    "description": "settings > general. Settings > General on Windows, below Open when you sign in, in the portable Windows app, an unpacked build or a run from source, which can't register themselves; the switch isn't there then. Also the error if the switch is used there. src/renderer/settings.js (loginRow), src/main/main.js (setOpenAtLogin)"
+  },
+  "settings.general.openAtLoginLinux": {
+    "message": "Your desktop's own startup settings can start Rukoo when you sign in.",
+    "description": "settings > general. Settings > General on Linux, below Open when you sign in, in place of the switch: Rukoo doesn't add itself to the startup programs there, and the desktop's own settings, such as GNOME Tweaks or KDE's Autostart, can. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginMac": {
+    "message": "Open at login",
+    "description": "settings > general. Settings > General on macOS: title of the switch that makes Rukoo a login item, so it starts in the background when the person logs in. Off by default. Matches the wording of macOS's Login Items. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginMacHelp": {
+    "message": "Rukoo starts in the background when you log in, so new mail and team chat notify you without opening Rukoo first.",
+    "description": "settings > general. Settings > General on macOS: explanation below Open at login, saying what it is for. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginMacUnavailable": {
+    "message": "Move Rukoo Mail to Applications and open it there first.",
+    "description": "settings > general. Settings > General on macOS, below Open at login, for a copy that runs from the disk image, Downloads or source, which may not register itself. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginMacApproval": {
+    "message": "Allow Rukoo Mail under System Settings › General › Login Items to finish, or turn this off to cancel.",
+    "description": "settings > general. Settings > General on macOS, below Open at login in place of its explanation, while macOS waits for the person to allow the login item: a new one, or one they turned off under Login Items. The switch shows on then, and turning it off removes the login item. Name the System Settings panes as macOS does in this language. src/renderer/settings.js (loginRow)"
+  },
+  "settings.general.openAtLoginFailed": {
+    "message": "Rukoo couldn't change this. Try again, or check the startup apps in your system's settings.",
+    "description": "settings > general. Toast after the Open when you sign in switch was used and the system kept its login item as it was. src/renderer/settings.js, src/main/main.js (setOpenAtLogin)"
   },
   "settings.general.notifications": {
     "message": "Notifications",
@@ -10947,17 +11180,29 @@
     "message": "Last reply {time}",
     "description": "Message list: text beside the reply count. {time}: when the newest reply came. src/renderer/chat-view.js"
   },
-  "chat.log.replyTo": {
-    "message": "replied to {name}: {text}",
-    "description": "Message list: context line above a reply in the main timeline; a click opens its thread. {name}: the author of the thread's first message; {text}: the start of that message. src/renderer/chat-view.js"
+  "chat.log.threadNew": {
+    "message": { "one": "{count} new reply in a thread", "other": "{count} new replies in a thread" },
+    "description": "Message list: pill at the top of a conversation when one thread whose first message is out of view has replies that came since you last read it; a click opens that thread. Replies show only in their thread. {count}: the new replies. src/renderer/chat-view.js"
   },
-  "chat.log.replyToRemoved": {
-    "message": "replied to a removed message",
-    "description": "Message list: context line above a reply whose thread's first message was removed. src/renderer/chat-view.js"
+  "chat.log.threadsNew": {
+    "message": { "one": "{count} new reply in {threads} threads", "other": "{count} new replies in {threads} threads" },
+    "description": "Message list: the same pill when two or more threads out of view have new replies; a click opens the thread with the oldest of them. {count}: the new replies, always 2 or more; {threads}: the threads. src/renderer/chat-view.js"
   },
-  "chat.log.replyInThread": {
-    "message": "replied in a thread",
-    "description": "Message list: context line above a reply whose thread's first message isn't on this computer. src/renderer/chat-view.js"
+  "chat.log.repliesUnsent": {
+    "message": { "one": "{count} reply not sent", "other": "{count} replies not sent" },
+    "description": "Message list: part of the reply line under a thread's first message while replies of yours wait to go out or were refused; a click opens the thread, where they show with Retry and Discard. {count}: those replies. src/renderer/chat-view.js"
+  },
+  "chat.log.rootGone": {
+    "message": "This message is no longer kept",
+    "description": "Message list: row where the first message of a thread was, after the server stopped keeping it (retention) while it still keeps replies; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
+  "chat.log.rootEarlier": {
+    "message": "Reply to an earlier message",
+    "description": "Message list: row for replies of yours that weren't sent yet, to a message further up that isn't loaded; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
+  "chat.log.threadNewOpen": {
+    "message": "open the thread",
+    "description": "Message list: end of the accessible name of the new replies pill, after its text and a comma, as in \"2 new replies in a thread, open the thread\". src/renderer/chat-view.js"
   },
   "chat.sys.created": {
     "message": "{actor} made #{name}",
@@ -11859,6 +12104,22 @@
     "message": "You're the last one here, so leaving archives #{name}.",
     "description": "Leave a channel: confirmation text when the user is its last member. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
   },
+  "chat.channel.leaveAgent": {
+    "message": "Your agent {name} leaves with you.",
+    "description": "Leave a private channel, leave any channel as its last person, or hand a private channel over and leave: second paragraph when one agent the user made is in it, since a private channel keeps someone's agents only while they are in it and the last person's leaving archives the channel and takes every agent out. {name}: the agent's name. Android chat_channel_leave_agent. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgents": {
+    "message": "Your agents {names} leave with you.",
+    "description": "The same as chat.channel.leaveAgent, for two or three agents. {names}: their names as the language lists them (\"Clark and Bee\"). Android chat_channel_leave_agents. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsMany": {
+    "message": { "one": "Your {count} agent in this channel leaves with you.", "other": "Your {count} agents in this channel leave with you." },
+    "description": "The same as chat.channel.leaveAgents, for more than three agents. {count}: how many. Android chat_channel_leave_agents_many. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsUnknown": {
+    "message": "Any agents of yours in this channel leave with you.",
+    "description": "The same as chat.channel.leaveAgent, when the channel's members couldn't be loaded, so the user's agents in it can't be named. It must be true whether or not any are in it. Android chat_channel_leave_agents_unknown. src/renderer/chat-model.js (leavingAgentsText)"
+  },
   "chat.channel.leave": {
     "message": "Leave",
     "description": "Leave a channel: confirmation button. src/renderer/chat-dialogs.js"
@@ -12727,6 +12988,14 @@
     "message": "{name}: {text}",
     "description": "Team chat notification: body line. {name}: the author; {text}: the first 120 characters of the message, with mentions as @Name. src/main/workspaces/notify.js"
   },
+  "chat.notify.reply": {
+    "message": "{name} replied: {text}",
+    "description": "Team chat notification: body line for a reply in a thread, which shows only in its thread; a click opens the thread at it. {name}: the author; {text}: the first 120 characters of the reply, with mentions as @Name. src/main/workspaces/notify.js"
+  },
+  "chat.notify.open": {
+    "message": "Open",
+    "description": "Team chat toast: button on an alert shown while Rukoo's window has focus; it opens the conversation at the message, and a reply in its thread, as a click on the notification does. src/renderer/app.js, src/renderer/web-shell.js"
+  },
   "chat.notify.summaryTitle": {
     "message": "Team chat",
     "description": "Team chat notification: title of the summary when more than three conversations have new messages. src/main/workspaces/notify.js"
@@ -12902,6 +13171,10 @@
   "chat.errors.mentions": {
     "message": "Someone you mentioned isn't in this conversation any more.",
     "description": "Team chat error, shown under an unsent message: the server refused it because someone it mentions left the conversation. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.rootRemoved": {
+    "message": "The message you replied to is no longer available.",
+    "description": "Team chat error, shown under an unsent reply in a thread: the server refused it because the thread's first message was removed meanwhile. src/renderer/chat-view.js (reasonText)"
   },
   "chat.errors.reactionLimit": {
     "message": "This message has 20 different reactions, the most it can hold.",
