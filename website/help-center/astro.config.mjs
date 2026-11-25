@@ -3,6 +3,7 @@ import starlight from '@astrojs/starlight';
 import navigation from './navigation.json' with { type: 'json' };
 import { satteri } from '@astrojs/markdown-satteri';
 import { markdownBase } from './scripts/markdown-base.mjs';
+import { markdownKeys } from './scripts/markdown-keys.mjs';
 
 // The help center is part of rukoo.io. `npm run build` writes it to ../site/help/, and the rukoo-site Worker serves it
 // at https://rukoo.io/help/ with the rest of the site. Page URLs in page-registry.json and in the Markdown stay
@@ -11,7 +12,7 @@ const base = '/help';
 
 export default defineConfig({
   site: 'https://rukoo.io', base, output: 'static', trailingSlash: 'always',
-  markdown: { processor: satteri({ hastPlugins: [markdownBase(base)] }) },
+  markdown: { processor: satteri({ hastPlugins: [markdownBase(base), markdownKeys()] }) },
   integrations: [starlight({
     title: 'Rukoo help', description: 'Help with Rukoo Mail, team chat and Rukoo Voice.',
     logo: { light: './public/rukoo-logo.svg', dark: './public/rukoo-logo-dark.svg', alt: 'Rukoo Mail', replacesTitle: false },

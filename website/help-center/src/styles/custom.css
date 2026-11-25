@@ -1,5 +1,6 @@
 /* The help center uses the type and dark colors of rukoo.io (site/styles.css). The Inter files are the main site's,
-   served from /assets/fonts/ on the same origin. Light mode keeps Starlight's grays.
+   served from /assets/fonts/ on the same origin. Like the main site it is one dark canvas, with hairlines between
+   the header, the sidebar and the page. Light mode follows the same rules with Starlight's light grays.
    Accent: --green #16f0a3 from the site. Light controls use the darker #087e5b for contrast.
    Wordmarks follow the tagged public artwork. */
 @font-face {
@@ -19,30 +20,228 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* ---------- tokens ---------- */
+
 :root {
   --sl-font: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-  --sl-color-accent-low: #123c35; --sl-color-accent: #16f0a3; --sl-color-accent-high: #b9ffe6;
+  --sl-font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  /* A calmer scale than Starlight's: headings structure an answer, they don't announce it. */
+  --sl-text-h1: clamp(2rem, 1.6rem + 1.25vw, 2.5rem);
+  --sl-text-h2: 1.5rem;
+  --sl-text-h3: 1.1875rem;
+  --sl-text-h4: 1.0625rem;
+  --sl-line-height: 1.7;
+  /* 44px touch targets on a phone, as on the rest of rukoo.io. */
+  --sl-menu-button-size: 2.75rem;
+  /* The help center's own tokens, light values first. Light mode and print use these; print keeps Starlight's
+     own light palette for everything else. */
+  --rk-tint: rgba(8, 126, 91, 0.09);
+  --rk-hover: rgba(23, 24, 28, 0.04);
+  --rk-field: #f6f6f7;
+  --rk-link: var(--sl-color-white);
+  --rk-link-hover: #087e5b;
+  --rk-link-line: rgba(8, 126, 91, 0.5);
+  --rk-current: #065c43;
+  --rk-code-bg: rgba(23, 24, 28, 0.05);
+  --rk-key-bg: linear-gradient(#ffffff, #f3f4f6);
+  --rk-key-edge: 0 1px 0 rgba(23, 24, 28, 0.12);
+  --rk-scroll-edge: rgba(23, 24, 28, 0.12);
+  --rk-shadow-pop: 0 16px 40px rgba(23, 24, 28, 0.16);
+  --rk-selection: rgba(8, 126, 91, 0.2);
 }
-/* Dark is the default, also before the theme script runs. */
-:root:not([data-theme='light']) {
-  --sl-color-white: #f7f8f8;
-  --sl-color-gray-3: #858a93;
-  --sl-color-gray-5: #2a2c33;
-  --sl-color-gray-6: #0d0e10;
-  --sl-color-black: #08090a;
+@media screen {
+  :root { --sl-color-accent-low: #123c35; --sl-color-accent: #16f0a3; --sl-color-accent-high: #b9ffe6; }
+  /* Dark is the default, also before the theme script runs. */
+  :root:not([data-theme='light']) {
+    --sl-color-white: #f7f8f8;
+    --sl-color-gray-3: #858a93;
+    --sl-color-gray-5: #2a2c33;
+    --sl-color-gray-6: #111215;
+    --sl-color-black: #08090a;
+    --sl-color-bg-nav: rgba(8, 9, 10, 0.82);
+    --sl-color-bg-sidebar: #08090a;
+    --sl-color-hairline: rgba(255, 255, 255, 0.07);
+    --sl-color-hairline-light: rgba(255, 255, 255, 0.12);
+    --sl-color-hairline-shade: rgba(255, 255, 255, 0.07);
+    --rk-tint: rgba(22, 240, 163, 0.1);
+    --rk-hover: rgba(255, 255, 255, 0.05);
+    --rk-field: #111215;
+    --rk-link-hover: #16f0a3;
+    --rk-link-line: rgba(22, 240, 163, 0.55);
+    --rk-current: #b9ffe6;
+    --rk-code-bg: rgba(255, 255, 255, 0.06);
+    --rk-key-bg: linear-gradient(#1c1d21, #141518);
+    --rk-key-edge: 0 1px 0 rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --rk-scroll-edge: rgba(255, 255, 255, 0.12);
+    --rk-shadow-pop: 0 16px 40px rgba(0, 0, 0, 0.55);
+    --rk-selection: rgba(22, 240, 163, 0.28);
+  }
+  :root[data-theme='light'] {
+    --sl-color-accent-low: #dcfff2; --sl-color-accent: #087e5b; --sl-color-accent-high: #1c2340;
+    --sl-color-bg-nav: rgba(255, 255, 255, 0.85);
+    --sl-color-bg-sidebar: #ffffff;
+    --sl-color-hairline: rgba(23, 24, 28, 0.08);
+    --sl-color-hairline-light: rgba(23, 24, 28, 0.12);
+    --sl-color-hairline-shade: rgba(23, 24, 28, 0.08);
+  }
 }
-:root[data-theme='light'] { --sl-color-accent-low: #dcfff2; --sl-color-accent: #087e5b; --sl-color-accent-high: #1c2340; }
 
 body {
   font-optical-sizing: auto;
   font-feature-settings: 'cv11', 'ss01', 'ss03';
 }
-/* 44px touch targets on a phone, as on the rest of rukoo.io. */
-:root { --sl-menu-button-size: 2.75rem; }
+::selection { background: var(--rk-selection); }
+:focus-visible { outline: 2px solid var(--sl-color-accent); outline-offset: 2px; }
+
+/* ---------- header ---------- */
+
+.header,
+mobile-starlight-toc nav { -webkit-backdrop-filter: saturate(160%) blur(16px); backdrop-filter: saturate(160%) blur(16px); }
 .sl-menu-button { align-items: center; justify-content: center; }
-@media (max-width: 49.99rem) {
-  button[data-open-modal] { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
+/* The search field is a pill, like every control on rukoo.io. */
+button[data-open-modal] { transition: border-color 120ms ease, color 120ms ease; }
+@media (min-width: 50rem) {
+  button[data-open-modal] { border-radius: 999px; border-color: var(--sl-color-hairline-light); background-color: var(--rk-field); padding-inline: 1rem 0.375rem; }
+  button[data-open-modal] > kbd { gap: 0.25em; border-radius: 999px; padding-inline: 0.5rem; background-color: var(--rk-code-bg); }
 }
 
-.sl-markdown-content h2 { scroll-margin-top: 6rem; }
-.sl-markdown-content a { text-underline-offset: .18em; }
+/* ---------- search dialog ---------- */
+
+site-search dialog { border-color: var(--sl-color-hairline-light); background-color: var(--rk-field); box-shadow: var(--rk-shadow-pop); }
+@media (min-width: 50rem) {
+  /* Starlight keeps 15rem free for results; before you type that is an empty box. */
+  site-search dialog { min-height: 0; border-radius: 16px; }
+}
+#starlight__search { --pagefind-ui-border: var(--sl-color-hairline-light); --pagefind-ui-border-radius: 12px; }
+#starlight__search .pagefind-ui__search-input { border-radius: 12px; }
+#starlight__search .pagefind-ui__search-input:focus { outline: 2px solid var(--sl-color-accent); outline-offset: -1px; border-color: transparent; }
+
+/* ---------- sidebar ---------- */
+
+#starlight__sidebar .large { font-size: 0.875rem; letter-spacing: -0.005em; }
+#starlight__sidebar a { border-radius: 8px; transition: color 120ms ease, background-color 120ms ease; }
+#starlight__sidebar a:hover { background-color: var(--rk-hover); }
+#starlight__sidebar a[aria-current='page'],
+#starlight__sidebar a[aria-current='page']:hover,
+#starlight__sidebar a[aria-current='page']:focus { background-color: var(--rk-tint); color: var(--rk-current); font-weight: 500; }
+
+/* ---------- on this page ---------- */
+
+starlight-toc h2 { font-size: 0.875rem; }
+starlight-toc a { transition: color 120ms ease; }
+mobile-starlight-toc .toggle { border-radius: 999px; }
+mobile-starlight-toc details:not([open]) .toggle:not(:hover) { border-color: var(--sl-color-hairline-light); }
+/* The open list is a raised panel over the page, like the search dialog. */
+mobile-starlight-toc .dropdown { border-color: var(--sl-color-hairline-light); border-top-color: transparent; background-color: var(--rk-field); box-shadow: var(--rk-shadow-pop); }
+
+/* ---------- page title and headings ---------- */
+
+h1#_top { font-weight: 650; letter-spacing: -0.02em; text-wrap: balance; }
+.sl-markdown-content :is(h2, h3, h4) { letter-spacing: -0.015em; text-wrap: balance; scroll-margin-top: 6rem; }
+.sl-markdown-content :not(h1, h2, h3, h4, h5, h6) + :is(h2, h3) { margin-top: 2.25rem; }
+.sl-markdown-content :is(h2, h3) + * { margin-top: 0.75rem; }
+.sl-markdown-content :is(p, li) { text-wrap: pretty; }
+.sl-markdown-content strong { color: var(--sl-color-white); font-weight: 600; }
+
+/* ---------- links ---------- */
+
+/* As on rukoo.io: links keep the text color, a step brighter than the paragraph, with a green underline. */
+.sl-markdown-content a {
+  color: var(--rk-link);
+  text-decoration-color: var(--rk-link-line);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  transition: text-decoration-color 120ms ease, color 120ms ease;
+}
+.sl-markdown-content a:hover { color: var(--rk-link-hover); text-decoration-color: currentColor; }
+/* A link that leaves rukoo.io says so. */
+.sl-markdown-content a[href^='http']::after { content: '↗'; content: '↗' / ''; display: inline-block; margin-inline-start: 0.15em; font-size: 0.8em; text-decoration: none; }
+
+/* ---------- lists ---------- */
+
+/* A blank line between items makes a "loose" list, which Starlight spaces wider. Every list gets the same rhythm. */
+.sl-markdown-content :is(ul, ol) > li > :last-child { margin-bottom: 0; }
+.sl-markdown-content li + li { margin-top: 0.375rem; }
+.sl-markdown-content ol > li + li { margin-top: 0.5rem; }
+.sl-markdown-content li::marker { color: var(--sl-color-gray-3); }
+.sl-markdown-content ol > li::marker { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---------- code and keys ---------- */
+
+.sl-markdown-content code {
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 6px;
+  background-color: var(--rk-code-bg);
+  padding: 0.0625rem 0.375rem;
+  font-size: 0.84em;
+  overflow-wrap: anywhere;
+}
+/* Shortcuts become keycaps at build time (scripts/markdown-keys.mjs), drawn like the keys on rukoo.io. */
+.sl-markdown-content kbd {
+  display: inline-block;
+  min-width: 1.75em;
+  padding: 0.0625rem 0.4375rem;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 6px;
+  background: var(--rk-key-bg);
+  box-shadow: var(--rk-key-edge);
+  color: var(--sl-color-white);
+  font: 500 0.8125em/1.6 var(--sl-font);
+  text-align: center;
+  white-space: nowrap;
+  /* Starlight spaces block-like siblings 1rem apart; a key sits in the line. */
+  margin-block: 0;
+}
+.sl-markdown-content .keys { white-space: nowrap; color: var(--sl-color-gray-3); }
+.sl-markdown-content .keys kbd { margin: 0 0.1em; }
+
+/* ---------- tables ---------- */
+
+.sl-markdown-content table {
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  /* Shadows at an edge that scrolls, covered where the table ends. */
+  background:
+    linear-gradient(to right, var(--sl-color-bg) 40%, transparent) left / 2rem 100% no-repeat local,
+    linear-gradient(to left, var(--sl-color-bg) 40%, transparent) right / 2rem 100% no-repeat local,
+    linear-gradient(to right, var(--rk-scroll-edge), transparent) left / 0.75rem 100% no-repeat scroll,
+    linear-gradient(to left, var(--rk-scroll-edge), transparent) right / 0.75rem 100% no-repeat scroll;
+}
+.sl-markdown-content :is(th, td) { padding-block: 0.625rem; border-bottom-color: var(--sl-color-hairline-light); }
+.sl-markdown-content th { font-size: 0.875rem; border-bottom-color: var(--sl-color-gray-5); }
+.sl-markdown-content tr:last-child td { border-bottom: 0; }
+@media (max-width: 49.99rem) {
+  /* On a phone a column keeps room for its words, and the table scrolls sideways instead. */
+  .sl-markdown-content :is(th, td) { min-width: 8rem; }
+  .sl-markdown-content :is(th, td):first-child { min-width: 9.5rem; }
+}
+
+/* ---------- previous and next ---------- */
+
+.pagination-links a { border-color: var(--sl-color-hairline-light); border-radius: 16px; padding: 1rem 1.25rem; box-shadow: none; font-size: 0.8125rem; color: var(--sl-color-gray-3); transition: border-color 120ms ease, background-color 120ms ease; }
+.pagination-links a:hover { border-color: var(--rk-link-line); background-color: var(--rk-hover); }
+.pagination-links .link-title { margin-top: 0.125rem; font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; line-height: 1.35; }
+.pagination-links svg { color: var(--sl-color-gray-3); transition: color 120ms ease; }
+.pagination-links a:hover svg { color: var(--sl-color-accent); }
+
+/* ---------- touch targets on a phone ---------- */
+
+/* 44px, as on the rest of rukoo.io: the search and menu buttons and the menu's links and groups on a phone, and the
+   page sections wherever Starlight shows them as a menu, which is up to 72rem wide (a phone held sideways too). */
+@media (max-width: 49.99rem) {
+  button[data-open-modal] { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
+  #starlight__sidebar a { padding-block: 0.6875rem; }
+  #starlight__sidebar summary { min-height: 2.75rem; }
+  #starlight__sidebar a[rel='me'] { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
+}
+@media (max-width: 71.99rem) {
+  :root { --sl-mobile-toc-height: 3.5rem; }
+  mobile-starlight-toc .toggle { min-height: 2.75rem; }
+  mobile-starlight-toc .dropdown a { min-height: 2.75rem; align-items: center; }
+  /* Centred rows no longer stretch the current section's checkmark, so it gets its own height. */
+  mobile-starlight-toc .dropdown a::after { block-size: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0ms !important; }
+}
