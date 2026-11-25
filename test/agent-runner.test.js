@@ -1751,6 +1751,24 @@ test('a run the server takes while the runner stops still gets its id answered, 
   }
 });
 
+test('a run the runner stopped before it was submitted is never sent', async () => {
+  const seen = [];
+  const fake = await fakeHttp((req, body, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    if (req.method === 'POST' && req.url === '/v1/runs') return res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ run_id: 'run_unwanted' }));
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+  });
+  try {
+    const stop = new AbortController();
+    stop.abort();
+    await assert.rejects(backends.makeBackend({ type: 'runs', url: fake.url, timeout: 30 }).run({ instructions: 'I', input: 'Q', text: 'I\n\nQ' }, { id: 'e_t', signal: stop.signal }), (err) => err instanceof backends.BackendError);
+    await sleep(1500);
+    assert.deepEqual(seen, []);
+  } finally {
+    await fake.close();
+  }
+});
+
 test("a pinned program is started only while its path is still that file: a link or a file that went says 'changed'", () => {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const real = fs.realpathSync.native(tempDir('rukoo-pinned-'));

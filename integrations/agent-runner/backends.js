@@ -257,6 +257,8 @@ class RunsBackend {
 
   async run(prompt, { id, signal } = {}) {
     const deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs(this.config)), ...(signal ? [signal] : [])]);
+    // Stopped before it was sent: no run starts on the server that nobody follows.
+    if (deadline.aborted) throw new BackendError('Stopped before the run started', 'stopped');
     const body = { input: prompt.input, instructions: prompt.instructions };
     // "provider::model", as Rukoo's model menu names a model of another provider.
     const model = String(this.config.model || '').trim();
@@ -277,8 +279,7 @@ class RunsBackend {
     const onDeadline = () => {
       graceTimer = setTimeout(() => submit.abort(), SUBMIT_GRACE);
     };
-    if (deadline.aborted) onDeadline();
-    else deadline.addEventListener('abort', onDeadline, { once: true });
+    deadline.addEventListener('abort', onDeadline, { once: true });
     let res;
     let started;
     try {
