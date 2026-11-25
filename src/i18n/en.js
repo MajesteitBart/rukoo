@@ -403,11 +403,47 @@
   },
   "agent.empty.setupBody": {
     "message": "Rukoo needs a few details before it can reach {name}.",
-    "description": "Chat panel empty state line when the agent is not set up; the setup link is below."
+    "description": "Chat panel empty state line when the agent is not set up; Set up {name} and Chat with buttons for ready agents are below it (renderEmpty in agent/panel.js)."
   },
   "agent.empty.setupTitle": {
     "message": "Set up {name} to start",
     "description": "Chat panel empty state heading when the agent is not set up or installed."
+  },
+  "agent.empty.setupBodyDraft": {
+    "message": "Rukoo needs a few details before it can reach {name}. Your message stays here until you set up {name} or pick another agent.",
+    "description": "Chat panel empty state line instead of agent.empty.setupBody when the person already wrote or attached something for this agent and it then stopped taking messages; the input is hidden meanwhile, and the message is not sent anywhere else. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.removedTitle": {
+    "message": "{name} was removed",
+    "description": "Chat panel empty state heading when the agent of the chat being written was removed in Settings > Agents (a custom agent). name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.removedBody": {
+    "message": "{name} is no longer in Settings → Agents. Pick another agent for this chat. Anything you wrote stays here.",
+    "description": "Chat panel empty state line under agent.empty.removedTitle; Chat with buttons for ready agents are below it. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.chatWith": {
+    "message": "Chat with {name}",
+    "description": "Chat panel empty state: button on the card of an agent that isn't set up or can't be reached; it switches this new chat to another agent that is ready, as the agent menu under the input does. name: that agent's name, e.g. Claude (emptyActions in agent/panel.js)."
+  },
+  "agent.empty.offlineTitle": {
+    "message": "{name} can't be reached",
+    "description": "Chat panel empty state heading when Rukoo couldn't reach the agent's server or program the last time it checked. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.offlineBody": {
+    "message": "Rukoo couldn't reach {name} the last time it checked. The shortcuts come back once it answers.",
+    "description": "Chat panel empty state line under agent.empty.offlineTitle; the quick action chips are hidden while the agent can't be reached. name: the agent's name (renderEmpty in agent/panel.js)."
+  },
+  "agent.empty.tryAgain": {
+    "message": "Try again",
+    "description": "Chat panel empty state: primary button on the card of an agent that can't be reached; Rukoo tests the connection again (checkAgain in agent/panel.js)."
+  },
+  "agent.empty.checking": {
+    "message": "Checking...",
+    "description": "Chat panel empty state: the Try again button while Rukoo tests the agent's connection (emptyActions in agent/panel.js)."
+  },
+  "agent.empty.checkSettings": {
+    "message": "Check settings",
+    "description": "Chat panel empty state: button on the card of an agent that can't be reached; it opens Settings > Agents at that agent's card (emptyActions in agent/panel.js)."
   },
   "agent.empty.title": {
     "message": "What should {name} do with this email?",
@@ -476,6 +512,10 @@
   "agent.errors.disabled": {
     "message": "{name} is turned off in Settings.",
     "description": "Chat panel error: the agent is switched off."
+  },
+  "agent.errors.removed": {
+    "message": "{name} is no longer in Settings, so your message wasn't sent. Pick another agent.",
+    "description": "Chat panel error: Rukoo refused to start a chat with an agent that was removed in Settings > Agents (a custom agent), instead of sending the message to another agent. The message stays in the input. name: the agent's name."
   },
   "agent.errors.not-configured": {
     "message": "{name} isn't set up yet.",
@@ -861,7 +901,7 @@
   },
   "agent.panel.setUp": {
     "message": "Set up {name}",
-    "description": "Chat panel: link-style button that opens Settings, Agents; name is the agent name."
+    "description": "Chat panel: link-style button above the disabled input and primary button on the empty state's card; it opens Settings, Agents at that agent's card. name is the agent name."
   },
   "agent.panel.show": {
     "message": "Show",
@@ -934,6 +974,13 @@
   "agent.panel.toggle": {
     "message": "Chat with an agent (Ctrl+J)",
     "description": "Title bar button tooltip that opens or closes the chat panel."
+  },
+  "agent.panel.tooLong": {
+    "message": {
+      "one": "This message is {shown} character too long. Shorten it or send it in parts.",
+      "other": "This message is {shown} characters too long. Shorten it or send it in parts."
+    },
+    "description": "Chat panel notice when you press Send on a message longer than a chat takes (20,000 characters). Nothing is sent and the text stays in the input. count: how many characters too many; shown: that number, formatted (send in agent/panel.js)."
   },
   "agent.panel.transcript": {
     "message": "Conversation",
@@ -1023,6 +1070,10 @@
     "message": "{name} isn't installed on this computer.",
     "description": "Chat panel, above the disabled input: the agent program was not found."
   },
+  "agent.setup.removed": {
+    "message": "{name} was removed in Settings.",
+    "description": "Chat panel, above the disabled input: the agent of the chat being written was removed in Settings > Agents; the agent menu beside it picks another. name: the agent's name (setupNote in agent/panel.js)."
+  },
   "agent.setup.unauthorized": {
     "message": "{name} didn't accept the API key.",
     "description": "Chat panel, above the disabled input: the agent rejected the key."
@@ -1046,6 +1097,10 @@
   "agent.status.ready": {
     "message": "Ready",
     "description": "Chat panel and Settings: agent status when it can take a message."
+  },
+  "agent.status.removed": {
+    "message": "Removed",
+    "description": "Chat panel: status of an agent that was removed in Settings > Agents (a custom agent), shown in the panel header for a chat being written for it or a chat with it."
   },
   "agent.status.starting": {
     "message": "Starting...",
@@ -4982,7 +5037,11 @@
   },
   "settings.agents.default": {
     "message": "Default agent",
-    "description": "Settings, Agents page: which agent a new chat goes to."
+    "description": "Settings, Agents page: which agent a new chat goes to. While it can't take a message, a new chat starts on the first agent that is ready."
+  },
+  "settings.agents.defaultValue": {
+    "message": "{name} · {status}",
+    "description": "Settings, Agents page: value of the Default agent row, the agent and its status, e.g. \"Hermes · Not set up\", so you see why a new chat starts on another agent. status is one of the agent.status texts (defaultAgentText in settings.js)."
   },
   "settings.agents.enabled": {
     "message": "Use {name}",
@@ -11021,17 +11080,29 @@
     "message": "Last reply {time}",
     "description": "Message list: text beside the reply count. {time}: when the newest reply came. src/renderer/chat-view.js"
   },
-  "chat.log.replyTo": {
-    "message": "replied to {name}: {text}",
-    "description": "Message list: context line above a reply in the main timeline; a click opens its thread. {name}: the author of the thread's first message; {text}: the start of that message. src/renderer/chat-view.js"
+  "chat.log.threadNew": {
+    "message": { "one": "{count} new reply in a thread", "other": "{count} new replies in a thread" },
+    "description": "Message list: pill at the top of a conversation when one thread whose first message is out of view has replies that came since you last read it; a click opens that thread. Replies show only in their thread. {count}: the new replies. src/renderer/chat-view.js"
   },
-  "chat.log.replyToRemoved": {
-    "message": "replied to a removed message",
-    "description": "Message list: context line above a reply whose thread's first message was removed. src/renderer/chat-view.js"
+  "chat.log.threadsNew": {
+    "message": { "one": "{count} new reply in {threads} threads", "other": "{count} new replies in {threads} threads" },
+    "description": "Message list: the same pill when two or more threads out of view have new replies; a click opens the thread with the oldest of them. {count}: the new replies, always 2 or more; {threads}: the threads. src/renderer/chat-view.js"
   },
-  "chat.log.replyInThread": {
-    "message": "replied in a thread",
-    "description": "Message list: context line above a reply whose thread's first message isn't on this computer. src/renderer/chat-view.js"
+  "chat.log.repliesUnsent": {
+    "message": { "one": "{count} reply not sent", "other": "{count} replies not sent" },
+    "description": "Message list: part of the reply line under a thread's first message while replies of yours wait to go out or were refused; a click opens the thread, where they show with Retry and Discard. {count}: those replies. src/renderer/chat-view.js"
+  },
+  "chat.log.rootGone": {
+    "message": "This message is no longer kept",
+    "description": "Message list: row where the first message of a thread was, after the server stopped keeping it (retention) while it still keeps replies; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
+  "chat.log.rootEarlier": {
+    "message": "Reply to an earlier message",
+    "description": "Message list: row for replies of yours that weren't sent yet, to a message further up that isn't loaded; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
+  "chat.log.threadNewOpen": {
+    "message": "open the thread",
+    "description": "Message list: end of the accessible name of the new replies pill, after its text and a comma, as in \"2 new replies in a thread, open the thread\". src/renderer/chat-view.js"
   },
   "chat.sys.created": {
     "message": "{actor} made #{name}",
@@ -11933,6 +12004,22 @@
     "message": "You're the last one here, so leaving archives #{name}.",
     "description": "Leave a channel: confirmation text when the user is its last member. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
   },
+  "chat.channel.leaveAgent": {
+    "message": "Your agent {name} leaves with you.",
+    "description": "Leave a private channel, leave any channel as its last person, or hand a private channel over and leave: second paragraph when one agent the user made is in it, since a private channel keeps someone's agents only while they are in it and the last person's leaving archives the channel and takes every agent out. {name}: the agent's name. Android chat_channel_leave_agent. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgents": {
+    "message": "Your agents {names} leave with you.",
+    "description": "The same as chat.channel.leaveAgent, for two or three agents. {names}: their names as the language lists them (\"Clark and Bee\"). Android chat_channel_leave_agents. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsMany": {
+    "message": { "one": "Your {count} agent in this channel leaves with you.", "other": "Your {count} agents in this channel leave with you." },
+    "description": "The same as chat.channel.leaveAgents, for more than three agents. {count}: how many. Android chat_channel_leave_agents_many. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsUnknown": {
+    "message": "Any agents of yours in this channel leave with you.",
+    "description": "The same as chat.channel.leaveAgent, when the channel's members couldn't be loaded, so the user's agents in it can't be named. It must be true whether or not any are in it. Android chat_channel_leave_agents_unknown. src/renderer/chat-model.js (leavingAgentsText)"
+  },
   "chat.channel.leave": {
     "message": "Leave",
     "description": "Leave a channel: confirmation button. src/renderer/chat-dialogs.js"
@@ -12561,6 +12648,14 @@
     "message": "{name}: {text}",
     "description": "Team chat notification: body line. {name}: the author; {text}: the first 120 characters of the message, with mentions as @Name. src/main/workspaces/notify.js"
   },
+  "chat.notify.reply": {
+    "message": "{name} replied: {text}",
+    "description": "Team chat notification: body line for a reply in a thread, which shows only in its thread; a click opens the thread at it. {name}: the author; {text}: the first 120 characters of the reply, with mentions as @Name. src/main/workspaces/notify.js"
+  },
+  "chat.notify.open": {
+    "message": "Open",
+    "description": "Team chat toast: button on an alert shown while Rukoo's window has focus; it opens the conversation at the message, and a reply in its thread, as a click on the notification does. src/renderer/app.js, src/renderer/web-shell.js"
+  },
   "chat.notify.summaryTitle": {
     "message": "Team chat",
     "description": "Team chat notification: title of the summary when more than three conversations have new messages. src/main/workspaces/notify.js"
@@ -12736,6 +12831,10 @@
   "chat.errors.mentions": {
     "message": "Someone you mentioned isn't in this conversation any more.",
     "description": "Team chat error, shown under an unsent message: the server refused it because someone it mentions left the conversation. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.rootRemoved": {
+    "message": "The message you replied to is no longer available.",
+    "description": "Team chat error, shown under an unsent reply in a thread: the server refused it because the thread's first message was removed meanwhile. src/renderer/chat-view.js (reasonText)"
   },
   "chat.errors.reactionLimit": {
     "message": "This message has 20 different reactions, the most it can hold.",

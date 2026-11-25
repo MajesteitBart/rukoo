@@ -167,7 +167,7 @@ for (const method of ['findFor', 'forPanel']) for (const close of [false, true])
     const messageId = await win.locator('.item', { hasText: subject }).first().getAttribute('data-id');
     await app.evaluate((_e, { method, messageId, subject }) => {
       const hub = global.__semAgents;
-      const conversation = hub.create({ agent: 'hermes', message: { id: messageId, subject } });
+      const conversation = hub.create({ agent: 'clark', message: { id: messageId, subject } });
       const original = hub[method].bind(hub);
       const releases = [];
       global.__semCalendarLookup = {

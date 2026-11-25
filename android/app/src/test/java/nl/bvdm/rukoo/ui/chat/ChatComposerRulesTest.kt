@@ -31,9 +31,9 @@ class ChatComposerRulesTest {
 
     private fun message(actor: String, removed: Boolean = false, pending: PendingState? = null, root: String? = null, replies: Int = 0) = Message(
         key = "e_1", seq = 1, id = if (pending == null) "e_1" else null, local = if (pending != null) "l1" else null, actor = actor, at = 0, root = root,
-        reply = root != null, head = true, text = if (removed) null else "hi", mentions = emptyList(), removed = removed, mentionsMe = false,
+        head = true, text = if (removed) null else "hi", mentions = emptyList(), removed = removed, mentionsMe = false,
         blocked = false, pending = pending, reason = null, nextAt = null,
-        replies = if (replies > 0) ChatTimeline.Replies(replies, 0, listOf(sanne), false) else null, context = null,
+        replies = if (replies > 0) ChatTimeline.Replies(replies, 0, listOf(sanne), false) else null,
     )
 
     @Test

@@ -379,8 +379,8 @@ export async function openRoom(page, name) {
   await expect(page.locator('.ch-head .ch-title')).toHaveText(name);
 }
 
-// A message in the open conversation's log (or a thread's, with where: '.ch-thread-log'), by its own text: a thread
-// reply shown in the channel quotes its root's text in its "replied to" line, which doesn't count.
+// A message in the open conversation's log (or a thread's, with where: '.ch-thread-log'), by its own text. A thread's
+// replies show only in the thread.
 export const message = (page, text, where = '.ch-log') => page.locator(`${where} .ch-msg`, { has: page.locator('.ch-text', { hasText: text }) });
 
 // Types into a composer and sends with Enter, as a person does; the message then shows in that log, sent.

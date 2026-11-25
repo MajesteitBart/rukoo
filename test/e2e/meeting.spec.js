@@ -1762,6 +1762,55 @@ test('notes typed while a save is still on its way are kept when another meeting
   await expect(view().locator('.mt-notes-input')).toHaveText('First line. Second line.');
 });
 
+// A Codex chat about one meeting is on screen when the person opens another meeting and types before main has looked.
+// That meeting has no chat: the text stays under Codex, where it was typed, as it does for an email. It used to move to
+// the default agent.
+test('text typed while a meeting is looked up keeps the agent it was typed under when the meeting has no chat', async () => {
+  const ended = (id, title, ago) => {
+    voice.append('meeting.started', id, { title, startedAt: Date.now() - ago, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null });
+    voice.append('meeting.state', id, { state: 'done', at: 60000, endedAt: Date.now() - ago + 60000 });
+    say(id, 'call', 1000, `A line from ${title}.`);
+  };
+  const first = voice.meetingId();
+  const second = voice.meetingId();
+  ended(first, 'First meeting', 3 * 60 * 60 * 1000);
+  ended(second, 'Second meeting', 2 * 60 * 60 * 1000);
+  await openMeetings();
+  const item = (title) => win.locator('.sidebar [data-mt-open]', { hasText: title });
+  const head = () => win.locator('.agentpane .ap-agent');
+  const chats = () => app.evaluate(() => global.__semAgents.list().map((c) => [c.agent, c.meeting && c.meeting.title, c.status]));
+  await item('First meeting').click();
+  await expect(view().locator('.mt-title')).toHaveText('First meeting');
+  await win.keyboard.press('Control+j');
+  await expect(pane()).toBeVisible();
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: /^Codex$/ }) }).click();
+  await expect(head()).toHaveText('Codex');
+  await input().fill('Hello Codex');
+  await input().press('Enter');
+  await expect.poll(chats, { timeout: 15000 }).toEqual([['codex', 'First meeting', 'idle']]);
+  // Main's lookup of a meeting's chat waits until the test lets it answer.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    const find = hub.findForMeeting.bind(hub);
+    global.__lookup = new Promise((resolve) => (global.__answerLookup = resolve));
+    hub.findForMeeting = (id) => global.__lookup.then(() => find(id));
+  });
+  await item('Second meeting').click();
+  await expect(view().locator('.mt-title')).toHaveText('Second meeting');
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Hello Codex']);
+  await input().fill('For Codex');
+  await app.evaluate(() => global.__answerLookup());
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await expect(head()).toHaveText('Codex');
+  expect(await input().evaluate((el) => el.value)).toBe('For Codex');
+  await input().press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list().map((c) => [c.agent, c.meeting && c.meeting.title]).sort())).toEqual([
+    ['codex', 'First meeting'],
+    ['codex', 'Second meeting']
+  ]);
+});
+
 test('without Rukoo Voice the view says to start it, and Settings > Meetings has both switches', async () => {
   await voice.close();
   voice.removeDiscovery();

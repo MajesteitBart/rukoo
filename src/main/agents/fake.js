@@ -10,6 +10,17 @@ const STEP_MS = 30;
 
 const STOPPED = Symbol('stopped');
 
+// The states SEM_AGENT_FAKE_STATUS can give an agent ("clark=unconfigured,codex=offline"): agent id → state.
+const FAKE_STATES = new Set(['ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'unknown']);
+function fakeStates(spec = process.env.SEM_AGENT_FAKE_STATUS) {
+  const out = {};
+  for (const part of String(spec || '').split(',')) {
+    const [id, state] = part.split('=').map((s) => s.trim());
+    if (id && FAKE_STATES.has(state)) out[id] = state;
+  }
+  return out;
+}
+
 const ECHO_TAIL =
   'This is the fake agent. It answers every message with a short, fixed reply so tests and screenshots ' +
   'have something real to show. It streams six characters every thirty milliseconds, the way a model ' +
@@ -117,7 +128,11 @@ class FakeAdapter {
     return true;
   }
 
+  // SEM_AGENT_FAKE_STATUS gives agents another state, such as "clark=unconfigured,codex=offline", so a test can
+  // show a fresh profile. It is read on every call: a test can change it in main and press Test connection.
   async status() {
+    const state = fakeStates()[this.id];
+    if (state) return { state, detail: `Fake agent (SEM_AGENT_FAKE_STATUS=${this.id}=${state})` };
     return { state: 'ready', detail: 'Fake agent (SEM_AGENT_FAKE=1)' };
   }
 
@@ -538,4 +553,4 @@ class FakeRun {
   }
 }
 
-module.exports = { FakeAdapter, LONG_COMMAND, LONG_COMMAND_TAIL, MARKDOWN_REPLY };
+module.exports = { FakeAdapter, fakeStates, LONG_COMMAND, LONG_COMMAND_TAIL, MARKDOWN_REPLY };

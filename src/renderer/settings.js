@@ -2,6 +2,7 @@ import { t, languages, setLanguage, localize, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm, KEEP_OPEN } from './ui.js';
 import { icon as panelIcon } from './agent/bui.js';
+import { setupTarget } from './agent/pick.js';
 import {
   ACTIONS,
   shortcutList,
@@ -240,12 +241,16 @@ export function promptDialog(title, value = '', { multiline = false, placeholder
 
 // view: open straight on one page (the chat panel opens 'agents'); Back still leads to the overview. An account's
 // 'server' page needs the account's id, and Back from it leads to that account.
-export function openSettings(ctx, { view: start, id = null } = {}) {
+// state: with view 'agents' and an agent's id, the state the chat panel showed for that agent, so Set up can put the
+// keyboard in the right place before this page's own status check answers.
+export function openSettings(ctx, { view: start, id = null, state = null } = {}) {
   const page = document.createElement('div');
   page.className = 'page settings';
   document.getElementById('overlays').appendChild(page);
   const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : start === 'shortcuts' ? ['main', 'agents', 'shortcuts'] : ['main', start];
   let params = id ? { id } : {};
+  // Set up {name} in the chat panel opens the agents page on that agent's card, once (revealAgent()).
+  let revealing = start === 'agents' && id ? { id, state } : null;
   // What the update check found (main's updates.js), and how far its download got (installer.js; null where this
   // install can't update itself), for the Check now row.
   let updates = null;
@@ -569,6 +574,45 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     el.querySelector('.title').textContent = state === 'testing' ? t('settings.agents.testing') : t(`agent.status.${state}`);
     el.querySelector('.agent-detail').textContent = state === 'testing' ? '' : String(s.detail || '');
     el.querySelector('button').disabled = state === 'testing';
+    if (id === agentState.config.defaultAgent) showDefaultAgent();
+  }
+
+  // The Default agent row: the agent and its status ("Hermes · Not set up"), so a person sees why a new chat starts on
+  // another agent while it can't take a message (agent/pick.js). Until the status is in, the name alone.
+  const defaultAgentText = () => {
+    const c = agentState.config;
+    const state = agentStateOf(agentState.status, c.defaultAgent);
+    if (state === 'starting') return agentName(c, c.defaultAgent);
+    return t('settings.agents.defaultValue', { name: agentName(c, c.defaultAgent), status: t(`agent.status.${state}`) });
+  };
+  function showDefaultAgent() {
+    const el = page.querySelector('[data-agent-default]');
+    if (el && agentState) el.textContent = defaultAgentText();
+  }
+
+  // Scrolls the agents page to an agent's card and puts the keyboard in what its state needs (agent/pick.js
+  // setupTarget()): the Use switch of an agent that is turned off, Replace for a saved key it refused, the program path
+  // of one that isn't installed, else its first empty field. The state is this page's own once its status check
+  // answered, else the one the panel showed (shown): the reveal runs on the first draw, before that check is back.
+  function revealAgent(id, shown) {
+    const status = page.querySelector(`[data-agent-status="${CSS.escape(id)}"]`);
+    const card = status && status.closest('.agent-card');
+    if (!card) return;
+    const title = card.previousElementSibling;
+    (title && title.classList.contains('settings-group-title') ? title : card).scrollIntoView({ block: 'start' });
+    const known = agentStateOf(agentState.status, id);
+    const state = known === 'starting' && shown ? shown : known;
+    const controls = {
+      url: card.querySelector(`[data-agent-field="${CSS.escape(`${id}.url`)}"]`),
+      key: card.querySelector(`[data-agent-key="${CSS.escape(id)}"]`),
+      exe: card.querySelector(`[data-agent-field="${CSS.escape(`${id}.exe`)}"]`),
+      replace: card.querySelector(`[data-a="${CSS.escape(`agent-key-replace:${id}`)}"]`),
+      enabled: card.querySelector(`[data-a="${CSS.escape(`agent-enabled:${id}`)}"]`)
+    };
+    const fields = { replace: Boolean(controls.replace) };
+    for (const k of ['url', 'key', 'exe']) if (controls[k]) fields[k] = { empty: !controls[k].value };
+    const target = controls[setupTarget({ state, enabled: agentConf(agentState.config, id).enabled !== false, fields })];
+    if (target) target.focus({ preventScroll: true });
   }
 
   const agentField = (id, key, label, value, placeholder) =>
@@ -807,7 +851,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     return `
       <p class="settings-intro" data-i18n="settings.agents.help">${esc(t('settings.agents.help'))}</p>
       <div class="card">
-        ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(agentName(c, c.defaultAgent))}</span>`, action: 'agent-default' })}
+        ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(defaultAgentText())}</span>`, action: 'agent-default' })}
         ${row({ title: t('settings.agents.shortcuts'), desc: t('settings.agents.shortcutsHelp'), action: 'agent-shortcuts' })}
         ${row({ title: t('settings.agents.permission'), desc: t('settings.agents.permissionHelp'), value: `<span data-agent-permission>${esc(labelOf(PERMISSION, c.permission))}</span>`, action: 'agent-permission' })}
       </div>
@@ -995,7 +1039,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         return go('shortcuts');
       case 'agent-default': {
         const v = await choiceDialog(t('settings.agents.default'), allAgentIds(c).map((x) => ({ value: x, label: agentName(c, x), hint: productOf(c, x) })), c.defaultAgent);
-        if (v && (await updateAgents({ defaultAgent: v }))) b.querySelector('[data-agent-default]').textContent = agentName(agentState.config, v);
+        if (v && (await updateAgents({ defaultAgent: v }))) showDefaultAgent();
         return;
       }
       case 'agent-permission': {
@@ -1151,8 +1195,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (isCustom(id) && key === 'name') return render();
     if ((id === 'clark' || isCustom(id)) && key === 'name') {
       page.querySelectorAll(`[data-agent-name="${id}"]`).forEach((el) => (el.textContent = agentName(agentState.config, id)));
-      const def = page.querySelector('[data-agent-default]');
-      if (def) def.textContent = agentName(agentState.config, agentState.config.defaultAgent);
+      showDefaultAgent();
     }
     if (key === 'url' || key === 'exe' || (id === 'openclaw' && key === 'agent')) testAgent(id);
   }
@@ -1495,6 +1538,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (focused) page.querySelector(`[data-a="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
     if (view === 'agents' && agentState) allAgentIds(agentState.config).forEach((id) => showAgentStatus(id));
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
+    if (view === 'agents' && agentState && revealing) {
+      revealAgent(revealing.id, revealing.state);
+      revealing = null;
+    }
     if (view === 'main') showMailto();
     if (view === 'main' || ACCOUNT_VIEWS.includes(view)) account.fill(view);
     calendarPage.fill(view, page);
