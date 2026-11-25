@@ -14,6 +14,7 @@ pub mod recovery;
 pub mod restore;
 pub mod s3;
 pub mod scan;
+pub mod stops;
 pub mod sync;
 mod worker;
 

@@ -1160,3 +1160,55 @@ fn an_unreadable_screen_journal_keeps_its_meeting_held() {
         voice.sync.status()
     );
 }
+
+#[test]
+fn nothing_uploads_while_settings_from_another_computer_are_applied() {
+    let fake = fake();
+    let data = scratch("upload-apply");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    voice.connect(&fake.endpoint());
+    let m = Meeting::new(&voice.meetings(), "Apply", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    m.transcript(&[("mic", 0, 900, "hello")], now_ms());
+    voice.settle(&fake, WAIT);
+    let (code, _) = voice.sync.current_key().unwrap().expect("a key");
+
+    // This computer lost its key file, then takes the same key back from another computer.
+    voice.sync.configure(None);
+    let sync_dir = data.join(voice_sync::SYNC_DIR);
+    std::fs::remove_file(sync_dir.join("master-key.bin")).unwrap();
+    voice.sync.begin_apply(&serde_json::json!({})).unwrap();
+    // Settings turn sync on meanwhile: it waits for the apply.
+    voice.sync.configure(Some(config(&fake.endpoint())));
+    assert_eq!(voice.sync.status().state, SyncState::Off);
+    voice.sync.import_key(&code).unwrap();
+    assert_eq!(voice.sync.status().state, SyncState::Off);
+
+    // Rolled back, a key that something was uploaded with stays, and the caller keeps the
+    // settings it came with.
+    assert!(
+        voice.sync.roll_back_apply().unwrap(),
+        "the apply stays whole"
+    );
+    assert_eq!(voice.sync.current_key().unwrap().unwrap().0, code);
+    assert_eq!(voice.sync.status().state, SyncState::Off);
+    voice.sync.finish_apply().unwrap();
+    assert!(wait_for(WAIT, || voice.sync.status().state != SyncState::Off));
+    assert!(!sync_dir.join("apply").exists());
+
+    // A key that uploaded nothing here goes again.
+    let other = scratch("upload-apply-fresh");
+    let _o = Cleanup(other.clone());
+    let fresh = Voice::open(&other);
+    fresh.sync.begin_apply(&serde_json::json!({})).unwrap();
+    fresh.sync.import_key(&code).unwrap();
+    assert!(!fresh.sync.roll_back_apply().unwrap());
+    assert!(fresh.sync.current_key().unwrap().is_none());
+    // A journal that waits refuses a new apply.
+    assert!(fresh.sync.begin_apply(&serde_json::json!({})).is_err());
+    fresh.sync.finish_apply().unwrap();
+    fresh.sync.begin_apply(&serde_json::json!({})).unwrap();
+    fresh.sync.finish_apply().unwrap();
+}
