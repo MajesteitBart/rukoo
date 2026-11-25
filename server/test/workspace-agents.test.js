@@ -228,6 +228,80 @@ describe('changing and removing an agent', () => {
     expect(seen.map((m) => m.id)).not.toContain(mila.me.id);
   });
 
+  it("gives a guest an agent's sponsor only when the guest shares a channel with them", async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila');
+    expect((await api('PATCH', route(ws.id, `/members/${mila.me.id}`), { token: ws.person.token, body: { role: 'admin' } })).status).toBe(200);
+    // Mila makes project and manages it; Olga isn't in it. Mila lets Olga's agent in, and invites a guest into it.
+    const project = (await api('POST', route(ws.id, '/channels'), { token: mila.person.token, body: { name: 'project', visibility: 'workspace' } })).body.channel;
+    const clark = await newAgent(ws.person, ws.id, { answers: 'members', members: [mila.me.id] });
+    expect((await addToChannel(mila.person, ws.id, project.id, clark.agent.id)).status).toBe(200);
+    const gita = await guest({ person: mila.person, id: ws.id }, 'Gita', [project.id]);
+    // The directory as a reader of each wire version gets it: version 2 is desktop, the browser app and the runner.
+    const directory = async (token, version) =>
+      (await api('GET', route(ws.id, '/members'), { token, headers: version ? { 'rukoo-workspace-version': String(version) } : {} })).body.members;
+
+    const seen = await directory(gita.person.token, 2);
+    expect(seen.map((m) => m.id)).not.toContain(ws.me.id);
+    expect(seen.find((m) => m.id === clark.agent.id).agent).toEqual({ sponsor: null, answers: 'members', members: [mila.me.id], agents: false });
+    // A full member still gets the sponsor, and so does the guest once they share a channel with Olga.
+    const full = await directory(mila.person.token, 2);
+    expect(full.find((m) => m.id === clark.agent.id).agent.sponsor).toBe(ws.me.id);
+    expect((await api('POST', route(ws.id, `/channels/${project.id}/join`), { token: ws.person.token })).status).toBe(200);
+    const later = await directory(gita.person.token, 2);
+    expect(later.find((m) => m.id === clark.agent.id).agent.sponsor).toBe(ws.me.id);
+  });
+
+  // Android reads wire version 1. The nightly 0.6.1-nightly.20261124.17 requires a sponsor string in an agent's
+  // settings and refuses the whole page over a null one; Android 0.6.0 has no settings at all. Both read an agent
+  // without them, so a reader of version 1 gets the agent without its settings when the sponsor is hidden.
+  it('leaves the settings out for a reader of wire version 1 when the sponsor is hidden, and never sends the sponsor', async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila');
+    expect((await api('PATCH', route(ws.id, `/members/${mila.me.id}`), { token: ws.person.token, body: { role: 'admin' } })).status).toBe(200);
+    const project = (await api('POST', route(ws.id, '/channels'), { token: mila.person.token, body: { name: 'project', visibility: 'workspace' } })).body.channel;
+    const clark = await newAgent(ws.person, ws.id, { answers: 'members', members: [mila.me.id] });
+    const milas = await newAgent(mila.person, ws.id, { name: 'Milabot', answers: 'sponsor' });
+    for (const a of [clark, milas]) expect((await addToChannel(mila.person, ws.id, project.id, a.agent.id)).status).toBe(200);
+    const gita = await guest({ person: mila.person, id: ws.id }, 'Gita', [project.id]);
+    const get = (token, headers = {}) => api('GET', route(ws.id, '/members'), { token, headers });
+
+    for (const headers of [{}, { 'rukoo-workspace-version': '1' }]) {
+      const res = await get(gita.person.token, headers);
+      expect(res.status).toBe(200);
+      expect(res.text).not.toContain(ws.me.id);
+      const seen = res.body.members;
+      // Olga's Clark comes without settings; Mila's own agent, whose sponsor Gita shares a channel with, keeps them.
+      expect(seen.find((m) => m.id === clark.agent.id)).toEqual({ id: clark.agent.id, kind: 'agent', name: 'Clark', role: 'member', state: 'active', joinedAt: expect.any(Number) });
+      expect(seen.find((m) => m.id === milas.agent.id).agent).toEqual({ sponsor: mila.me.id, answers: 'sponsor', members: [], agents: false });
+    }
+    // An agent reading version 2, as the runner does, gets its own row's sponsor as null too: Olga isn't in its channels.
+    const own = await get(clark.key, { 'rukoo-workspace-version': '2' });
+    expect(own.text).not.toContain(ws.me.id);
+    expect(own.body.members.find((m) => m.id === clark.agent.id).agent.sponsor).toBe(null);
+    // A full member reading version 1 still gets every agent's settings.
+    const full = (await get(mila.person.token, { 'rukoo-workspace-version': '1' })).body.members;
+    expect(full.find((m) => m.id === clark.agent.id).agent).toEqual({ sponsor: ws.me.id, answers: 'members', members: [mila.me.id], agents: false });
+  });
+
+  // An agent's own row in GET / is unfiltered, but GET /agents/me, which its runner reads, gives the agent the same
+  // sponsor and chosen people: the row tells it nothing new.
+  it("gives an agent the same sponsor and chosen people in GET / as GET /agents/me does", async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila');
+    const ada = await newMember(ws, 'Ada');
+    expect((await api('PATCH', route(ws.id, `/members/${mila.me.id}`), { token: ws.person.token, body: { role: 'admin' } })).status).toBe(200);
+    const project = (await api('POST', route(ws.id, '/channels'), { token: mila.person.token, body: { name: 'project', visibility: 'workspace' } })).body.channel;
+    const clark = await newAgent(ws.person, ws.id, { answers: 'members', members: [mila.me.id, ada.me.id] });
+    expect((await addToChannel(mila.person, ws.id, project.id, clark.agent.id)).status).toBe(200);
+
+    const row = (await asAgent(clark, 'GET', route(ws.id))).body.me.agent;
+    const settings = (await asAgent(clark, 'GET', route(ws.id, '/agents/me'))).body.agent;
+    expect(row).toEqual({ sponsor: settings.sponsor, answers: settings.answers, members: settings.members, agents: settings.agents });
+    expect(settings.sponsor).toBe(ws.me.id);
+    expect(settings.members).toEqual([mila.me.id, ada.me.id]);
+  });
+
   it('takes a chosen member off the list when they leave', async () => {
     const ws = await newWorkspace('Acme', 'Olga');
     const mila = await newMember(ws, 'Mila');

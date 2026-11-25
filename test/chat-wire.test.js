@@ -918,6 +918,9 @@ test('an agent comes with kind agent and its settings; a person, a room and a me
   assert.equal('agent' in wire.checkMembers({ members: [{ ...person, agent: settings }] }).members[0], false);
   // A newer server's answers word stays, for the renderer to show nothing for.
   assert.equal(wire.checkMembers({ members: [{ ...agent, agent: { ...settings, answers: 'channel_managers' } }] }).members[0].agent.answers, 'channel_managers');
+  // A guest who shares no channel with the sponsor gets sponsor null; an older server may leave it out.
+  assert.equal(wire.checkMembers({ members: [{ ...agent, agent: { ...settings, sponsor: null } }] }).members[0].agent.sponsor, null);
+  assert.equal(wire.checkMembers({ members: [{ ...agent, agent: { ...settings, sponsor: undefined } }] }).members[0].agent.sponsor, null);
   for (const [where, bad] of [
     ['members.members[0].agent.answers', { ...settings, answers: 'Every One' }],
     ['members.members[0].agent.sponsor', { ...settings, sponsor: 'u_x' }],

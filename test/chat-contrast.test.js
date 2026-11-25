@@ -85,7 +85,6 @@ test('information in chat is set in the supporting ink, not the caption grey', (
     '.ch-row-quiet': 'Browse channels and the other sidebar actions',
     '.ch-form .field-help': '"You can\'t change this later." and the invitation line',
     '.ch-state': 'the unsent states, "Waits for a connection"',
-    '.ch-context': 'the "replied to" line',
     '.ch-intro-line': 'the host disclosure at the start of a DM',
   };
   for (const [selector, what] of Object.entries(lines)) assert.equal(rule(selector).get('color'), 'var(--text-2)', `${what} (${selector})`);

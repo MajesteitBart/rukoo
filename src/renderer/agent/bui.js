@@ -1146,18 +1146,29 @@ export function contextCards(item = {}, { onOpen, labels = {} } = {}) {
 
 // ---------- recommendation card ----------
 
+// actions: [{id, label, kind, disabled, busy}]. busy: the action is under way; the button stays focusable (so the
+// keyboard stays on it) but does nothing. A label too long for the card ends in an ellipsis; the button's accessible
+// name and its tooltip keep all of it.
 export function recommendationCard({ eyebrow, title, body, actions = [], icon: eyebrowIcon = null } = {}, onAction) {
   const foot = h(
     'div',
     { class: 'bui-rec__foot' },
-    actions.map((a) =>
-      button({
-        label: a.label,
+    actions.map((a) => {
+      const el = button({
+        label: h('span', { class: 'bui-rec__label', text: a.label }),
         kind: a.kind === 'primary' ? 'primary' : a.kind === 'danger' ? 'danger' : 'secondary',
         size: 'sm',
-        onClick: () => onAction && onAction(a.id)
-      })
-    )
+        disabled: Boolean(a.disabled),
+        title: a.label,
+        onClick: () => !a.busy && onAction && onAction(a.id)
+      });
+      el.dataset.action = String(a.id);
+      if (a.busy) {
+        el.setAttribute('aria-disabled', 'true');
+        el.setAttribute('aria-busy', 'true');
+      }
+      return el;
+    })
   );
   const el = h(
     'div',
@@ -1494,6 +1505,8 @@ export function chatComposer(opts = {}, handlers = {}) {
   const ta = h('div', {
     class: 'bui-pb__ta is-empty',
     contenteditable: 'plaintext-only',
+    // Also in the Tab order while off and read-only (setDisabled's readable), when the editable no longer is.
+    tabindex: '0',
     role: 'textbox',
     'aria-multiline': 'true',
     spellcheck: 'true',
@@ -1663,11 +1676,20 @@ export function chatComposer(opts = {}, handlers = {}) {
     placeSelection(Math.min(state.caret, value().length));
   }
 
+  // What the input holds changed. Every edit ends here, whatever put it there: typing and an IME (settle()), a paste
+  // or cut (insert()), undo and redo, a picked skill or command, and text set by code (setValue()) or cleared after
+  // Send. Pastes and undo cancel the browser's own edit and fire no input event, so the owner hears of edits from
+  // this, not from the DOM.
+  function changed() {
+    if (handlers.onChange) handlers.onChange();
+  }
+
   // ---------- undo ----------
 
   // Adds what the input holds now as a step. Keys typed in a row, without a pause and from where the last ones
   // ended, are one step: moving the caret starts a new one, as in a textarea.
   function record(type = '') {
+    changed();
     const snap = { parts: current(), caret: caret() };
     const top = history.list[history.at];
     const from = history.from;
@@ -1695,9 +1717,12 @@ export function chatComposer(opts = {}, handlers = {}) {
     history.list = [{ parts: current(), caret: state.caret }];
     history.at = 0;
     history.type = '';
+    changed();
   }
   // step -1 undoes, 1 redoes.
   function undo(step) {
+    // Text that can't be edited isn't undone either.
+    if (state.disabled) return;
     const i = history.at + step;
     if (i < 0 || i >= history.list.length) return;
     history.at = i;
@@ -1708,6 +1733,7 @@ export function chatComposer(opts = {}, handlers = {}) {
     state.dismissed = false;
     refreshMenu();
     updateSend();
+    changed();
   }
 
   // After the user changed the text: a $name of a skill with a space or punctuation after it becomes a chip, a line
@@ -1968,7 +1994,8 @@ export function chatComposer(opts = {}, handlers = {}) {
     const pasted = data ? [...data.files] : [];
     const types = data ? [...data.types] : [];
     e.preventDefault();
-    if (pasted.length && handlers.onFiles && !state.disabled && !types.includes('text/plain')) {
+    if (state.disabled) return;
+    if (pasted.length && handlers.onFiles && !types.includes('text/plain')) {
       handlers.onFiles(pasted.map((file) => ({ file, folder: false })));
       return;
     }
@@ -1985,7 +2012,8 @@ export function chatComposer(opts = {}, handlers = {}) {
     if (cut) insert('', 'cut');
   }
   ta.addEventListener('copy', (e) => copy(e, false));
-  ta.addEventListener('cut', (e) => copy(e, true));
+  // An input that is off only copies.
+  ta.addEventListener('cut', (e) => copy(e, !state.disabled));
 
   ta.addEventListener('compositionstart', () => {
     composing = true;
@@ -2022,6 +2050,12 @@ export function chatComposer(opts = {}, handlers = {}) {
     // pick a command or send.
     if (e.isComposing || e.keyCode === 229) return;
     const key = e.key.toLowerCase();
+    // Read-only, Ctrl+A selects the input's text, not the page's, for Ctrl+C to copy.
+    if (state.disabled && (e.ctrlKey || e.metaKey) && !e.altKey && key === 'a') {
+      e.preventDefault();
+      placeSelection(0, value().length);
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
       e.preventDefault();
       undo(key === 'y' || e.shiftKey ? 1 : -1);
@@ -2115,8 +2149,22 @@ export function chatComposer(opts = {}, handlers = {}) {
       resetHistory();
       updateSend();
     },
+    // Text put before what the input holds, as one step to undo. The selection stays on the same text.
+    prepend(text) {
+      const add = String(text ?? '');
+      if (!add) return;
+      const { anchor, focus } = selection();
+      render(reconcile(spliceParts(current(), 0, 0, add)), anchor + add.length, focus + add.length);
+      record('prepend');
+      updateSend();
+    },
     getValue() {
       return value();
+    },
+    // The id of the agent the agent menu shows, as drawn: what Send was pressed for.
+    shownAgent() {
+      const a = state.agents.find((x) => x.id === state.agentId) || state.agents[0];
+      return a ? a.id : null;
     },
     setRunning(running) {
       state.running = Boolean(running);
@@ -2138,10 +2186,14 @@ export function chatComposer(opts = {}, handlers = {}) {
       else if (was && document.activeElement === ta) refreshMenu();
       updateSend();
     },
-    setDisabled(disabled, reason) {
+    // readable: while off, the text stays on screen to select and copy, and can't be changed or sent.
+    setDisabled(disabled, reason, readable = false) {
       state.disabled = Boolean(disabled);
       el.classList.toggle('is-disabled', state.disabled);
-      ta.hidden = state.disabled;
+      ta.hidden = state.disabled && !readable;
+      const editable = state.disabled ? 'false' : 'plaintext-only';
+      if (ta.getAttribute('contenteditable') !== editable) ta.setAttribute('contenteditable', editable);
+      ta.setAttribute('aria-readonly', String(state.disabled));
       disabledRow.hidden = !state.disabled;
       disabledRow.replaceChildren();
       if (state.disabled && reason != null) disabledRow.append(reason instanceof Node ? reason : String(reason));
