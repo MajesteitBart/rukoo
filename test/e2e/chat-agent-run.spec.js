@@ -113,12 +113,18 @@ async function ask(question) {
   await win.keyboard.press('Enter');
 }
 
-// Helper's reply, which the echo agent makes from the question.
+// Helper's reply, which the echo agent makes from the question. Helper answers in the thread of the question, and a
+// reply shows only in its thread (issue #376): the question in the log counts it, and its thread shows it.
 async function answered(question, prefix = 'Echo') {
-  const reply = messageRow(win, `${prefix}: @Helper ${question}`);
-  await expect(reply).toHaveCount(1, { timeout: 60000 });
+  const asked = messageRow(win, `@Helper ${question}`);
+  await expect(asked.locator('.ch-replies-n')).toHaveText('1 reply', { timeout: 60000 });
+  await expect(messageRow(win, `${prefix}: @Helper ${question}`)).toHaveCount(0);
+  await asked.locator('.ch-replies').click();
+  const reply = messageRow(win, `${prefix}: @Helper ${question}`, { thread: true });
+  await expect(reply).toHaveCount(1, { timeout: 15000 });
   await expect(reply.locator('.ch-name')).toHaveText('Helper');
   await expect(reply.locator('.ch-tag')).toHaveText('Agent');
+  await win.locator('section.chat .ch-thread [data-ch="thread-close"]').click();
 }
 
 // The Agents dialog's row for Helper.
