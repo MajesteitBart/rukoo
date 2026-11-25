@@ -645,3 +645,33 @@ fn a_replacement_whose_file_is_neither_staged_nor_in_place_is_let_go() {
     assert!(!voice_sync::pull::pending_install(&b.meetings(), &m.id));
     assert_eq!(Meeting::passages(&m.dir), before);
 }
+
+#[test]
+fn a_meeting_that_can_t_come_in_is_the_look_s_error_and_the_others_still_come() {
+    let fake = fake();
+    let root = scratch("pull-one-fails");
+    let _c = Cleanup(root.clone());
+    let a = Voice::open(&root.join("a"));
+    let (blocked, _) = finished(&a.meetings(), "Blocked", 7_200_000);
+    let (fine, _) = finished(&a.meetings(), "Fine", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+
+    let (code, _) = a.sync.show_key().unwrap();
+    let b = Voice::open(&root.join("b"));
+    b.sync.import_key(&code).unwrap();
+    // A file where the meeting's folder goes: that meeting can't come in here.
+    fs::create_dir_all(b.meetings()).unwrap();
+    fs::write(b.meetings().join(&blocked.id), b"in the way").unwrap();
+    let hooks = Hooks::new(&b.meetings());
+    b.sync.set_pull_hooks(hooks.clone());
+    b.connect(&fake.endpoint());
+    assert!(
+        wait_for(WAIT, || hooks.restored().contains(&fine.id)
+            && b.sync.status().pull.error.is_some()),
+        "{:?}",
+        b.sync.status().pull
+    );
+    assert!(!hooks.restored().contains(&blocked.id));
+    assert_eq!(b.sync.status().restore.available, 1);
+}

@@ -1323,6 +1323,31 @@ impl Queue {
                     m.update,
                 ],
             )?;
+            if m.update {
+                // A newer version without some of the meeting's media: another computer removed
+                // it from the bucket. Its rows here say so, so no manifest from here lists it again.
+                let listed: std::collections::HashSet<&str> =
+                    m.files.iter().map(|f| f.path.as_str()).collect();
+                let gone: Vec<i64> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT id, path FROM files WHERE meeting = ?1 AND state = 'done' \
+                           AND kind NOT IN ('manifest', 'index')",
+                    )?;
+                    let rows = stmt
+                        .query_map([m.meeting], |r| {
+                            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    rows.into_iter()
+                        .filter(|(_, path)| !listed.contains(path.as_str()))
+                        .map(|(id, _)| id)
+                        .collect()
+                };
+                for id in gone {
+                    tx.execute("UPDATE files SET state = 'removed' WHERE id = ?1", [id])?;
+                    tx.execute("DELETE FROM parts WHERE file = ?1", [id])?;
+                }
+            }
             for f in m.files {
                 tx.execute(
                     "INSERT OR IGNORE INTO files (meeting, path, kind, lane, size, sha256, object, \

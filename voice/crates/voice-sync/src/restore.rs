@@ -1056,6 +1056,55 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Another computer removed some of a meeting's media from the bucket: its newer version comes
+    /// in without them, and no manifest from here lists them again.
+    #[test]
+    fn a_newer_version_without_some_media_marks_it_removed_here() {
+        let fake = FakeS3::start("test", "test", None).unwrap();
+        let dir = scratch("update-removed");
+        let meetings = dir.join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let sync = open(&dir, &meetings);
+        sync.configure(Some(config(fake.endpoint())));
+        assert!(wait_for(|| sync.can_fetch()), "sync starts");
+        let shared = sync.shared();
+        let (_, binding) = shared.remote().unwrap();
+        let id = "m-20261031-100000-0abc";
+        let file = |path: &str, kind: &str, sha: char| crate::manifest::ManifestFile {
+            path: path.into(),
+            kind: kind.into(),
+            object: format!("o/{path}/{sha}"),
+            size: 1,
+            sha256: sha.to_string().repeat(64),
+            track: None,
+            seq: None,
+            t: None,
+            samples: None,
+        };
+        let first = [
+            file("transcript.db", "transcript", 'a'),
+            file("audio/mic/000001.wav", "audio", 'b'),
+        ];
+        let mut import = rows(id, &binding.target, &binding.kid);
+        import.files = &first;
+        assert!(shared.queue.import(&import).unwrap());
+        let newer = [file("transcript.db", "transcript", 'c')];
+        import.files = &newer;
+        import.gen = 2;
+        import.update = true;
+        assert!(shared.queue.import(&import).unwrap());
+        let listed: Vec<String> = shared
+            .queue
+            .manifest_rows(id)
+            .unwrap()
+            .into_iter()
+            .map(|f| format!("{} {}", f.path, &f.sha256[..1]))
+            .collect();
+        assert_eq!(listed, ["transcript.db c"]);
+        sync.shutdown();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_fetch_checks_before_every_ranged_request() {
         let fake = FakeS3::start("test", "test", None).unwrap();

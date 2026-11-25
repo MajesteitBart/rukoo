@@ -222,7 +222,7 @@ fn run(shared: &Arc<Shared>) {
 }
 
 /// One look at the bucket. A meeting that fails doesn't stop the others; sync moving or turning
-/// off does.
+/// off does. The first meeting that failed is the look's error, for Settings.
 pub(crate) fn pull_once(
     shared: &Shared,
     hooks: &dyn PullHooks,
@@ -230,6 +230,7 @@ pub(crate) fn pull_once(
     binding: &Binding,
 ) -> Result<(), SyncError> {
     let check = || shared.still(binding);
+    let mut failed: Option<SyncError> = None;
     // Replacements that stopped before their version was noted go first, from disk: they hold
     // their meetings out of uploads, whatever the bucket's indexes say now.
     for id in pending_installs(&shared.opts.meetings_dir) {
@@ -239,6 +240,7 @@ pub(crate) fn pull_once(
                 return Err(e);
             }
             log::warn!("sync: can't finish a meeting's newer text: {e}");
+            failed.get_or_insert(e);
         }
     }
     let indexes = read_indexes(remote, &check)?;
@@ -270,6 +272,7 @@ pub(crate) fn pull_once(
                 if !entry.deleted {
                     not_here += 1;
                 }
+                failed.get_or_insert(e);
             }
         }
     }
@@ -278,7 +281,8 @@ pub(crate) fn pull_once(
         // What a restore would still bring: meetings that didn't finish, or failed to come in.
         st.restore.available = not_here;
     }
-    Ok(())
+    drop(st);
+    failed.map_or(Ok(()), Err)
 }
 
 fn origin<'a>(shared: &'a Shared, binding: &Binding) -> PullOrigin<'a> {
