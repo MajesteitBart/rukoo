@@ -55,8 +55,10 @@ impl Key {
         Key::ScrollLock,
     ];
 
-    /// The keys a Mac keyboard has. Pause and Scroll Lock don't exist there;
-    /// Right Command is the one Mac key Voice adds.
+    /// The keys a Mac keyboard can have, each with a Mac key code. Pause and
+    /// Scroll Lock don't exist there; Right Command is the one Mac key Voice
+    /// adds. Settings offers only those every Mac keyboard has
+    /// (`voice_core::config::MACOS_HOTKEYS`); the rest still work when stored.
     #[cfg(target_os = "macos")]
     pub const MACOS: [Key; 7] = [
         Key::RightAlt,

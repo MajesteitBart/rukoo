@@ -983,11 +983,17 @@ fn a_settings_key_change_applies_without_a_restart() {
     let h = Harness::new("keys");
     h.config(json!({}));
     let engine = h.start();
+    // Settings on a Mac offers only the keys every Mac keyboard has, so no F15 there.
+    let new_key = if cfg!(target_os = "macos") {
+        Key::RightShift
+    } else {
+        Key::F15
+    };
     engine
-        .settings_set("dictation.hotkey", json!("f15"))
+        .settings_set("dictation.hotkey", json!(new_key.name()))
         .unwrap();
     h.speech.say("new key");
-    h.hold(Key::F15);
+    h.hold(new_key);
     wait_for("the insertion", || h.input.texts() == ["new key"]);
     // The old key does nothing now.
     h.keys.down(Key::F13);

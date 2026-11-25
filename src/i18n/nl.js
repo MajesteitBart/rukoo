@@ -810,6 +810,10 @@
   "errors.connection.refused": "Verbinding geweigerd. Controleer de server en poort.",
   "errors.connection.timeout": "Er is een time-out opgetreden bij het verbinden met de server.",
   "errors.connection.yahooAppPassword": "Yahoo heeft dit wachtwoord niet geaccepteerd. Yahoo Mail werkt hier alleen met een app-wachtwoord, niet met je gewone Yahoo-wachtwoord. Maak er een aan en probeer het opnieuw.",
+  "errors.delete.noUidExpunge": "Deze mailserver kan geen losse e-mail definitief verwijderen.",
+  "errors.delete.refused": "De mailserver heeft de e-mail niet verwijderd.",
+  "errors.delete.stillMarked": "De mailserver heeft de e-mail niet definitief verwijderd. De e-mail is nog gemarkeerd voor verwijdering.",
+  "errors.delete.unknown": "Rukoo kon niet controleren of de mailserver de e-mail heeft verwijderd.",
   "errors.flags.refused": "De mailserver heeft de wijziging niet opgeslagen.",
   "errors.folder.duplicate": "Er is al een map met die naam.",
   "errors.folder.invalidName": "Een mapnaam mag geen / \\ % of * bevatten.",
@@ -899,6 +903,10 @@
   "errors.message.missing": "Bericht niet gevonden.",
   "errors.message.savedMissing": "Opgeslagen e-mail niet gevonden.",
   "errors.message.serverMissing": "Bericht niet gevonden op de server.",
+  "errors.move.copied": "De mailserver heeft de e-mail gekopieerd en niet bevestigd dat het origineel is verwijderd. Controleer beide mappen voordat je het opnieuw probeert.",
+  "errors.move.noUidExpunge": "Deze mailserver kan geen losse e-mail verplaatsen.",
+  "errors.move.refused": "De mailserver heeft de e-mail niet verplaatst.",
+  "errors.move.unknown": "Rukoo kon niet controleren of de mailserver de e-mail heeft verplaatst. Controleer beide mappen voordat je het opnieuw probeert.",
   "errors.network.privateHost": "{hostname} is geen openbaar adres",
   "errors.search.refused": "De mailserver heeft de zoekopdracht niet uitgevoerd.",
   "errors.send.identity": "Je kunt niet verzenden als {address} vanaf dit account.",
@@ -1054,6 +1062,30 @@
   },
   "mailbox.older.none": "Geen oudere mail op de server gevonden",
   "mailbox.older.searching": "Oudere mail op de server doorzoeken…",
+  "mailbox.outcome.deleted": {
+    "one": "{count} e-mail definitief verwijderd.",
+    "other": "{count} e-mails definitief verwijderd."
+  },
+  "mailbox.outcome.moved": {
+    "one": "{count} e-mail verplaatst naar {folder}.",
+    "other": "{count} e-mails verplaatst naar {folder}."
+  },
+  "mailbox.outcome.restored": {
+    "one": "{count} e-mail teruggezet.",
+    "other": "{count} e-mails teruggezet."
+  },
+  "mailbox.outcome.stayed": {
+    "one": "{count} e-mail staat nog waar die stond.",
+    "other": "{count} e-mails staan nog waar ze stonden."
+  },
+  "mailbox.outcome.trashed": {
+    "one": "{count} e-mail verplaatst naar Prullenbak.",
+    "other": "{count} e-mails verplaatst naar Prullenbak."
+  },
+  "mailbox.outcome.unsure": {
+    "one": "Rukoo kon niet controleren wat er met {count} e-mail is gebeurd. Kijk waar die is voordat je het opnieuw probeert.",
+    "other": "Rukoo kon niet controleren wat er met {count} e-mails is gebeurd. Kijk waar ze zijn voordat je het opnieuw probeert."
+  },
   "mailbox.saved.save": "Opslaan in Opgeslagen e-mails",
   "mailbox.saved.saved": "Opgeslagen in Opgeslagen e-mails",
   "mailbox.search.account": "Dit account",
@@ -1443,6 +1475,15 @@
   "settings.general.mailtoUse": "Rukoo Mail gebruiken",
   "settings.general.minimizeToTray": "Minimaliseren naar het systeemvak",
   "settings.general.minimizeToTrayHelp": "Bij minimaliseren gaat het venster naar het systeemvak in plaats van naar de taakbalk.",
+  "settings.general.openAtLogin": "Openen bij aanmelden",
+  "settings.general.openAtLoginHelp": "Rukoo start verborgen in het systeemvak zodra je je op de computer aanmeldt, zodat je meldingen van nieuwe mail en teamchat krijgt zonder Rukoo eerst te openen.",
+  "settings.general.openAtLoginUnavailable": "Alleen de geïnstalleerde app kan openen bij aanmelden.",
+  "settings.general.openAtLoginLinux": "De opstartinstellingen van je bureaublad kunnen Rukoo starten wanneer je je aanmeldt.",
+  "settings.general.openAtLoginMac": "Openen bij inloggen",
+  "settings.general.openAtLoginMacHelp": "Rukoo start op de achtergrond zodra je inlogt, zodat je meldingen van nieuwe mail en teamchat krijgt zonder Rukoo eerst te openen.",
+  "settings.general.openAtLoginMacUnavailable": "Verplaats Rukoo Mail eerst naar Programma’s en open de app daar.",
+  "settings.general.openAtLoginMacApproval": "Sta Rukoo Mail toe onder Systeeminstellingen › Algemeen › Inlogonderdelen om dit af te ronden, of zet dit uit om het te annuleren.",
+  "settings.general.openAtLoginFailed": "Rukoo kon dit niet wijzigen. Probeer het opnieuw, of kijk bij de opstart-apps in de instellingen van je systeem.",
   "settings.general.notifications": "Meldingen",
   "settings.general.notificationsHelp": "Toon een melding bij nieuwe e-mails: op het bureaublad, of in Rukoo als het venster vooraan staat.",
   "settings.general.newMailSound": "Geluid bij nieuwe mail",

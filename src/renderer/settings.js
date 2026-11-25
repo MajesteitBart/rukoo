@@ -323,6 +323,7 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
     page.remove();
     document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('focus', showMailto);
+    window.removeEventListener('focus', showLogin);
     // Team chat holds the Join dialog of a sign-up with an invitation link until Settings is gone (chat.js).
     document.dispatchEvent(new Event('rukoo:settings-closed'));
   };
@@ -483,6 +484,47 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
   };
   // Coming back from desktop settings shows the current default handler.
   window.addEventListener('focus', showMailto);
+
+  // Open when you sign in: { available, on, approval, platform } from main, which reads it from the system each time,
+  // so a login item someone turned off in the system's own settings shows off here. null until main has answered.
+  let loginState = null;
+  const loadLogin = () =>
+    api('openAtLoginState')
+      .then((next) => (loginState = next))
+      .catch(() => null);
+  // The wording follows the system main plays (loginState.platform), which a test can set.
+  const loginPlatform = () => (loginState && loginState.platform) || window.mail.platform;
+  const loginKey = (kind) => `settings.general.openAtLogin${loginPlatform() === 'darwin' ? 'Mac' : ''}${kind}`;
+  // A switch where this copy of Rukoo may register itself; elsewhere a static row that says why it can't. Linux has
+  // no switch: the desktop's own startup settings start Rukoo there.
+  const loginRow = () => {
+    const title = esc(t(loginKey('')));
+    const help = esc(t(loginKey('Help')));
+    if (loginState && !loginState.available) {
+      const linux = loginPlatform() === 'linux';
+      return `<div class="row static" data-login>
+        <div class="text"><div class="title">${title}</div>${linux ? '' : `<div class="desc">${help}</div>`}
+        <div class="value">${esc(t(linux ? 'settings.general.openAtLoginLinux' : loginKey('Unavailable')))}</div></div>
+      </div>`;
+    }
+    // macOS keeps a login item waiting until the person allows it under Login Items, also after they turned it off
+    // there. It is registered, so the switch is on and turning it off removes it. The way to allow it takes the place
+    // of the help line, which wraps where a value line would be cut off.
+    const waiting = Boolean(loginState && loginState.approval);
+    const desc = waiting ? esc(t('settings.general.openAtLoginMacApproval')) : help;
+    return row({ title, desc, action: 'open-at-login', toggle: Boolean(loginState && (loginState.on || waiting)) });
+  };
+  // Draws the row again with what the system has now, keeping the keyboard on it. focus: the switch was just used, and
+  // was disabled meanwhile, which took the focus away.
+  const showLogin = async (opts) => {
+    if (!(await loadLogin())) return;
+    const old = page.querySelector('[data-a="open-at-login"], [data-login]');
+    if (!old) return;
+    const focused = (opts && opts.focus === true) || old === document.activeElement;
+    old.outerHTML = loginRow();
+    if (focused) page.querySelector('[data-a="open-at-login"]')?.focus({ preventScroll: true });
+  };
+  window.addEventListener('focus', showLogin);
 
   // ----- agents -----
 
@@ -1181,6 +1223,7 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
     const [agents, updatesState] = await Promise.all([
       view === 'main' || view === 'agents' || view === 'shortcuts' ? loadAgents() : agentState,
       view === 'main' ? api('updatesState').catch(() => updates) : updates,
+      view === 'main' ? loadLogin() : null,
       view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
       view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
       view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
@@ -1254,6 +1297,7 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
+          ${loginRow()}
           ${mailtoRow()}
           ${row({ title: t('settings.general.undoSend'), desc: t('settings.general.undoSendHelp'), value: labelOf(UNDO_SEND, Number(s.undoSend)), action: 'undo-send' })}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
@@ -1565,6 +1609,19 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
       notices.test = await api('testNotification').catch((err) => ({ result: 'failed', error: err.message }));
       notices.testing = false;
       return render();
+    }
+    if (a === 'open-at-login') {
+      const want = !(loginState && (loginState.on || loginState.approval));
+      b.disabled = true;
+      try {
+        loginState = await api('setOpenAtLogin', want);
+        // The row shows the switch on while macOS waits for approval, so that counts as on: a Mac that still waits
+        // after the switch turned it off kept it as it was.
+        if (Boolean(loginState.on || loginState.approval) !== want) toast(t('settings.general.openAtLoginFailed'), 5000);
+      } catch (err) {
+        toast(err.message, 5000);
+      }
+      return showLogin({ focus: true });
     }
     if (a === 'mailto-use') {
       b.disabled = true;

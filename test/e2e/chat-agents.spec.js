@@ -515,7 +515,7 @@ test("an agent's captions pass 4.5:1 in the Agents and Members dialogs, Add agen
     await expectReadable(picker().locator('[role="option"].active .mention-note'), `${theme}, the mention Enter picks`);
     await win.keyboard.press('Escape');
     await expect(picker()).toHaveCount(0);
-    await win.keyboard.press('Control+A');
+    await win.keyboard.press('ControlOrMeta+a');
     await win.keyboard.press('Backspace');
   }
 });

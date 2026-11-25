@@ -2104,18 +2104,79 @@ async function chooseSort() {
 
 async function emptyCurrent() {
   const accounts = scopedAccounts();
+  const role = S.view;
   const what =
-    S.view === 'trash'
+    role === 'trash'
       ? t('mailbox.emptyFolder.permanent')
       : t('mailbox.emptyFolder.trash');
   const ok = await confirmDialog(t('mailbox.emptyFolder.title', { folder: viewLabel() }), what, t('mailbox.emptyFolder.confirm'), true);
   if (!ok) return;
-  let n = 0;
+  const tally = outcomes();
+  let total = 0;
+  let trashed = 0;
+  let deleted = 0;
   for (const a of accounts) {
-    const f = a.folders.find((x) => x.role === S.view);
-    if (f) n += await api('emptyFolder', a.id, f.path);
+    const f = a.folders.find((x) => x.role === role);
+    if (!f) continue;
+    const result = await api('emptyFolder', a.id, f.path);
+    total += result.total;
+    trashed += result.trashed;
+    deleted += result.deleted;
+    tally.add(result);
   }
-  toast(t('mailbox.delete.deletedCount', { count: n }));
+  if (!tally.failed && !(trashed && deleted)) {
+    return toast(trashed ? t('mailbox.delete.movedCount', { count: trashed }) : t('mailbox.delete.deletedCount', { count: deleted }));
+  }
+  toast(tally.notice(gone(trashed, deleted), total), tally.failed ? 5000 : undefined);
+}
+
+// What happened to the emails of one action, for its notice. fail(r) counts an email that didn't go, from a batch's
+// answer for it ({ error, code }) or a thrown error: one that stayed, as the server turned it down, or one nobody can
+// place until its folders have synced (code 'uncertain', engine.js notMoved), with the first reason for each. An Undo
+// whose folder was rebuilt (code 'rebuilt', engine.js undoAll) counts as one nobody can place, and its reason is
+// given. add() takes those counts from emptyFolder.
+function outcomes() {
+  const n = { stayed: 0, unsure: 0 };
+  const reasons = { stayed: null, unsure: null, rebuilt: null };
+  return {
+    fail(r) {
+      const code = r && r.code;
+      const kind = code === 'uncertain' || code === 'rebuilt' ? 'unsure' : 'stayed';
+      const text = (r && (r.error || r.message)) || null;
+      n[kind]++;
+      reasons[kind] ||= text;
+      if (code === 'rebuilt') reasons.rebuilt ||= text;
+    },
+    add(result) {
+      for (const kind of ['stayed', 'unsure']) {
+        n[kind] += result[kind] || 0;
+        reasons[kind] ||= (result.reasons && result.reasons[kind]) || null;
+      }
+    },
+    get failed() {
+      return n.stayed + n.unsure;
+    },
+    // done: a sentence for each way emails went (gone(), mailbox.outcome.*), then one for those that didn't, then the
+    // server's reason for those that stayed and the reason a rebuilt folder gives. Each count is of one outcome only,
+    // so the notice holds for any mix. One email: just its reason.
+    notice(done, total) {
+      if (total === 1 && this.failed) return reasons.unsure || reasons.stayed;
+      const parts = [...done];
+      if (n.stayed) parts.push(t('mailbox.outcome.stayed', { count: n.stayed }));
+      if (n.unsure) parts.push(t('mailbox.outcome.unsure', { count: n.unsure }));
+      if (n.stayed && reasons.stayed) parts.push(reasons.stayed);
+      if (reasons.rebuilt) parts.push(reasons.rebuilt);
+      return parts.join(' ');
+    }
+  };
+}
+
+// The sentences for emails moved to Trash and deleted for good, for outcomes().notice().
+function gone(trashed, deleted) {
+  const out = [];
+  if (trashed) out.push(t('mailbox.outcome.trashed', { count: trashed }));
+  if (deleted) out.push(t('mailbox.outcome.deleted', { count: deleted }));
+  return out;
 }
 
 // ---------- swipe (touch and pen only; a mouse drags messages to folders) ----------
@@ -2421,26 +2482,54 @@ function detach(list) {
   return wasOpen;
 }
 
-async function offerUndo(ids, message, reopen) {
+// ms: how long the notice shows when none of ids can be undone.
+async function offerUndo(ids, message, reopen, ms) {
   const can = await Promise.all(ids.map((id) => api('canUndo', id).catch(() => false)));
   const undoable = ids.filter((_, i) => can[i]);
-  if (!undoable.length) return toast(message);
+  if (!undoable.length) return toast(message, ms);
   toast(message, { action: { get label() { return t('common.actions.undo'); }, run: () => undoMoves(undoable, reopen) } });
 }
 
+// When the server turns some of them down, the notice says why and offers Undo again for those: they stay where
+// they were moved, and the engine keeps their Undo while its time lasts.
 async function undoMoves(ids, reopen) {
   const restored = [];
-  for (const id of ids) {
-    try {
-      restored.push(await api('undoMove', id));
-    } catch (err) {
-      toast(err.message, 5000);
-    }
+  const failed = [];
+  const tally = outcomes();
+  // One batch per folder to the server (engine.js undoMany).
+  for (const r of await batch('undoMany', ids)) {
+    if (r.error) {
+      failed.push(r.id);
+      tally.fail(r);
+    } else restored.push(r.restored);
   }
   await refresh();
   const back = restored.filter(Boolean);
-  if (reopen && back.length === 1) openMessage(back[0]);
+  // auto: it comes back as it was, an email left unread included.
+  if (reopen && back.length === 1) openMessage(back[0], { auto: true });
+  if (failed.length) {
+    const done = restored.length ? [t('mailbox.outcome.restored', { count: restored.length })] : [];
+    return offerUndo(failed, tally.notice(done, ids.length), reopen, 5000);
+  }
   if (back.length) toast(back.length === 1 ? t('mailbox.undo.restored') : t('mailbox.undo.restoredCount', { count: back.length }));
+}
+
+// A move, delete or Undo of many emails (moveMany, removeMany, undoMany in main.js): an answer per email, { id, ... }
+// or { id, error, code }. A call that fails as a whole leaves each email's result unknown.
+async function batch(method, ids, ...args) {
+  try {
+    return await api(method, ids, ...args);
+  } catch (err) {
+    return ids.map((id) => ({ id, error: err.message, code: err.code || 'uncertain' }));
+  }
+}
+
+// Puts the list right after emails came back: refused by the server, or kept at the no-Trash question. The email that
+// was open (open) opens again, unless another has been opened since detach() showed shown. It opens as automatically
+// opened email does, so one the user left unread stays unread.
+async function showBack(back, open, shown) {
+  await refresh().catch(() => {});
+  if (open && back.includes(open) && S.selectedId === shown && S.list.some((x) => x.id === open)) openMessage(open, { auto: true });
 }
 
 export async function removeMessages(list) {
@@ -2456,20 +2545,25 @@ export async function removeMessages(list) {
     );
     if (!ok) return renderList();
   }
+  const open = S.selectedId;
   const reopen = detach(list);
+  const shown = S.selectedId;
   const moved = [];
   const confirm = [];
+  const back = [];
   let deleted = 0;
-  for (const m of list) {
-    try {
-      const where = await api('remove', m.id);
-      if (where === 'trash') moved.push(m.id);
-      else if (where === 'confirm') confirm.push(m);
-      else deleted++;
-    } catch (err) {
-      toast(err.message, 5000);
-      refresh();
-    }
+  let total = list.length;
+  // The emails that didn't go are back in the engine's list, and the notice at the end says why. One batch per
+  // folder to the server (engine.js removeMany); an answer per email.
+  const tally = outcomes();
+  const byId = new Map(list.map((m) => [m.id, m]));
+  for (const r of await batch('removeMany', list.map((m) => m.id))) {
+    if (r.error) {
+      back.push(r.id);
+      tally.fail(r);
+    } else if (r.where === 'trash') moved.push(r.id);
+    else if (r.where === 'confirm') confirm.push(byId.get(r.id));
+    else deleted++;
   }
   if (confirm.length) {
     const ok = await confirmDialog(
@@ -2480,18 +2574,28 @@ export async function removeMessages(list) {
       t('common.actions.delete'),
       true
     );
-    if (!ok) return refresh();
-    for (const m of confirm) {
-      try {
-        await api('remove', m.id, { force: true });
-        deleted++;
-      } catch (err) {
-        toast(err.message, 5000);
+    if (ok) {
+      for (const r of await batch('removeMany', confirm.map((m) => m.id), { force: true })) {
+        if (r.error) {
+          back.push(r.id);
+          tally.fail(r);
+        } else deleted++;
       }
+    } else {
+      total -= confirm.length;
+      back.push(...confirm.map((m) => m.id));
     }
   }
-  if (moved.length) offerUndo(moved, moved.length === 1 ? t('mailbox.delete.movedOne') : t('mailbox.delete.movedCount', { count: moved.length }), reopen);
-  else if (deleted) toast(deleted === 1 ? t('mailbox.delete.deletedOne') : t('mailbox.delete.deletedCount', { count: deleted }));
+  if (back.length) showBack(back, reopen && open, shown);
+  let message;
+  if (tally.failed || (moved.length && deleted)) message = tally.notice(gone(moved.length, deleted), total);
+  else if (moved.length) message = moved.length === 1 ? t('mailbox.delete.movedOne') : t('mailbox.delete.movedCount', { count: moved.length });
+  else if (deleted) message = deleted === 1 ? t('mailbox.delete.deletedOne') : t('mailbox.delete.deletedCount', { count: deleted });
+  if (!message) return;
+  const ms = tally.failed ? 5000 : undefined;
+  // Undo moves the emails that went to Trash back; the rest are back already, or gone for good.
+  if (moved.length) offerUndo(moved, message, reopen, ms);
+  else toast(message, ms);
 }
 
 function destination(m, target) {
@@ -2508,18 +2612,34 @@ async function moveMessages(list, target, label) {
     .map((m) => ({ m, path: destination(m, target) }))
     .filter((p) => p.path && p.path !== p.m.folder);
   if (!plan.length) return toast(target.role === 'archive' ? t('mailbox.move.noArchive') : t('mailbox.move.alreadyThere'));
+  const open = S.selectedId;
   const reopen = detach(plan.map((p) => p.m));
+  const shown = S.selectedId;
   const moved = [];
+  const back = [];
+  // As in removeMessages(): one batch per account and destination.
+  const tally = outcomes();
+  const batches = new Map();
   for (const { m, path } of plan) {
-    try {
-      await api('move', m.id, path);
-      moved.push(m.id);
-    } catch (err) {
-      toast(err.message, 5000);
-      refresh();
+    const key = `${m.accountId}
+${path}`;
+    if (!batches.has(key)) batches.set(key, { path, ids: [] });
+    batches.get(key).ids.push(m.id);
+  }
+  for (const { path, ids } of batches.values()) {
+    for (const r of await batch('moveMany', ids, path)) {
+      if (r.error) {
+        back.push(r.id);
+        tally.fail(r);
+      } else moved.push(r.id);
     }
   }
-  if (moved.length) offerUndo(moved, moved.length === 1 ? t('mailbox.move.one', { folder: label }) : t('mailbox.move.count', { count: moved.length, folder: label }), reopen);
+  if (back.length) showBack(back, reopen && open, shown);
+  if (tally.failed) {
+    const done = moved.length ? [t('mailbox.outcome.moved', { count: moved.length, folder: label })] : [];
+    return offerUndo(moved, tally.notice(done, plan.length), reopen, 5000);
+  }
+  offerUndo(moved, moved.length === 1 ? t('mailbox.move.one', { folder: label }) : t('mailbox.move.count', { count: moved.length, folder: label }), reopen);
 }
 
 function archiveMessages(list) {
