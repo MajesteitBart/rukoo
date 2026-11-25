@@ -5,7 +5,8 @@ name: Website
 # Rukoo in the browser (rukoo.io/app) is built from the desktop's renderer, catalogs and chat engine, so a change to
 # those is a change to the website too. A server change only runs the tests: the browser tests run against it, but
 # the server deploys separately. The tests also start the server from its wrangler.jsonc and seed it with
-# test/fixtures/real-server.js.
+# test/fixtures/real-server.js. The help center (rukoo.io/help) is built from website/help-center/ with its own
+# packages; its build validates the pages and checks every link before the deploy takes it.
 on:
   pull_request:
     paths:
@@ -69,19 +70,24 @@ jobs:
           cache: npm
           cache-dependency-path: |
             website/package-lock.json
+            website/help-center/package-lock.json
             server/package-lock.json
       - run: npm ci
       # Wrangler and the local Workers runtime, which the browser tests run the account server in.
       - run: npm ci --prefix ../server
       - run: npm run app:build
+      - run: npm run help:build
       - run: npm test
+      - run: npm run help:test
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
-      # The deploy job takes the app from here, so it is the build these tests ran against.
+      # The deploy job takes the app and the help center from here, so they are the builds these tests ran against.
       - uses: actions/upload-artifact@v7
         with:
-          name: rukoo-app
-          path: website/site/app
+          name: rukoo-builds
+          path: |
+            website/site/app
+            website/site/help
           if-no-files-found: error
           retention-days: 3
 
@@ -104,14 +110,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      # The artifact holds app/ and help/, the two folders of site/ it was made from.
       - uses: actions/download-artifact@v8
         with:
-          name: rukoo-app
-          path: website/site/app
-      # site/app is gitignored: without the artifact Wrangler would deploy the site without the app and not say so.
-      - run: test -f site/app/index.html
+          name: rukoo-builds
+          path: website/site
+      # site/app and site/help are gitignored: without the artifact Wrangler would deploy the site without them and
+      # not say so.
+      - run: test -f site/app/index.html && test -f site/help/index.html
       # No npm ci and no build: deploying needs only Wrangler, so no other package runs next to the token. That is
-      # also why this isn't npm run deploy, which builds the app first.
+      # also why this isn't npm run deploy, which builds the app and the help center first.
       - run: npx --yes wrangler@4 deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

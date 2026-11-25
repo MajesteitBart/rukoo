@@ -9,8 +9,10 @@
     "changelog": "node tools/build-changelog.mjs",
     "serve": "npx --yes serve site -l 4321",
     "app:build": "node tools/build-app.mjs",
+    "help:build": "npm ci --prefix help-center && npm run build --prefix help-center",
+    "help:test": "npm test --prefix help-center",
     "app:dev": "node tools/build-app.mjs --watch -- node ../server/node_modules/wrangler/bin/wrangler.js dev -c wrangler.jsonc -c ../server/wrangler.jsonc --local --ip 127.0.0.1 --infer-origin-from-routes=false",
-    "deploy": "npm run app:build && npx --yes wrangler@4 deploy",
+    "deploy": "npm run app:build && npm run help:build && npx --yes wrangler@4 deploy",
     "test": "node --test \"cloudflare/*.test.mjs\" \"tools/*.test.mjs\"",
     "test:browser": "node --test --test-concurrency=1 \"test/browser/*.e2e.mjs\""
   },

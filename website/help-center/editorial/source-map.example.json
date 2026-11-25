@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "checkpoint": "fictional-example",
+  "changes": [
+    {
+      "sourceId": "EXAMPLE-001",
+      "publicRelease": null,
+      "released": false,
+      "outcome": "hold",
+      "reason": "Await a released build and its behavior evidence.",
+      "pageIds": [],
+      "review": {
+        "product": null,
+        "editorial": null
+      }
+    }
+  ]
+}

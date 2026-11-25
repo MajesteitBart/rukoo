@@ -371,7 +371,7 @@ kbd,
   }
 }
 /* Between the phone and a wide window the nav keeps its main links, and GitHub becomes an icon. */
-@media (max-width: 1100px) {
+@media (max-width: 1140px) {
   .nav-links .nav-wide {
     display: none;
   }
@@ -381,6 +381,12 @@ kbd,
   .nav-end .nav-gh {
     width: 36px;
     padding: 0;
+  }
+}
+/* Just above the phone layout the main links fit with a little less room around each. */
+@media (min-width: 861px) and (max-width: 940px) {
+  .nav-links a {
+    padding: 0 9px;
   }
 }
 /* Sign in and Get started need the room on a phone; GitHub is in the footer and under Contribute. */
