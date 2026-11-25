@@ -20,7 +20,7 @@ use voice_screen::platform::{
 };
 use voice_screen::record::{record, CaptureStop, Ev};
 use voice_screen_files::clock::Now;
-use voice_screen_files::exclude::{Exclusions, SHOWN_LEASE};
+use voice_screen_files::exclude::{Applied, Exclusions, HOLD_LIMIT, SHOWN_LEASE};
 use voice_screen_files::frames::Thumb;
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 use voice_screen_files::paths;
@@ -343,7 +343,9 @@ struct FakeSource {
     /// What `exclude` gave the source.
     excluded: Arc<Mutex<Option<Exclusions>>>,
     /// What `applied` answers: `None` applies every change at once.
-    applied: Arc<Mutex<Option<(u64, u64)>>>,
+    applied: Arc<Mutex<Option<Applied>>>,
+    /// What `already_out` answers for every pid.
+    already_out: bool,
     worker: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
@@ -432,8 +434,12 @@ impl Source for FakeSource {
         *self.excluded.lock().unwrap() = Some(exclusions.clone());
     }
 
-    fn applied(&self) -> Option<(u64, u64)> {
-        *self.applied.lock().unwrap()
+    fn applied(&self) -> Option<Applied> {
+        self.applied.lock().unwrap().clone()
+    }
+
+    fn already_out(&self, _pid: u32) -> bool {
+        self.already_out
     }
 }
 
@@ -472,7 +478,9 @@ struct FakePlatform {
     /// What the source's `exclude` was last given.
     excluded: Arc<Mutex<Option<Exclusions>>>,
     /// What the source says it has in place, for a filter the test applies by hand.
-    applied: Arc<Mutex<Option<(u64, u64)>>>,
+    applied: Arc<Mutex<Option<Applied>>>,
+    /// The source's filter leaves every pid out already.
+    already_out: bool,
 }
 
 impl FakePlatform {
@@ -498,6 +506,7 @@ impl FakePlatform {
             by_user: false,
             excluded: Arc::new(Mutex::new(None)),
             applied: Arc::new(Mutex::new(None)),
+            already_out: false,
         }
     }
 
@@ -643,6 +652,7 @@ impl Platform for FakePlatform {
             kept: Arc::new(Mutex::new(None)),
             excluded: self.excluded.clone(),
             applied: self.applied.clone(),
+            already_out: self.already_out,
             worker: None,
         })
     }
@@ -1308,8 +1318,8 @@ fn exclusions_arrive_over_the_control_port() {
 
 /// A change that takes Rukoo out of the recording holds frames and video until the capture has
 /// its filter in place: the open video file ends with reason `hide`, nothing is saved or
-/// encoded meanwhile, the status still says Rukoo is kept in, and once the filter is in place
-/// a new video file starts and the status says it is out.
+/// encoded meanwhile, the status says the screen is starting and still that Rukoo is kept in,
+/// and once the filter is in place a new video file starts and the status says it is out.
 #[test]
 fn a_change_that_hides_waits_for_its_filter() {
     let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -1317,7 +1327,11 @@ fn a_change_that_hides_waits_for_its_filter() {
     let platform = FakePlatform::new(true);
     let (applied, clock) = (platform.applied.clone(), platform.clock.clone());
     // A filtering capture: the command line's revision 1 is in place from the start.
-    *applied.lock().unwrap() = Some((1, 0));
+    *applied.lock().unwrap() = Some(Applied {
+        revision: 1,
+        at: 0,
+        shown: vec![4821],
+    });
     let mut opts = meeting.opts();
     opts.exclusions = Exclusions::new([], [4821]);
     let handle = std::thread::spawn(move || record(platform, opts));
@@ -1352,6 +1366,8 @@ fn a_change_that_hides_waits_for_its_filter() {
         serde_json::json!([4821]),
         "not confirmed yet"
     );
+    // Rukoo's view doesn't call that plain recording.
+    assert_eq!(status["state"], "starting");
     let lines = meeting.journal();
     assert_eq!(
         kinds(&lines).iter().filter(|k| *k == "video").count(),
@@ -1359,14 +1375,90 @@ fn a_change_that_hides_waits_for_its_filter() {
     );
 
     // The filter of revision 2 is in place from now on: recording goes on, without Rukoo.
-    *applied.lock().unwrap() = Some((2, clock.boot_100ns()));
+    *applied.lock().unwrap() = Some(Applied {
+        revision: 2,
+        at: clock.boot_100ns(),
+        shown: Vec::new(),
+    });
     meeting.wait_for("a new video file", |lines| {
         kinds(lines).iter().filter(|k| *k == "video").count() > videos
     });
-    assert_eq!(
-        ask(serde_json::json!({ "cmd": "status" }))["shown"],
-        serde_json::json!([])
+    let status = ask(serde_json::json!({ "cmd": "status" }));
+    assert_eq!(status["shown"], serde_json::json!([]));
+    assert_eq!(status["state"], "recording");
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
+}
+
+/// Leaving out a pid the stream's filter leaves out already, as a packaged Rukoo that connects
+/// with hiding on, needs no wait: the video goes on.
+#[test]
+fn a_hide_the_filter_already_has_needs_no_wait() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("hide-already-out");
+    let mut platform = FakePlatform::new(true);
+    platform.already_out = true;
+    *platform.applied.lock().unwrap() = Some(Applied {
+        revision: 1,
+        at: 0,
+        shown: Vec::new(),
+    });
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("video", |lines| kinds(lines).iter().any(|k| k == "video"));
+    let file = voice_screen_files::screenfile::read(&meeting.dir).expect("screen.json");
+    let reply = voice_screen_files::control::request(
+        file.port,
+        &file.token,
+        serde_json::json!({ "cmd": "exclude", "pids": [4821] }),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    std::thread::sleep(Duration::from_millis(600));
+    let lines = meeting.journal();
+    assert!(
+        !lines.iter().any(|l| l["kind"] == "video_end"),
+        "the video ended for a pid that was out already"
     );
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
+}
+
+/// A change that hides whose filter is never confirmed doesn't hold the screen for good: after
+/// `HOLD_LIMIT` the capture starts over on a new stream, through the bounded retries.
+#[test]
+fn a_hide_that_is_never_confirmed_starts_the_capture_over() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("hide-overdue");
+    let platform = FakePlatform::new(true);
+    *platform.applied.lock().unwrap() = Some(Applied {
+        revision: 1,
+        at: 0,
+        shown: vec![4821],
+    });
+    let starts = platform.starts.clone();
+    let mut opts = meeting.opts();
+    opts.exclusions = Exclusions::new([], [4821]);
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("capture", |lines| {
+        kinds(lines).iter().any(|k| k == "capture")
+    });
+    let file = voice_screen_files::screenfile::read(&meeting.dir).expect("screen.json");
+    let reply = voice_screen_files::control::request(
+        file.port,
+        &file.token,
+        serde_json::json!({ "cmd": "exclude", "pids": [4821] }),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let before = starts.load(Ordering::SeqCst);
+    let deadline = Instant::now() + HOLD_LIMIT + Duration::from_secs(4);
+    while starts.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < deadline, "the capture didn't start over");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
     handle.join().unwrap().expect("record failed");
 }

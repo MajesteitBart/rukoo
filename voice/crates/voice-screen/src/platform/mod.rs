@@ -11,7 +11,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 use voice_screen_files::clock::Now;
-use voice_screen_files::exclude::Exclusions;
+use voice_screen_files::exclude::{Applied, Exclusions};
 use voice_screen_files::frames::Thumb;
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 
@@ -88,11 +88,17 @@ pub trait Source: Send {
     /// mid-meeting or its user turns hiding off, as the change of `revision`. A platform that
     /// can't filter by process ignores it.
     fn exclude(&mut self, _exclusions: &Exclusions, _revision: u64) {}
-    /// The newest revision whose filter the capture has in place, and the boot time it confirmed
-    /// that, so frames captured before it can be told apart. `None` for a source that applies a
-    /// change at once or has no filter, such as the synthetic screen.
-    fn applied(&self) -> Option<(u64, u64)> {
+    /// The newest revision whose filter the capture has in place, the boot time it confirmed
+    /// that, so frames captured before it can be told apart, and the Rukoo pids the active
+    /// stream's filter keeps in. `None` for a source that applies a change at once or has no
+    /// filter, such as the synthetic screen.
+    fn applied(&self) -> Option<Applied> {
         None
+    }
+    /// Whether the active stream's filter leaves the process `pid` out already, so leaving it
+    /// out needs no wait. A source that can't tell says no.
+    fn already_out(&self, _pid: u32) -> bool {
+        false
     }
 }
 

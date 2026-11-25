@@ -26,7 +26,6 @@ use voice_meetings::Library;
 use voice_protocol::{events, RukooWindowsReport, ScreenMode, StartedBy};
 use voice_screen_files::caps::Capabilities;
 use voice_screen_files::exclude::Exclusions;
-#[cfg(target_os = "macos")]
 use voice_screen_files::exclude::SHOWN_RENEW;
 use voice_screen_files::journal::{self, JournalReader, Line};
 use voice_screen_files::monitors::{self, MonitorInfo};
@@ -558,15 +557,30 @@ impl ScreenSupervisor {
 
     /// Voice is quitting: a screen process that keeps a Rukoo in leaves it out from now on,
     /// instead of when Voice's permission lapses. The watchdog has stopped, so no renewal
-    /// follows. macOS only.
+    /// follows. It goes out whether or not an `exclude` was answered before: the screen process
+    /// hides every Rukoo it ever showed, the command line's `--show-pid`s too, once an `exclude`
+    /// doesn't show it, and this one shows none. macOS only.
     #[cfg(target_os = "macos")]
     fn revoke_shown(&self) {
+        let wanted = self.exclusions();
         let target = {
             let slot = self.lock();
             slot.as_ref().and_then(|live| {
                 let file = live.file.clone()?;
-                let (_, said) = live.excluded.as_ref()?;
-                (!said.shown.is_empty()).then(|| (live.id.clone(), file, said.hiding_shown()))
+                let said = live.excluded.as_ref().map(|(_, said)| said.clone());
+                let all = Exclusions::new(
+                    wanted
+                        .hidden
+                        .iter()
+                        .chain(said.iter().flat_map(|s| s.hidden.iter()))
+                        .copied(),
+                    wanted
+                        .shown
+                        .iter()
+                        .chain(said.iter().flat_map(|s| s.shown.iter()))
+                        .copied(),
+                );
+                Some((live.id.clone(), file, all.hiding_shown()))
             })
         };
         if let Some((id, file, hidden)) = target {
@@ -1687,7 +1701,7 @@ impl ScreenSupervisor {
         // Read before the slot's lock: the bridge answers it under a lock of its own. macOS only.
         #[cfg(target_os = "macos")]
         let wanted = self.exclusions();
-        let (id, file, exited, mut changes) = {
+        let (id, file, exited, mut changes, exclude) = {
             let mut slot = self.lock();
             let Some(live) = slot.as_mut() else {
                 return;
@@ -1700,8 +1714,29 @@ impl ScreenSupervisor {
                 .child
                 .as_mut()
                 .is_some_and(|child| !matches!(child.try_wait(), Ok(None)));
-            (live.id.clone(), live.file.clone(), exited, changes)
+            // Changed, or a Rukoo is kept in and its permission needs renewing before it lapses.
+            // It goes before the status request, so slow status answers don't let it lapse.
+            #[cfg(target_os = "macos")]
+            let exclude = live.file.clone().filter(|file| {
+                !exited
+                    && needs_exclude(
+                        live.excluded.as_ref(),
+                        file.pid,
+                        &wanted,
+                        live.renewed,
+                        Instant::now(),
+                    )
+            });
+            #[cfg(not(target_os = "macos"))]
+            let exclude: Option<ScreenFile> = None;
+            (live.id.clone(), live.file.clone(), exited, changes, exclude)
         };
+        #[cfg(target_os = "macos")]
+        if let Some(file) = &exclude {
+            self.send_exclude(&id, file, wanted.clone());
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = exclude;
         let status = match (&file, exited) {
             (Some(file), false) => request(file, json!({"cmd": "status"}), REQUEST_WAIT)
                 .ok()
@@ -1731,19 +1766,7 @@ impl ScreenSupervisor {
                 });
             }
             live.status = Some(status);
-            // Changed, or a Rukoo is kept in and the screen process needs the permission renewed
-            // before it lapses.
-            #[cfg(target_os = "macos")]
-            let exclude = file.clone().filter(|file| {
-                live.excluded.as_ref() != Some(&(file.pid, wanted.clone()))
-                    || (!wanted.shown.is_empty()
-                        && live.renewed.is_none_or(|at| at.elapsed() >= SHOWN_RENEW))
-            });
             drop(slot);
-            #[cfg(target_os = "macos")]
-            if let Some(file) = exclude {
-                self.send_exclude(&id, &file, wanted);
-            }
             self.emit_all(changes);
             return;
         }
@@ -1896,6 +1919,21 @@ fn record_args(
         args.push(pid.to_string().into());
     }
     args
+}
+
+/// Whether the screen process with pid `pid` needs an `exclude` now: what it was last told isn't
+/// `wanted`, or a Rukoo is kept in and the last renewal, at `renewed`, is [`SHOWN_RENEW`] old.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn needs_exclude(
+    said: Option<&(u32, Exclusions)>,
+    pid: u32,
+    wanted: &Exclusions,
+    renewed: Option<Instant>,
+    now: Instant,
+) -> bool {
+    said.is_none_or(|(to, what)| *to != pid || what != wanted)
+        || (!wanted.shown.is_empty()
+            && renewed.is_none_or(|at| now.duration_since(at) >= SHOWN_RENEW))
 }
 
 /// The `rukooWindows` of a status from a screen process's status reply: `shown` there is what
@@ -2108,6 +2146,38 @@ mod tests {
             ]
             .map(OsString::from)
         );
+    }
+
+    /// The watchdog tells the screen process what changed, and renews a shown Rukoo's
+    /// permission every `SHOWN_RENEW`, whatever the status requests do.
+    #[test]
+    fn the_watchdog_renews_the_permission_on_its_own_clock() {
+        let now = Instant::now();
+        let shown = Exclusions::new([77], [4821]);
+        let hidden = Exclusions::new([77, 4821], []);
+        assert!(needs_exclude(None, 9, &hidden, None, now));
+        let told = (9, hidden.clone());
+        assert!(!needs_exclude(Some(&told), 9, &hidden, None, now));
+        // Another screen process, or other lists.
+        assert!(needs_exclude(Some(&told), 10, &hidden, None, now));
+        assert!(needs_exclude(Some(&told), 9, &shown, None, now));
+        let told = (9, shown.clone());
+        assert!(!needs_exclude(Some(&told), 9, &shown, Some(now), now));
+        assert!(!needs_exclude(
+            Some(&told),
+            9,
+            &shown,
+            Some(now),
+            now + SHOWN_RENEW / 2
+        ));
+        assert!(needs_exclude(
+            Some(&told),
+            9,
+            &shown,
+            Some(now),
+            now + SHOWN_RENEW
+        ));
+        assert!(SHOWN_RENEW * 3 <= voice_screen_files::exclude::SHOWN_LEASE);
     }
 
     /// Rukoo hears what the screen process confirmed it keeps in, and that a screen process

@@ -44,7 +44,7 @@ use objc2_screen_capture_kit::{
     SCStreamConfiguration, SCStreamDelegate, SCStreamErrorCode, SCStreamFrameInfoDirtyRects,
     SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
-use voice_screen_files::exclude::{self, Exclusions, Matched};
+use voice_screen_files::exclude::{self, Applied, Exclusions, FilterStep, Matched, StreamFilter};
 use voice_screen_files::monitors::MonitorInfo;
 
 use super::mac::PixelBuffer;
@@ -135,9 +135,8 @@ struct Live {
     /// The stream was started again after the one before it stalled.
     restarted: bool,
     display: u32,
-    /// What the stream's filter leaves out, and the revision it was made for.
-    applied: Matched,
-    revision: u64,
+    /// What the stream's filter applies, as far as is known.
+    filter: StreamFilter,
     stream: Retained<SCStream>,
     /// The stream's output and delegate. `Live` holds it until the stream stopped: whether a
     /// stream retains its delegate isn't in the header.
@@ -182,10 +181,15 @@ impl ScreenSource {
             let Some(live) = shared.live.as_ref() else {
                 return;
             };
-            if shared.refreshing || shared.retry_at.is_some_and(|at| now < at) {
+            // A stream whose filter update was lost starts over instead.
+            if shared.refreshing
+                || shared.failed.is_some()
+                || live.filter.lost()
+                || shared.retry_at.is_some_and(|at| now < at)
+            {
                 return;
             }
-            if now < self.next_refresh && live.revision >= self.revision {
+            if now < self.next_refresh && live.filter.revision() >= self.revision {
                 return;
             }
             let generation = live.generation;
@@ -284,8 +288,26 @@ impl Source for ScreenSource {
         self.next_refresh = 0;
     }
 
-    fn applied(&self) -> Option<(u64, u64)> {
-        Some(lock(&self.shared).applied)
+    fn applied(&self) -> Option<Applied> {
+        let shared = lock(&self.shared);
+        // Without an active stream nothing is recorded, so no Rukoo is kept in.
+        let shown = shared
+            .live
+            .as_ref()
+            .map(|live| live.filter.shown().to_vec())
+            .unwrap_or_default();
+        Some(Applied {
+            revision: shared.applied.0,
+            at: shared.applied.1,
+            shown,
+        })
+    }
+
+    fn already_out(&self, pid: u32) -> bool {
+        lock(&self.shared)
+            .live
+            .as_ref()
+            .is_some_and(|live| live.filter.leaves_out(pid))
     }
 
     fn health(&mut self) -> Option<CaptureStop> {
@@ -379,10 +401,7 @@ impl RefreshJob {
         let (stream, display) = {
             let mut shared = lock(&self.shared);
             shared.refresh_error = None;
-            // A newer change came while the applications were read: the read for it follows.
-            if self.revision < shared.latest {
-                return;
-            }
+            let latest = shared.latest;
             let Some(live) = shared
                 .live
                 .as_mut()
@@ -390,11 +409,16 @@ impl RefreshJob {
             else {
                 return;
             };
-            if live.applied == exclusions.matched {
+            match live.filter.next(self.revision, latest, &exclusions.matched) {
+                // A newer change came while the applications were read: the read for it follows.
+                FilterStep::Stale => return,
                 // The stream's filter already leaves out what this revision asks.
-                live.revision = live.revision.max(self.revision);
-                shared.applied(self.revision, clock_mac::boot_100ns());
-                return;
+                FilterStep::InPlace => {
+                    live.filter.in_place(self.revision, &self.exclusions);
+                    shared.applied(self.revision, clock_mac::boot_100ns());
+                    return;
+                }
+                FilterStep::Install => {}
             }
             (live.stream.clone(), live.display)
         };
@@ -435,25 +459,39 @@ impl RefreshJob {
                     .as_mut()
                     .filter(|live| live.generation == self.generation)
                 {
-                    live.applied = exclusions.matched;
-                    live.revision = self.revision;
-                    shared.applied(self.revision, boot);
+                    live.filter.installed(
+                        self.revision,
+                        exclusions.matched,
+                        self.exclusions.clone(),
+                    );
+                    if !live.filter.lost() {
+                        shared.applied(self.revision, boot);
+                    }
                 }
             }
             Err(e) => {
+                // The update failed or didn't answer, and may still land: what the stream's
+                // filter does isn't known any more, so the stream starts over with the newest
+                // exclusions, through the capture's bounded retries.
+                crate::log(format_args!("{e}; the capture starts over"));
                 let mut shared = lock(&self.shared);
                 shared.retry_at = Some(clock_mac::awake_100ns() + REFRESH_RETRY_100NS);
-                if e.permission && shared.wanted == self.generation {
+                if let Some(live) = shared
+                    .live
+                    .as_mut()
+                    .filter(|live| live.generation == self.generation)
+                {
+                    live.filter.lose(&self.exclusions);
+                }
+                if shared.wanted == self.generation {
                     shared.failed = Some((
                         self.generation,
                         CaptureStop {
                             why: e.to_string(),
-                            permission_lost: true,
+                            permission_lost: e.permission,
                             by_user: false,
                         },
                     ));
-                } else {
-                    crate::log(format_args!("{e}"));
                 }
             }
         }
@@ -618,8 +656,11 @@ impl StartJob {
             started: clock_mac::awake_100ns(),
             restarted: self.restarted,
             display: self.display,
-            applied: exclusions.matched.clone(),
-            revision: self.revision,
+            filter: StreamFilter::started(
+                self.revision,
+                exclusions.matched.clone(),
+                self.exclusions.clone(),
+            ),
             stream,
             output,
             _queue: queue,

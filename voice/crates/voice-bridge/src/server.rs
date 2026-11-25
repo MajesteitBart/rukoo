@@ -45,6 +45,10 @@ const PAGE: usize = 500;
 const MAX_PENDING: usize = 16;
 /// Commands a connection may queue while an earlier one runs.
 const COMMAND_QUEUE: usize = 32;
+/// Ordinary commands a connection keeps waiting beyond `COMMAND_QUEUE`, so it keeps reading and
+/// a `windows.hide` or `meeting.protected` behind them is handled at once. One more is answered
+/// `busy`.
+pub const COMMAND_BACKLOG: usize = 1024;
 /// How long a close waits for the client's close in return.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
 /// How long shutdown waits for connections to close before it drops them.
@@ -798,6 +802,8 @@ impl Session {
         // Whether the last pass read a frame: then the next one leaves input out, so replies and
         // live events get a turn between two frames of a client that never stops sending.
         let mut read_last = false;
+        // Ordinary commands the queue had no room for, oldest first, sent on as it empties.
+        let mut backlog: VecDeque<Job> = VecDeque::new();
         loop {
             if behind && std::mem::take(&mut page_next) {
                 behind = self.next_page().await?;
@@ -841,7 +847,29 @@ impl Session {
                                     };
                                     behind |= self.answer(answered).await?;
                                 }
-                                job => jobs.send(job).await.map_err(|_| End::Dropped)?,
+                                job if backlog.len() >= COMMAND_BACKLOG => {
+                                    let reply = match job {
+                                        Job::Run(Command { id, .. }, _) => Reply::error(
+                                            id,
+                                            ReplyError::new(
+                                                ErrorCode::Busy,
+                                                "Voice has too many commands of this connection waiting.",
+                                            ),
+                                        ),
+                                        Job::Answer(reply) => reply,
+                                    };
+                                    let answered = Answered {
+                                        json: within_limit(reply),
+                                        head: self.shared.log.head(),
+                                    };
+                                    behind |= self.answer(answered).await?;
+                                }
+                                job if !backlog.is_empty() => backlog.push_back(job),
+                                job => match jobs.try_send(job) {
+                                    Ok(()) => {}
+                                    Err(mpsc::error::TrySendError::Full(job)) => backlog.push_back(job),
+                                    Err(mpsc::error::TrySendError::Closed(_)) => return Err(End::Dropped),
+                                },
                             }
                         }
                     }
@@ -852,6 +880,13 @@ impl Session {
                     Some(Err(WsError::Capacity(_))) => return Ok(End::TooBig),
                     Some(Err(_)) => return Ok(End::Dropped),
                 }},
+                // The queue has room again: the oldest waiting command goes on, in order.
+                permit = jobs.reserve(), if !backlog.is_empty() => {
+                    let permit = permit.map_err(|_| End::Dropped)?;
+                    if let Some(job) = backlog.pop_front() {
+                        permit.send(job);
+                    }
+                }
                 Some(answered) = replies.recv() => {
                     page_next = true;
                     behind |= self.answer(answered).await?;

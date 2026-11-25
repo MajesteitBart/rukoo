@@ -14,7 +14,7 @@ use common::{
     NEW_MEETING,
 };
 use serde_json::{json, Value};
-use voice_bridge::{EventLog, Options, RukooWindows};
+use voice_bridge::{EventLog, Options, RukooWindows, COMMAND_BACKLOG};
 use voice_protocol::{validate_discovery, CLIP_WAIT, MAX_RUKOO_MESSAGE};
 
 const A: &str = "m-20261030-171203-4f2a";
@@ -200,6 +200,91 @@ fn windows_hide_moves_a_rukoo_between_hidden_and_shown() {
             "the closed connection still hid the windows"
         );
         thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// With a command running and its queue full, the connection keeps reading: ordinary commands
+/// wait in its backlog and are answered in order later, and a `windows.hide` after them is
+/// answered and applied at once.
+#[test]
+fn windows_hide_doesnt_wait_behind_a_full_queue() {
+    let bridge = Bridge::start("server-full-queue");
+    let handle = bridge.handle.as_ref().unwrap();
+    let (open, gate) = std::sync::mpsc::channel();
+    *bridge.control.gate.lock().unwrap() = Some(gate);
+    let mut rukoo = rukoo_with_pid(&bridge, Some(false));
+    assert!(read_until_status_reply(&mut rukoo, "rukoo-ready").is_empty());
+    rukoo.command(
+        "mark-1",
+        "meeting.mark",
+        json!({ "meeting": DONE_MEETING, "label": "wait" }),
+    );
+    // The mark runs and holds the queue; 32 fill it and the rest wait behind them.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !bridge
+        .control
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c.starts_with("mark"))
+    {
+        assert!(Instant::now() < deadline, "the mark didn't start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    const WAITING: usize = 80;
+    for n in 0..WAITING {
+        rukoo.command(&format!("q-{n}"), "status.get", json!({}));
+    }
+    let reply = windows_hide(&mut rukoo, "hide-1", true);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
+    // The rest are answered in order once the mark is done.
+    open.send(()).unwrap();
+    rukoo.read_reply("mark-1");
+    for n in 0..WAITING {
+        assert_eq!(rukoo.read_reply(&format!("q-{n}"))["ok"], true);
+    }
+}
+
+/// Past `COMMAND_BACKLOG` waiting commands, the next is answered `busy` at once, and the
+/// connection goes on.
+#[test]
+fn a_full_backlog_answers_busy() {
+    let bridge = Bridge::start("server-full-backlog");
+    let (open, gate) = std::sync::mpsc::channel();
+    *bridge.control.gate.lock().unwrap() = Some(gate);
+    let (mut client, _) = bridge.client(None, 0);
+    client.command(
+        "mark-1",
+        "meeting.mark",
+        json!({ "meeting": DONE_MEETING, "label": "wait" }),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !bridge
+        .control
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c.starts_with("mark"))
+    {
+        assert!(Instant::now() < deadline, "the mark didn't start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    // 32 in the queue and COMMAND_BACKLOG behind them; the one after is refused.
+    let waiting = 32 + COMMAND_BACKLOG;
+    for n in 0..waiting {
+        client.command(&format!("q-{n}"), "status.get", json!({}));
+    }
+    client.command("over", "status.get", json!({}));
+    let busy = client.read();
+    assert_eq!(busy["id"], "over", "{busy}");
+    assert_eq!(busy["error"]["code"], "busy", "{busy}");
+    open.send(()).unwrap();
+    client.read_reply("mark-1");
+    for n in 0..waiting {
+        assert_eq!(client.read_reply(&format!("q-{n}"))["ok"], true);
     }
 }
 

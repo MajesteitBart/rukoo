@@ -800,6 +800,7 @@ impl<P: Platform> Screen<P> {
         if !self.applying.passes(frame.boot) {
             return;
         }
+        self.applying.recorded();
         let now = self.platform.clocks().at_boot(frame.boot);
         let Some(t) = self.clock.at(now) else {
             return;
@@ -961,12 +962,23 @@ impl<P: Platform> Screen<P> {
             "revision {}: leaving out the windows of pids {:?}, keeping Rukoo pids {:?}",
             update.revision, update.exclusions.hidden, update.exclusions.shown
         ));
+        // A pid the active stream's filter leaves out already needs no wait; without a source
+        // nothing records, and the next one starts with these exclusions.
+        let hides = match self.source.as_ref() {
+            Some(source) => update.hides(|pid| source.already_out(pid)),
+            None => false,
+        };
         if let Some(source) = self.source.as_mut() {
             source.exclude(&update.exclusions, update.revision);
         }
-        self.applying
-            .changed(&update, self.platform.clocks().boot_100ns());
-        if update.hides {
+        self.applying.changed(
+            &update,
+            hides,
+            self.platform.clocks().boot_100ns(),
+            Instant::now(),
+        );
+        if hides {
+            log("recording nothing of the screen until the filter is in place");
             self.last = None;
             self.end_video("hide");
         }
@@ -1463,13 +1475,24 @@ impl<P: Platform> Screen<P> {
             }
         }
         // Voice's permission to keep a Rukoo in lapsed without a renewal: Voice quit or hangs.
-        if let Some(update) = self.policy.tick(now) {
+        // A Rukoo shown before whose process ended is let go.
+        if let Some(update) = self.policy.tick(now, alive) {
             if self.policy.lapsed() {
                 log("Voice didn't renew its permission to keep Rukoo in; leaving it out");
             }
             self.exclusions_changed(update);
         }
         self.check_applied();
+        // A change that hides waited too long for its filter or a frame after it: the capture
+        // starts over on a new stream with the newest exclusions, through the bounded retries.
+        if self.capturing && !self.paused && !self.locked && self.applying.overdue(now) {
+            self.applying.restarted(now);
+            self.on_capture_stopped(&CaptureStop {
+                why: "the filter that leaves Rukoo out wasn't confirmed in time".into(),
+                permission_lost: false,
+                by_user: false,
+            });
+        }
         if let Some(video) = &self.video {
             video.tick(self.platform.clocks().boot_100ns());
         }
@@ -1670,7 +1693,7 @@ impl<P: Platform> Screen<P> {
             #[cfg(target_os = "macos")]
             Some("exclude") => match control::exclusions(&request.body) {
                 Some(exclusions) => {
-                    if let Some(update) = self.policy.set(exclusions, Instant::now()) {
+                    if let Some(update) = self.policy.set(exclusions, Instant::now(), alive) {
                         self.exclusions_changed(update);
                     }
                     json!({ "ok": true, "shown": self.policy.effective().shown })
@@ -1694,7 +1717,9 @@ impl<P: Platform> Screen<P> {
             "paused"
         } else if self.locked {
             "locked"
-        } else if !self.captured {
+        } else if !self.captured || self.applying.holding() {
+            // Also while a change that hides waits for its filter: nothing of the screen is
+            // recorded meanwhile.
             "starting"
         } else {
             "recording"
@@ -1729,6 +1754,29 @@ impl<P: Platform> Screen<P> {
             status["shown"] = json!(self.applying.shown());
         }
         status
+    }
+}
+
+/// Whether a process runs, for the Rukoo the screen process showed before. Off macOS nothing is
+/// ever shown, so every pid counts as running.
+fn alive(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: signal 0 sends nothing; it only asks whether the process exists. EPERM means
+        // it runs as another user.
+        let answer = unsafe { libc::kill(pid, 0) };
+        answer == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        true
     }
 }
 
