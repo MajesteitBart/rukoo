@@ -216,6 +216,86 @@ test('a use whose answer was lost counts once Voice says it uses the bucket', as
   assert.equal(sets(laptop).length, 1, 'used once');
 });
 
+test('a use whose answer was lost waits for Voice to finish, also past looks that come first, for a while only', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  const laptop = await computer(t, srv, 'Laptop', null, { setTimeoutMs: 100, unsureMs: 2000 });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.share.state().offer, 'the offer');
+
+  // Rukoo stops waiting, then looks while Voice is still testing the bucket: Voice says it syncs nowhere yet.
+  laptop.fake.syncSetMs = 600;
+  assert.equal((await laptop.share.use()).error.code, 'timeout');
+  await laptop.share.check();
+  assert.equal(laptop.fake.syncSettings, null, 'Voice is still at it');
+  await laptop.share.check();
+  // Voice finishes: the next look counts the use, and Rukoo follows the record.
+  await until(() => laptop.fake.syncSettings, 'Voice to finish');
+  await laptop.share.check();
+  const state = laptop.share.state();
+  assert.deepEqual({ follow: state.follow, error: state.error, offer: state.offer }, { follow: true, error: null, offer: null });
+  assert.equal(sets(laptop).length, 1, 'used once');
+
+  // A use that never shows in Voice stops counting once the time is up: the error and the offer stay.
+  desk.fake.syncSettings = { ...BUCKET, secret: 'never-used' };
+  await desk.share.check();
+  await desk.account.sync();
+  laptop.fake.syncSetMs = 400;
+  laptop.fake.syncRefusal = { code: 'failed', message: 'The bucket is down.', reason: 'test' };
+  await laptop.account.sync();
+  await until(() => laptop.share.state().error, 'the lost automatic use');
+  assert.equal(laptop.share.state().error.code, 'timeout');
+  const tries = sets(laptop).length;
+  await laptop.share.check();
+  assert.equal(sets(laptop).length, tries, 'not sent again while Voice may still be at it');
+  assert.ok(laptop.share.unsure, 'still waiting for Voice');
+  await new Promise((r) => setTimeout(r, 2100));
+  await laptop.share.check();
+  assert.equal(laptop.share.unsure, null, 'no longer waiting');
+  assert.ok(laptop.share.state().error);
+});
+
+test('a computer whose sync was off for a while shares the bucket it uses once sync is back', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  const laptop = await computer(t, srv, 'Laptop', { ...BUCKET });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await laptop.share.setShare(true);
+
+  // Sync off in the desk's Voice, and back on with a new secret: the account gets the new secret.
+  desk.fake.syncSettings = null;
+  await desk.share.check();
+  assert.equal(desk.account.getSealed('voicesync', 'bucket').settings.secret, BUCKET.secret);
+  desk.fake.syncSettings = { ...BUCKET, secret: 'after-a-pause' };
+  await desk.share.check();
+  assert.equal(desk.account.getSealed('voicesync', 'bucket').settings.secret, 'after-a-pause');
+  await desk.account.sync();
+
+  // Sharing off on the desk removes the record. Sync off and on again on the laptop with the same settings doesn't
+  // bring it back; a moved bucket there does.
+  await desk.share.setShare(false);
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.account.get('voicesync', 'bucket') === undefined, 'the removal on the laptop');
+  await laptop.share.check();
+  laptop.fake.syncSettings = null;
+  await laptop.share.check();
+  laptop.fake.syncSettings = { ...BUCKET };
+  await laptop.share.check();
+  assert.equal(laptop.account.get('voicesync', 'bucket'), undefined, 'the same bucket is not shared again');
+  laptop.fake.syncSettings = null;
+  await laptop.share.check();
+  laptop.fake.syncSettings = { ...BUCKET, bucket: 'moved' };
+  await laptop.share.check();
+  assert.equal(laptop.account.getSealed('voicesync', 'bucket').settings.bucket, 'moved');
+});
+
 test('a computer that changes its own bucket stops following, and an older Voice shows as such', async (t) => {
   const srv = await server(t);
   const desk = await computer(t, srv, 'Desk', { ...BUCKET });

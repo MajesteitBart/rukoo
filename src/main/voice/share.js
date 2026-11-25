@@ -30,6 +30,9 @@ const EVERY_MS = 5 * 60 * 1000;
 // sync.settings.set tests the bucket before it answers, which can take minutes; Voice keeps answering the heartbeat
 // meanwhile. When the answer doesn't come, the next look at Voice's settings tells whether it worked.
 const SET_TIMEOUT_MS = 5 * 60 * 1000;
+// How long Rukoo waits for a use whose answer was lost to show in Voice's settings: Voice may still be testing the
+// bucket, each request of which can take 120 s.
+const UNSURE_MS = 5 * 60 * 1000;
 // A use that failed by itself for a reason that may pass (Voice away, the bucket down) is tried again after these
 // waits, doubling up to the last; one Voice refused for good (key_in_use, settings it refuses) only when the record
 // changes.
@@ -42,13 +45,14 @@ const DEVICE_MAX = 100;
 const digest = (settings) => (settings ? crypto.createHash('sha256').update(JSON.stringify(SYNC_FIELDS.map((k) => settings[k]))).digest('base64url') : null);
 
 class VoiceShare extends EventEmitter {
-  constructor({ account, voice, dataDir, everyMs = EVERY_MS, setTimeoutMs = SET_TIMEOUT_MS, retryMs = RETRY_MS, now = Date.now, log = () => {} }) {
+  constructor({ account, voice, dataDir, everyMs = EVERY_MS, setTimeoutMs = SET_TIMEOUT_MS, unsureMs = UNSURE_MS, retryMs = RETRY_MS, now = Date.now, log = () => {} }) {
     super();
     this.account = account;
     this.voice = voice;
     this.file = path.join(dataDir, FILE);
     this.everyMs = everyMs;
     this.setTimeoutMs = setTimeoutMs;
+    this.unsureMs = unsureMs;
     this.retryMs = retryMs;
     this.now = now;
     this.log = log;
@@ -67,8 +71,9 @@ class VoiceShare extends EventEmitter {
     this.failedFor = null;
     this.retry = null;
     this.retryTimer = null;
-    // A use whose answer never came (Voice went away or took too long): { digest, session }. The next look at Voice
-    // tells whether it worked.
+    // A use whose answer never came (Voice went away or took too long): { digest, session, until }. A look at Voice
+    // that finds those settings says it worked; until then, or until the session changes or the time is up, Voice may
+    // still be at it, so Rukoo neither sends it again nor takes the change for one the user made.
     this.unsure = null;
     // Looks, shares and uses run one at a time, so a look that read Voice before a use can't mistake the use for a
     // change the user made. pending: a look that waits in the queue, which a later request joins.
@@ -252,11 +257,15 @@ class VoiceShare extends EventEmitter {
     const mine = digest(here);
     // A use whose answer was lost: Voice uses the record's settings now when it worked.
     const unsure = this.unsure;
-    this.unsure = null;
-    if (unsure && this.live(unsure.session) && unsure.digest === mine) this.used(here, 'its answer was lost on the way');
-    // The user changed Voice's sync here since Rukoo last looked.
+    if (unsure && (!this.live(unsure.session) || this.now() >= unsure.until)) this.unsure = null;
+    else if (unsure && unsure.digest === mine) {
+      this.unsure = null;
+      this.used(here, 'its answer was lost on the way');
+    }
+    // The user changed Voice's sync here since Rukoo last looked. seen is the last bucket Voice synced to here, kept
+    // while sync is off, so a bucket that changed meanwhile counts once sync is back.
     const movedHere = Boolean(this.prefs.seen) && this.prefs.seen !== mine;
-    this.setPrefs({ seen: mine });
+    if (mine && mine !== this.prefs.seen) this.setPrefs({ seen: mine });
     const record = this.record();
     const theirs = record && digest(record.settings);
     if (movedHere && this.prefs.follow && !this.prefs.share) {
@@ -267,7 +276,7 @@ class VoiceShare extends EventEmitter {
     // stays removed until then, or until the user turns sharing on here again.
     if (this.prefs.share && here && movedHere) {
       this.write(here);
-    } else if (this.prefs.follow && record && theirs !== mine && !movedHere && this.failedFor !== theirs && !this.waiting(theirs)) {
+    } else if (this.prefs.follow && record && theirs !== mine && !movedHere && this.failedFor !== theirs && !this.waiting(theirs) && !this.maybeUsing(theirs)) {
       await this.apply(record, { auto: true, session });
       return;
     }
@@ -279,9 +288,15 @@ class VoiceShare extends EventEmitter {
     return Boolean(this.retry) && this.retry.digest === theirs && this.now() < this.retry.until;
   }
 
+  // Whether Voice may still be using these settings after Rukoo lost its answer.
+  maybeUsing(theirs) {
+    return Boolean(this.unsure) && this.unsure.digest === theirs;
+  }
+
   // Voice uses settings from the account now: Rukoo follows the record from here on.
   used(settings, how) {
     this.here = settings;
+    this.unsure = null;
     this.failedFor = null;
     this.retry = null;
     this.error = null;
@@ -312,7 +327,7 @@ class VoiceShare extends EventEmitter {
       const reason = err && typeof err.reason === 'string' ? err.reason.slice(0, 40) : null;
       this.error = { action: 'use', code, reason };
       // Voice may still finish what Rukoo stopped waiting for.
-      if (code === 'offline' || code === 'timeout') this.unsure = { digest: theirs, session };
+      if (code === 'offline' || code === 'timeout') this.unsure = { digest: theirs, session, until: this.now() + this.unsureMs };
       if (auto && (FOR_GOOD_REASONS.has(reason) || FOR_GOOD_CODES.has(code))) this.failedFor = theirs;
       else if (auto) this.later(theirs);
       this.log('share', `the bucket of another computer wasn't used: ${code}${reason ? ` (${reason})` : ''}`);
