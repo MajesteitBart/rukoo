@@ -844,26 +844,31 @@ test('a refused email the reading pane had not opened when Rukoo is killed opens
   await expect(again.locator('.editor')).toContainText('Refused before a kill, every word.');
   expect(subjectsIn(heldFile)).toEqual(['Refused before a kill']);
 
-  // Sent this time, it goes from held.json and doesn't come back. Every list held.json gets on the way names it once:
-  // the kept email leaves in the write that lists its queued copy, so no kill in between finds both and opens two.
+  // Sent this time, it goes from held.json and doesn't come back. Until it is on its way, every state held.json goes
+  // through names it once: the kept email leaves in the write that lists its queued copy, so no kill in between finds
+  // it twice and opens two, or finds no file and loses it.
   await app.evaluate(() => {
     const fs = process.mainModule.require('fs');
-    const rename = fs.renameSync;
+    const { renameSync, rmSync } = fs;
     global.__heldLists = [];
     fs.renameSync = (from, to) => {
-      rename(from, to);
+      renameSync(from, to);
       if (String(to).endsWith('held.json')) global.__heldLists.push(JSON.parse(fs.readFileSync(to, 'utf8')).map((e) => e.restore.state.subject));
+    };
+    fs.rmSync = (file, options) => {
+      rmSync(file, options);
+      if (String(file).endsWith('held.json')) global.__heldLists.push([]);
     };
   });
   await clickClosing(again, '[data-c="send"]');
   await expect(notice()).toContainText('Sending email…');
+  const lists = await app.evaluate(() => global.__heldLists);
+  expect(lists.length).toBeGreaterThan(0);
+  for (const list of lists) expect(list).toEqual(['Refused before a kill']);
   await sendWaiting();
   await expect(notice()).toContainText('Email sent');
   expect(await subjects('sent')).toContain('Refused before a kill');
   expect(subjectsIn(heldFile)).toEqual([]);
-  const lists = await app.evaluate(() => global.__heldLists);
-  expect(lists.length).toBeGreaterThan(0);
-  for (const list of lists) expect(list).toEqual(['Refused before a kill']);
   await crash();
   await launch();
   await nothingReopens();
