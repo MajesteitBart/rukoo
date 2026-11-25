@@ -822,8 +822,12 @@ test('the key step goes when its person is removed from the workspace, quietly o
   expect([200, 204]).toContain(removed.status);
   await expect.poll(() => inState(beta.id), { timeout: 15000 }).toBe(false);
   await app.evaluate(() => global.__semHold.release());
-  await expect(toast()).toHaveText(keyLostText('Courier'), { timeout: 15000 });
+  // Two toasts answer, in either order, and the later one stays: the key that went, and the Agents list that can't
+  // load now that Bart is out of Beta. The key step itself never shows.
+  const said = [keyLostText('Courier'), "You're not in this workspace anymore."];
+  await expect.poll(async () => said.includes(await toast().textContent()), { timeout: 15000 }).toBe(true);
   await settle();
+  expect(said).toContain(await toast().textContent());
   await expect(stepTitles()).toHaveCount(0);
 
   // Acme: the step is open and its config copied when Olga removes Bart. It goes without a word: the key was kept.

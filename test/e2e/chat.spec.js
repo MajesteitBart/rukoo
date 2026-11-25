@@ -970,7 +970,8 @@ test('a thread opened at its oldest new reply keeps the dot for the replies belo
   await expect(pill).toBeVisible();
   await expect(pill).not.toHaveText('12 new replies in a thread');
   await win.locator('section.chat .ch-thread [data-ch="thread-close"]').click();
-  await message('Lunch on Friday?').scrollIntoViewIfNeeded();
+  // The conversation draws again when the thread closes, so the row found first can be gone: try until one stays.
+  await expect(() => message('Lunch on Friday?').scrollIntoViewIfNeeded({ timeout: 2000 })).toPass({ timeout: 15000 });
   const line = message('Lunch on Friday?').locator('.ch-replies');
   await expect(line).toHaveClass(/has-new/);
   // Opened again at its newest replies, the ones between were never in view: the dot stays until they were.
