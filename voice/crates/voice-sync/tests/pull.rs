@@ -13,7 +13,7 @@ use harness::*;
 use voice_meetings::Transcript;
 use voice_protocol::Passage;
 use voice_s3_fake::{FakeS3, Op};
-use voice_sync::{PullHooks, SyncError};
+use voice_sync::{PullHooks, PullOrigin, SyncError};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -74,8 +74,8 @@ impl PullHooks for Hooks {
         Ok(())
     }
 
-    fn deleted(&self, meeting: &str, still: &dyn Fn() -> bool) -> bool {
-        if !still() {
+    fn deleted(&self, meeting: &str, from: &PullOrigin<'_>) -> bool {
+        if !from.holds() {
             return false;
         }
         if *self.refuse_delete.lock().unwrap() {
@@ -297,7 +297,7 @@ fn a_deletion_on_one_computer_deletes_the_meeting_on_the_other() {
     assert!(wait_for(WAIT, || hooks.restored() == vec![m.id.clone()]));
     *hooks.refuse_delete.lock().unwrap() = true;
 
-    a.sync.mark_deleted(&m.id).unwrap();
+    a.sync.mark_deleted(&m.id, None).unwrap();
     fs::remove_dir_all(&m.dir).unwrap();
     assert!(wait_for(WAIT, || indexes(&fake, &a.key())
         .iter()
@@ -372,7 +372,7 @@ fn a_meeting_that_only_shares_an_id_is_never_touched() {
     let (b, hooks) = second_computer(&fake, &root, &a, Setup::default());
     assert!(wait_for(WAIT, || b.sync.status().pull.at.is_some()));
 
-    a.sync.mark_deleted(&m.id).unwrap();
+    a.sync.mark_deleted(&m.id, None).unwrap();
     fs::remove_dir_all(&m.dir).unwrap();
     assert!(wait_for(WAIT, || indexes(&fake, &a.key())
         .iter()
@@ -580,7 +580,7 @@ fn a_deletion_that_stopped_halfway_goes_on() {
     // B's deletion renamed the folder and stopped there.
     let pending = b.meetings().join(format!(".deleted-{}", m.id));
     fs::rename(b.meetings().join(&m.id), &pending).unwrap();
-    a.sync.mark_deleted(&m.id).unwrap();
+    a.sync.mark_deleted(&m.id, None).unwrap();
     fs::remove_dir_all(&m.dir).unwrap();
     assert!(
         wait_for(WAIT, || hooks.deleted() == vec![m.id.clone()]),

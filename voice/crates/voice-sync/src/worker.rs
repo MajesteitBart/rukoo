@@ -134,6 +134,11 @@ impl State {
             .as_ref()
             .is_some_and(|cfg| self.target.as_deref() != Some(cfg.target().as_str()))
     }
+
+    /// Sync is on, Voice isn't quitting, and `place` is still the bucket and key it uses.
+    pub(crate) fn uses(&self, place: u64) -> bool {
+        !self.stopping && self.cfg.is_some() && self.place == place
+    }
 }
 
 #[derive(Clone, Debug)]

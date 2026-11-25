@@ -19,7 +19,7 @@ mod worker;
 
 pub use config::{BucketRetention, Service, SyncConfig, UrlStyle};
 pub use error::{SyncError, SyncErrorKind};
-pub use pull::{PullHooks, PullInfo};
+pub use pull::{PullHooks, PullInfo, PullOrigin};
 pub use scan::{NoScreen, ScreenFile, ScreenFileKind, ScreenFiles};
 pub use sync::{
     BucketSync, KeyInfo, LastError, RemoteMeeting, RestoreState, SyncOptions, SyncState,

@@ -634,6 +634,12 @@ pub fn forget_meeting<E>(
     Ok(true)
 }
 
+/// Undoes [`forget_meeting`] for a deletion that didn't go ahead: cuts may write the meeting's
+/// files again.
+pub fn keep_meeting(meeting: &Path) {
+    lock(jobs()).deleted.remove(meeting);
+}
+
 fn jobs() -> &'static Mutex<Jobs> {
     static JOBS: OnceLock<Mutex<Jobs>> = OnceLock::new();
     JOBS.get_or_init(Mutex::default)

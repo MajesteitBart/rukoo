@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::keys::{KeyStore, SECRET_FILE};
 use crate::protect::Protector;
-use crate::pull::PullInfo;
+use crate::pull::{PullInfo, PullOrigin};
 use crate::queue::Queue;
 use crate::s3::Bucket;
 use crate::worker::{self, Shared};
@@ -641,16 +641,36 @@ impl BucketSync {
 
     /// A durable deletion, also offline: the next index tombstones the meeting. Encrypted
     /// objects remain subject to the bucket's lifecycle rules; restore cannot select them.
-    pub fn mark_deleted(&self, meeting: &str) -> Result<(), SyncError> {
+    ///
+    /// With `from`, the deletion is another computer's that a pull read, and it counts only while
+    /// sync still uses the bucket and key the pull read it from: `Off` otherwise, with nothing
+    /// noted. The check and the note happen under the lock every settings change takes, after
+    /// the worker's request is done, so a change lands either before both or after both.
+    pub fn mark_deleted(
+        &self,
+        meeting: &str,
+        from: Option<&PullOrigin<'_>>,
+    ) -> Result<(), SyncError> {
         if voice_protocol::MeetingId::parse(meeting).is_none() {
             return Err(SyncError::new(SyncErrorKind::Local, "Invalid meeting id."));
         }
         let shared = &self.shared;
         let _busy = shared.busy();
-        shared.queue.drop_meeting(meeting, true)?;
-        shared
-            .queue
-            .set_meta("index_due", Some(&shared.now().to_string()))?;
+        {
+            let st = shared.lock();
+            if let Some(from) = from {
+                if !std::ptr::eq(from.shared, &**shared) || !st.uses(from.place) {
+                    return Err(SyncError::new(
+                        SyncErrorKind::Off,
+                        "Bucket sync changed while the meeting was to be deleted.",
+                    ));
+                }
+            }
+            shared.queue.drop_meeting(meeting, true)?;
+            shared
+                .queue
+                .set_meta("index_due", Some(&shared.now().to_string()))?;
+        }
         shared.changed();
         shared.poke();
         Ok(())

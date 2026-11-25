@@ -850,6 +850,7 @@ mod tests {
 
     use super::*;
     use crate::format::Sealer;
+    use crate::pull::PullOrigin;
     use crate::{BucketRetention, Service, SyncConfig, UrlStyle};
 
     fn wait_for(mut f: impl FnMut() -> bool) -> bool {
@@ -884,6 +885,28 @@ mod tests {
         ))
     }
 
+    /// Bucket sync in `dir` with a saved secret, still off.
+    fn open(dir: &Path, meetings: &Path) -> crate::BucketSync {
+        let sync = crate::BucketSync::open(crate::SyncOptions {
+            data_dir: dir.to_path_buf(),
+            meetings_dir: meetings.to_path_buf(),
+            protector: Arc::new(crate::protect::TestProtector),
+            screen: Arc::new(crate::NoScreen),
+            now: Arc::new(|| {
+                let since = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap();
+                u64::try_from(since.as_millis()).unwrap()
+            }),
+            reserve: Arc::new(|_| true),
+            timing: crate::SyncTiming::default(),
+            on_change: Arc::new(|| {}),
+        })
+        .unwrap();
+        sync.save_secret("secret").unwrap();
+        sync
+    }
+
     /// A restored meeting's rows, read from `target` with key `kid`.
     fn rows<'a>(meeting: &'a str, target: &'a str, kid: &'a str) -> Import<'a> {
         Import {
@@ -915,23 +938,7 @@ mod tests {
         let dir = scratch("place");
         let meetings = dir.join("meetings");
         fs::create_dir_all(&meetings).unwrap();
-        let sync = crate::BucketSync::open(crate::SyncOptions {
-            data_dir: dir.clone(),
-            meetings_dir: meetings.clone(),
-            protector: Arc::new(crate::protect::TestProtector),
-            screen: Arc::new(crate::NoScreen),
-            now: Arc::new(|| {
-                let since = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap();
-                u64::try_from(since.as_millis()).unwrap()
-            }),
-            reserve: Arc::new(|_| true),
-            timing: crate::SyncTiming::default(),
-            on_change: Arc::new(|| {}),
-        })
-        .unwrap();
-        sync.save_secret("secret").unwrap();
+        let sync = open(&dir, &meetings);
         sync.configure(Some(config(first.endpoint())));
         assert!(
             wait_for(|| sync.can_fetch()),
@@ -974,6 +981,77 @@ mod tests {
         put(&read_second).unwrap();
         assert!(target.join(voice_meetings::MEETING_FILE).is_file());
         assert!(shared.queue.meeting(id).unwrap().is_some());
+        sync.shutdown();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A pull read a deletion from the first bucket, and sync moved to the second while the
+    /// deletion waited for the worker's request: nothing is noted, so the second bucket never
+    /// hears of it and the meeting stays.
+    #[test]
+    fn a_deletion_read_from_a_bucket_sync_left_is_never_noted() {
+        let (first, second) = (
+            FakeS3::start("test", "test", None).unwrap(),
+            FakeS3::start("test", "test", None).unwrap(),
+        );
+        let dir = scratch("deletion-place");
+        let meetings = dir.join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let sync = open(&dir, &meetings);
+        sync.configure(Some(config(first.endpoint())));
+        assert!(
+            wait_for(|| sync.can_fetch()),
+            "sync starts with the first bucket"
+        );
+        let shared = sync.shared();
+        let id = "m-20261031-100000-0abc";
+        let (_, read_first) = shared.remote().unwrap();
+        assert!(shared
+            .queue
+            .import(&rows(id, &read_first.target, &read_first.kid))
+            .unwrap());
+        let from = PullOrigin {
+            shared,
+            place: read_first.place(),
+        };
+        assert!(from.holds());
+
+        let request = shared.busy();
+        let refused = std::thread::scope(|s| {
+            let deleting = s.spawn(|| sync.mark_deleted(id, Some(&from)));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(
+                !deleting.is_finished(),
+                "the deletion waits for the request"
+            );
+            sync.configure(Some(config(second.endpoint())));
+            drop(request);
+            deleting.join().unwrap()
+        });
+        assert_eq!(refused.unwrap_err().kind, SyncErrorKind::Off);
+        assert!(!from.holds());
+        let row = shared.queue.meeting(id).unwrap();
+        assert!(row.is_none_or(|r| r.phase != "forgotten"));
+
+        // Read from the bucket sync uses, the deletion is noted.
+        assert!(
+            wait_for(|| sync.can_fetch()),
+            "sync starts with the second bucket"
+        );
+        let (_, read_second) = shared.remote().unwrap();
+        assert!(shared
+            .queue
+            .import(&rows(id, &read_second.target, &read_second.kid))
+            .unwrap());
+        let from = PullOrigin {
+            shared,
+            place: read_second.place(),
+        };
+        sync.mark_deleted(id, Some(&from)).unwrap();
+        assert_eq!(
+            shared.queue.meeting(id).unwrap().unwrap().phase,
+            "forgotten"
+        );
         sync.shutdown();
         let _ = fs::remove_dir_all(&dir);
     }

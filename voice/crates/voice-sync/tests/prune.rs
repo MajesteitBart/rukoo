@@ -161,7 +161,7 @@ fn a_user_deletion_survives_disconnect_and_cannot_be_restored() {
     let key = voice.key();
     let before = objects(&fake).len();
     voice.sync.configure(None);
-    voice.sync.mark_deleted(&gone.id).unwrap();
+    voice.sync.mark_deleted(&gone.id, None).unwrap();
     std::fs::remove_dir_all(&gone.dir).unwrap();
     assert_eq!(
         objects(&fake).len(),

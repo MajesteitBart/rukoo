@@ -17,6 +17,7 @@ use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, S
 use voice_screen_files::frames::FrameIndex;
 use voice_screen_files::media::{self, ClipCheck, MediaError};
 use voice_screen_files::{paths, policy};
+use voice_sync::{PullOrigin, SyncErrorKind};
 
 use super::controller::Controller;
 use super::screen::ScreenSupervisor;
@@ -82,15 +83,16 @@ impl Control {
     }
 
     pub(crate) fn delete_meeting(&self, id: &str) -> Result<(), ControlError> {
-        self.delete_meeting_if(id, &|| true)
+        self.delete_meeting_from(id, None)
     }
 
-    /// Deletes the meeting when `still` says yes at the last moment before anything goes: a
-    /// deletion another computer made counts only while it comes from the bucket sync uses.
-    pub(crate) fn delete_meeting_if(
+    /// Deletes the meeting. With `from`, the deletion is another computer's that a pull read, and
+    /// it counts only while sync still uses the bucket and key the pull read it from: bucket sync
+    /// checks that as it notes the deletion, before anything here goes.
+    pub(crate) fn delete_meeting_from(
         &self,
         id: &str,
-        still: &dyn Fn() -> bool,
+        from: Option<&PullOrigin<'_>>,
     ) -> Result<(), ControlError> {
         let _deleting = self.deleting.lock().unwrap_or_else(PoisonError::into_inner);
         if MeetingId::parse(id).is_none() {
@@ -117,18 +119,31 @@ impl Control {
                 ));
             }
         }
-        if !still() {
-            return Err(ControlError::new(
+        let moved = || {
+            ControlError::new(
                 voice_protocol::ErrorCode::Busy,
                 "Bucket sync changed while the meeting was to be deleted.",
-            ));
+            )
+        };
+        if from.is_some_and(|from| !from.holds()) {
+            return Err(moved());
         }
         if !media::forget_meeting(&source, || self.media.forget_meeting(id))? {
             return Err(ControlError::new(voice_protocol::ErrorCode::Busy, "A video clip is still being prepared. Try deleting the meeting again when it finishes."));
         }
-        if let Some(sync) = self.media.bucket_sync() {
-            sync.mark_deleted(id)
-                .map_err(|e| ControlError::failed(e.message))?;
+        let noted = match (self.media.bucket_sync(), from) {
+            (Some(sync), from) => sync.mark_deleted(id, from).map_err(|e| match e.kind {
+                SyncErrorKind::Off if from.is_some() => moved(),
+                _ => ControlError::failed(e.message),
+            }),
+            (None, Some(_)) => Err(moved()),
+            (None, None) => Ok(()),
+        };
+        if let Err(e) = noted {
+            // The meeting stays: its media can be prepared and cut again.
+            media::keep_meeting(&source);
+            self.media.keep_meeting(id);
+            return Err(e);
         }
         if !pending.is_dir() {
             fs::rename(&source, &pending).map_err(|e| {

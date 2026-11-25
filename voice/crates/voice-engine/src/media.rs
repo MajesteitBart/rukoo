@@ -350,6 +350,11 @@ impl MediaService {
         inner.deleted.insert(meeting.to_owned());
         Ok(())
     }
+
+    /// Undoes [`forget_meeting`](Self::forget_meeting) for a deletion that didn't go ahead.
+    pub(crate) fn keep_meeting(&self, meeting: &str) {
+        self.lock().deleted.remove(meeting);
+    }
     /// Empties `<data>/media/`: nothing prepared before this start is still asked for.
     pub fn new(
         data_dir: &Path,

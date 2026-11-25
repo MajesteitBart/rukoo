@@ -15,7 +15,8 @@ use voice_meetings::{release_held, MediaPart};
 use voice_sync::keys::KeyStore;
 use voice_sync::protect::Protector;
 use voice_sync::{
-    BucketSync, LastError, PullHooks, SyncConfig, SyncError, SyncErrorKind, SyncState, SyncStatus,
+    BucketSync, LastError, PullHooks, PullOrigin, SyncConfig, SyncError, SyncErrorKind, SyncState,
+    SyncStatus,
 };
 
 use crate::engine::{lock, Core};
@@ -78,14 +79,14 @@ impl PullHooks for EnginePull {
         swapped
     }
 
-    fn deleted(&self, meeting: &str, still: &dyn Fn() -> bool) -> bool {
+    fn deleted(&self, meeting: &str, from: &PullOrigin<'_>) -> bool {
         let Some(core) = self.0.upgrade() else {
             return false;
         };
         let Some(control) = core.meetings.control() else {
             return false;
         };
-        match control.delete_meeting_if(meeting, still) {
+        match control.delete_meeting_from(meeting, Some(from)) {
             Ok(()) => {
                 log::info!("sync: a meeting deleted on another computer is gone here too");
                 core.settings.forget_storage();

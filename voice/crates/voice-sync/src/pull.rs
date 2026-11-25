@@ -86,10 +86,24 @@ pub trait PullHooks: Send + Sync {
     ) -> Result<(), SyncError>;
 
     /// Another computer deleted the meeting. True once it is gone here too; false while it can't
-    /// go, for instance while a clip of it is being cut. The next pull tries again. `still` says
-    /// whether the deletion still comes from the bucket sync uses: the engine asks it at the last
-    /// moment before anything goes, and leaves the meeting when it says no.
-    fn deleted(&self, meeting: &str, still: &dyn Fn() -> bool) -> bool;
+    /// go, for instance while a clip of it is being cut. The next pull tries again. The engine
+    /// passes `from` to [`BucketSync::mark_deleted`](crate::BucketSync::mark_deleted), which
+    /// notes the deletion only while sync still uses the bucket and key the pull read it from.
+    fn deleted(&self, meeting: &str, from: &PullOrigin<'_>) -> bool;
+}
+
+/// The bucket and key a pull read a deletion from.
+pub struct PullOrigin<'a> {
+    pub(crate) shared: &'a Shared,
+    pub(crate) place: u64,
+}
+
+impl PullOrigin<'_> {
+    /// True while sync still uses that bucket and key. Only a hint: settings can change right
+    /// after; [`BucketSync::mark_deleted`](crate::BucketSync::mark_deleted) checks again.
+    pub fn holds(&self) -> bool {
+        self.shared.lock().uses(self.place)
+    }
 }
 
 /// The last pull, for Settings (voice/ui/API.md, `sync.pull`).
@@ -267,6 +281,13 @@ pub(crate) fn pull_once(
     Ok(())
 }
 
+fn origin<'a>(shared: &'a Shared, binding: &Binding) -> PullOrigin<'a> {
+    PullOrigin {
+        shared,
+        place: binding.place(),
+    }
+}
+
 /// The start time a `meeting.json` gives, or `None` without a readable one.
 fn created_at_of(path: &Path) -> Option<u64> {
     let bytes = fs::read(path).ok()?;
@@ -302,7 +323,7 @@ fn pull_meeting(
             let same = created_at_of(&pending.join(voice_meetings::MEETING_FILE))
                 .is_none_or(|at| others.iter().any(|e| e.deleted && e.created_at == at));
             if same && merged.deleted {
-                hooks.deleted(id, &|| shared.still(binding).is_ok());
+                hooks.deleted(id, &origin(shared, binding));
             }
             return Ok(false);
         }
@@ -340,7 +361,7 @@ fn pull_meeting(
     if entry.deleted {
         // Also when it is forgotten here already: a deletion that stopped halfway goes on. Only
         // while the tombstone is from the bucket sync uses now.
-        return Ok(!hooks.deleted(id, &|| shared.still(binding).is_ok()));
+        return Ok(!hooks.deleted(id, &origin(shared, binding)));
     }
     let row = shared.queue.meeting(id)?;
     if row.as_ref().is_some_and(|r| r.phase == "forgotten") {
@@ -567,11 +588,26 @@ fn update_from(
         transcript_digest,
     };
     check_meeting_file(&title_file, id)?;
-    // The downloads are on disk, names included, before the journal says to move them.
+    // The downloads are on disk, names included, up to the update folder's own name in the
+    // library, before the journal says to move them: a move that survives a power cut then always
+    // has its journal.
+    let root = &shared.opts.meetings_dir;
+    let mut folders = std::collections::BTreeSet::new();
     for path in &swap {
-        if let Some(parent) = files.join(path).parent() {
-            sync_dir(parent).map_err(|e| local("Voice can't keep newer meeting text", &e))?;
+        let mut at = files.join(path).parent().map(Path::to_path_buf);
+        while let Some(folder) = at {
+            if !folder.starts_with(root) || !folders.insert(folder.clone()) {
+                break;
+            }
+            at = folder
+                .parent()
+                .filter(|_| folder != *root)
+                .map(Path::to_path_buf);
         }
+    }
+    // Deepest first, so a folder is flushed after the names in it.
+    for folder in folders.iter().rev() {
+        sync_dir(folder).map_err(|e| local("Voice can't keep newer meeting text", &e))?;
     }
     // Under `busy`, right before anything changes: the meeting is still at the version the pull
     // started from, with nothing of it on its way up, and its transcript says what it said.
