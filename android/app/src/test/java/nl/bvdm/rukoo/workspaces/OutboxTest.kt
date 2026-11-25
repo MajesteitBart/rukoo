@@ -542,6 +542,16 @@ class OutboxTest {
         assertEquals(third, (last.getValue("operationId") as JsonPrimitive).content)
         assertEquals(0, last.getValue("mentions").jsonArray.size)
         assertTrue(rows().isEmpty())
+
+        // A reply whose first message was removed meanwhile: the server refuses its root, and the row says so (#376).
+        ids += "01a1f5ec-a6e1-7000-8000-000000000004"
+        server.answerWith(
+            MockResponse().setResponseCode(400).setHeader("Content-Type", "application/json")
+                .setBody("""{"error":"invalid","message":"root must be a top-level message in this conversation.","field":"root"}"""),
+        )
+        val reply = box.enqueue(w, general, Ids.event(3), text, emptyList())
+        box.flush(10_000)
+        assertEquals("failed" to "root_removed", row(reply).let { it.state to it.reason })
     }
 
     private suspend fun assertMode(box: Outbox, local: String, mode: ResendMode) {

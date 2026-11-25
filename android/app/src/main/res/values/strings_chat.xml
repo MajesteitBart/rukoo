@@ -176,9 +176,23 @@
         <item quantity="other">%d replies, some new</item>
     </plurals>
     <string name="chat_log_last_reply">Last reply %1$s</string><!-- Beside the reply count. -->
-    <string name="chat_log_reply_to">replied to %1$s: %2$s</string><!-- Reply row quoting the message it answers. -->
-    <string name="chat_log_reply_to_removed">replied to a removed message</string><!-- Reply row whose message was removed. -->
-    <string name="chat_log_reply_in_thread">replied in a thread</string><!-- Reply row in the log for a thread reply. -->
+    <!-- Pill at the top of a conversation when one thread whose first message is out of view has replies that came since you last read it; a tap opens that thread. Replies show only in their thread. -->
+    <plurals name="chat_log_thread_new">
+        <item quantity="one">%d new reply in a thread</item>
+        <item quantity="other">%d new replies in a thread</item>
+    </plurals>
+    <!-- Part of the reply line under a thread's first message while replies of yours wait to go out or were refused; a tap opens the thread, where they show with Retry and Discard. -->
+    <plurals name="chat_log_replies_unsent">
+        <item quantity="one">%d reply not sent</item>
+        <item quantity="other">%d replies not sent</item>
+    </plurals>
+    <string name="chat_log_root_gone">This message is no longer kept</string><!-- Row where a thread's first message was, after retention took it while its replies are kept; the reply line under it opens the thread. -->
+    <string name="chat_log_root_earlier">Reply to an earlier message</string><!-- Row for unsent replies of yours to a message further up that isn't loaded; the reply line under it opens the thread. -->
+    <!-- The same pill for two or more threads; a tap opens the one with the oldest new reply. %1$d: the new replies; %2$d: the threads. -->
+    <plurals name="chat_log_threads_new">
+        <item quantity="one">%1$d new reply in %2$d threads</item>
+        <item quantity="other">%1$d new replies in %2$d threads</item>
+    </plurals>
 
     <!-- chat.sys.* -->
     <string name="chat_sys_created">%1$s made #%2$s</string><!-- System row. -->
@@ -496,6 +510,7 @@
     <string name="chat_errors_not_saved">Rukoo couldn\'t save this message on this phone, so it wasn\'t sent. Free up storage space and try again.</string><!-- The outbox could not store the message. --><!-- phone wording -->
     <string name="chat_errors_paused">%1$s is paused. Start over to use it again.</string><!-- An action in a paused workspace. -->
     <string name="chat_errors_mentions">Someone you mentioned isn\'t in this conversation any more.</string><!-- A mention the server refused. -->
+    <string name="chat_errors_root_removed">The message you replied to is no longer available.</string><!-- A reply in a thread the server refused because the thread's first message was removed or is no longer kept. -->
     <string name="chat_errors_quota">%1$s is full.</string><!-- 413 quota without a known kind. -->
     <string name="chat_errors_quota_members">%1$s has as many members as it can hold.</string><!-- 413 quota, members. -->
     <string name="chat_errors_quota_conversations">%1$s can\'t hold more channels or conversations.</string><!-- 413 quota, conversations. -->
@@ -523,6 +538,8 @@
 
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string><!-- Notification text. -->
+    <string name="chat_notify_reply">%1$s replied: %2$s</string><!-- Notification text of a reply in a thread, which shows only in its thread. -->
+    <string name="chat_notify_replied">%1$s replied</string><!-- The sender of a reply in a conversation notification; Android puts a colon and the reply's text after it, as in "Olga replied: I do". -->
     <string name="chat_notify_summary_title">Team chat</string><!-- Title of the summary notification. -->
     <!-- Its text. -->
     <plurals name="chat_notify_summary_body">

@@ -160,9 +160,20 @@
         <item quantity="other">%d antwoorden, waarvan nieuwe</item>
     </plurals>
     <string name="chat_log_last_reply">Laatste antwoord %1$s</string>
-    <string name="chat_log_reply_to">antwoordde %1$s: %2$s</string>
-    <string name="chat_log_reply_to_removed">antwoordde op een verwijderd bericht</string>
-    <string name="chat_log_reply_in_thread">antwoordde in een thread</string>
+    <plurals name="chat_log_thread_new">
+        <item quantity="one">%d nieuw antwoord in een thread</item>
+        <item quantity="other">%d nieuwe antwoorden in een thread</item>
+    </plurals>
+    <plurals name="chat_log_replies_unsent">
+        <item quantity="one">%d antwoord niet verstuurd</item>
+        <item quantity="other">%d antwoorden niet verstuurd</item>
+    </plurals>
+    <string name="chat_log_root_gone">Dit bericht wordt niet meer bewaard</string>
+    <string name="chat_log_root_earlier">Antwoord op een eerder bericht</string>
+    <plurals name="chat_log_threads_new">
+        <item quantity="one">%1$d nieuw antwoord in %2$d threads</item>
+        <item quantity="other">%1$d nieuwe antwoorden in %2$d threads</item>
+    </plurals>
 
     <!-- chat.sys.* -->
     <string name="chat_sys_created">%1$s heeft #%2$s gemaakt</string>
@@ -472,6 +483,7 @@
     <string name="chat_errors_not_saved">Rukoo kon dit bericht niet op deze telefoon bewaren, dus het is niet verstuurd. Maak opslagruimte vrij en probeer het opnieuw.</string><!-- phone wording -->
     <string name="chat_errors_paused">%1$s is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.</string>
     <string name="chat_errors_mentions">Iemand die je noemde, zit niet meer in dit gesprek.</string>
+    <string name="chat_errors_root_removed">Het bericht waarop je antwoordde, is niet meer beschikbaar.</string>
     <string name="chat_errors_quota">%1$s is vol.</string>
     <string name="chat_errors_quota_members">%1$s heeft zoveel leden als er passen.</string>
     <string name="chat_errors_quota_conversations">%1$s kan geen kanalen of gesprekken meer bevatten.</string>
@@ -499,6 +511,8 @@
 
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string>
+    <string name="chat_notify_reply">%1$s antwoordde: %2$s</string>
+    <string name="chat_notify_replied">%1$s antwoordde</string>
     <string name="chat_notify_summary_title">Teamchat</string>
     <plurals name="chat_notify_summary_body">
         <item quantity="one">Nieuwe berichten in %d gesprek</item>

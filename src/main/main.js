@@ -534,26 +534,34 @@ async function serveChatFile(request) {
 // desktop notification whose click opens the conversation at the message.
 const chatNotices = new Map();
 
-// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
-function openChatNotice(open) {
+// Where a chat notification opens, checked: { kind: 'open', ws, conversation, seq }, ws or conversation null when not
+// valid.
+function chatNoticeTarget(open) {
   const o = plainObject(open);
   const id = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
-  const payload = {
+  return {
     kind: 'open',
     ws: id(o.ws, /^w_[A-Za-z0-9_-]{22}$/),
     conversation: id(o.conversation, /^c_[A-Za-z0-9_-]{22}$/),
     seq: Number.isSafeInteger(o.seq) && o.seq >= 0 ? o.seq : null
   };
+}
+
+// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
+function openChatNotice(open) {
+  const payload = chatNoticeTarget(open);
   showWindow();
   if (payload.ws && payload.conversation) send('chat', payload);
 }
 
 // A toast carries the alert's id, so taking the alert back (a read, a removal, an eviction, signing out) takes the toast
-// down too when it still shows.
+// down too when it still shows, and where the alert opens: the toast's Open goes there as a notification's click does
+// (app.js), such as a reply's thread.
 function showChatNotification({ id, title, body, open } = {}) {
   const key = String(id || '').slice(0, 200);
   if (win && !win.isDestroyed() && win.isFocused()) {
-    send('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
+    const target = chatNoticeTarget(open);
+    send('chat-toast', { id: key, body: String(body || '').slice(0, 200), open: target.ws && target.conversation ? target : null });
     return;
   }
   if (screenRecording()) {
