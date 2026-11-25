@@ -320,8 +320,14 @@ mod tests {
     #[test]
     fn every_documented_key_round_trips_through_the_view() {
         let mut cfg = Config::defaults(true);
+        // A Mac offers neither F15 nor Pause, and starts on Right Option and Right Command.
+        let (dictate, stop) = if cfg!(target_os = "macos") {
+            ("right shift", "right command")
+        } else {
+            ("f15", "pause")
+        };
         let cases = [
-            ("dictation.hotkey", json!("f15")),
+            ("dictation.hotkey", json!(dictate)),
             ("dictation.rewriteHotkey", json!("off")),
             ("dictation.pasteMode", json!(false)),
             ("dictation.readyChime", json!(true)),
@@ -342,14 +348,7 @@ mod tests {
             ("rewriting.formatting", json!(false)),
             ("rewriting.instructions", json!("Keep greetings.")),
             ("meetings.retention", json!("after_transcription")),
-            (
-                "meetings.stopKey",
-                json!(if cfg!(target_os = "macos") {
-                    "right shift"
-                } else {
-                    "pause"
-                }),
-            ),
+            ("meetings.stopKey", json!(stop)),
             ("meetings.screen", json!("off")),
             ("meetings.liveSpeakers", json!(false)),
             ("ui.language", json!("nl")),
@@ -364,7 +363,7 @@ mod tests {
             let (group, field) = key.split_once('.').unwrap();
             assert_eq!(view[group][field], value, "{key}");
         }
-        assert_eq!(cfg.hotkey, "f15");
+        assert_eq!(cfg.hotkey, dictate);
         assert_eq!(cfg.meetings_retention, Retention::AfterTranscription);
         assert!(!cfg.meetings_live_speakers);
         assert!(
@@ -415,56 +414,64 @@ mod tests {
     #[test]
     fn only_keys_this_keyboard_has_can_be_chosen() {
         let mut cfg = Config::defaults(true);
+        // Stored keys a Mac no longer offers (#360): the config keeps them, Settings can't pick them.
         cfg.hotkey = "f13".into();
         cfg.rewrite_hotkey = "f14".into();
-        for key in ["pause", "scroll lock"] {
-            assert_eq!(
-                set(&mut cfg, "dictation.hotkey", json!(key))
-                    .unwrap_err()
-                    .code,
-                "invalid_value",
-                "{key} isn't on a Mac keyboard"
-            );
+        for key in ["pause", "scroll lock", "f13", "f14", "f15", "right ctrl"] {
+            for role in [
+                "dictation.hotkey",
+                "dictation.rewriteHotkey",
+                "meetings.stopKey",
+            ] {
+                assert_eq!(
+                    set(&mut cfg, role, json!(key)).unwrap_err().code,
+                    "invalid_value",
+                    "{key} isn't on every Mac keyboard ({role})"
+                );
+            }
         }
         set(&mut cfg, "dictation.hotkey", json!("right command")).unwrap();
         assert_eq!(cfg.hotkey, "right command");
+        set(&mut cfg, "meetings.stopKey", json!("right shift")).unwrap();
+        assert_eq!(cfg.meetings_stop_key, "right shift");
     }
 
     #[test]
     fn a_key_can_only_have_one_role() {
         let mut cfg = Config::defaults(true);
-        // Pinned on a Mac, whose development copy has other keys.
-        if cfg!(target_os = "macos") {
-            cfg.hotkey = "f13".into();
-            cfg.rewrite_hotkey = "f14".into();
-        }
+        // Three keys this platform offers: Right Alt, Right Ctrl and Right Shift on Windows,
+        // Right Option, Right Command and Right Shift on a Mac.
+        let keys = offered_hotkeys();
+        let (a, b, c) = (keys[0], keys[1], keys[2]);
+        cfg.hotkey = a.into();
+        cfg.rewrite_hotkey = b.into();
         assert_eq!(
-            set(&mut cfg, "dictation.hotkey", json!("f14"))
+            set(&mut cfg, "dictation.hotkey", json!(b))
                 .unwrap_err()
                 .code,
             "same_key"
         );
         assert_eq!(
-            set(&mut cfg, "dictation.rewriteHotkey", json!("f13"))
+            set(&mut cfg, "dictation.rewriteHotkey", json!(a))
                 .unwrap_err()
                 .code,
             "same_key"
         );
         assert_eq!(
-            set(&mut cfg, "meetings.stopKey", json!("F14"))
+            set(&mut cfg, "meetings.stopKey", json!(b.to_uppercase()))
                 .unwrap_err()
                 .code,
             "same_key"
         );
-        set(&mut cfg, "meetings.stopKey", json!("f15")).unwrap();
+        set(&mut cfg, "meetings.stopKey", json!(c)).unwrap();
         assert_eq!(
-            set(&mut cfg, "dictation.hotkey", json!("f15"))
+            set(&mut cfg, "dictation.hotkey", json!(c))
                 .unwrap_err()
                 .code,
             "same_key"
         );
         set(&mut cfg, "dictation.rewriteHotkey", json!("off")).unwrap();
-        set(&mut cfg, "dictation.hotkey", json!("f14")).unwrap();
+        set(&mut cfg, "dictation.hotkey", json!(b)).unwrap();
     }
 
     #[test]

@@ -10,7 +10,9 @@ There are three ways to start a recording:
 
 - **Record a meeting** at the top of the sidebar in meeting mode.
 - **Record with Rukoo Voice** on a calendar event's card, from 15 minutes before the event until it ends, while Voice is connected and nothing records yet. The meeting takes the event's title and is linked to it.
-- Voice's own pill or tray. Rukoo opens the meeting as soon as Voice tells it, and links the calendar event that overlaps its start when exactly one fits.
+- Voice's own pill or tray. Rukoo opens the meeting as soon as Voice tells it.
+
+Only a recording started from an event's card is linked to a calendar event from the start. Rukoo doesn't link the others by itself, also when one event overlaps their start, because a guess from the time can put a recording on the wrong meeting. Without a title from Voice, such a meeting is called after its start time, such as Meeting at 09:31, until you rename it or link an event with **Link** beside Calendar event in the meeting view.
 
 ### The screen
 
@@ -46,7 +48,7 @@ Double-click a line, or press Enter on it, to correct its text; Enter saves and 
 
 Beside the transcript:
 
-- **Calendar event**: the event the meeting is linked to. Change picks another event within 15 minutes of the start, or unlinks it, and a click on the title opens the event in the calendar.
+- **Calendar event**: the event the meeting is linked to, or "Not linked to an event". **Link**, or **Change** once there is one, lists the events within 15 minutes of the start; picking one links it, and a meeting without a title of its own takes the event's. Change also unlinks it, and a click on the title opens the event in the calendar.
 - **People**: the voices Voice heard, under At your microphone and On the call. Your microphone is You, and anyone next to you speaks into it too. With speaker labels on in Rukoo Voice, each voice on the call gets its own row, Speaker 1, Speaker 2 and so on; without them the whole call is one voice, Speaker 1. Pick who each one is from the linked event's guests, or type a name. A guest you already picked for another voice is marked. Rukoo fills in a name by itself only when the call has one voice and the event exactly one other guest; when a second voice turns up later, Rukoo asks you to check that name. A name stays on its voice for the whole meeting, also when Voice settles later who said a passage.
 - **Hear a voice**: the play button on a voice opens its player, which plays a passage of that voice and marks it in the transcript. Previous and next pick its other passages, and Assign gives it a name and moves on to the next voice without one. **Hear each voice** above the list starts with the first of those. In the player, Space plays and pauses, Left and Right pick a passage and Escape closes it. Rukoo Voice serves the audio, so it has to run. While a meeting records the player shows the words without sound: Voice records everything the computer plays, so a clip would land in the call's audio and the other side would hear it.
 - **Split into voices**: once a meeting has ended, this asks Rukoo Voice to tell apart the people who shared your microphone, as it does on the call. They become Speaker A, Speaker B under At your microphone, and their passages move to them. Voice takes the voice that spoke most, or the one heard while you dictated, for you; **This is me** on another voice corrects that. **Show as one voice** in your row's menu shows the microphone as You again, and the voices come back from the button under it.
