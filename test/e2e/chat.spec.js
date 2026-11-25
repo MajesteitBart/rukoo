@@ -36,6 +36,9 @@ const log = () => win.locator('section.chat .ch-log');
 // A message row by its own text.
 const message = (text) => log().locator('li.ch-msg').filter({ has: win.locator('.ch-text', { hasText: text }) });
 const threadLog = () => win.locator('section.chat .ch-thread .ch-thread-log');
+// Scrolls a row into view. The conversation draws again after a thread closes or a message comes in, so the row
+// found first can be gone by the time it would scroll: try until one stays.
+const intoView = (row) => expect(() => row.scrollIntoViewIfNeeded({ timeout: 2000 })).toPass({ timeout: 15000 });
 
 // Settings, from wherever: back out of every page.
 async function closeSettings() {
@@ -325,12 +328,12 @@ test('new replies in threads out of view show a pill that opens each thread in t
   await win.locator('section.chat .ch-thread [data-ch="thread-close"]').click();
   await expect(pill).toBeHidden();
   // Scrolled up to the question, its dot is gone too: its thread showed the reply.
-  await message('Lunch on Friday?').scrollIntoViewIfNeeded();
+  await intoView(message('Lunch on Friday?'));
   await expect(message('Lunch on Friday?').locator('.ch-replies')).not.toHaveClass(/has-new/);
 
   // A new reply later in a thread out of view brings the pill back.
   await server.post(sanne, ws.id, ws.general, 'News 43');
-  await message('News 43').scrollIntoViewIfNeeded();
+  await intoView(message('News 43'));
   await server.post(olga, ws.id, ws.general, 'Actually, half past twelve', { root: question.messageId });
   await expect(pill).toHaveText('1 new reply in a thread', { timeout: 15000 });
 });
@@ -937,7 +940,7 @@ test('the pill for new replies shows while their reply line is out of view, also
   await expect(top.locator('.ch-replies')).not.toBeInViewport();
   await expect(pill).toBeVisible();
   // The reply line in view: the pill goes.
-  await top.locator('.ch-replies').scrollIntoViewIfNeeded();
+  await intoView(top.locator('.ch-replies'));
   await expect(top.locator('.ch-replies')).toHaveClass(/has-new/);
   await expect(pill).toBeHidden();
 });
@@ -970,8 +973,7 @@ test('a thread opened at its oldest new reply keeps the dot for the replies belo
   await expect(pill).toBeVisible();
   await expect(pill).not.toHaveText('12 new replies in a thread');
   await win.locator('section.chat .ch-thread [data-ch="thread-close"]').click();
-  // The conversation draws again when the thread closes, so the row found first can be gone: try until one stays.
-  await expect(() => message('Lunch on Friday?').scrollIntoViewIfNeeded({ timeout: 2000 })).toPass({ timeout: 15000 });
+  await intoView(message('Lunch on Friday?'));
   const line = message('Lunch on Friday?').locator('.ch-replies');
   await expect(line).toHaveClass(/has-new/);
   // Opened again at its newest replies, the ones between were never in view: the dot stays until they were.
@@ -996,7 +998,7 @@ test('a thread opened at its oldest new reply keeps the dot for the replies belo
   await expect(lateRow).toHaveCount(1, { timeout: 15000 });
   await expect(lateRow).not.toBeInViewport();
   await expect(line).toHaveClass(/has-new/);
-  await lateRow.scrollIntoViewIfNeeded();
+  await intoView(lateRow);
   await expect(line).not.toHaveClass(/has-new/);
 });
 
