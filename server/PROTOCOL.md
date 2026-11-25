@@ -202,7 +202,7 @@ Signs that device out. → `204`.
 
 ### `PUT /v1/push-endpoint` and `DELETE /v1/push-endpoint`
 
-While team chat and push wakes are on (`push-wake` in `workspace.capabilities` of `GET /v1/info`), a session registers the push endpoint its device got, and the server posts an encrypted wake there when that account gets something that notifies. `PUT` takes `{ endpoint, p256dh, auth }` and answers `204`; `DELETE` answers `204`. The endpoint goes with the session, so signing out and every other end of a session remove it. [WORKSPACES.md](WORKSPACES.md#push-wakes) has the rules and the errors.
+While team chat and push wakes are on (`push-wake` in `workspace.capabilities` of `GET /v1/info`), a session registers the push endpoint its device got, and the server posts an encrypted wake there when that account gets something that notifies. `PUT` takes `{ endpoint, p256dh, auth }` and answers `204`; the endpoint must be on a push service the server posts to. `DELETE` answers `204` whatever the settings. The endpoint goes with the session, so every end of the session on the server removes it. [WORKSPACES.md](WORKSPACES.md#push-wakes) has the rules and the errors.
 
 ### `POST /v1/password`
 

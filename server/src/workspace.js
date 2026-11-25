@@ -1202,7 +1202,7 @@ export class Workspace extends DurableObject {
         }
       }
       const asked = accountObject(this.env, row.account)
-        .wake(row.incarnation, live)
+        .wake(row.incarnation, live, this.wid)
         .catch((err) => console.error('Could not ask an account to send a push wake:', err?.message || err));
       this.ctx.waitUntil?.(asked);
     }

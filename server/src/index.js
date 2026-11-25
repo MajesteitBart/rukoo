@@ -200,12 +200,9 @@ async function handle(request, env, ctx) {
     case 'GET /v1/booking/bookings':
       return owner.listBookings(request, env, url);
     case 'PUT /v1/push-endpoint':
-      return putPushEndpoint(request, env, url);
-    case 'DELETE /v1/push-endpoint': {
-      if (!pushOn(env)) throw notFound();
-      const { stub, token } = session(request, env);
-      return send(await stub.clearWakeEndpoint(token));
-    }
+      return putPushEndpoint(request, env);
+    case 'DELETE /v1/push-endpoint':
+      return deletePushEndpoint(request, env);
   }
   const device = path.match(DEVICE_PATH);
   if (device && method === 'DELETE') {
@@ -405,14 +402,33 @@ async function deleteAccount(request, env) {
   return send(result);
 }
 
-// A session's push endpoint for team chat's wakes (webpush.js; WORKSPACES.md, Push wakes). The address is checked, its
-// host looked up, before the account stores it; the lookup is why this route shares the sign-in routes' rate limit.
-async function putPushEndpoint(request, env, url) {
+// A session's push endpoint for team chat's wakes (webpush.js; WORKSPACES.md, Push wakes). The session is checked
+// first, with its own allowance of registrations, then the address against the push services this server posts to,
+// and the account checks the session again where it writes. A failure of the account object, which a client can't
+// tell from an outage, answers 503 so the device tries again; 400 is only for an endpoint that is wrong or not allowed.
+async function putPushEndpoint(request, env) {
   if (!pushOn(env)) throw notFound();
   const { stub, token } = session(request, env);
-  await limitRate(request, env.RATE_LIMITER);
-  const fields = await endpointInput(await input.readJson(request), env, url);
-  return send(await stub.setWakeEndpoint(token, fields));
+  const allowed = await retryable(() => stub.checkWakeSession(token));
+  if (allowed.status !== 204) return send(allowed);
+  const fields = await endpointInput(await input.readJson(request), env);
+  return send(await retryable(() => stub.setWakeEndpoint(token, fields)));
+}
+
+// Taking an endpoint back works whatever the settings, so a device can still remove one after the operator turned push
+// wakes or team chat off.
+async function deletePushEndpoint(request, env) {
+  const { stub, token } = session(request, env);
+  return send(await retryable(() => stub.clearWakeEndpoint(token)));
+}
+
+async function retryable(call) {
+  try {
+    return await call();
+  } catch (err) {
+    console.error('A push endpoint request failed:', err?.message || err);
+    throw new HttpError(503, 'unavailable', 'The server could not save this right now. Try again shortly.', { 'retry-after': '30' });
+  }
 }
 
 async function pull(request, env, url) {

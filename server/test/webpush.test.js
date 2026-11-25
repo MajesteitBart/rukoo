@@ -4,7 +4,7 @@
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { fromBase64url, toBase64url, utf8 } from '../src/bytes.js';
-import { encrypt, endpointRules, postable, vapidAuthorization, vapidContact, vapidKeys, vapidPublicKey } from '../src/webpush.js';
+import { PUSH_ORIGINS, WAKE_WORKSPACES, encrypt, postable, pushOrigins, vapidAuthorization, vapidContact, vapidKeys, vapidPublicKey, wakeText } from '../src/webpush.js';
 import { decryptPush } from './fixtures/fake-push.js';
 
 const b64 = (text) => fromBase64url(text);
@@ -99,12 +99,17 @@ describe('VAPID', () => {
 });
 
 describe('endpoint rules', () => {
-  const rules = endpointRules({ WORKSPACE_ORIGIN: 'https://chat.example' }, new URL('https://accounts.example/v1/push-endpoint'));
+  const origins = pushOrigins({ WORKSPACE_PUSH_ORIGINS: 'https://ntfy.example.org, https://push.example.net:8443, http://plain.example, https://x.example/path, nonsense' });
 
-  it('takes public https addresses on the default port', () => {
-    expect(postable('https://ntfy.sh/upAbCdEf?up=1', rules)).toBe(true);
-    expect(postable('https://fcm.googleapis.com/fcm/send/abc:def', rules)).toBe(true);
-    expect(postable('https://93.184.215.14/push', rules)).toBe(true);
+  it('takes the known push services and the origins the operator lists', () => {
+    expect([...origins].sort()).toEqual(
+      [...PUSH_ORIGINS, 'https://ntfy.example.org', 'https://push.example.net:8443'].sort()
+    );
+    expect(postable('https://ntfy.sh/upAbCdEf?up=1', origins)).toBe(true);
+    expect(postable('https://fcm.googleapis.com/fcm/send/abc:def', origins)).toBe(true);
+    expect(postable('https://updates.push.services.mozilla.com/wpush/v2/abc', origins)).toBe(true);
+    expect(postable('https://ntfy.example.org/upX?up=1', origins)).toBe(true);
+    expect(postable('https://push.example.net:8443/up/1', origins)).toBe(true);
   });
 
   it('refuses everything else', () => {
@@ -113,19 +118,32 @@ describe('endpoint rules', () => {
       'https://ntfy.sh:8443/up1',
       'https://user:pass@ntfy.sh/up1',
       'https://ntfy.sh/up1#frag',
-      'https://localhost/up',
-      'https://push.local/up',
-      'https://router/up',
-      'https://10.0.0.1/up',
+      'https://push.example.net/up/1',
+      'https://plain.example/up',
+      'https://x.example/path/up',
+      'https://ntfy.sh.evil.example/up',
       'https://127.0.0.1/up',
-      'https://[::1]/up',
-      'https://169.254.169.254/latest',
-      'https://accounts.example/v1/info',
-      'https://chat.example/v1/info',
-      'ftp://ntfy.sh/up',
-      'not a url'
+      'not a url',
+      42
     ]) {
-      expect(postable(address, rules), address).toBe(false);
+      expect(postable(address, origins), String(address)).toBe(false);
     }
+  });
+});
+
+describe('what a wake says', () => {
+  it('names the workspaces, up to ten, and nothing else', () => {
+    expect(wakeText()).toBe('{"t":"wake"}');
+    expect(wakeText(['w_a', 'w_b', 'w_a'])).toBe('{"t":"wake","w":["w_a","w_b"]}');
+    const many = Array.from({ length: WAKE_WORKSPACES + 1 }, (_, i) => `w_${i}`);
+    expect(wakeText(many)).toBe('{"t":"wake"}');
+  });
+
+  it('stays small: ten workspace IDs fit easily in one 4,096-byte record', async () => {
+    const ten = Array.from({ length: 10 }, () => `w_${'A'.repeat(22)}`);
+    const ua = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const uaPublic = new Uint8Array(await crypto.subtle.exportKey('raw', ua.publicKey));
+    const body = await encrypt(uaPublic, crypto.getRandomValues(new Uint8Array(16)), utf8(wakeText(ten)));
+    expect(body.length).toBeLessThan(500);
   });
 });

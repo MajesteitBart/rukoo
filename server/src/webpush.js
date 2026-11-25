@@ -1,28 +1,27 @@
 // Push wakes for team chat (WORKSPACES.md, Push wakes): a phone that isn't connected hears that it has something new
-// through the push service it chose, such as a UnifiedPush distributor like ntfy, or Google's FCM through the embedded
-// distributor in Rukoo for Android. The phone registers that service's endpoint with its session (PUT
-// /v1/push-endpoint), and the account object posts a wake there (account.js, wake).
+// through the push service it uses: a UnifiedPush distributor app such as ntfy, or Google's FCM through the distributor
+// built into Rukoo for Android. The phone registers that service's endpoint with its session (PUT /v1/push-endpoint),
+// and the account object posts a wake there (account.js, wake). Delivery is best effort: the push service and the
+// phone's battery settings decide when a wake arrives, and the phone's periodic check stays the fallback.
 //
 // A wake is a Web Push message as UnifiedPush's Android specification requires it (AND_3): encrypted for the phone
 // with its public key and auth secret, as RFC 8291 says, and signed by this server with VAPID (RFC 8292). Its plaintext
-// is {"t":"wake"}, the same frame the wake socket sends: it names no workspace, no conversation and no person, and the
-// phone fetches what changed over its own signed-in connection. The push service sees when a wake is sent and how
-// large it is, which is always the same.
+// is {"t":"wake","w":[…]}: that there is something new, and the IDs of the workspaces it is in, so the phone fetches
+// those first. It names no conversation and no person and holds no text; the phone fetches what changed over its own
+// signed-in connection. The push service can't read it and sees only when a wake is sent and how large it is.
 //
 // The VAPID key pair comes from the PEPPER secret, so it never changes and needs no setting of its own. FCM ties each
 // registration to the key it was made with, so a new key would end every phone's registration.
 //
-// The server posts to an address a phone gave it, which is a way to make this server send requests elsewhere. So an
-// endpoint must be https on its default port, at most 1,000 bytes long, without a user name, password or fragment, and
-// must pass the rules link cards follow (previews.js): no local or internal host name, no IP literal in a private,
-// loopback, link-local, shared or multicast range, none of this server's own hosts, and a host name whose addresses
-// are all public when it is registered. Redirects aren't followed, the answer's body isn't read, and a session's
-// wakes come at most once per PUSH_WINDOW (account.js), whatever happens in its workspaces.
+// The server posts to an address a phone gave it, which is a way to make this server send requests elsewhere. So it
+// posts only to known push services: Google's FCM, ntfy.sh and Mozilla's push service (PUSH_ORIGINS), and the origins
+// its operator adds in WORKSPACE_PUSH_ORIGINS, such as a self-hosted ntfy. An endpoint is https, at most 1,000 bytes,
+// without a user name, password or fragment, on one of those origins. Redirects aren't followed, the answer's body
+// isn't read, and a session's wakes come at most once per PUSH_WINDOW (account.js), whatever happens in its workspaces.
 
 import { fromBase64url, randomBytes, toBase64url, utf8 } from './bytes.js';
-import { ownHosts, workspacesOn } from './config.js';
+import { configProblem, workspacesOn } from './config.js';
 import { HttpError, invalid } from './input.js';
-import { allowed, resolvesPublic } from './previews.js';
 
 // The longest endpoint UnifiedPush allows, in bytes.
 export const ENDPOINT_BYTES = 1000;
@@ -31,12 +30,16 @@ export const ENDPOINT_BYTES = 1000;
 const TTL = 24 * 60 * 60;
 const TOPIC = 'rukoo-wake';
 const SEND_TIME = 10 * 1000;
-const DNS_TIME = 4 * 1000;
 // The record size the encrypted body names: the plaintext fits in one record.
 const RECORD_SIZE = 4096;
 // How long a VAPID signature is valid. RFC 8292 allows at most 24 hours.
 const VAPID_TIME = 12 * 60 * 60;
-export const WAKE = '{"t":"wake"}';
+// Workspace IDs one wake names, at most. A wake for more names none, and the phone checks its workspaces as it would.
+export const WAKE_WORKSPACES = 10;
+
+// The push services every server posts to: Google's FCM, which Rukoo for Android's built-in distributor uses, ntfy.sh,
+// the ntfy app's default server, and Mozilla's push service, which the Sunup app uses.
+export const PUSH_ORIGINS = ['https://fcm.googleapis.com', 'https://ntfy.sh', 'https://updates.push.services.mozilla.com'];
 
 // The order of the P-256 group: a private key is a number from 1 to N - 1.
 const N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
@@ -47,15 +50,33 @@ const PKCS8_PREFIX = Uint8Array.from([
   0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04, 0x27, 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20
 ]);
 
-// Whether push wakes are on: with team chat, unless WORKSPACE_PUSH is "off". The objects check WORKSPACE_PUSH alone,
-// since team chat being on is the Worker's to decide.
+// Whether WORKSPACE_PUSH leaves push wakes on. The objects check this alone, since team chat being on is the Worker's
+// to decide.
 export function pushSwitch(env) {
   return String(env.WORKSPACE_PUSH ?? '').trim().toLowerCase() !== 'off';
 }
 
-// Whether the Worker takes push endpoints: team chat on, and push wakes not turned off.
+// Whether push wakes can work: WORKSPACE_PUSH not off and a PEPPER to make the VAPID key from.
+export function pushConfigured(env) {
+  return pushSwitch(env) && configProblem(env) === null;
+}
+
+// Whether the Worker takes push endpoints: team chat on and push wakes configured.
 export function pushOn(env) {
-  return workspacesOn(env) && pushSwitch(env);
+  return workspacesOn(env) && pushConfigured(env);
+}
+
+// The origins this server posts wakes to: PUSH_ORIGINS and the https origins in WORKSPACE_PUSH_ORIGINS,
+// comma-separated. An entry that isn't a bare https origin is left out.
+export function pushOrigins(env) {
+  const origins = new Set(PUSH_ORIGINS);
+  for (const entry of String(env.WORKSPACE_PUSH_ORIGINS ?? '').split(',')) {
+    const url = URL.parse(entry.trim());
+    if (url && url.protocol === 'https:' && !url.username && !url.password && (url.pathname === '/' || url.pathname === '') && !url.search && !url.hash) {
+      origins.add(url.origin);
+    }
+  }
+  return origins;
 }
 
 export function concat(...parts) {
@@ -82,7 +103,7 @@ function hex(bytes) {
 let vapid = { pepper: null, keys: null };
 
 // The server's VAPID key pair: { privateKey, publicKey }, the second as the 65 bytes of an uncompressed P-256 point,
-// which is what GET /v1/info hands the apps in base64url.
+// which is what GET /v1/info hands the apps in base64url. Throws without a usable PEPPER.
 export async function vapidKeys(env) {
   if (vapid.pepper === env.PEPPER && vapid.keys) return vapid.keys;
   let d = null;
@@ -106,6 +127,18 @@ async function hmacKey(secret) {
 // The public key apps register with, in base64url.
 export async function vapidPublicKey(env) {
   return toBase64url((await vapidKeys(env)).publicKey);
+}
+
+// The public key while push wakes are configured and the key can be made, else null: GET /v1/info offers push-wake
+// only then, and answers without it when PEPPER is missing or too short.
+export async function pushKey(env) {
+  if (!pushConfigured(env)) return null;
+  try {
+    return await vapidPublicKey(env);
+  } catch (err) {
+    console.error('Could not make the VAPID key:', err?.message || err);
+    return null;
+  }
 }
 
 // Who runs this server, for the VAPID token's sub claim, so a push service can reach the operator: OPERATOR_CONTACT
@@ -163,28 +196,26 @@ export async function encrypt(uaPublic, authSecret, plaintext, { sender = null, 
 
 // ---- Endpoints ----
 
-// The rules an endpoint is held to: link cards' rules (previews.js) without their exemptions, and https only. url:
-// the request's, for this server's own host names; the account object has none and passes null.
-export function endpointRules(env, url = null) {
-  return { own: url ? ownHosts(env, url) : ownHosts(env, new URL('https://invalid.invalid')), exempt: new Set() };
+// Whether endpoint is an address this server posts to: https on one of origins, without a user name, password or
+// fragment.
+export function postable(endpoint, origins) {
+  const url = typeof endpoint === 'string' ? URL.parse(endpoint) : null;
+  return Boolean(url) && url.protocol === 'https:' && !url.username && !url.password && !endpoint.includes('#') && origins.has(url.origin);
 }
 
-// Whether the account object may post to endpoint now: the address rules without the DNS lookup.
-export function postable(endpoint, rules) {
-  const url = URL.parse(endpoint);
-  return Boolean(url) && url.protocol === 'https:' && !url.hash && allowed(url, rules);
-}
-
-// A registration as PUT /v1/push-endpoint sends it: { endpoint, p256dh, auth }, each checked, the endpoint's host
-// looked up too. Throws 400 invalid with the field that is wrong.
-export async function endpointInput(body, env, url, rules = endpointRules(env, url)) {
+// A registration as PUT /v1/push-endpoint sends it: { endpoint, p256dh, auth }. A malformed field is 400 invalid with
+// the field; an endpoint on a push service this server doesn't post to is 400 push_not_allowed.
+export async function endpointInput(body, env) {
   const endpoint = body?.endpoint;
   if (typeof endpoint !== 'string' || endpoint.length < 1 || utf8(endpoint).length > ENDPOINT_BYTES) {
     throw invalid(`endpoint must be an https address of at most ${ENDPOINT_BYTES} bytes.`, 'endpoint');
   }
   const parsed = URL.parse(endpoint);
-  if (!parsed || parsed.href !== endpoint || endpoint.includes('#') || !postable(endpoint, rules)) {
-    throw invalid('endpoint must be a public https address on its default port, as the push service gave it.', 'endpoint');
+  if (!parsed || parsed.href !== endpoint || parsed.protocol !== 'https:' || parsed.username || parsed.password || endpoint.includes('#')) {
+    throw invalid('endpoint must be an https address without a user name or fragment, as the push service gave it.', 'endpoint');
+  }
+  if (!postable(endpoint, pushOrigins(env))) {
+    throw new HttpError(400, 'push_not_allowed', "This server doesn't send wakes to that push service.", {}, { field: 'endpoint' });
   }
   const p256dh = fromBase64url(body.p256dh);
   let point = false;
@@ -197,15 +228,18 @@ export async function endpointInput(body, env, url, rules = endpointRules(env, u
   if (!point) throw invalid('p256dh must be the P-256 public key the push service registration made, uncompressed, in base64url.', 'p256dh');
   const auth = fromBase64url(body.auth);
   if (!auth || auth.length !== 16) throw invalid('auth must be the 16-byte auth secret, in base64url.', 'auth');
-  if (!(await resolvesPublic(parsed, rules, AbortSignal.timeout(DNS_TIME)))) {
-    throw new HttpError(400, 'invalid', "endpoint's host doesn't lead to a public address.", {}, { field: 'endpoint' });
-  }
   return { endpoint, p256dh, auth };
 }
 
-// Posts one wake. Returns the push service's status; throws when the request fails or runs out of time.
-export async function sendWake(env, target, now = Date.now()) {
-  const body = await encrypt(new Uint8Array(target.p256dh), new Uint8Array(target.auth), utf8(WAKE));
+// What a wake says: that there is something new, and in which workspaces, when there are at most WAKE_WORKSPACES.
+export function wakeText(workspaces = []) {
+  const list = [...new Set(workspaces)];
+  return JSON.stringify(list.length && list.length <= WAKE_WORKSPACES ? { t: 'wake', w: list } : { t: 'wake' });
+}
+
+// Posts one wake for workspaces. Returns the push service's status; throws when the request fails or runs out of time.
+export async function sendWake(env, target, workspaces = [], now = Date.now()) {
+  const body = await encrypt(new Uint8Array(target.p256dh), new Uint8Array(target.auth), utf8(wakeText(workspaces)));
   const response = await fetch(target.endpoint, {
     method: 'POST',
     headers: {

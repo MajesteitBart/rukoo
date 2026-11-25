@@ -1,6 +1,7 @@
-// Push wakes for team chat (WORKSPACES.md, Push wakes): registering a session's push endpoint, which activity sends a
-// wake there, how a burst is held to one wake per window, what the push service's answers do, and that a device with
-// a working socket hears of it there instead. The push service is test/fixtures/fake-push.js.
+// Push wakes for team chat (WORKSPACES.md, Push wakes): registering a session's push endpoint on a push service the
+// server posts to, which activity sends a wake there and what it says, how a burst is held to one wake per window,
+// what the push service's answers do, and that a device with a working socket hears of it there instead. The push
+// service is test/fixtures/fake-push.js, whose hosts vitest.config.js lists in WORKSPACE_PUSH_ORIGINS.
 
 import { runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,7 +9,7 @@ import { vapidPublicKey } from '../src/webpush.js';
 import { env } from 'cloudflare:workers';
 import { FakePush, installFakePush, readVapid } from './fixtures/fake-push.js';
 import { accountStub, call, login, signup } from './helpers.js';
-import { ON, api, newMember, newWorkspace, openSocket, post, startDm, until, workspaceStub } from './workspace-helpers.js';
+import { ON, api, invite, newMember, newWorkspace, openSocket, post, startDm, until, workspaceStub } from './workspace-helpers.js';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,6 +35,13 @@ async function sessions(person) {
   return runInDurableObject(await accountStub(person.email), (instance, state) =>
     state.storage.sql.exec('SELECT id, wakeEndpoint, wakeAt FROM sessions ORDER BY createdAt, id').toArray()
   );
+}
+
+// Lets a session try many addresses, past the allowance a phone gets.
+async function manyTries(person) {
+  await runInDurableObject(await accountStub(person.email), (instance) => {
+    instance.wakePutBurst = 1000;
+  });
 }
 
 // Sets how long the account object waits between two wakes to one session.
@@ -66,19 +74,28 @@ describe('GET /v1/info', () => {
     expect(info.body.workspace.push.vapid).toMatch(/^B[A-Za-z0-9_-]{86}$/);
   });
 
-  it('leaves it out when WORKSPACE_PUSH is off, and the routes answer 404', async () => {
+  it('leaves it out when WORKSPACE_PUSH is off, and registering answers 404', async () => {
     const off = { WORKSPACE_PUSH: 'off' };
     const info = await call('GET', '/v1/info', { vars: { ...ON, ...off } });
     expect(info.body.workspace.capabilities).not.toContain('push-wake');
     expect(info.body.workspace.push).toBeUndefined();
     const person = await signup();
     expect((await register(person.token, await push.device(), off)).status).toBe(404);
-    expect((await unregister(person.token, off)).status).toBe(404);
   });
 
-  it('has neither the capability nor the routes while team chat is off', async () => {
+  it('has neither the capability nor registration while team chat is off', async () => {
     const person = await signup();
     expect((await call('PUT', '/v1/push-endpoint', { token: person.token, body: {} })).status).toBe(404);
+  });
+
+  it('still answers without push-wake when PEPPER is missing or too short, instead of failing', async () => {
+    for (const PEPPER of [undefined, '', 'short']) {
+      const info = await call('GET', '/v1/info', { vars: { ...ON, PEPPER } });
+      expect(info.status, String(PEPPER)).toBe(200);
+      expect(info.body.features).toContain('workspaces-v1');
+      expect(info.body.workspace.capabilities).not.toContain('push-wake');
+      expect(info.body.workspace.push).toBeUndefined();
+    }
   });
 });
 
@@ -94,7 +111,7 @@ describe('PUT /v1/push-endpoint', () => {
   it('works for an account made before sessions had endpoints', async () => {
     const person = await signup();
     await runInDurableObject(await accountStub(person.email), (instance, state) => {
-      for (const column of ['wakeEndpoint', 'wakeKey', 'wakeAuth', 'wakeAt']) state.storage.sql.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
+      for (const column of ['wakeEndpoint', 'wakeKey', 'wakeAuth', 'wakeAt', 'wakeFailedSince']) state.storage.sql.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
       instance.migrate();
       instance.migrate();
     });
@@ -103,33 +120,61 @@ describe('PUT /v1/push-endpoint', () => {
     expect((await sessions(person))[0].wakeEndpoint).toBe(device.endpoint);
   });
 
-  it('needs a session', async () => {
+  it('needs a live session, checked before the address is', async () => {
     const device = await push.device();
     expect((await call('PUT', '/v1/push-endpoint', { body: { endpoint: device.endpoint }, vars: ON })).status).toBe(401);
     const person = await signup();
     expect((await call('POST', '/v1/logout', { token: person.token })).status).toBe(204);
     expect((await register(person.token, device)).status).toBe(401);
+    // An ended session with a body that would be refused gets 401, not 400: nothing is checked for it.
+    const res = await call('PUT', '/v1/push-endpoint', { token: person.token, body: { endpoint: 'not a url' }, vars: ON });
+    expect([res.status, res.body.error]).toEqual([401, 'unauthorized']);
   });
 
-  it('takes only public https addresses of at most 1,000 bytes, and real keys', async () => {
+  it('takes the known push services and the ones the operator lists, and refuses others as not allowed', async () => {
     const person = await signup();
+    await manyTries(person);
+    const keys = await push.device();
+    const put = (endpoint, vars = {}) =>
+      call('PUT', '/v1/push-endpoint', { token: person.token, body: { endpoint, p256dh: keys.p256dh, auth: keys.auth }, vars: { ...ON, ...vars } });
+    for (const endpoint of [
+      'https://fcm.googleapis.com/fcm/send/dAbCdEf:APA91bHabc',
+      'https://ntfy.sh/upAbCdEf123?up=1',
+      'https://updates.push.services.mozilla.com/wpush/v2/gAAAAABabc'
+    ]) {
+      expect((await put(endpoint)).status, endpoint).toBe(204);
+    }
+    for (const endpoint of [
+      'https://ntfy.example.org/upAbC?up=1',
+      'https://push.example:8443/up/1',
+      'https://127.0.0.1/up/1',
+      'https://10.0.0.8/up/1',
+      'https://[fd00::1]/up/1',
+      'https://localhost/up/1',
+      'https://accounts.example/v1/info',
+      'https://fcm.googleapis.com.evil.example/fcm/send/x'
+    ]) {
+      const res = await put(endpoint);
+      expect([res.status, res.body.error, res.body.field], endpoint).toEqual([400, 'push_not_allowed', 'endpoint']);
+    }
+    // An operator's own ntfy, listed as an origin; entries that aren't bare https origins count for nothing.
+    const own = { WORKSPACE_PUSH_ORIGINS: 'https://ntfy.example.org, http://plain.example.org, https://path.example.org/up' };
+    expect((await put('https://ntfy.example.org/upAbC?up=1', own)).status).toBe(204);
+    expect((await put('https://plain.example.org/up', own)).body.error).toBe('push_not_allowed');
+    expect((await put('https://path.example.org/up/x', own)).body.error).toBe('push_not_allowed');
+  });
+
+  it('refuses malformed addresses and keys as invalid', async () => {
+    const person = await signup();
+    await manyTries(person);
     const good = await push.device();
     const tries = [
       [{ endpoint: good.endpoint.replace('https:', 'http:') }, 'endpoint'],
-      [{ endpoint: good.endpoint.replace('push.example', 'push.example:8443') }, 'endpoint'],
       [{ endpoint: good.endpoint.replace('https://', 'https://user:pw@') }, 'endpoint'],
       [{ endpoint: `${good.endpoint}#x` }, 'endpoint'],
-      [{ endpoint: 'https://127.0.0.1/up/1' }, 'endpoint'],
-      [{ endpoint: 'https://10.0.0.8/up/1' }, 'endpoint'],
-      [{ endpoint: 'https://[fd00::1]/up/1' }, 'endpoint'],
-      [{ endpoint: 'https://localhost/up/1' }, 'endpoint'],
-      [{ endpoint: 'https://ntfy.internal/up/1' }, 'endpoint'],
-      [{ endpoint: 'https://accounts.example/v1/info' }, 'endpoint'],
-      // A host name that leads to a private address, and one DNS doesn't know.
-      [{ endpoint: 'https://inside.example/up/1' }, 'endpoint'],
-      [{ endpoint: 'https://nowhere.example/up/1' }, 'endpoint'],
       [{ endpoint: `https://push.example/up/${'a'.repeat(1000)}` }, 'endpoint'],
       [{ endpoint: 42 }, 'endpoint'],
+      [{ endpoint: 'not a url' }, 'endpoint'],
       [{ p256dh: good.p256dh.slice(0, 40) }, 'p256dh'],
       // 65 bytes that aren't a point on the curve.
       [{ p256dh: `B${'A'.repeat(86)}` }, 'p256dh'],
@@ -148,6 +193,48 @@ describe('PUT /v1/push-endpoint', () => {
     const exact = `https://push.example/up/${'b'.repeat(1000 - 'https://push.example/up/'.length)}`;
     const res = await call('PUT', '/v1/push-endpoint', { token: person.token, body: { ...good, endpoint: exact }, vars: ON });
     expect(res.status).toBe(204);
+  });
+
+  it('has an allowance per session, apart from the sign-in routes', async () => {
+    const person = await signup();
+    const other = (await login(person, 'Tablet')).body.token;
+    const ip = '10.9.9.9';
+    const put = async (token) => {
+      const device = await push.device();
+      return call('PUT', '/v1/push-endpoint', { token, ip, body: { endpoint: device.endpoint, p256dh: device.p256dh, auth: device.auth }, vars: ON });
+    };
+    for (let i = 0; i < 6; i++) expect((await put(person.token)).status).toBe(204);
+    const over = await put(person.token);
+    expect([over.status, over.body.error]).toEqual([429, 'rate_limited']);
+    expect(Number(over.headers.get('retry-after'))).toBeGreaterThan(0);
+    // Another session of the account, from the same address, has its own.
+    expect((await put(other)).status).toBe(204);
+    // Taking an endpoint back isn't counted.
+    expect((await unregister(person.token)).status).toBe(204);
+  });
+
+  it('answers 503 when the account object fails, so the device tries again', async () => {
+    const person = await signup();
+    const device = await push.device();
+    // An account binding whose object fails every call, as during an outage.
+    const failing = () => ({
+      jurisdiction() {
+        return this;
+      },
+      idFromName: (name) => name,
+      get: () => ({
+        checkWakeSession: async () => {
+          throw new Error('the object is unavailable');
+        },
+        clearWakeEndpoint: async () => {
+          throw new Error('the object is unavailable');
+        }
+      })
+    });
+    const res = await register(person.token, device, { ACCOUNTS: failing() });
+    expect([res.status, res.body.error, res.headers.get('retry-after')]).toEqual([503, 'unavailable', '30']);
+    const removed = await unregister(person.token, { ACCOUNTS: failing() });
+    expect([removed.status, removed.body.error]).toEqual([503, 'unavailable']);
   });
 
   it('replaces the session’s endpoint, and takes it from another session of the account that had it', async () => {
@@ -178,6 +265,16 @@ describe('PUT /v1/push-endpoint', () => {
 });
 
 describe('ending a registration', () => {
+  it('DELETE works whatever the settings, so a phone can take its endpoint back after push wakes went off', async () => {
+    const person = await signup();
+    for (const vars of [{ WORKSPACE_PUSH: 'off' }, { WORKSPACE_MODE: 'off' }]) {
+      expect((await register(person.token, await push.device())).status).toBe(204);
+      expect((await call('DELETE', '/v1/push-endpoint', { token: person.token, vars: { ...ON, ...vars } })).status).toBe(204);
+      expect((await sessions(person))[0].wakeEndpoint).toBeNull();
+    }
+    expect((await call('DELETE', '/v1/push-endpoint', { vars: ON })).status).toBe(401);
+  });
+
   it('DELETE clears this session’s endpoint and no other', async () => {
     const person = await signup();
     const second = (await login(person, 'Phone')).body.token;
@@ -229,8 +326,8 @@ describe('what sends a wake', () => {
     expect(sent.headers.ttl).toBe('86400');
     expect(sent.headers.urgency).toBe('high');
     expect(sent.headers.topic).toBe('rukoo-wake');
-    // It says only that there is something, the same as the socket's frame, and no workspace, room or name.
-    expect(await push.open(sent)).toEqual({ text: '{"t":"wake"}', rs: 4096 });
+    // It says only that there is something and in which workspace, encrypted for the phone: no room, name or text.
+    expect(await push.open(sent)).toEqual({ text: JSON.stringify({ t: 'wake', w: [ws.id] }), rs: 4096 });
     const vapid = await readVapid(sent.headers.authorization);
     expect(vapid.valid).toBe(true);
     expect(vapid.key).toBe(await vapidPublicKey(env));
@@ -299,6 +396,25 @@ describe('bursts', () => {
     expect(await until(() => push.to(phone.endpoint).length === 3)).toBe(true);
   });
 
+  it('the wake at the end of a window names every workspace that had something', async () => {
+    const { ws, mila, phone } = await setUp();
+    const other = await newWorkspace('Other');
+    const { secret } = await invite(other.person, other.id);
+    const joined = await api('POST', `/v1/workspaces/${other.id}/join`, { token: mila.person.token, body: { invite: secret, name: 'Mila' } });
+    expect(joined.status).toBe(201);
+    const inOther = { me: joined.body.me };
+    await pushWindow(mila.person, 500);
+    await post(ws.person, ws.id, await dmWith(ws, mila), 'first');
+    expect(await until(() => push.to(phone.endpoint).length === 1)).toBe(true);
+    await post(ws.person, ws.id, ws.general, 'hi @Mila', { mentions: [{ actor: mila.me.id, start: 3, end: 8 }] });
+    const dm = await startDm(other.person, other.id, [inOther.me.id]);
+    await post(other.person, other.id, dm.body.dm.conversation, 'from the other team');
+    expect(await until(() => push.to(phone.endpoint).length === 2, 1500)).toBe(true);
+    const last = JSON.parse((await push.open(push.to(phone.endpoint)[1])).text);
+    expect(last.t).toBe('wake');
+    expect(last.w.sort()).toEqual([ws.id, other.id].sort());
+  });
+
   it('a lone message in a quiet window sends no second wake', async () => {
     const { ws, mila, phone } = await setUp();
     await pushWindow(mila.person, 400);
@@ -335,6 +451,48 @@ describe('the push service’s answers', () => {
     await post(ws.person, ws.id, dm, 'two');
     expect(await until(() => push.to(phone.endpoint).length === 2)).toBe(true);
     expect((await sessions(mila.person))[0].wakeEndpoint).toBe(phone.endpoint);
+  });
+
+  it('a registration made again at the same address with new keys stays when the old one answers 410', async () => {
+    const { ws, mila, phone } = await setUp();
+    await pushWindow(mila.person, 0);
+    push.answers.set(phone.endpoint, 410);
+    const release = push.hold(phone.endpoint);
+    await post(ws.person, ws.id, await dmWith(ws, mila), 'one');
+    expect(await until(() => push.to(phone.endpoint).length === 1)).toBe(true);
+    // While the wake to the old registration waits for its answer, the phone registers again: same address, new keys.
+    const again = await push.device('push.example', phone.endpoint);
+    expect((await register(mila.person.token, again)).status).toBe(204);
+    release();
+    await pause(300);
+    const [row] = await runInDurableObject(await accountStub(mila.person.email), (instance, state) =>
+      state.storage.sql.exec('SELECT wakeEndpoint, wakeKey FROM sessions').toArray()
+    );
+    expect(row.wakeEndpoint).toBe(phone.endpoint);
+    expect(new Uint8Array(row.wakeKey)).toEqual(again.publicKey);
+  });
+
+  it('an endpoint whose wakes have failed for seven days goes, and one that works again stays', async () => {
+    const { ws, mila, phone } = await setUp();
+    await pushWindow(mila.person, 0);
+    const failingSince = async (at) =>
+      runInDurableObject(await accountStub(mila.person.email), (instance, state) => {
+        if (at !== undefined) state.storage.sql.exec('UPDATE sessions SET wakeFailedSince = ?', at);
+        return state.storage.sql.exec('SELECT wakeFailedSince FROM sessions').one().wakeFailedSince;
+      });
+    const dm = await dmWith(ws, mila);
+    push.answers.set(phone.endpoint, 507);
+    await post(ws.person, ws.id, dm, 'one');
+    expect(await until(async () => (await failingSince()) !== null)).toBe(true);
+    // Working again clears the clock.
+    push.answers.delete(phone.endpoint);
+    await post(ws.person, ws.id, dm, 'two');
+    expect(await until(async () => (await failingSince()) === null)).toBe(true);
+    // Failing since eight days ago: the next failure ends it.
+    push.answers.set(phone.endpoint, 507);
+    await failingSince(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    await post(ws.person, ws.id, dm, 'three');
+    expect(await until(async () => (await sessions(mila.person))[0].wakeEndpoint === null)).toBe(true);
   });
 
   it('a registration made again meanwhile stays when the old endpoint answers 410', async () => {

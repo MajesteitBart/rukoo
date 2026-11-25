@@ -600,6 +600,7 @@ describe('sessions', () => {
       'wakeAt',
       'wakeAuth',
       'wakeEndpoint',
+      'wakeFailedSince',
       'wakeKey'
     ]);
     expect(stored[0].wakeEndpoint).toBeNull();

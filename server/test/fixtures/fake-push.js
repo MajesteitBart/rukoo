@@ -1,60 +1,67 @@
 // A Web Push service in memory, for the push wake tests (test/push-wake.test.js). installFakePush() points the
-// runtime's fetch at it for requests to its hosts, and at its DNS answers for queries about them, and lets every other
-// request through: the Worker, the Durable Objects and the tests share one isolate, so the server's own requests reach
-// it too. Each device() is a phone's registration: an endpoint on the service, and the key pair and auth secret the
-// phone made, with which the service decrypts what it receives, as the phone would.
+// runtime's fetch at it for requests to its hosts and lets every other request through: the Worker, the Durable Objects
+// and the tests share one isolate, so the server's own requests reach it too. vitest.config.js lists its hosts in
+// WORKSPACE_PUSH_ORIGINS, as an operator lists a self-hosted ntfy. Each device() is a phone's registration: an endpoint
+// on the service, and the key pair and auth secret the phone made, with which the service decrypts what it receives,
+// as the phone would.
 
 import { concat } from '../../src/webpush.js';
 import { fromBase64url, toBase64url } from '../../src/bytes.js';
 
-const DOH = 'https://cloudflare-dns.com/dns-query';
 const enc = new TextEncoder();
 
+export const PUSH_HOSTS = ['push.example', 'other-push.example'];
+
 export class FakePush {
-  // zone: the A records of each host the service is reached at. A host whose address is private stands for a push
-  // service on someone's own network, which the server must refuse.
-  constructor(zone = { 'push.example': ['93.184.215.14'], 'other-push.example': ['93.184.215.15'], 'inside.example': ['10.1.2.3'] }) {
-    this.zone = zone;
+  constructor(hosts = PUSH_HOSTS) {
+    this.hosts = new Set(hosts);
     this.devices = new Map();
     // Every POST it took: { endpoint, headers, body, at }.
     this.log = [];
     // Status by endpoint, for a registration the service ended (404, 410) or a service that fails (500).
     this.answers = new Map();
+    // Answers held back by endpoint until the test lets them go (hold).
+    this.held = new Map();
   }
 
   // A phone's registration on host: { endpoint, p256dh, auth } as the phone sends them to the server, and the keys.
-  async device(host = 'push.example') {
+  // A registration made again at the same address gets new keys: pass its endpoint.
+  async device(host = 'push.example', endpoint = null) {
     const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
     const publicKey = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
     const auth = crypto.getRandomValues(new Uint8Array(16));
-    const endpoint = `https://${host}/up/${toBase64url(crypto.getRandomValues(new Uint8Array(20)))}?up=1`;
-    const device = { endpoint, p256dh: toBase64url(publicKey), auth: toBase64url(auth), privateKey: pair.privateKey, publicKey, authBytes: auth };
-    this.devices.set(endpoint, device);
+    const url = endpoint ?? `https://${host}/up/${toBase64url(crypto.getRandomValues(new Uint8Array(20)))}?up=1`;
+    const device = { endpoint: url, p256dh: toBase64url(publicKey), auth: toBase64url(auth), privateKey: pair.privateKey, publicKey, authBytes: auth };
+    this.devices.set(url, device);
     return device;
   }
 
+  // Holds the answers to endpoint until the returned function is called.
+  hold(endpoint) {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    this.held.set(endpoint, gate);
+    return () => {
+      this.held.delete(endpoint);
+      release();
+    };
+  }
+
   async handle(request) {
-    const url = new URL(request.url);
-    if (`${url.origin}${url.pathname}` === DOH) return this.dns(url);
     const body = new Uint8Array(await request.arrayBuffer());
     const headers = Object.fromEntries(request.headers);
-    this.log.push({ endpoint: request.url, method: request.method, headers, body, at: Date.now() });
+    const entry = { endpoint: request.url, method: request.method, headers, body, at: Date.now(), device: this.devices.get(request.url) };
+    this.log.push(entry);
+    const gate = this.held.get(request.url);
+    if (gate) await gate;
     const status = this.answers.get(request.url) ?? (this.devices.has(request.url) ? 201 : 404);
     return new Response(status === 201 ? null : 'gone', { status });
   }
 
-  dns(url) {
-    const name = url.searchParams.get('name');
-    const type = url.searchParams.get('type');
-    const records = this.zone[name];
-    if (!records) return Response.json({ Status: 3 });
-    const Answer = type === 'A' ? records.map((data) => ({ name, type: 1, TTL: 60, data })) : [];
-    return Response.json({ Status: 0, Answer });
-  }
-
   handles(url) {
-    if (`${url.origin}${url.pathname}` === DOH) return url.searchParams.get('name') in this.zone;
-    return url.protocol === 'https:' && url.hostname in this.zone;
+    return url.protocol === 'https:' && this.hosts.has(url.hostname);
   }
 
   // The posts to one endpoint.
@@ -62,9 +69,10 @@ export class FakePush {
     return this.log.filter((entry) => entry.endpoint === endpoint);
   }
 
-  // What a post's body says once the phone decrypted it, and the record size it named.
+  // What a post's body says once the phone decrypted it, and the record size it named. It is opened with the keys the
+  // endpoint had when the post came, so a registration made again later doesn't change it.
   async open(entry) {
-    const device = this.devices.get(entry.endpoint);
+    const device = entry.device;
     return decryptPush(entry.body, device.privateKey, device.publicKey, device.authBytes);
   }
 }

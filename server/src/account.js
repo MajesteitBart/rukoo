@@ -9,7 +9,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { blob, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import { EXPIRE_MIN_DAYS, expiryDays, registryObject, workspaceObject } from './config.js';
-import { endpointRules, postable, pushSwitch, sendWake } from './webpush.js';
+import { postable, pushOrigins, pushSwitch, sendWake } from './webpush.js';
 
 // Ten failed sign-ins or recovery attempts within 15 minutes lock the account for 15 minutes (PROTOCOL.md, login).
 // The registry keeps that lock, per address and for addresses without an account too (lock.js); this object keeps it
@@ -32,14 +32,24 @@ export const HANDLE_WINDOW = 30 * 24 * 60 * 60 * 1000;
 // A session's own count of wrong passwords and its lock, for the signed-in calls that ask for the password again.
 const SESSION_LOCK = ['failures', 'failedAt', 'lockedUntil'].map((name) => `${name} INTEGER NOT NULL DEFAULT 0`);
 // A session's push endpoint for team chat's wakes (webpush.js; WORKSPACES.md, Push wakes): the address its push
-// service gave the phone, the phone's public key and auth secret, and when it was registered. They go with the session,
-// so signing out, being signed out from another device and every other end of a session take them along.
-const SESSION_WAKE = ['wakeEndpoint TEXT', 'wakeKey BLOB', 'wakeAuth BLOB', 'wakeAt INTEGER'];
+// service gave the phone, the phone's public key and auth secret, when it was registered, and since when every wake to
+// it has failed. They go with the session, so signing out, being signed out from another device and every other end of
+// a session on the server take them along.
+const SESSION_WAKE = ['wakeEndpoint TEXT', 'wakeKey BLOB', 'wakeAuth BLOB', 'wakeAt INTEGER', 'wakeFailedSince INTEGER'];
+// What clears a session's push registration.
+const CLEAR_WAKE = 'wakeEndpoint = NULL, wakeKey = NULL, wakeAuth = NULL, wakeAt = NULL, wakeFailedSince = NULL';
 // Sessions of one account that may have a push endpoint at once. Registering one more clears the oldest.
 const WAKE_ENDPOINTS = 10;
 // A session gets one wake at once, then at most one more per window: activity in the window after a wake sends a
 // single wake when it ends. Tests shorten it on the object (pushWindow).
 const PUSH_WINDOW = 15 * 1000;
+// An endpoint whose wakes have all failed for this long goes, as after a phone signed out without a connection and let
+// go of its push registration, which some push services answer with an error that isn't 404 or 410.
+const WAKE_FAILING = 7 * 24 * 60 * 60 * 1000;
+// What one session may register: a burst of this many, then one more a minute (PUT /v1/push-endpoint). Tests that
+// try many addresses raise the burst on the object (wakePutBurst).
+const WAKE_PUTS = 6;
+const WAKE_PUT_EVERY = 60 * 1000;
 
 // The booking page's handle, for accounts that ever had one. changes is a JSON list of when it was changed.
 const BOOKING_TABLE = `
@@ -181,10 +191,14 @@ export class Account extends DurableObject {
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
     this.identity = null;
     this.cleaning = false;
-    // Push wakes in memory: when each session last got one, and the one each still waits to send (wake).
+    // Push wakes in memory: when each session last got one, the one each still waits to send and the workspaces it is
+    // for (wake), and each session's allowance for registering (checkWakeSession).
     this.pushWindow = PUSH_WINDOW;
     this.wakeSent = new Map();
     this.wakeLater = new Map();
+    this.wakeWorkspaces = new Map();
+    this.wakePuts = new Map();
+    this.wakePutBurst = WAKE_PUTS;
     if (this.present) this.migrate();
     this.expiring = this.present && this.#has('expiry');
     // A list of workspaces to tell with no alarm to work through it would wait forever. That can happen when an alarm
@@ -222,10 +236,12 @@ export class Account extends DurableObject {
         for (const column of SESSION_LOCK) this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
       });
     }
-    if (!columns('sessions').has('wakeEndpoint')) {
+    const sessionColumns = columns('sessions');
+    const missing = SESSION_WAKE.filter((column) => !sessionColumns.has(column.split(' ')[0]));
+    if (missing.length) {
       // Push wakes came later; no session had an endpoint before.
       this.ctx.storage.transactionSync(() => {
-        for (const column of SESSION_WAKE) this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
+        for (const column of missing) this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
       });
     }
     // Booking pages came later; accounts from before have no handle yet.
@@ -369,19 +385,31 @@ export class Account extends DurableObject {
 
   // ---- Push wakes (webpush.js) ----
 
+  // Before PUT /v1/push-endpoint does any work: 204 for a live session within its allowance, a burst of WAKE_PUTS and
+  // then one a minute, else 429 with Retry-After, or 401. setWakeEndpoint checks the session again where it writes.
+  async checkWakeSession(token) {
+    return this.#signedIn(token, (session, now) => {
+      const held = this.wakePuts.get(session.id) ?? { tokens: this.wakePutBurst, at: now };
+      const tokens = Math.min(this.wakePutBurst, held.tokens + (now - held.at) / WAKE_PUT_EVERY);
+      if (tokens < 1) {
+        this.wakePuts.set(session.id, { tokens, at: now });
+        const wait = Math.ceil(((1 - tokens) * WAKE_PUT_EVERY) / 1000);
+        return failure(429, 'rate_limited', 'Too many push registrations. Try again shortly.', { 'retry-after': String(wait) });
+      }
+      this.wakePuts.set(session.id, { tokens: tokens - 1, at: now });
+      return reply(204);
+    });
+  }
+
   // PUT /v1/push-endpoint: this session's push endpoint, which the Worker checked. It replaces the session's earlier
   // one. Another session of this account with the same endpoint lets go of it, so a phone that signed in again doesn't
   // get every wake twice, and past WAKE_ENDPOINTS the session that registered longest ago loses its own.
   async setWakeEndpoint(token, { endpoint, p256dh, auth }) {
     return this.#signedIn(token, (session, now) => {
       this.ctx.storage.transactionSync(() => {
+        this.sql.exec(`UPDATE sessions SET ${CLEAR_WAKE} WHERE wakeEndpoint = ? AND id != ?`, endpoint, session.id);
         this.sql.exec(
-          'UPDATE sessions SET wakeEndpoint = NULL, wakeKey = NULL, wakeAuth = NULL, wakeAt = NULL WHERE wakeEndpoint = ? AND id != ?',
-          endpoint,
-          session.id
-        );
-        this.sql.exec(
-          'UPDATE sessions SET wakeEndpoint = ?, wakeKey = ?, wakeAuth = ?, wakeAt = ? WHERE id = ?',
+          'UPDATE sessions SET wakeEndpoint = ?, wakeKey = ?, wakeAuth = ?, wakeAt = ?, wakeFailedSince = NULL WHERE id = ?',
           endpoint,
           blob(p256dh),
           blob(auth),
@@ -389,7 +417,7 @@ export class Account extends DurableObject {
           session.id
         );
         this.sql.exec(
-          `UPDATE sessions SET wakeEndpoint = NULL, wakeKey = NULL, wakeAuth = NULL, wakeAt = NULL WHERE id IN (
+          `UPDATE sessions SET ${CLEAR_WAKE} WHERE id IN (
              SELECT id FROM sessions WHERE wakeEndpoint IS NOT NULL ORDER BY wakeAt DESC, id LIMIT -1 OFFSET ?)`,
           WAKE_ENDPOINTS
         );
@@ -398,10 +426,10 @@ export class Account extends DurableObject {
     });
   }
 
-  // DELETE /v1/push-endpoint: this session gets no more wakes. 204 also when it had no endpoint.
+  // DELETE /v1/push-endpoint: this session gets no more wakes. 204 also when it had none, and while push wakes are off.
   async clearWakeEndpoint(token) {
     return this.#signedIn(token, (session) => {
-      this.#dropWakeEndpoint(session.id);
+      this.sql.exec(`UPDATE sessions SET ${CLEAR_WAKE} WHERE id = ?`, session.id);
       return reply(204);
     });
   }
@@ -409,9 +437,9 @@ export class Account extends DurableObject {
   // A workspace has something for this account that notifies (workspace.js, #post): a wake goes to each of its
   // sessions with a push endpoint, apart from those in live, which have a working socket to that workspace and heard
   // of it there. Returns how many sessions got one at once; a session woken within the last pushWindow gets one when
-  // the window ends instead, one for everything that came in it. The incarnation must be this account's, so an account
-  // made again at the same address hears nothing of the old one's workspaces.
-  async wake(incarnation, live = []) {
+  // the window ends instead, one for everything that came in it, naming every workspace it came from. The incarnation
+  // must be this account's, so an account made again at the same address hears nothing of the old one's workspaces.
+  async wake(incarnation, live = [], workspace = null) {
     if (!pushSwitch(this.env) || this.#knownIdentity()?.incarnation !== incarnation) return 0;
     const skip = new Set(live);
     const now = Date.now();
@@ -419,61 +447,89 @@ export class Account extends DurableObject {
     for (const row of this.sql.exec('SELECT id FROM sessions WHERE wakeEndpoint IS NOT NULL').toArray()) {
       if (skip.has(row.id)) continue;
       const since = now - (this.wakeSent.get(row.id) ?? -Infinity);
-      if (since >= this.pushWindow) {
+      if (since >= this.pushWindow && !this.wakeLater.has(row.id)) {
         this.wakeSent.set(row.id, now);
-        sends.push(this.#sendWake(row.id));
-      } else if (!this.wakeLater.has(row.id)) {
-        // The wake at the end of the window, which waitUntil keeps this object alive for.
-        const later = new Promise((resolve) => {
-          setTimeout(() => {
-            this.wakeLater.delete(row.id);
-            this.wakeSent.set(row.id, Date.now());
-            this.#sendWake(row.id)
-              .catch((err) => console.error('A push wake failed:', err?.message || err))
-              .finally(resolve);
-          }, this.pushWindow - since);
-        });
-        this.wakeLater.set(row.id, later);
-        this.ctx.waitUntil?.(later);
+        sends.push(this.#sendWake(row.id, workspace ? [workspace] : []));
+        continue;
       }
+      const waiting = this.wakeWorkspaces.get(row.id) ?? new Set();
+      if (workspace) waiting.add(workspace);
+      this.wakeWorkspaces.set(row.id, waiting);
+      if (this.wakeLater.has(row.id)) continue;
+      // The wake at the end of the window, which waitUntil keeps this object alive for.
+      const later = new Promise((resolve) => {
+        setTimeout(() => {
+          this.wakeLater.delete(row.id);
+          const workspaces = [...(this.wakeWorkspaces.get(row.id) ?? [])];
+          this.wakeWorkspaces.delete(row.id);
+          this.wakeSent.set(row.id, Date.now());
+          this.#sendWake(row.id, workspaces)
+            .catch((err) => console.error('A push wake failed:', err?.message || err))
+            .finally(resolve);
+        }, Math.max(0, this.pushWindow - since));
+      });
+      this.wakeLater.set(row.id, later);
+      this.ctx.waitUntil?.(later);
     }
     await Promise.all(sends);
     return sends.length;
   }
 
   // Sends one wake to a session's endpoint as it is now. The push service's 404 or 410 means the registration is gone,
-  // so the endpoint goes too; any other failure is logged without the endpoint, and the next wake tries again.
-  async #sendWake(id) {
+  // so the endpoint goes too, unless the session registered another meanwhile. Any other failure is logged without the
+  // endpoint, and the next wake tries again; an endpoint whose wakes have all failed for WAKE_FAILING goes.
+  async #sendWake(id, workspaces) {
     const row = this.#wakeTarget(id);
     if (!row) return;
-    if (!postable(row.wakeEndpoint, endpointRules(this.env))) {
-      this.#dropWakeEndpoint(id, row.wakeEndpoint);
+    if (!postable(row.wakeEndpoint, pushOrigins(this.env))) {
+      this.#dropWakeEndpoint(id, row);
       return;
     }
-    let status;
+    let status = 0;
     try {
-      status = await sendWake(this.env, { endpoint: row.wakeEndpoint, p256dh: row.wakeKey, auth: row.wakeAuth });
+      status = await sendWake(this.env, { endpoint: row.wakeEndpoint, p256dh: row.wakeKey, auth: row.wakeAuth }, workspaces);
     } catch (err) {
       console.error('A push wake could not be sent:', err?.name || 'Error', err?.message || '');
-      return;
     }
-    if (status === 404 || status === 410) this.#dropWakeEndpoint(id, row.wakeEndpoint);
-    else if (status < 200 || status >= 300) console.error(`A push service answered a wake with ${status}.`);
+    if (status === 404 || status === 410) return this.#dropWakeEndpoint(id, row);
+    if (status >= 200 && status < 300) return this.#wakeWorked(id, row, true);
+    if (status) console.error(`A push service answered a wake with ${status}.`);
+    this.#wakeWorked(id, row, false);
   }
 
-  // The endpoint and keys of a session, or null: none registered, or the session or the account is gone.
+  // Notes whether a wake to a registration worked. The first failure starts the clock; WAKE_FAILING later, with every
+  // wake in between failed too, the registration goes.
+  #wakeWorked(id, row, ok) {
+    if (!this.present || !this.#has('sessions')) return;
+    const same = 'id = ? AND wakeEndpoint = ? AND wakeKey = ? AND wakeAuth = ?';
+    const args = [id, row.wakeEndpoint, row.wakeKey, row.wakeAuth];
+    if (ok) {
+      if (row.wakeFailedSince !== null) this.sql.exec(`UPDATE sessions SET wakeFailedSince = NULL WHERE ${same}`, ...args);
+      return;
+    }
+    const now = Date.now();
+    if (row.wakeFailedSince === null) this.sql.exec(`UPDATE sessions SET wakeFailedSince = ? WHERE ${same}`, now, ...args);
+    else if (now - row.wakeFailedSince >= WAKE_FAILING) this.#dropWakeEndpoint(id, row);
+  }
+
+  // The endpoint, keys and failure clock of a session, or null: none registered, or the session or the account is gone.
   #wakeTarget(id) {
     if (!this.present || !this.#has('sessions')) return null;
-    const row = this.sql.exec('SELECT wakeEndpoint, wakeKey, wakeAuth FROM sessions WHERE id = ?', id).toArray()[0];
+    const row = this.sql.exec('SELECT wakeEndpoint, wakeKey, wakeAuth, wakeFailedSince FROM sessions WHERE id = ?', id).toArray()[0];
     return row?.wakeEndpoint ? row : null;
   }
 
-  // Clears a session's endpoint, or only the given one, so a newer registration made meanwhile stays.
-  #dropWakeEndpoint(id, endpoint = null) {
+  // Clears a session's registration when it is still the one in row, the same endpoint and keys: one the session made
+  // meanwhile stays.
+  #dropWakeEndpoint(id, row) {
     if (!this.present || !this.#has('sessions')) return;
-    const clear = 'UPDATE sessions SET wakeEndpoint = NULL, wakeKey = NULL, wakeAuth = NULL, wakeAt = NULL WHERE id = ?';
-    if (endpoint === null) this.sql.exec(clear, id);
-    else this.sql.exec(`${clear} AND wakeEndpoint = ?`, id, endpoint);
+    this.sql.exec(
+      `UPDATE sessions SET ${CLEAR_WAKE} WHERE id = ? AND wakeEndpoint = ? AND wakeKey = ? AND wakeAuth = ?`,
+      id,
+      row.wakeEndpoint,
+      row.wakeKey,
+      row.wakeAuth
+    );
   }
 
   // Tells the workspaces a deleted account was in, and tries again later for the ones that didn't answer. Checks
