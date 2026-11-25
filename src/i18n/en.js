@@ -5505,6 +5505,70 @@
     "message": "Show or hide email folders.",
     "description": "settings > general. src/renderer/settings.js (render)"
   },
+  "settings.general.tabs": {
+    "message": "Tabs",
+    "description": "Settings > General: row that opens the page where the user turns the title bar's mode tabs (Mail, Calendar, Meet, Chat) on or off. src/renderer/settings.js (render)"
+  },
+  "settings.general.tabsHelp": {
+    "message": "Turn {modes} on or off.",
+    "description": "Settings > General: help under the Tabs row. {modes}: the tab names joined as a list in the interface language, such as \"Mail, Calendar, Meet and Chat\"; Chat is left out while team chat isn't available. src/renderer/settings.js (render)"
+  },
+  "settings.modes.show": {
+    "message": "Show in Rukoo",
+    "description": "Settings > General > Tabs: heading above the switches for Mail, Calendar, Meet and Chat. src/renderer/settings.js (render)"
+  },
+  "settings.modes.help": {
+    "message": "A tab you turn off leaves the title bar, and its shortcut, notifications, sounds and badges go with it. Your accounts, data and sync stay as they are, and agents keep their tools, so turning it back on picks up where you left off. At least one tab stays on.",
+    "description": "Settings > General > Tabs: text under the switches. Says what turning a mode off does and what it leaves alone (hiding is not disconnecting). src/renderer/settings.js (render)"
+  },
+  "settings.modes.lastOn": {
+    "message": "The only tab that shows, so it stays on.",
+    "description": "Settings > General > Tabs: help under the one switch that can't be turned off, because every other tab is off or unavailable. src/renderer/settings.js (render)"
+  },
+  "settings.modes.chatAway": {
+    "message": "Shows when team chat is available.",
+    "description": "Settings > General > Tabs: help under the Chat switch while the server of the user's Rukoo account has no team chat, or the user is signed out; the switch then only says whether Chat shows once it is there. src/renderer/settings.js (render)"
+  },
+  "settings.modes.turnOn": {
+    "message": "Turn on",
+    "description": "Button in the notice that a mode is turned off (settings.modes.off*): turns that mode back on in Settings > General > Tabs. Short. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.offMail": {
+    "message": "Mail is turned off, so Rukoo didn't start a new email.",
+    "description": "Notice in the main window when an email link (mailto:) was opened with Rukoo while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Mail on and then starts the email. src/renderer/app.js (modeOffNotice), src/main/main.js (openMailto)"
+  },
+  "settings.modes.offMailOpen": {
+    "message": "Mail is turned off, so Rukoo can't open this email.",
+    "description": "Notice in the main window when the user opens an email or a draft from the chat panel or from the inbox sorting panel while Mail is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Mail on and then opens it. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.goneMail": {
+    "message": "That email is no longer in Rukoo, so there is nothing to open.",
+    "description": "Notice in the main window after Turn on (settings.modes.turnOn) in the notice settings.modes.offMailOpen: Mail is on again, but the email or draft the user asked for while Mail was off was deleted or moved meanwhile, so nothing opens. src/renderer/app.js (offerMail), src/renderer/agent/panel.js (showDraftLater)"
+  },
+  "settings.modes.chatNeeded": {
+    "message": "Without a mail account, Chat is the tab you can use, so it stays on.",
+    "description": "Settings > General > Tabs: help under the Chat switch, which can't be turned off, for someone who uses Rukoo with a Rukoo account and no mail account. Mail, Calendar and Meet need a mail account. src/renderer/settings.js (render)"
+  },
+  "settings.modes.offCalendar": {
+    "message": "Calendar is turned off, so Rukoo can't show this.",
+    "description": "Notice in the main window when the user opens a calendar file or an event while Calendar is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Calendar on and then opens the file or the event. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.offMeeting": {
+    "message": "Meet is turned off, so Rukoo can't show this meeting.",
+    "description": "Notice in the main window when the user opens a meeting, such as from a chat about it, while Meet is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Meet on and then opens that meeting. src/renderer/app.js (modeOffNotice)"
+  },
+  "settings.modes.offChat": {
+    "message": "Chat is turned off, so Rukoo can't open your invitation.",
+    "description": "Notice in the main window when a team chat invitation waits to be joined while Chat is turned off in Settings > General > Tabs. Followed by a Turn on button, after which the Join dialog opens. src/renderer/app.js (modeOffNotice)"
+  },
+  "setup.chatOnly.action": {
+    "message": "Use Chat only, without email",
+    "description": "Setup page, opened from the Mail, Calendar or Meet tab by someone who uses team chat without a mail account: link that turns Mail, Calendar and Meet off in Settings > General > Tabs and closes the page. src/renderer/setup.js (showGrid)"
+  },
+  "setup.chatOnly.done": {
+    "message": "Mail, Calendar and Meet are off. Settings > General > Tabs turns them back on.",
+    "description": "Notice after the user chose setup.chatOnly.action on the setup page. Names the place in Settings where the tabs come back. src/renderer/setup.js"
+  },
   "settings.general.language": {
     "message": "Language",
     "description": "settings > general. Settings > General: opens the interface language picker."

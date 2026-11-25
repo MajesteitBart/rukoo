@@ -56,6 +56,16 @@ const BODY_CHARS = 120;
 const LINES = 3;
 const FETCH = 20;
 
+// Alerts are on: Settings > General > Team chat notifications, and Chat not hidden in Settings > General > Tabs. The
+// desktop's main says whether Chat shows (svc.chatHidden, src/main/modes.js), since Chat stays for someone without a
+// mail account whatever the setting says; elsewhere 'chat' in the stored list means hidden. Rooms that come due
+// meanwhile are marked notified, so turning either back on doesn't bring old alerts.
+const chatHidden = (svc, s) => (svc.chatHidden ? Boolean(svc.chatHidden()) : Array.isArray(s.hiddenModes) && s.hiddenModes.includes('chat'));
+const alertsOn = (svc) => {
+  const s = svc.settings();
+  return Boolean(s) && s.chatNotifications !== false && !chatHidden(svc, s);
+};
+
 const roomKey = (ws, room) => `chat:${ws}:${room}`;
 const summaryKey = (ws) => `chat:${ws}:summary`;
 
@@ -183,7 +193,7 @@ class Notifier {
     if (row.state !== 'ok' || row.fresh || !row.me) return;
     const due = store.all(DUE, ws);
     if (!due.length) return;
-    const on = svc.settings().chatNotifications !== false;
+    const on = alertsOn(svc);
     const ctx = this.context(ws, row);
     let slots = svc.timing.notifyRooms;
     let fetches = svc.timing.notifyRooms;
@@ -239,7 +249,7 @@ class Notifier {
         // Meanwhile the person may have read it, muted it or opened it.
         room = store.getRoom(ws, id);
         if (!room || !isDue(room)) continue;
-        if (room.muted || svc.isOnScreen(ws, id) || svc.settings().chatNotifications === false) {
+        if (room.muted || svc.isOnScreen(ws, id) || !alertsOn(svc)) {
           this.mark(ws, id, room.head);
           continue;
         }

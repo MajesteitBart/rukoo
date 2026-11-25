@@ -23,6 +23,10 @@ import { meetingSettingsPages, MEETING_VIEWS } from './meeting-settings.js';
 import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
 import { videoPages, VIDEO_VIEWS } from './video-settings.js';
 import { SCHEMES, ACTIONS as KEY_ACTIONS, bindings, display, keyLabel } from './keymap.js';
+import { MODES, visibleModes, canHide, withMode } from './modes.js';
+
+// Settings > General > Tabs: each mode's switch carries the name its tab has.
+const MODE_LABELS = { mail: 'calendar.mode.mail', calendar: 'calendar.mode.calendar', meeting: 'meeting.mode.label', chat: 'chat.mode.label' };
 
 // Settings > Keyboard shortcuts: the schemes by the name of their app (keymap.js).
 const SCHEME_NAMES = { rukoo: 'Rukoo', gmail: 'Gmail', outlook: 'Outlook', apple: 'Apple Mail', thunderbird: 'Thunderbird' };
@@ -299,7 +303,11 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
       if (stack[stack.length - 1] === 'agents' && agentState) refreshPhone();
     }
     const view = stack[stack.length - 1];
-    if (type === 'updated' && (view === 'main' || view === 'account')) setTimeout(render, 80);
+    if (type === 'updated' && (view === 'main' || view === 'account' || view === 'tabs')) setTimeout(render, 80);
+    // Team chat came or went on the server: the Tabs page and General's rows follow which tabs there are.
+    if (type === 'chat' && payload && payload.kind === 'state' && payload.state && (view === 'tabs' || view === 'main') && Boolean(payload.state.available) !== chatOn) {
+      setTimeout(render, 0);
+    }
     // Agent status changes only touch the status lines, never the fields you are typing in.
     if (type === 'agent' && payload && payload.kind === 'agents' && (view === 'agents' || view === 'main') && agentState) {
       agentState.status = payload.status || agentState.status;
@@ -359,12 +367,15 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
   document.addEventListener('keydown', onKey, true);
 
   // preview: markup shown under the value, such as a signature as it will be sent.
-  const row = ({ title, desc, value, preview, action, toggle, sep, cls = '', lead = '' }) => `
-    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}>
+  // disabled: a switch that can't change now, such as the last tab that shows.
+  // toggle: the row is a switch. The button that takes the focus carries the role and its state, so a screen reader
+  // hears it as a switch with the row's text for its name; the drawn switch beside it is only the picture of it.
+  const row = ({ title, desc, value, preview, action, toggle, sep, cls = '', lead = '', disabled = false }) => `
+    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}${toggle !== undefined ? ` role="switch" aria-checked="${Boolean(toggle)}"` : ''}${disabled ? ' disabled' : ''}>
       ${lead}
       <div class="text"><div class="title ${cls.includes('danger') ? 'danger' : ''}">${title}</div>
       ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}${preview || ''}</div>
-      ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
+      ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" aria-hidden="true"></span>` : ''}
     </button>`;
 
   // Marks the default account in the overview and the default address on the sender addresses page.
@@ -1013,10 +1024,10 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
       return false;
     }
   }
+  // A switch row's state changes in place: the drawn switch, and the row's own aria-checked (row()).
   const flip = (b, on) => {
-    const sw = b.querySelector('.switch');
-    sw.classList.toggle('on', on);
-    sw.setAttribute('aria-checked', String(on));
+    b.querySelector('.switch').classList.toggle('on', on);
+    b.setAttribute('aria-checked', String(on));
   };
 
   async function testAgent(id) {
@@ -1231,7 +1242,7 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
       view === 'main' || MEETING_VIEWS.includes(view) ? meetingPage.prepare() : null,
       view === 'main' || VIDEO_VIEWS.includes(view) ? videoPage.prepare(view) : null,
       view === 'main' ? api('notificationState').then((n) => (notices.supported = n.supported)).catch(() => null) : null,
-      view === 'main'
+      view === 'main' || view === 'tabs'
         ? api('chatState')
             .then((c) => (chatOn = Boolean(c && c.available)))
             .catch(() => (chatOn = false))
@@ -1269,15 +1280,25 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
       const calendarGroup = `
         <div class="settings-group-title" data-i18n="settings.groups.calendar">${esc(t('settings.groups.calendar'))}</div>
         <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}${videoPage.rowHtml()}</div>`;
+      // Someone without a mail account who turned Mail off (team chat only) doesn't start on mail accounts: Settings
+      // opens on General, whose Tabs row brings Mail back, and Mail's tab then offers to add an account.
+      const mailGroup = state.accounts.length || !(s.hiddenModes || []).includes('mail');
+      // "Email settings" says too much then.
+      if (!mailGroup) title = t('settings.title.short');
       body = `
-        <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
+        ${
+          mailGroup
+            ? `<div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
           ${row({ title: t('settings.accounts.add'), action: 'add', cls: 'indent', lead: `<span class="add-ic">${icons.plus}</span>` })}
           ${row({ title: esc(t('settings.signatures.title')), desc: esc(t('settings.signatures.rowHelp')), action: 'signatures', cls: 'indent', lead: `<span class="sig-ic">${icons.edit}</span>` })}
-        </div>
+        </div>`
+            : ''
+        }
         <div class="settings-group-title" data-i18n="settings.groups.general">${esc(t('settings.groups.general'))}</div>
         <div class="card">
           ${row({ title: t('settings.general.language'), desc: t('settings.general.languageHelp'), value: languages.find((language) => language.code === s.language)?.name || 'English', action: 'language' })}
+          ${row({ title: t('settings.general.tabs'), desc: esc(t('settings.general.tabsHelp', { modes: new Intl.ListFormat(getLocale(), { type: 'conjunction' }).format(MODES.filter((m) => m !== 'chat' || chatOn).map((m) => t(MODE_LABELS[m]))) })), action: 'tabs' })}
           ${row({ title: t('settings.general.folders'), desc: t('settings.general.foldersHelp'), action: 'folders' })}
           ${categoriesPage.rowHtml()}
           ${row({ title: t('settings.general.density'), value: labelOf(DENSITY, s.density), action: 'density' })}
@@ -1468,6 +1489,28 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
       body = `<div class="settings-group-title" data-i18n="settings.folders.show">${esc(t('settings.folders.show'))}</div><div class="card">${[...hideableViews(), ...folderRows]
         .map(([id, label]) => row({ title: esc(label), action: `hide:${id}`, toggle: !hidden.has(id) }))
         .join('')}</div>`;
+    }
+
+    // A switch per mode, showing whether its tab shows now (modes.js visibleModes). Chat's switch is here while team
+    // chat is available, or while it is turned off, so it can come back. The last tab that shows can't go.
+    if (view === 'tabs') {
+      title = t('settings.general.tabs');
+      const hidden = s.hiddenModes || [];
+      // Mail, Calendar and Meet need a mail account; without one, Chat is the tab that stays (modes.js).
+      const hasMail = state.accounts.length > 0;
+      const shown = visibleModes(hidden, chatOn, hasMail);
+      const rows = MODES.filter((m) => m !== 'chat' || chatOn || hidden.includes('chat')).map((m) => {
+        const on = m === 'chat' && !chatOn ? !hidden.includes('chat') : shown.includes(m);
+        // A mode that shows although it is turned off stands in for the others (visibleModes), and canHide counts it as
+        // on: its switch is locked only while it is the one mode left that can be used.
+        const locked = on && !canHide(hidden, m, chatOn, hasMail);
+        const lockedWhy = m === 'chat' && !hasMail ? 'settings.modes.chatNeeded' : 'settings.modes.lastOn';
+        const desc = locked ? t(lockedWhy) : m === 'chat' && !chatOn ? t('settings.modes.chatAway') : '';
+        return row({ title: esc(t(MODE_LABELS[m])), desc: esc(desc), action: `mode:${m}`, toggle: on, disabled: locked });
+      });
+      body = `<div class="settings-group-title" data-i18n="settings.modes.show">${esc(t('settings.modes.show'))}</div>
+        <div class="card" data-modes>${rows.join('')}</div>
+        <p class="settings-text" data-i18n="settings.modes.help">${esc(t('settings.modes.help'))}</p>`;
     }
 
     if (view === 'spam' || view === 'vips') {
@@ -1692,6 +1735,13 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
       if (quick.length >= 4) return toast(t('settings.swipe.quickMax'));
       return set({ quickActions: QUICK.filter((x) => x === id || quick.includes(x)) });
     }
+    // Settings > General > Tabs: the window that shows a mode turned off leaves it once main has the change (app.js
+    // leaveHiddenMode).
+    if (a.startsWith('mode:')) {
+      const on = Boolean(b.querySelector('.switch.on'));
+      const next = withMode(s.hiddenModes || [], a.slice(5), on, chatOn, ctx.S.data.accounts.length > 0);
+      return next ? set({ hiddenModes: next }) : undefined;
+    }
     if (a.startsWith('hide:')) {
       const id = a.slice(5);
       const hidden = new Set(s.hiddenViews || []);
@@ -1747,6 +1797,7 @@ export function openSettings(ctx, { view: start, id = null, state = null } = {})
         return;
       }
       case 'folders':
+      case 'tabs':
       case 'spam':
       case 'vips':
       case 'keyboard':

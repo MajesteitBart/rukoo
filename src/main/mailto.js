@@ -65,4 +65,49 @@ function fromArgs(args) {
   return (Array.isArray(args) ? args : []).slice(1).find(isMailto) || null;
 }
 
-module.exports = { isMailto, parse, fromArgs };
+// Email links opened while Mail is turned off (Settings > General > Tabs), each under an id until the notice's Turn on
+// takes it (main.js offerHiddenMode, openHeldMailto). A link holds recipients and a body, so it doesn't stay: the
+// window drops it when its notice goes, it expires by itself after ttl ms in case the window can't say so, and only
+// the last few are kept.
+class HeldLinks {
+  constructor({ limit = 5, ttl = 120000 } = {}) {
+    this.limit = limit;
+    this.ttl = ttl;
+    this.links = new Map();
+    this.seq = 0;
+  }
+
+  get size() {
+    return this.links.size;
+  }
+
+  hold(url) {
+    const id = String(++this.seq);
+    const timer = setTimeout(() => this.drop(id), this.ttl);
+    if (timer.unref) timer.unref();
+    this.links.set(id, { url, timer });
+    while (this.links.size > this.limit) this.drop(this.links.keys().next().value);
+    return id;
+  }
+
+  // The link under id, once; null when it went.
+  take(id) {
+    const entry = this.links.get(String(id));
+    if (!entry) return null;
+    this.drop(id);
+    return entry.url;
+  }
+
+  drop(id) {
+    const entry = this.links.get(String(id));
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.links.delete(String(id));
+  }
+
+  clear() {
+    for (const id of [...this.links.keys()]) this.drop(id);
+  }
+}
+
+module.exports = { isMailto, parse, fromArgs, HeldLinks };

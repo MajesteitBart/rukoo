@@ -62,3 +62,34 @@ test('the link Windows passes on the command line is found after the program its
   assert.equal(mailto.fromArgs(['electron.exe', '.']), null);
   assert.equal(mailto.fromArgs(undefined), null);
 });
+
+// An email link opened while Mail is off waits under an id for the notice's Turn on (main.js offerHiddenMode). It
+// holds recipients and a body, so it goes when its notice goes, and by itself after a short time.
+test('a held email link is taken once, dropped with its notice, expires by itself, and only the last few are kept', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const held = new mailto.HeldLinks({ limit: 3, ttl: 60000 });
+  const a = held.hold('mailto:a@example.com?body=private');
+  assert.equal(held.size, 1);
+  assert.equal(held.take(a), 'mailto:a@example.com?body=private');
+  assert.equal(held.take(a), null, 'once');
+
+  const b = held.hold('mailto:b@example.com');
+  held.drop(b);
+  assert.equal(held.size, 0, 'its notice went');
+  assert.equal(held.take(b), null);
+
+  const c = held.hold('mailto:c@example.com');
+  t.mock.timers.tick(59000);
+  assert.equal(held.size, 1);
+  t.mock.timers.tick(1000);
+  assert.equal(held.size, 0, 'expired on its own');
+  assert.equal(held.take(c), null);
+
+  const ids = ['1', '2', '3', '4'].map((n) => held.hold(`mailto:${n}@example.com`));
+  assert.equal(held.size, 3);
+  assert.equal(held.take(ids[0]), null, 'the oldest made way');
+  assert.equal(held.take(ids[3]), 'mailto:4@example.com');
+  held.drop('nonsense');
+  held.clear();
+  assert.equal(held.size, 0);
+});

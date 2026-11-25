@@ -62,6 +62,9 @@ async function init() {
     editor.retheme(next);
   };
   window.mail.on(({ type }) => (type === 'theme' || type === 'language') && retheme());
+  // Settings > General > Tabs changed in any window (main.js modesMaybeChanged): the calendar button and anything open
+  // from it follow at once, without waiting for the focus.
+  window.mail.on(({ type }) => type === 'modes' && api('state').then((next) => editor.modesChanged(next)).catch(() => {}));
   onSystemThemeChange(retheme);
   // Main's account updates reach only the main window. Coming back from it, the editor follows a default account
   // changed there.

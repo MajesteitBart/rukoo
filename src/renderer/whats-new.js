@@ -138,10 +138,10 @@ async function run() {
       categories: () => {
         const rows = st.cats
           .map(
-            (c) => `<button type="button" class="row wn-cat" data-cat="${esc(c.id)}" ${st.fixed ? 'disabled' : ''}>
+            (c) => `<button type="button" class="row wn-cat" data-cat="${esc(c.id)}" ${st.fixed ? 'disabled' : `role="switch" aria-checked="${Boolean(c.keep)}"`}>
               <span class="wn-dot" style="--cat:${esc(c.color)}"></span>
               <span class="text"><span class="title">${esc(c.name)}</span><span class="desc">${esc(c.description || '')}</span></span>
-              ${st.fixed ? '' : `<span class="switch ${c.keep ? 'on' : ''}" role="switch" aria-checked="${c.keep}"></span>`}
+              ${st.fixed ? '' : `<span class="switch ${c.keep ? 'on' : ''}" aria-hidden="true"></span>`}
             </button>`
           )
           .join('');

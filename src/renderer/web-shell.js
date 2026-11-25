@@ -685,13 +685,13 @@ function settingsPanel(start) {
     if (type === 'account') account.onStatus(payload);
   });
 
-  // settings.js row().
+  // settings.js row(): a switch row carries the role and its state on the button that takes the focus.
   const row = ({ title, desc, value, action, toggle, cls = '', lead = '' }) => `
-    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}>
+    <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}${toggle !== undefined ? ` role="switch" aria-checked="${Boolean(toggle)}"` : ''}>
       ${lead}
       <div class="text"><div class="title ${cls.includes('danger') ? 'danger' : ''}">${title}</div>
       ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}</div>
-      ${toggle !== undefined ? `<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
+      ${toggle !== undefined ? `<span class="switch ${toggle ? 'on' : ''}" aria-hidden="true"></span>` : ''}
     </button>`;
 
   // The account pages. Their success path calls back(); here it closes Settings, so the person lands in chat.
