@@ -109,11 +109,15 @@ const log = () => {
   const file = path.join(dataDir, 'data', 'logs', 'rukoo.log');
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 };
-// A touch on a row (the third) that goes down and never comes up, as a pointerup the window never got.
+// A touch on a row (the third) that goes down and never comes up, as a pointerup the window never got. The row is
+// found and touched in one step: a locator finds it and evaluates on it in two, and a list drawn between them leaves a
+// row off the page, whose touch no listener hears. Says whether the row was on the page.
 const stuckTouch = () =>
-  win.locator('.list-scroll .item').nth(2).evaluate((item) => {
+  win.evaluate(() => {
+    const item = document.querySelectorAll('.list-scroll .item')[2];
     const r = item.getBoundingClientRect();
     item.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', pointerId: 9, isPrimary: true, bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: r.left + 50, clientY: r.top + 10 }));
+    return item.isConnected;
   });
 
 test('with an email open in the reader, new mail shows in the list by itself, and the log has the sync', async () => {
@@ -229,11 +233,26 @@ test('an email whose Date header no parser reads shows with the date the server 
 });
 
 test('a touch on a row whose pointerup never came holds the list for a few seconds at most', async () => {
-  await stuckTouch();
+  // What else lets go of the swipe without a log line, for the error when the list didn't wait (CI's Windows runner,
+  // a moment after start): a blur, a real pointer, the list drawn again.
+  await win.evaluate(() => {
+    const seen = (window.__seen = []);
+    window.addEventListener('blur', () => seen.push('blur'));
+    for (const type of ['pointerdown', 'pointerup', 'pointercancel']) window.addEventListener(type, (e) => e.isTrusted && seen.push(`${type} ${e.pointerType} ${e.pointerId}`), true);
+    new MutationObserver(() => seen.push(`list drawn ${Date.now()}`)).observe(document.querySelector('.list-scroll'), { childList: true });
+  });
+  const touched = Date.now();
+  expect(await stuckTouch()).toBe(true);
   const subject = deliver(0, 'Under a stuck finger');
   await timerSync();
   await expect(row(subject)).toBeVisible({ timeout: 6000 });
-  await expect.poll(log).toMatch(/INFO  window main: list reason=swipe-stale ms=\d+/);
+  const shown = Date.now() - touched;
+  await expect
+    .poll(log)
+    .toMatch(/INFO  window main: list reason=swipe-stale ms=\d+/)
+    .catch(async (err) => {
+      throw new Error(`${err.message}\nTouched at ${touched}, row shown after ${shown} ms; the window saw: ${JSON.stringify(await win.evaluate(() => window.__seen))}`);
+    });
 
   // Another pointer going down lets go of it at once.
   await stuckTouch();
