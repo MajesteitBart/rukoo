@@ -9,6 +9,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { blob, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import { EXPIRE_MIN_DAYS, expiryDays, registryObject, workspaceObject } from './config.js';
+import { endpointRules, postable, pushSwitch, sendWake } from './webpush.js';
 
 // Ten failed sign-ins or recovery attempts within 15 minutes lock the account for 15 minutes (PROTOCOL.md, login).
 // The registry keeps that lock, per address and for addresses without an account too (lock.js); this object keeps it
@@ -30,6 +31,15 @@ export const HANDLE_WINDOW = 30 * 24 * 60 * 60 * 1000;
 
 // A session's own count of wrong passwords and its lock, for the signed-in calls that ask for the password again.
 const SESSION_LOCK = ['failures', 'failedAt', 'lockedUntil'].map((name) => `${name} INTEGER NOT NULL DEFAULT 0`);
+// A session's push endpoint for team chat's wakes (webpush.js; WORKSPACES.md, Push wakes): the address its push
+// service gave the phone, the phone's public key and auth secret, and when it was registered. They go with the session,
+// so signing out, being signed out from another device and every other end of a session take them along.
+const SESSION_WAKE = ['wakeEndpoint TEXT', 'wakeKey BLOB', 'wakeAuth BLOB', 'wakeAt INTEGER'];
+// Sessions of one account that may have a push endpoint at once. Registering one more clears the oldest.
+const WAKE_ENDPOINTS = 10;
+// A session gets one wake at once, then at most one more per window: activity in the window after a wake sends a
+// single wake when it ends. Tests shorten it on the object (pushWindow).
+const PUSH_WINDOW = 15 * 1000;
 
 // The booking page's handle, for accounts that ever had one. changes is a JSON list of when it was changed.
 const BOOKING_TABLE = `
@@ -115,7 +125,8 @@ const SCHEMA = `
     platform TEXT NOT NULL,
     createdAt INTEGER NOT NULL,
     lastSeenAt INTEGER NOT NULL,
-    ${SESSION_LOCK.join(',\n    ')}
+    ${SESSION_LOCK.join(',\n    ')},
+    ${SESSION_WAKE.join(',\n    ')}
   );
   CREATE TABLE records (
     id TEXT PRIMARY KEY,
@@ -170,6 +181,10 @@ export class Account extends DurableObject {
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
     this.identity = null;
     this.cleaning = false;
+    // Push wakes in memory: when each session last got one, and the one each still waits to send (#wake).
+    this.pushWindow = PUSH_WINDOW;
+    this.wakeSent = new Map();
+    this.wakeLater = new Map();
     if (this.present) this.migrate();
     this.expiring = this.present && this.#has('expiry');
     // A list of workspaces to tell with no alarm to work through it would wait forever. That can happen when an alarm
@@ -205,6 +220,12 @@ export class Account extends DurableObject {
       // Wrong passwords on signed-in calls counted toward the account's lock before; each session starts at none.
       this.ctx.storage.transactionSync(() => {
         for (const column of SESSION_LOCK) this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
+      });
+    }
+    if (!columns('sessions').has('wakeEndpoint')) {
+      // Push wakes came later; no session had an endpoint before.
+      this.ctx.storage.transactionSync(() => {
+        for (const column of SESSION_WAKE) this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
       });
     }
     // Booking pages came later; accounts from before have no handle yet.
@@ -344,6 +365,109 @@ export class Account extends DurableObject {
   async session(incarnation, id) {
     if (this.#knownIdentity()?.incarnation !== incarnation) return false;
     return this.sql.exec('SELECT 1 FROM sessions WHERE id = ?', id).toArray().length > 0;
+  }
+
+  // ---- Push wakes (webpush.js) ----
+
+  // PUT /v1/push-endpoint: this session's push endpoint, which the Worker checked. It replaces the session's earlier
+  // one. Another session of this account with the same endpoint lets go of it, so a phone that signed in again doesn't
+  // get every wake twice, and past WAKE_ENDPOINTS the session that registered longest ago loses its own.
+  async setWakeEndpoint(token, { endpoint, p256dh, auth }) {
+    return this.#signedIn(token, (session, now) => {
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec(
+          'UPDATE sessions SET wakeEndpoint = NULL, wakeKey = NULL, wakeAuth = NULL, wakeAt = NULL WHERE wakeEndpoint = ? AND id != ?',
+          endpoint,
+          session.id
+        );
+        this.sql.exec(
+          'UPDATE sessions SET wakeEndpoint = ?, wakeKey = ?, wakeAuth = ?, wakeAt = ? WHERE id = ?',
+          endpoint,
+          blob(p256dh),
+          blob(auth),
+          now,
+          session.id
+        );
+        this.sql.exec(
+          `UPDATE sessions SET wakeEndpoint = NULL, wakeKey = NULL, wakeAuth = NULL, wakeAt = NULL WHERE id IN (
+             SELECT id FROM sessions WHERE wakeEndpoint IS NOT NULL ORDER BY wakeAt DESC, id LIMIT -1 OFFSET ?)`,
+          WAKE_ENDPOINTS
+        );
+      });
+      return reply(204);
+    });
+  }
+
+  // DELETE /v1/push-endpoint: this session gets no more wakes. 204 also when it had no endpoint.
+  async clearWakeEndpoint(token) {
+    return this.#signedIn(token, (session) => {
+      this.#dropWakeEndpoint(session.id);
+      return reply(204);
+    });
+  }
+
+  // A workspace has something for this account that notifies (workspace.js, #post): a wake goes to each of its
+  // sessions with a push endpoint, apart from those in live, which have a working socket to that workspace and heard
+  // of it there. Returns how many sessions got one at once; a session woken within the last pushWindow gets one when
+  // the window ends instead, one for everything that came in it. The incarnation must be this account's, so an account
+  // made again at the same address hears nothing of the old one's workspaces.
+  async wake(incarnation, live = []) {
+    if (!pushSwitch(this.env) || this.#knownIdentity()?.incarnation !== incarnation) return 0;
+    const skip = new Set(live);
+    const now = Date.now();
+    const sends = [];
+    for (const row of this.sql.exec('SELECT id FROM sessions WHERE wakeEndpoint IS NOT NULL').toArray()) {
+      if (skip.has(row.id)) continue;
+      const since = now - (this.wakeSent.get(row.id) ?? -Infinity);
+      if (since >= this.pushWindow) {
+        this.wakeSent.set(row.id, now);
+        sends.push(this.#sendWake(row.id));
+      } else if (!this.wakeLater.has(row.id)) {
+        const timer = setTimeout(() => {
+          this.wakeLater.delete(row.id);
+          this.wakeSent.set(row.id, Date.now());
+          this.#sendWake(row.id).catch((err) => console.error('A push wake failed:', err?.message || err));
+        }, this.pushWindow - since);
+        this.wakeLater.set(row.id, timer);
+      }
+    }
+    await Promise.all(sends);
+    return sends.length;
+  }
+
+  // Sends one wake to a session's endpoint as it is now. The push service's 404 or 410 means the registration is gone,
+  // so the endpoint goes too; any other failure is logged without the endpoint, and the next wake tries again.
+  async #sendWake(id) {
+    const row = this.#wakeTarget(id);
+    if (!row) return;
+    if (!postable(row.wakeEndpoint, endpointRules(this.env))) {
+      this.#dropWakeEndpoint(id, row.wakeEndpoint);
+      return;
+    }
+    let status;
+    try {
+      status = await sendWake(this.env, { endpoint: row.wakeEndpoint, p256dh: row.wakeKey, auth: row.wakeAuth });
+    } catch (err) {
+      console.error('A push wake could not be sent:', err?.name || 'Error', err?.message || '');
+      return;
+    }
+    if (status === 404 || status === 410) this.#dropWakeEndpoint(id, row.wakeEndpoint);
+    else if (status < 200 || status >= 300) console.error(`A push service answered a wake with ${status}.`);
+  }
+
+  // The endpoint and keys of a session, or null: none registered, or the session or the account is gone.
+  #wakeTarget(id) {
+    if (!this.present || !this.#has('sessions')) return null;
+    const row = this.sql.exec('SELECT wakeEndpoint, wakeKey, wakeAuth FROM sessions WHERE id = ?', id).toArray()[0];
+    return row?.wakeEndpoint ? row : null;
+  }
+
+  // Clears a session's endpoint, or only the given one, so a newer registration made meanwhile stays.
+  #dropWakeEndpoint(id, endpoint = null) {
+    if (!this.present || !this.#has('sessions')) return;
+    const clear = 'UPDATE sessions SET wakeEndpoint = NULL, wakeKey = NULL, wakeAuth = NULL, wakeAt = NULL WHERE id = ?';
+    if (endpoint === null) this.sql.exec(clear, id);
+    else this.sql.exec(`${clear} AND wakeEndpoint = ?`, id, endpoint);
   }
 
   // Tells the workspaces a deleted account was in, and tries again later for the ones that didn't answer. Checks

@@ -200,6 +200,10 @@ Ends this session. → `204`.
 
 Signs that device out. → `204`.
 
+### `PUT /v1/push-endpoint` and `DELETE /v1/push-endpoint`
+
+While team chat and push wakes are on (`push-wake` in `workspace.capabilities` of `GET /v1/info`), a session registers the push endpoint its device got, and the server posts an encrypted wake there when that account gets something that notifies. `PUT` takes `{ endpoint, p256dh, auth }` and answers `204`; `DELETE` answers `204`. The endpoint goes with the session, so signing out and every other end of a session remove it. [WORKSPACES.md](WORKSPACES.md#push-wakes) has the rules and the errors.
+
 ### `POST /v1/password`
 
 This call, `POST /v1/recovery`, `POST /v1/password/check` and `DELETE /v1/account` check the password again with `authKey`. A wrong one gives `403 wrong_password`, never 401, so the device can tell a typo from a session that ended. These attempts don't count toward the account's lock, so a device that is signed in can still use these calls while someone else's failed sign-ins lock the account. Each session counts its own instead: ten wrong passwords from one session within 15 minutes of the first lock that session's password checks for 15 minutes, with `429 locked` and `Retry-After` as for sign-ins. The session keeps working for everything else, and other sessions aren't affected. A right password from the session resets its count; sign-ins on other devices leave its count and lock alone. While the lock lasts, `DELETE /v1/booking` from this session is refused too.
@@ -259,6 +263,7 @@ Every stored write gets the next `seq`, also a delete. A tombstone stays so devi
 - Failed sign-in attempts, under a hash of the address, also for addresses without an account, until the lock ends or 15 minutes after the first.
 - Where it sends codes by email: hashes of the addresses codes went to, for up to a day, of the mailboxes unlock emails went to, for a day, and of the domains accounts were made at with a code, until the day is over; and the mail itself while it passes to the mail service.
 - For an account that turns on a booking page: what that page publishes and the bookings made on it, as [Booking pages](#booking-pages) describes.
+- For a session that registered a push endpoint: the address of its push service, the keys to encrypt wakes for it, and when it was registered, until the session ends or the device takes it back.
 
 It can't see what a record holds: no category names, no senders, no Message-IDs and nothing about the mail.
 

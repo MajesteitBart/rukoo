@@ -47,6 +47,7 @@ import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
 import { DOMAIN_LIMIT, checkAlert, registrableDomain, untilTomorrow, verifiedSignup } from './signups.js';
 import { isPage } from './web.js';
+import { endpointInput, pushOn } from './webpush.js';
 import { inviteSignups, signupInvite, workspaceInfo, workspaces } from './workspaces.js';
 
 export { Account } from './account.js';
@@ -86,8 +87,8 @@ async function handle(request, env, ctx) {
   if (path === '/' && reading) return html(page(config(env, url)), method);
   if (path === '/privacy' && reading) {
     // The statement covers team chat only while the server runs it, with the retention it is set to, link previews
-    // while it makes them, files while it has a bucket for them, with their limits and the store that holds them, and
-    // agents unless WORKSPACE_AGENTS turns them off.
+    // while it makes them, files while it has a bucket for them, with their limits and the store that holds them,
+    // agents unless WORKSPACE_AGENTS turns them off, and push wakes unless WORKSPACE_PUSH does.
     const limits = workspaceLimits(env);
     const storage = filesStorage(env);
     const chat = workspacesOn(env)
@@ -96,7 +97,8 @@ async function handle(request, env, ctx) {
           inviteSignups: inviteSignups(env),
           previews: previewsOn(env),
           files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null,
-          agents: agentsOn(env)
+          agents: agentsOn(env),
+          push: pushOn(env)
         }
       : null;
     // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator
@@ -197,6 +199,13 @@ async function handle(request, env, ctx) {
       return owner.deleteBooking(request, env);
     case 'GET /v1/booking/bookings':
       return owner.listBookings(request, env, url);
+    case 'PUT /v1/push-endpoint':
+      return putPushEndpoint(request, env, url);
+    case 'DELETE /v1/push-endpoint': {
+      if (!pushOn(env)) throw notFound();
+      const { stub, token } = session(request, env);
+      return send(await stub.clearWakeEndpoint(token));
+    }
   }
   const device = path.match(DEVICE_PATH);
   if (device && method === 'DELETE') {
@@ -394,6 +403,16 @@ async function deleteAccount(request, env) {
     await owner.wipeAfterDelete(env, token, result.handle, handleKey ? toBase64url(await sha256(handleKey)) : null);
   }
   return send(result);
+}
+
+// A session's push endpoint for team chat's wakes (webpush.js; WORKSPACES.md, Push wakes). The address is checked, its
+// host looked up, before the account stores it; the lookup is why this route shares the sign-in routes' rate limit.
+async function putPushEndpoint(request, env, url) {
+  if (!pushOn(env)) throw notFound();
+  const { stub, token } = session(request, env);
+  await limitRate(request, env.RATE_LIMITER);
+  const fields = await endpointInput(await input.readJson(request), env, url);
+  return send(await stub.setWakeEndpoint(token, fields));
 }
 
 async function pull(request, env, url) {

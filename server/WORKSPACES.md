@@ -161,7 +161,7 @@ When feed continuity is lost, invalidate or quarantine all cached timeline rows,
 
 Page room history under a fixed upper sequence with current redactions/permissions. On an old restore generation reconcile pending sends and surface the local count of missing received IDs *only* after reauthorizing that specific conversation; never display cached contents of removed scopes.
 
-Android foreground/tray behavior follows OS capabilities; WorkManager's periodic interval has a 15-minute minimum and the OS can defer it longer; catch-up is best-effort, no publisher push relay in v1.
+Android foreground/tray behavior follows OS capabilities; WorkManager's periodic interval has a 15-minute minimum and the OS can defer it longer. A phone that isn't connected gets an empty, encrypted wake through the push service it registered ([Push wakes](#push-wakes)), and the periodic catch-up stays as the fallback.
 
 ## Agents
 
@@ -218,7 +218,7 @@ Desktop, Android and runner enforce their own limits on redirects, response byte
 
 ## Gate 1 routes
 
-This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js`, `test/workspace-live.test.js`, `test/workspace-signup.test.js`, `test/workspace-reactions.test.js`, `test/workspace-reaction-cleared.test.js`, `test/workspace-files.test.js`, `test/workspace-previews.test.js` and `test/workspace-agents.test.js` are the runnable vectors for these routes.
+This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js`, `test/workspace-live.test.js`, `test/workspace-signup.test.js`, `test/workspace-reactions.test.js`, `test/workspace-reaction-cleared.test.js`, `test/workspace-files.test.js`, `test/workspace-previews.test.js`, `test/workspace-agents.test.js`, `test/push-wake.test.js` and `test/webpush.test.js` are the runnable vectors for these routes.
 
 Every route takes the account's session token as `Authorization: Bearer <token>`, like the account API, apart from the file links of [Rich messages](#rich-messages), which carry their own capability. An agent takes its key the same way, on the routes [Agents in channels](#agents-in-channels) lists. A client names the wire version it speaks in `Rukoo-Workspace-Version`, the highest that it and `versions` in `GET /v1/info` share; a request without one is version 1. Version 2 changes two things. Its reader takes a `message.posted` whose `text` is `''` because the message has only files. A version 1 reader gets such a message with `text` set to `📎 ` and the files' names joined by `, `, and `mentions: []`, in the events of a conversation and the feed's `inlineEvents` alike; what is stored doesn't change. Its reader also takes an agent's `sponsor` as `null` in `GET /members`; a version 1 reader gets that agent without its `agent` settings instead. An ID is a letter, an underscore and 22 base64url characters: `w_` for a workspace, `c_` a conversation, `u_` a member, `e_` an event, `g_` a grant, `i_` an invitation and `f_` a file. A member's ID belongs to one workspace, so two workspaces can't tell that they share a person. The account's incarnation is only ever sent to its own devices, in `GET /v1/account`.
 
@@ -228,9 +228,10 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
 "workspace": {
   "versions": [1, 2],
   "home": { "origin": "https://rukoo.example", "installation": "…" },
-  "capabilities": ["reactions", "unread", "files", "previews", "agents"],
+  "capabilities": ["reactions", "unread", "files", "previews", "agents", "push-wake"],
   "files": { "maxBytes": 26214400, "workspaceBytes": 5368709120, "origin": "https://rukoo.example" },
   "agents": { "max": 20, "depth": 3, "repliesPerHour": 120 },
+  "push": { "vapid": "B…" },
   "recovery": "basic",
   "inviteSignups": true,
   "inviteSignupsNeedCode": false,
@@ -239,7 +240,7 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
 }
 ```
 
-`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)), and `inviteSignupsNeedCode` when that sign-up also needs a code emailed to the address, as on a `verified` server. `capabilities` lists `reactions` and `unread` on every server of this version, `files` only when the operator gave it a file store (an R2 binding or an S3-compatible bucket), `previews` unless the operator turned link cards off, and `agents` unless the operator turned agents off (`WORKSPACE_AGENTS` set to `0` or `off`). `files` is there only with the `files` capability: the largest file, the file bytes one workspace may keep, and the origin upload and download links use. `agents` is there only with the `agents` capability: how many agents a workspace may have (`WORKSPACE_AGENTS`), how deep agents answer each other (`WORKSPACE_AGENT_DEPTH`) and how many replies one agent posts in an hour (`WORKSPACE_AGENT_REPLIES`).
+`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)), and `inviteSignupsNeedCode` when that sign-up also needs a code emailed to the address, as on a `verified` server. `capabilities` lists `reactions` and `unread` on every server of this version, `files` only when the operator gave it a file store (an R2 binding or an S3-compatible bucket), `previews` unless the operator turned link cards off, and `agents` unless the operator turned agents off (`WORKSPACE_AGENTS` set to `0` or `off`). `files` is there only with the `files` capability: the largest file, the file bytes one workspace may keep, and the origin upload and download links use. `agents` is there only with the `agents` capability: how many agents a workspace may have (`WORKSPACE_AGENTS`), how deep agents answer each other (`WORKSPACE_AGENT_DEPTH`) and how many replies one agent posts in an hour (`WORKSPACE_AGENT_REPLIES`). `push-wake` is listed unless the operator turned push wakes off (`WORKSPACE_PUSH` set to `off`), and `push` comes with it: `vapid`, the server's VAPID public key, 87 characters of base64url for the 65 bytes of an uncompressed P-256 point ([Push wakes](#push-wakes)).
 
 ### Errors
 
@@ -549,6 +550,29 @@ A pass can take several pages, and a room can change again while a device is pag
 `POST /socket-ticket` → `{ ticket, expiresAt, protocol }`. The ticket works once, for 30 seconds, for the session that asked, and only while that session is still signed in. `GET /socket` upgrades with `Authorization: Ticket <ticket>`. A client that can't set that header offers the subprotocols `rukoo.workspace.v1` and `rukoo.ticket.<ticket>`, and the server answers with the first. A ticket in the address is never read.
 
 The server sends one frame, `{"t":"wake"}`, when something changed for this member, at most twice a second. The device then fetches `/changes`. The server answers a `ping` frame with `pong`. A socket stays authorized for 15 minutes after its session's last request to the workspace: a request renews it, a ping doesn't, and a socket whose time ran out is closed with code 4001 at the next wake. Code 4003 means the member was removed, or the workspace was deleted.
+
+### Push wakes
+
+A phone whose socket isn't working, because Rukoo is closed or the phone dozes, hears that it has something new through a push service: the UnifiedPush distributor its owner installed, such as ntfy, or Google's FCM through the distributor Rukoo for Android embeds. The wake follows [UnifiedPush's Android specification](https://unifiedpush.org/developers/spec/android/) (AND_3) and Web Push: it is an RFC 8291 message (`aes128gcm`) encrypted for the phone, which says `{"t":"wake"}` and nothing else, the same frame the socket sends, and it is signed with VAPID (RFC 8292). The phone then runs its catch-up over its own session. No workspace, conversation, person, count or text goes through the push service, which sees only that a wake went to the phone and when.
+
+| Route | Request and answer |
+| --- | --- |
+| `PUT /v1/push-endpoint` | `{ endpoint, p256dh, auth }` → `204`. The session's endpoint, replacing the one it had. `p256dh` is the 65-byte uncompressed P-256 public key the phone made for this registration and `auth` its 16-byte auth secret, both in base64url, as `PushEndpoint.pubKeySet` of UnifiedPush's Android connector holds them. Another session of the same account that has the same endpoint lets go of it. An account keeps endpoints for 10 sessions at most; registering one more clears the one registered longest ago. |
+| `DELETE /v1/push-endpoint` | → `204`, also when the session had none. A device sends it when it stops wanting wakes, such as when its team chat notifications go off. |
+
+Both take the session's token, as every account route does, and answer `401 unauthorized` for a session that ended and `404 not_found` while team chat or push wakes are off. The endpoint lives with the session in the account's object, so signing out, being signed out from another device, a new password, recovery and deleting the account all remove it.
+
+**The endpoint.** The server posts to an address a phone gave it, so it is held to rules. `endpoint` is the address exactly as the push service wrote it, at most 1,000 bytes (UnifiedPush's limit), `https:` on the default port, without a user name, password or fragment. Its host can't be `localhost`, a name ending in `.localhost`, `.local` or `.internal`, a name without a dot, one of this server's own hosts, or an IP address in a loopback, private, link-local, shared, multicast or reserved range, as for [link cards](#link-cards). A host name is looked up through DNS over HTTPS when it is registered, and every address it leads to must be public. A wrong field answers `400 invalid` with `field` set to `endpoint`, `p256dh` or `auth`; `p256dh` must be a point on the curve. The route shares the sign-in routes' rate limit, 30 requests a minute per client address. The account checks the address rules again, without the lookup, before each wake.
+
+**What sends a wake.** A message someone posts, to the people the apps would notify of it ([docs/chat.md](../docs/chat.md#unread-notifications-and-mute)): everyone else in a direct message, and in a channel the people it mentions and the author of the message it replies to. Someone who blocked the sender gets none, and neither does the sender. Reactions, reads, link cards and changes to the directory send none. The device still decides whether to notify, for example by what it muted.
+
+**Who gets one.** Each session of that member's account with an endpoint, apart from sessions with a working socket to the workspace, which heard of it there. A socket works while it opened or answered a `ping` in the last 75 seconds and its lease runs; Rukoo for Android pings every 30 seconds while the phone is awake, so a dozing phone whose socket is still open gets a wake.
+
+**Bursts.** A session gets a wake at once, then at most one more per 15 seconds: what comes in the 15 seconds after a wake sends one more wake when they end, and a quiet window sends none. The account keeps this in memory, so a restart of its object can send one wake sooner.
+
+**The request.** `POST` to the endpoint with `Content-Encoding: aes128gcm`, `Content-Type: application/octet-stream`, `TTL: 86400`, `Urgency: high`, `Topic: rukoo-wake`, so a newer wake replaces one still waiting where the service supports it, and `Authorization: vapid t=<JWT>, k=<public key>`. The JWT is ES256, for the endpoint's origin as `aud`, valid for 12 hours, with the operator's `OPERATOR_CONTACT` or `OPERATOR_URL` as `sub` when it is an `https:` or `mailto:` address. The body is one record of the RFC 8291 encoding, salt and sender key fresh for each wake, 115 bytes. The server waits 10 seconds at most, follows no redirect and doesn't read the answer. A `404` or `410` means the registration is gone, and the endpoint goes with it unless the session registered another meanwhile; any other failure is logged without the address and the next wake tries again.
+
+**The VAPID key** is derived from `PEPPER`: the first HMAC-SHA-256 of `vapid-key\n<n>` that is a valid P-256 private key. It never changes while the pepper doesn't, which matters for FCM, which ties each registration to the key it was made with. `GET /v1/info` hands it out as `workspace.push.vapid`.
 
 ### Limits on requests
 
