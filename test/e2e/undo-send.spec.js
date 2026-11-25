@@ -716,13 +716,10 @@ test('an email refused while the session ends is written down at once, though an
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('session-end'));
   const unsentFile = path.join(dataDir, 'data', 'unsent.json');
   const heldFile = path.join(dataDir, 'data', 'held.json');
-  const subjectsIn = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map((e) => e.restore.state.subject) : []);
   await expect.poll(() => subjectsIn(unsentFile)).toEqual(['Refused at the end']);
   await expect.poll(() => subjectsIn(heldFile)).toEqual(['Hanging at the end']);
 
-  const exited = app.waitForEvent('close');
-  kill(app.process());
-  await exited;
+  await crash();
   await launch();
   // No autosave settles the hanging one before the test looks.
   await app.evaluate(() => {
@@ -847,13 +844,26 @@ test('a refused email the reading pane had not opened when Rukoo is killed opens
   await expect(again.locator('.editor')).toContainText('Refused before a kill, every word.');
   expect(subjectsIn(heldFile)).toEqual(['Refused before a kill']);
 
-  // Sent this time, it goes from held.json and doesn't come back.
+  // Sent this time, it goes from held.json and doesn't come back. Every list held.json gets on the way names it once:
+  // the kept email leaves in the write that lists its queued copy, so no kill in between finds both and opens two.
+  await app.evaluate(() => {
+    const fs = process.mainModule.require('fs');
+    const rename = fs.renameSync;
+    global.__heldLists = [];
+    fs.renameSync = (from, to) => {
+      rename(from, to);
+      if (String(to).endsWith('held.json')) global.__heldLists.push(JSON.parse(fs.readFileSync(to, 'utf8')).map((e) => e.restore.state.subject));
+    };
+  });
   await clickClosing(again, '[data-c="send"]');
   await expect(notice()).toContainText('Sending email…');
   await sendWaiting();
   await expect(notice()).toContainText('Email sent');
   expect(await subjects('sent')).toContain('Refused before a kill');
   expect(subjectsIn(heldFile)).toEqual([]);
+  const lists = await app.evaluate(() => global.__heldLists);
+  expect(lists.length).toBeGreaterThan(0);
+  for (const list of lists) expect(list).toEqual(['Refused before a kill']);
   await crash();
   await launch();
   await nothingReopens();

@@ -1117,7 +1117,8 @@ const fromMainWindow = (sender) => Boolean(win && !win.isDestroyed() && sender =
 
 // Writes down what the quit leaves of the emails that left the outbox: those refused and not saved, or not yet opened.
 // Emails still in the outbox, such as one on its way whose fate nobody can know now, are in held.json already
-// (writeHeld), so none is in both. None of them is sent again by itself.
+// (writeHeld). A refused one can be in both files, since held.json keeps it until an editor has it (keepHeld): the
+// next start merges them by id and opens it once. None of them is sent again by itself.
 function keepUnsent() {
   const waiting = refused.list().map(({ id, restore, error }) => ({ id, restore, error }));
   const list = [...unsent, ...waiting].filter((u) => u.restore);
@@ -1233,13 +1234,15 @@ function letHeldGo(id) {
 }
 
 // The compose window sender, when it opened a kept email (reopenHeld, openKept), has saved it as a draft, sent or
-// queued it, or closed with an answer, so held.json lets that email go.
-function heldSettled(sender) {
+// queued it, or closed with an answer, so held.json lets that email go. write false: the caller's next step writes
+// held.json itself.
+function heldSettled(sender, write = true) {
   const c = sender && composeWindows.get(sender.id);
   if (!c || !c.heldId) return;
   const id = c.heldId;
   c.heldId = null;
-  letHeldGo(id);
+  if (write) letHeldGo(id);
+  else heldBefore = heldBefore.filter((e) => e.id !== id);
 }
 
 // The server refused an email that waited. Its editor closed after Send, so it opens again with the email and the
@@ -2108,9 +2111,10 @@ const windowApi = {
     if (ms > 0 && restore && typeof restore === 'object' && win && !win.isDestroyed()) {
       // Refused now, while the editor is still open to show why.
       engine.checkSend(payload);
+      // A kept email leaves held.json in the write that lists its queued copy (the outbox's changed()), so held.json
+      // never lists it twice, as itself and as queued, and a kill in between can't open it twice.
+      heldSettled(sender, false);
       const { id } = outbox.queue({ payload, restore, origin: sender === win.webContents ? 'main' : 'window', ms });
-      // In the same step, so held.json never lists an email reopened after a crash twice: as itself and as queued.
-      heldSettled(sender);
       send('send-queued', { id, ms });
       return { queued: id, ms };
     }
