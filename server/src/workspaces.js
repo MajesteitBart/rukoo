@@ -196,7 +196,7 @@ export async function workspaces(request, env, url, ctx) {
     case 'POST /invites':
       return ask('invite.create', invite(await body()));
     case 'GET /members':
-      return ask('members.list');
+      return ask('members.list', { version: wire });
     case 'GET /channels':
       return ask('channels.list');
     case 'POST /channels': {

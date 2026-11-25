@@ -41,7 +41,8 @@ function refusal(err) {
     case 'quota':
       return { state: 'failed', reason: 'quota' };
     case 'invalid':
-      return { state: 'failed', reason: err.field === 'mentions' ? 'mentions' : 'invalid' };
+      // A reply's root the server refused: the client replies only to top-level messages, so it was removed meanwhile.
+      return { state: 'failed', reason: err.field === 'mentions' ? 'mentions' : err.field === 'root' ? 'root_removed' : 'invalid' };
     case 'not_found':
     case 'forbidden':
       return { state: 'failed', reason: 'no_access' };

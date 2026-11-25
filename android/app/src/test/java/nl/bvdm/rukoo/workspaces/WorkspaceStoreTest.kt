@@ -399,6 +399,29 @@ class WorkspaceStoreTest {
     }
 
     @Test
+    fun `a guest's directory reads and keeps an agent whose sponsor the server left out`() = runTest {
+        val store = seeded()
+        val clark = "u_" + "clark".padEnd(22, 'x')
+        // GET /members gives a guest sponsor null when they share no channel with the sponsor; absent reads the same.
+        val page = nl.bvdm.rukoo.core.RukooJson.decodeFromString(
+            MembersPage.serializer(),
+            """{"members":[
+              {"id":"$me","kind":"human","name":"Me","role":"guest","state":"active","joinedAt":1},
+              {"id":"$clark","kind":"agent","name":"Clark","role":"member","state":"active","joinedAt":2,
+               "agent":{"sponsor":null,"answers":"members","members":["$me"],"agents":false}},
+              {"id":"$olga","kind":"agent","name":"Bee","role":"member","state":"active","joinedAt":3,
+               "agent":{"answers":"everyone"}}
+            ],"more":false}""",
+        )
+        assertEquals(AgentSettings(null, "members", listOf(me)), page.members[1].agent)
+        assertEquals(AgentSettings(null, "everyone"), page.members[2].agent)
+        store.tx {
+            replaceMembers(ws, page.members)
+            assertEquals(AgentSettings(null, "members", listOf(me)), listMembers(ws).single { it.id == clark }.agent)
+        }
+    }
+
+    @Test
     fun `the outbox keeps rows in order and holds a room back behind its first row`() = runTest {
         val store = seeded()
         store.tx {
