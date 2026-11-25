@@ -1084,6 +1084,8 @@ mod tests {
         let first = [
             file("transcript.db", "transcript", 'a'),
             file("audio/mic/000001.wav", "audio", 'b'),
+            // What Rukoo owns travels outside every manifest: it stays.
+            file("rukoo.json", "data", 'd'),
         ];
         let mut import = rows(id, &binding.target, &binding.kid);
         import.files = &first;
@@ -1101,6 +1103,7 @@ mod tests {
             .map(|f| format!("{} {}", f.path, &f.sha256[..1]))
             .collect();
         assert_eq!(listed, ["transcript.db c"]);
+        assert!(shared.queue.in_bucket(id, "rukoo.json").unwrap().is_some());
         sync.shutdown();
         let _ = fs::remove_dir_all(&dir);
     }

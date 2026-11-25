@@ -1353,7 +1353,7 @@ impl Queue {
                 let gone: Vec<i64> = {
                     let mut stmt = tx.prepare(
                         "SELECT id, path FROM files WHERE meeting = ?1 AND state = 'done' \
-                           AND kind NOT IN ('manifest', 'index')",
+                           AND kind NOT IN ('manifest', 'index', 'data')",
                     )?;
                     let rows = stmt
                         .query_map([m.meeting], |r| {
