@@ -66,3 +66,17 @@ test('macOS uses Keychain encryption and never writes a new credential without i
   assert.throws(() => locked.encrypt('password'), /Keychain/);
   assert.equal(locked.decrypt('plain:cGFzc3dvcmQ='), 'password');
 });
+
+test('available says whether a secret is kept encrypted: never with basic_text or without a keyring on Linux', () => {
+  assert.equal(createSecrets(storage('gnome_libsecret'), 'linux').available(), true);
+  assert.equal(createSecrets(storage('kwallet6'), 'linux').available(), true);
+  assert.equal(createSecrets(storage('basic_text'), 'linux').available(), false);
+  assert.equal(createSecrets(storage('gnome_libsecret', false), 'linux').available(), false);
+  assert.equal(createSecrets(storage(undefined), 'win32').available(), true);
+  assert.equal(createSecrets(storage(undefined, false), 'darwin').available(), false);
+  const throwing = storage('gnome_libsecret');
+  throwing.isEncryptionAvailable = () => {
+    throw new Error('not ready');
+  };
+  assert.equal(createSecrets(throwing, 'win32').available(), false);
+});

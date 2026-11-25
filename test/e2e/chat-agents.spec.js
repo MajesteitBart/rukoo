@@ -6,6 +6,8 @@
 // runs: the reply comes from the test, and "Answers with" only reads Settings, with the scripted agents
 // (SEM_AGENT_FAKE=1) as the agents whose status check passed.
 const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
 const { skipWithoutServer, startServer, launch, signIn, openChat, twoPeople, roomRow, dialogBox, menuItem, workspaceMenu, roomMenu, composer, serverMessages, serverGet, connected, directoryIn, messageRow, hoverTool, PASSWORD } = require('./chat-helpers');
@@ -40,6 +42,32 @@ const pane = () => win.locator('section.chat');
 const toast = () => win.locator('#toast');
 const picker = () => win.locator('.ch-suggest');
 const KEY = /^rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
+// The key as the config shows it on the computer, where only main has it.
+const MASK = '••••••••••••';
+
+// Save config on the computer: main asks first, in a question the test answers, then saves the config with the key
+// to the file the test names, never to the clipboard. The window never has it. Answers the saved config.
+let saves = 0;
+async function saveConfig(step) {
+  const open = await step
+    .locator('[data-elsewhere]')
+    .evaluate((d) => d.open)
+    .catch(() => true);
+  if (!open) await step.locator('[data-elsewhere] summary').click();
+  const file = path.join(dataDir, `saved-${++saves}.json`);
+  await app.evaluate((_e, f) => {
+    global.__semAgentRunAnswer = 'save';
+    global.__semAgentRunSaveTo = f;
+    global.__semAgentRunAsked = [];
+  }, file);
+  await app.evaluate(({ clipboard }) => clipboard.writeText(''));
+  await step.locator('[data-copy-config]').click();
+  await expect(toast()).toHaveText('Config saved');
+  const asked = await app.evaluate(() => global.__semAgentRunAsked);
+  expect(asked.map((q) => q.kind)).toEqual(['export']);
+  expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('');
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
 
 // Olga's agent Revy, which answers only her, in general.
 async function olgasAgent(olga, ws) {
@@ -150,12 +178,17 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   const step = dialogBox(win);
   await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
   await expect(step.locator('[name="key"], [name="server"], [name="workspace"]')).toHaveCount(0);
-  // The config shows from its top, with the server, the workspace and the key, and Copy config has the focus.
-  await expect(step.locator('[data-copy-config]')).toBeFocused();
+  // On the computer Run on this computer leads, filled and with the focus; the runner's config, to run the agent
+  // somewhere else, is under a closed section. Its key is hidden: the window never has it, and a line says so.
+  await expect(step.locator('[data-run]')).toBeFocused();
+  await expect(step.locator('[data-run]')).toHaveClass(/\bprimary\b/);
+  await expect(step.locator('[data-elsewhere]')).not.toHaveAttribute('open', '');
+  await step.locator('[data-elsewhere] summary').click();
   expect(await step.locator('[name="config"]').evaluate((el) => el.scrollTop)).toBe(0);
   const config = async () => JSON.parse(await step.locator('[name="config"]').inputValue());
-  const key = (await config()).key;
-  expect(key).toMatch(KEY);
+  expect((await config()).key).toBe(MASK);
+  expect(await win.evaluate(() => document.body.innerHTML)).not.toMatch(/rka_[A-Za-z0-9_-]{22}\./);
+  await expect(step.locator('[data-key-gone]')).toHaveText('Rukoo keeps the key out of this window, so nothing shown here can read it. Save config asks you first, then saves the config with the key to a file.');
   // Answers with starts on Bart's default agent, which is ready; the other ready ones follow in Settings' order, and a
   // program of his own comes last. Hermes has no address, so it isn't offered.
   const use = step.locator('[name="use"]');
@@ -164,7 +197,7 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   expect(await config()).toEqual({
     server: server.url,
     workspace: ws.id,
-    key,
+    key: MASK,
     backend: { type: 'claude' },
     context: { threadMessages: 50, channelMessages: 20, maxChars: 30000 },
     instructions: ''
@@ -174,27 +207,34 @@ test('an agent made in the Agents dialog joins general through Add people, is me
   expect((await config()).backend).toEqual({ type: 'openai', url: 'http://127.0.0.1:18789', model: 'openclaw/default' });
   await use.selectOption({ label: 'A program of my own' });
   expect((await config()).backend).toEqual({ type: 'command', command: 'my-agent' });
-  await expect(step.locator('[data-use-help]')).toHaveText('Put your program in place of my-agent in the config. It gets the question on stdin and answers on stdout.');
+  await expect(step.locator('[data-key-help]')).toHaveText('Put your program in place of my-agent in the config. It gets the question on stdin and answers on stdout.');
+  // Rukoo runs only the agents of Settings, Agents: a program of one's own takes the runner.
+  await expect(step.locator('[data-run]')).toBeDisabled();
+  await expect(step.locator('[data-use-help]')).toHaveText('Rukoo can run only the agents of Settings > Agents. For a program of your own, start the runner yourself with the config below.');
   await use.selectOption({ label: 'Claude Code' });
-  // Step 3: the runner comes from GitHub and starts from its own folder.
+  await expect(step.locator('[data-run]')).toBeEnabled();
+  // The runner comes from GitHub and starts from its own folder.
   await expect(step.locator('.ch-agent-cmd')).toHaveText('node runner.js --config agent.json');
-  await expect(step.locator('.ch-agent-step').nth(2)).toContainText('with Node.js 22 or newer');
+  await expect(step.locator('[data-elsewhere]')).toContainText('with Node.js 22 or newer');
   await expect(step.locator('[data-get-runner]')).toHaveText('Get the runner on GitHub');
   // general is on screen: the step offers to add Clark there. Here Bart adds it through Add agents instead.
   await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Clark to #general');
   await expect(step.locator('[name="join"]')).toBeChecked();
   await step.locator('[name="join"]').uncheck();
-  // Closing before copying asks first; Copy config copies it, and then Done is the filled button.
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bprimary\b/);
+  // Closing before it runs or the config was saved asks first; Save config saves it, and then Done is the filled
+  // button.
+  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
   await win.keyboard.press('Escape');
   const ask = win.locator('.scrim').last().locator('.dialog');
-  await expect(ask.locator('h2')).toHaveText('Close without copying the config?');
+  await expect(ask.locator('h2')).toHaveText('Close without connecting Clark?');
   await ask.locator('.buttons button', { hasText: 'Go back' }).click();
-  await step.locator('[data-copy-config]').click();
-  await expect(toast()).toHaveText('Config copied');
-  // Windows' clipboard gives the lines back with CRLF.
-  await expect.poll(async () => (await app.evaluate(({ clipboard }) => clipboard.readText())).replace(/\r\n/g, '\n')).toBe(await step.locator('[name="config"]').inputValue());
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
+  // Main asks, then saves the config the step shows, with the key in place of the mask.
+  const copied = await saveConfig(step);
+  expect(copied.key).toMatch(KEY);
+  expect({ ...copied, key: MASK }).toEqual(await config());
+  const key = copied.key;
+  await expect(step.locator('[data-run]')).toHaveClass(/\bsecondary\b/);
+  await expect(step).not.toHaveClass(/\bch-quiet-close\b/);
   await step.locator('.buttons button').last().click();
 
   // The list has it, with a menu for Bart; the key works for the agent's own routes.
@@ -334,9 +374,10 @@ test('workspace members show the agents in a group of their own, with no Message
   await expect(agents.locator('.ch-agent-meta')).toHaveText(['Made by Bart · Answers everyone · Not connected yet', 'Made by Olga Owner · Answers only Olga Owner · Not connected yet']);
   // Olga's agent: Bart, a member, has nothing to do with it.
   await expect(agents.filter({ hasText: 'Revy' }).locator('[data-person]')).toHaveCount(0);
-  // His own: Edit, New key and Remove, and never Message, Block or a role.
+  // His own: Edit, New key, Run on this computer (it runs nowhere here yet) and Remove, and never Message, Block or a
+  // role.
   await agents.filter({ hasText: 'Clark' }).locator('[data-person]').click();
-  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Remove agent']);
+  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Run on this computer', 'Remove agent']);
   await menuItem(win, 'Edit agent').click();
   const form = dialogBox(win);
   await expect(form.locator('h2')).toHaveText('Edit Clark');
@@ -355,15 +396,15 @@ test('workspace members show the agents in a group of their own, with no Message
   await confirm.locator('.buttons button').last().click();
   const step = dialogBox(win);
   await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
-  const key = JSON.parse(await step.locator('[name="config"]').inputValue()).key;
+  await step.locator('[data-elsewhere] summary').click();
+  expect(JSON.parse(await step.locator('[name="config"]').inputValue()).key).toBe(MASK);
+  const { key } = await saveConfig(step);
   expect(key).toMatch(KEY);
   expect(key).not.toBe(mine.key);
   // A new key doesn't offer to add the agent to a channel: it is in its channels already.
   await expect(step.locator('[name="join"]')).toHaveCount(0);
   expect((await server.agentCall(mine.key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(401);
   expect((await server.agentCall(key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(200);
-  await step.locator('[data-copy-config]').click();
-  await expect(toast()).toHaveText('Config copied');
   await step.locator('.buttons button').last().click();
   await dialog.locator('.buttons button').last().click();
   await expect(win.locator('.scrim')).toHaveCount(0);
@@ -399,7 +440,7 @@ test("an admin edits and removes someone else's agent but gets no New key; a pri
   await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'Remove agent']);
   await win.keyboard.press('Escape');
   await agents.filter({ hasText: 'Clark' }).locator('[data-person]').click();
-  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Remove agent']);
+  await expect(win.locator('.menu [role^="menuitem"]')).toHaveText(['Edit agent', 'New key', 'Run on this computer', 'Remove agent']);
   await win.keyboard.press('Escape');
   await dialog.locator('.buttons button').last().click();
   // The Agents dialog says the same.
@@ -514,11 +555,11 @@ test('the key step starts on the ready default agent and adds the new agent to t
   await expect(step.locator('h2')).toHaveText('Connect Helper', { timeout: 15000 });
   // The default agent comes first among the ready ones.
   await expect(step.locator('[name="use"] option')).toHaveText(['Codex', 'OpenClaw', 'Claude Code', 'A program of my own']);
+  await step.locator('[data-elsewhere] summary').click();
   expect(JSON.parse(await step.locator('[name="config"]').inputValue()).backend).toEqual({ type: 'codex' });
   await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Helper to #general');
   await expect(step.locator('[name="join"]')).toBeChecked();
-  await step.locator('[data-copy-config]').click();
-  const key = JSON.parse(await step.locator('[name="config"]').inputValue()).key;
+  const { key } = await saveConfig(step);
   await step.locator('.buttons button').last().click();
   await expect(list.locator('[data-agent-row]', { hasText: 'Helper' }).locator('.ch-agent-meta')).toHaveText('Made by Bart · Answers everyone · Not connected yet', { timeout: 15000 });
   await list.locator('.buttons button').last().click();
@@ -565,8 +606,8 @@ test('the key step adds the agent to the channel only on Done with the box check
   // Escape after copying the config: the step closes, and the agent joins nothing although the box was checked.
   let { step } = await makeAgent('Helper');
   await expect(step.locator('[name="join"]')).toBeChecked();
-  await step.locator('[data-copy-config]').click();
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
+  await saveConfig(step);
+  await expect(step.locator('[data-run]')).toHaveClass(/\bsecondary\b/);
   await win.keyboard.press('Escape');
   await expect(win.locator('.scrim')).toHaveCount(1);
   await expect(dialogBox(win).locator('[data-agent-row]', { hasText: 'Helper' })).toBeVisible({ timeout: 15000 });
@@ -577,8 +618,8 @@ test('the key step adds the agent to the channel only on Done with the box check
 
   // Olga removes Scout before Bart chooses Done: the server refuses to add it. The step stays open and says why.
   ({ step } = await makeAgent('Scout'));
-  await step.locator('[data-copy-config]').click();
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
+  await saveConfig(step);
+  await expect(step.locator('[data-run]')).toHaveClass(/\bsecondary\b/);
   const scout = await agentId(olga, ws, 'Scout');
   expect((await server.call('DELETE', `/v1/workspaces/${ws.id}/agents/${scout}`, { token: olga.token })).status).toBeLessThan(300);
   await step.locator('.buttons button').last().click();
@@ -621,13 +662,14 @@ test('the key step keeps the workspace the agent was made in when another worksp
   );
   await expect(switcherName()).toHaveText('Beta', { timeout: 15000 });
   await settle();
-  // The step is still there, with Acme's config and the key that works there.
+  // The step is still there, with Acme's config, and the key main copies works there.
   await expect(step.locator('h2')).toHaveText('Connect Courier');
   expect(await config()).toEqual(made);
-  expect((await server.agentCall(made.key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(200);
+  const copied = await saveConfig(step);
+  expect({ ...copied, key: MASK }).toEqual(made);
+  expect((await server.agentCall(copied.key, 'GET', `/v1/workspaces/${ws.id}/agents/me`)).status).toBe(200);
   await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText('Add Courier to #general');
-  await step.locator('[data-copy-config]').click();
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
+  await expect(step.locator('[data-run]')).toHaveClass(/\bsecondary\b/);
   await step.locator('.buttons button').last().click();
   await expect(win.locator('.scrim')).toHaveCount(0);
   // Done added Courier to Acme's general, the channel the box named, and to nothing in Beta.
@@ -644,8 +686,11 @@ test('with no agent in Settings that can answer, the key step offers only a prog
   await expect(step.locator('[name="use"] option')).toHaveText(['A program of my own']);
   await expect(step.locator('[name="use"]')).toHaveValue('own');
   await expect(step.locator('[data-use-help]')).toHaveText(
-    'None of your agents in Settings → Agents can answer: each is off, not set up or not installed. Put your program in place of my-agent in the config. It gets the question on stdin and answers on stdout.'
+    'None of your agents in Settings → Agents can answer: each is off, not set up or not installed. Rukoo can run only the agents of Settings > Agents. For a program of your own, start the runner yourself with the config below.'
   );
+  await expect(step.locator('[data-run]')).toBeDisabled();
+  await step.locator('[data-elsewhere] summary').click();
+  await expect(step.locator('[data-key-help]')).toHaveText('Put your program in place of my-agent in the config. It gets the question on stdin and answers on stdout.');
   expect(JSON.parse(await step.locator('[name="config"]').inputValue()).backend).toEqual({ type: 'command', command: 'my-agent' });
 });
 
@@ -694,7 +739,7 @@ test('the key step goes when its session signs out elsewhere, and says the key w
   const { bart } = await twoPeople(server);
   await ready(bart, { fake: true });
   const { step } = await makeAgent('Ghost');
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bprimary\b/);
+  await expect(step.locator('[data-run]')).toHaveClass(/\bprimary\b/);
   // Signed out as Settings or another window does it, while the config wasn't copied.
   await win.evaluate(() => window.mail.call('accountSignOut'));
   await expect(stepTitles()).toHaveCount(0, { timeout: 15000 });
@@ -790,8 +835,8 @@ test('the key step goes when its person is removed from the workspace, quietly o
   await expect(switcherName()).toHaveText('Acme', { timeout: 15000 });
   await directoryIn(app, win);
   const { step } = await makeAgent('Keeper');
-  await step.locator('[data-copy-config]').click();
-  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bsecondary\b/);
+  await saveConfig(step);
+  await expect(step.locator('[data-run]')).toHaveClass(/\bsecondary\b/);
   const out = await server.call('DELETE', `/v1/workspaces/${ws.id}/members/${bartMe.id}`, { token: olga.token });
   expect([200, 204]).toContain(out.status);
   await expect(stepTitles()).toHaveCount(0, { timeout: 15000 });

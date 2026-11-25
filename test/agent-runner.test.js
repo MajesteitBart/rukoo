@@ -1162,6 +1162,72 @@ test('the openai backend sends a system and a user message with a user per trigg
   }
 });
 
+test('a backend answer is read only up to its limit, and its failures carry a code and a status apart from their text', async () => {
+  const big = 'x'.repeat(5 * 1024 * 1024);
+  const fake = await fakeHttp((req, body, res) => {
+    if (req.url === '/huge/v1/chat/completions') return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content: big } }] }));
+    if (req.url === '/stream/v1/chat/completions') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      // A line that never ends.
+      res.write(`data: ${'y'.repeat(1024 * 1024 + 10)}`);
+      return setTimeout(() => res.end(), 50);
+    }
+    if (req.url === '/error/v1/chat/completions') return res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: `upstream said secret-value ${'z'.repeat(200000)}` } }));
+    res.writeHead(404).end();
+  });
+  try {
+    const run = (route) => backends.makeBackend({ type: 'openai', url: `${fake.url}/${route}`, timeout: 10 }).run({ instructions: 'I', input: 'Q', text: 'I\n\nQ' }, { id: 'e_t' });
+    await assert.rejects(run('huge'), (err) => err instanceof backends.BackendError && err.code === 'too_large');
+    await assert.rejects(run('stream'), (err) => err instanceof backends.BackendError && err.code === 'too_large');
+    await assert.rejects(run('error'), (err) => err.code === 'http' && err.status === 502 && err.message.length < 300);
+    const { failureOf } = require('../integrations/agent-runner/runner.js');
+    assert.deepEqual(failureOf(new backends.BackendError('HTTP 502: secret-value', 'http', 502)), { code: 'http', status: 502 });
+    assert.deepEqual(failureOf(new Error('anything at all')), { code: 'backend' });
+    assert.deepEqual(failureOf(Object.assign(new RukooError(0, null, 'No answer from host: secret'), { network: true })), { code: 'offline' });
+    assert.deepEqual(failureOf(new RukooError(503, { message: 'secret' })), { code: 'http', status: 503 });
+  } finally {
+    await fake.close();
+  }
+});
+
+test("the runner reports a backend's failure with its code, never its text, and stop waits for the turn in flight", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { bart, ws, agent, key } = await setup();
+  const events = [];
+  let release = null;
+  let stopped = false;
+  const { runner } = makeRunner(key, ws, {
+    options: {
+      report: (e) => events.push(e),
+      backend: {
+        run: (p, { signal }) =>
+          new Promise((resolve, reject) => {
+            release = resolve;
+            signal.addEventListener('abort', () => setTimeout(() => ((stopped = true), reject(new backends.BackendError('Stopped', 'stopped'))), 300), { once: true });
+          })
+      }
+    }
+  });
+  const running = runner.run();
+  await until(() => events.some((e) => e.type === 'pass'), 15000, 'a pass');
+  await ask(bart, ws, ws.general, '@Clark hello', agent);
+  await until(() => release, 15000, 'the turn');
+  const at = Date.now();
+  runner.stop();
+  await running;
+  // run() returned only after the turn ended, which took 300 ms after the stop.
+  assert.equal(stopped, true);
+  assert.ok(Date.now() - at >= 250, `${Date.now() - at} ms`);
+  const failing = makeRunner(key, ws, { options: { report: (e) => events.push(e), backend: { run: async () => Promise.reject(new backends.BackendError('HTTP 500: {"error":"secret-value"}', 'http', 500)) } } });
+  const going = failing.runner.run();
+  await ask(bart, ws, ws.general, '@Clark again', agent);
+  await until(() => events.some((e) => e.type === 'failed'), 15000, 'the failure');
+  failing.runner.stop();
+  await going;
+  assert.deepEqual(events.find((e) => e.type === 'failed'), { type: 'failed', code: 'http', status: 500 });
+  assert.ok(!JSON.stringify(events).includes('secret-value'));
+});
+
 test('a runner that can not reach the server at the start keeps trying until it is stopped', async () => {
   const key = `rka_${'A'.repeat(22)}.${'b'.repeat(43)}`;
   // A port nothing listens on: one the system gave out and took back.
@@ -1612,4 +1678,207 @@ test('the command line --check exits with 1 for a backend that cannot answer, an
   assert.equal(fine.code, 0, fine.err);
   assert.match(fine.err, /warn The agent is in no channel yet, so no mention can reach it\. In Rukoo, open a channel's menu and choose Add agents/);
   assert.match(fine.err, /info The check passed\. Start the runner without --check\./);
+});
+
+// ---- Review round 3 ----
+
+test('the stream parser counts every byte of a line and a frame as it arrives, before anything is kept or handed on', () => {
+  const tooLarge = (err) => err instanceof backends.BackendError && err.code === 'too_large';
+  // Empty data lines add nothing to the data, but every one is bytes of the frame.
+  const empty = [];
+  const p1 = new backends.SseParser((e) => empty.push(e));
+  assert.throws(() => {
+    for (let i = 0; i < 100000; i++) p1.push('data:\n'.repeat(10));
+  }, tooLarge);
+  assert.deepEqual(empty, []);
+  // A whole frame past the limit, in one piece and of short lines, is refused before it reaches its reader.
+  const whole = [];
+  const p2 = new backends.SseParser((e) => whole.push(e));
+  assert.throws(() => p2.push(`${`data: ${'x'.repeat(1000)}\n`.repeat(1100)}\n`), tooLarge);
+  assert.deepEqual(whole, []);
+  // A frame under the limit, arriving a byte at a time with CR LF and a character of two bytes split, is one event.
+  const small = [];
+  const p3 = new backends.SseParser((e) => small.push(e));
+  for (const b of Buffer.from('event: note\r\ndata: héllo\r\ndata:\r\n\r\ndata: two\n\n')) p3.push(Uint8Array.of(b));
+  assert.deepEqual(small, [
+    { event: 'note', data: 'héllo\n' },
+    { event: 'message', data: 'two' }
+  ]);
+});
+
+test('a stream the parser refuses is cancelled at once, so the server stops sending', async () => {
+  let closed = false;
+  const fake = await fakeHttp((req, body, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const timer = setInterval(() => res.write('data:\n'.repeat(5000)), 5);
+    res.on('close', () => {
+      closed = true;
+      clearInterval(timer);
+    });
+  });
+  try {
+    const started = Date.now();
+    await assert.rejects(backends.makeBackend({ type: 'openai', url: fake.url, timeout: 20 }).run({ instructions: 'I', input: 'Q', text: 'I\n\nQ' }, { id: 'e_t' }), (err) => err.code === 'too_large');
+    await until(() => closed, 3000, 'the stream to close');
+    assert.ok(Date.now() - started < 5000, `${Date.now() - started} ms`);
+  } finally {
+    await fake.close();
+  }
+});
+
+test('a run the server takes while the runner stops still gets its id answered, and is then stopped', async () => {
+  const stops = [];
+  const fake = await fakeHttp((req, body, res) => {
+    // The server takes the run at once and answers its id 400 ms later.
+    if (req.method === 'POST' && req.url === '/v1/runs') return setTimeout(() => res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ run_id: 'run_late' })), 400);
+    if (req.method === 'POST' && req.url === '/v1/runs/run_late/stop') {
+      stops.push(req.url);
+      return res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const stop = new AbortController();
+    const running = backends.makeBackend({ type: 'runs', url: fake.url, timeout: 30 }).run({ instructions: 'I', input: 'Q', text: 'I\n\nQ' }, { id: 'e_t', signal: stop.signal });
+    await sleep(100);
+    const at = Date.now();
+    stop.abort();
+    await assert.rejects(running);
+    assert.deepEqual(stops, ['/v1/runs/run_late/stop']);
+    assert.ok(Date.now() - at < 4000, `stopped in ${Date.now() - at} ms, within the runner's STOP_GRACE`);
+  } finally {
+    await fake.close();
+  }
+});
+
+test('a run the runner stopped before it was submitted is never sent', async () => {
+  const seen = [];
+  const fake = await fakeHttp((req, body, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    if (req.method === 'POST' && req.url === '/v1/runs') return res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ run_id: 'run_unwanted' }));
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+  });
+  try {
+    const stop = new AbortController();
+    stop.abort();
+    await assert.rejects(backends.makeBackend({ type: 'runs', url: fake.url, timeout: 30 }).run({ instructions: 'I', input: 'Q', text: 'I\n\nQ' }, { id: 'e_t', signal: stop.signal }), (err) => err instanceof backends.BackendError);
+    await sleep(1500);
+    assert.deepEqual(seen, []);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a pinned program is started only while its path is still that file: a link or a file that went says 'changed'", () => {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const real = fs.realpathSync.native(tempDir('rukoo-pinned-'));
+  const exe = path.join(real, `claude${ext}`);
+  fs.writeFileSync(exe, '#!/bin/sh\n');
+  fs.chmodSync(exe, 0o755);
+  const changed = (fn) => assert.throws(fn, (err) => err instanceof backends.BackendError && err.code === 'changed');
+  assert.equal(backends.makeBackend({ type: 'claude', exe, pin: true }).exe(), exe);
+  assert.equal(backends.makeBackend({ type: 'codex', exe, pin: true }).exe(), exe);
+  // Relative, or no longer there: not what was approved.
+  changed(() => backends.makeBackend({ type: 'claude', exe: `claude${ext}`, pin: true }).exe());
+  changed(() => backends.makeBackend({ type: 'codex', exe: path.join(real, `gone${ext}`), pin: true }).exe());
+  // A link put where the program was.
+  const link = path.join(real, `link${ext}`);
+  let linked = true;
+  try {
+    fs.symlinkSync(exe, link);
+  } catch (_) {
+    linked = false;
+  }
+  if (linked) changed(() => backends.makeBackend({ type: 'claude', exe: link, pin: true }).exe());
+  // Without pin, the runner on its own still looks for it as before.
+  assert.equal(backends.makeBackend({ type: 'claude', exe }).exe(), exe);
+});
+
+test('a request is built from the address and its path only, and a path that would name another server is refused', () => {
+  assert.equal(backends.endpoint('http://127.0.0.1:8642/p/work/?token=x#y', '/v1/runs').href, 'http://127.0.0.1:8642/p/work/v1/runs');
+  assert.equal(backends.endpoint('https://user:pw@hermes.example', '/v1/runs').href, 'https://hermes.example/v1/runs');
+  for (const url of ['http://127.0.0.1:8642//evil.example/x', 'http://127.0.0.1:8642//127.0.0.1:8642/x', 'http://127.0.0.1:8642/\\\\evil.example/']) {
+    assert.throws(() => backends.endpoint(url, '/v1/runs'), (err) => err.code === 'config', url);
+  }
+});
+
+// A workspace API that answers the runner from memory: one channel with one mention of the agent. events(opts) is
+// how GET /events answers; the others answer at once, and the socket ticket only when it is stopped.
+function memoryApi({ events }) {
+  const me = { id: `u_${'M'.repeat(22)}`, name: 'Clark', sponsor: `u_${'S'.repeat(22)}`, answers: 'everyone', agents: false, members: [] };
+  const never = (signal) => new Promise((resolve, reject) => signal && signal.addEventListener('abort', () => reject(Object.assign(new RukooError(0, null, 'aborted'), { network: true })), { once: true }));
+  return {
+    workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA',
+    info: async () => ({ workspace: { capabilities: ['agents'], agents: { depth: 3 } } }),
+    workspaceInfo: async () => ({ workspace: { id: 'w_AAAAAAAAAAAAAAAAAAAAAA', name: 'Acme', generation: 1, time: Date.now() } }),
+    me: async () => me,
+    members: async () => [{ id: me.sponsor, name: 'Olga', kind: 'human', state: 'active' }],
+    changes: async () => ({ changes: [{ conversation: 'c_1', kind: 'channel', grant: 1, head: 1, read: 0, mentions: 1 }], evictions: [], next: 'n1', more: false }),
+    events: (c, opts) => events(opts),
+    channelMembers: async () => [{ member: me.sponsor }],
+    read: async () => ({ read: 1 }),
+    post: async () => ({ status: 201, body: { event: { id: 'e_reply' } }, headers: new Map() }),
+    ticket: (opts = {}) => never(opts.signal),
+    socketUrl: () => 'ws://127.0.0.1:9/x',
+    socketProtocols: () => []
+  };
+}
+
+function memoryRunner(api, { backend, report = () => {} }) {
+  const key = `rka_${'M'.repeat(22)}.${'b'.repeat(43)}`;
+  const config = normalizeConfig({ server: 'https://rukoo.example', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: ['x'] }, state: false, context: { channelMessages: 0 } }, { env: {} });
+  const runner = new Runner(config, { log: () => {}, backend, report });
+  runner.api = api;
+  return runner;
+}
+
+test("stopping during the runner's first pass is bounded too, and its workspace reads take the stop", async () => {
+  // GET /events answers only when it is stopped: the reads take the runner's stop signal.
+  const signals = [];
+  const api = memoryApi({
+    events: (opts) => {
+      signals.push(opts.signal);
+      return new Promise((resolve, reject) => opts.signal && opts.signal.addEventListener('abort', () => reject(Object.assign(new RukooError(0, null, 'aborted'), { network: true })), { once: true }));
+    }
+  });
+  const runner = memoryRunner(api, { backend: { run: async () => 'never' } });
+  const running = runner.run();
+  await until(() => signals.length, 5000, 'the first read');
+  let at = Date.now();
+  runner.stop();
+  await running;
+  assert.ok(signals[0] instanceof AbortSignal && signals[0].aborted);
+  assert.ok(Date.now() - at < 1000, `${Date.now() - at} ms`);
+  // A read that ignores the stop holds the first pass no longer than any other pass: STOP_GRACE.
+  const deaf = memoryRunner(memoryApi({ events: () => new Promise(() => {}) }), { backend: { run: async () => 'never' } });
+  const going = deaf.run();
+  await sleep(200);
+  at = Date.now();
+  deaf.stop();
+  await going;
+  assert.ok(Date.now() - at < 6000, `${Date.now() - at} ms`);
+});
+
+test("a pinned program that changed stops the runner before the turn, which reports 'changed' and ends with that code", async () => {
+  const reports = [];
+  const sponsor = `u_${'S'.repeat(22)}`;
+  const api = memoryApi({
+    events: async (opts) =>
+      opts.before !== undefined ? { events: [], more: false } : { events: [{ seq: 1, id: 'e_1', kind: 'message.posted', actor: sponsor, text: '@Clark hi', mentions: [{ actor: `u_${'M'.repeat(22)}` }] }], more: false }
+  });
+  let turns = 0;
+  const runner = memoryRunner(api, {
+    report: (e) => reports.push(e),
+    backend: {
+      run: async () => {
+        turns += 1;
+        throw new backends.BackendError('The program changed since it was approved', 'changed');
+      }
+    }
+  });
+  await assert.rejects(runner.run(), (err) => err.code === 'changed');
+  assert.equal(turns, 1);
+  assert.equal(runner.stopped, true);
+  assert.ok(reports.some((e) => e.type === 'changed'));
+  assert.ok(!reports.some((e) => e.type === 'failed'), 'no failure line for a program that is no longer approved');
 });

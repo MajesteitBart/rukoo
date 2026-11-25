@@ -63,6 +63,7 @@ const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner')
 // ---- chat ----
 const { WorkspaceService, chatTiming } = require('./workspaces');
 const { chatApi } = require('./workspaces/ipc');
+const { AgentRuns, runBackend, exportBackend, runsApi } = require('./agent-runs');
 const { VIEW_SCHEME: CHAT_FILE_SCHEME } = require('./workspaces/files');
 // Team chat shows a downloaded image through rukoo-chat-file://view/<token> (workspaces/files.js), which serves only
 // files this session downloaded. Registered before the app is ready, as Electron requires.
@@ -160,6 +161,8 @@ let booking = null;
 let reminders = null;
 // Team chat (workspaces/index.js). Null until it is made after booking.
 let workspaces = null;
+// The team chat agents this computer runs (agent-runs.js, "Run on this computer"). Null until the agent hub is made.
+let agentRuns = null;
 // Invitations in email and .ics files (calendar/invitations.js).
 let invitations = null;
 // ---- voice ----
@@ -888,6 +891,7 @@ function closeServices() {
   if (reminders) reminders.stop();
   if (booking) booking.close();
   if (workspaces) workspaces.close();
+  if (agentRuns) agentRuns.close();
 }
 
 // Windows is signing out or shutting down. No before-quit or will-quit follows, and Windows ends Rukoo soon after,
@@ -1915,6 +1919,98 @@ const api = {
   ...chatApi(() => workspaces)
 };
 
+// ---- chat agents ----
+// Run on this computer (agent-runs.js): its own calls, and chatCreateAgent, chatNewAgentKey and chatRemoveAgent, which
+// keep the agent's key in main. The first two need the window document that asks, so they are window calls (below,
+// after windowApi); the plain ones that answer the key leave api, so no call answers it.
+function agentRunsService() {
+  if (!agentRuns) throw new Error('unknown');
+  return agentRuns;
+}
+const agentRunsIpc = runsApi(agentRunsService, { chatCreateAgent: api.chatCreateAgent, chatNewAgentKey: api.chatNewAgentKey, chatRemoveAgent: api.chatRemoveAgent });
+delete api.chatCreateAgent;
+delete api.chatNewAgentKey;
+Object.assign(api, agentRunsIpc.api);
+
+// The documents that hold an agent's key (agent-runs.js hold), each by a token: the webContents id and how many pages
+// its main frame showed before this one. A navigation, a reload, a crash or closing the window ends the document and
+// what it held, and an answer that comes for it later finds it gone (documentAlive). Watched once per webContents,
+// from its first call.
+const keyHolders = new Map();
+function watchKeyHolder(contents) {
+  if (keyHolders.has(contents.id)) return;
+  const id = contents.id;
+  keyHolders.set(id, { page: 0, gone: false });
+  const drop = () => {
+    const doc = keyHolders.get(id);
+    if (doc) doc.page += 1;
+    if (agentRuns) agentRuns.releaseOwner(`${id}:${doc ? doc.page - 1 : 0}`);
+  };
+  contents.on('did-start-navigation', (details) => {
+    if (details && details.isMainFrame && !details.isSameDocument) drop();
+  });
+  contents.on('render-process-gone', drop);
+  contents.once('destroyed', () => {
+    drop();
+    const doc = keyHolders.get(id);
+    if (doc) doc.gone = true;
+  });
+}
+// The token of the document that sent a call, when it came from the main frame of the main window; else null.
+function documentOf(event) {
+  const contents = event && event.sender;
+  const frame = event && event.senderFrame;
+  const main = contents && contents.mainFrame;
+  if (!contents || !fromMainWindow(contents) || !frame || !main || frame.processId !== main.processId || frame.routingId !== main.routingId) return null;
+  watchKeyHolder(contents);
+  return `${contents.id}:${keyHolders.get(contents.id).page}`;
+}
+// Whether the document of a token is still the one on screen.
+function documentAlive(owner) {
+  const [id, page] = String(owner || '').split(':').map(Number);
+  const doc = keyHolders.get(id);
+  return Boolean(doc && !doc.gone && doc.page === page && win && !win.isDestroyed() && win.webContents.id === id);
+}
+
+// A question about a team chat agent this computer runs (agent-runs.js ask): { kind, message, detail, buttons: [{ id,
+// label }], cancel }, as a native message box on the main window, which nothing in the window can answer. Answers the
+// id of the button chosen; Cancel is the default. Test runs answer through global.__semAgentRunAnswer (a button's id,
+// else Cancel) and find each question in global.__semAgentRunAsked.
+async function askAgentRun(q) {
+  if (process.env.SEM_HIDDEN) {
+    (global.__semAgentRunAsked ||= []).push({ kind: q.kind, message: q.message, detail: q.detail, buttons: q.buttons.map((b) => b.label) });
+    const answer = global.__semAgentRunAnswer;
+    return q.buttons.some((b) => b.id === answer) ? answer : q.cancel;
+  }
+  if (!win || win.isDestroyed()) return q.cancel;
+  const cancelId = Math.max(0, q.buttons.findIndex((b) => b.id === q.cancel));
+  const res = await dialog.showMessageBox(win, { type: 'question', title: 'Rukoo Mail', message: q.message, detail: q.detail, buttons: q.buttons.map((b) => b.label), defaultId: cancelId, cancelId, noLink: true });
+  return (q.buttons[res.response] || q.buttons[cancelId]).id;
+}
+
+// Where "Save to a file" puts an agent's exported config: a native save dialog on the main window. Test runs answer
+// through global.__semAgentRunSaveTo (a path, or null to cancel), as the chat's own saveDialog does.
+async function saveAgentRunConfig(name) {
+  if (process.env.SEM_HIDDEN && global.__semAgentRunSaveTo !== undefined) {
+    const to = global.__semAgentRunSaveTo;
+    global.__semAgentRunSaveTo = undefined;
+    return typeof to === 'string' ? to : null;
+  }
+  if (!win || win.isDestroyed()) return null;
+  const res = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('documents'), name), filters: [{ name: 'JSON', extensions: ['json'] }] });
+  return res.canceled || !res.filePath ? null : res.filePath;
+}
+
+// The directory of a workspace as the chat cache has it, for agentRuns.reconcile; null when it can't be read.
+function chatDirectory(ws) {
+  try {
+    return workspaces && workspaces.store ? workspaces.store.listMembers(ws) : null;
+  } catch (_) {
+    return null;
+  }
+}
+// ---- /chat agents ----
+
 // ---- agents ----
 // The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
 const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -2280,6 +2376,19 @@ const windowApi = {
   }
 };
 
+// ---- chat agents ----
+// Run on this computer's calls that need the window document (agent-runs.js runsApi): from the main frame of the main
+// window only, with the token of the document that called (documentOf). They take the IPC event, for its frame.
+const documentApi = {};
+for (const [name, fn] of Object.entries(agentRunsIpc.windowApi)) {
+  documentApi[name] = (event, ...args) => {
+    const doc = documentOf(event);
+    if (!doc) throw new Error('unknown');
+    return fn(doc, ...args);
+  };
+}
+// ---- /chat agents ----
+
 // Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
 // setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
 // page. 'uncertain': nobody knows what the server did with a move or delete until the folders sync (engine.js
@@ -2332,10 +2441,14 @@ if (process.env.SEM_HIDDEN) global.__semApi = api;
 
 ipcMain.handle('mail:call', async (event, method, args) => {
   const own = Object.prototype.hasOwnProperty;
-  if (!own.call(api, method) && !own.call(windowApi, method)) return { ok: false, error: `Onbekende actie: ${method}` };
+  if (!own.call(api, method) && !own.call(windowApi, method) && !own.call(documentApi, method)) return { ok: false, error: `Onbekende actie: ${method}` };
   const started = Date.now();
   try {
-    const result = own.call(windowApi, method) ? await windowApi[method](event.sender, ...(args || [])) : await api[method](...(args || []));
+    const result = own.call(documentApi, method)
+      ? await documentApi[method](event, ...(args || []))
+      : own.call(windowApi, method)
+        ? await windowApi[method](event.sender, ...(args || []))
+        : await api[method](...(args || []));
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err), ...windowError(err) };
@@ -2672,6 +2785,40 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semAgents = hub;
   hub.start().catch((err) => console.error('[agents] start failed:', err));
   // ---- /agents ----
+  // ---- chat agents ----
+  // After the hub, whose settings load as it starts: an agent here answers with one of Settings, Agents.
+  agentRuns = new AgentRuns({
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    secrets,
+    canKeep: () => secrets.available(),
+    account,
+    backendFor: (use) => runBackend(hub.cfg, use),
+    exportFor: (use) => exportBackend(hub.cfg, use),
+    // After a key stopped working: whether the agent is still in the workspace, or was removed.
+    agentExists: (ws, agent) => workspaces.manage.agents(ws).then((res) => res.agents.some((a) => a.id === agent), () => null),
+    ask: askAgentRun,
+    saveTo: saveAgentRunConfig,
+    // The agent's name as main's copy of the workspace's directory has it, for the native questions.
+    memberName: (ws, member) => {
+      const found = (chatDirectory(ws) || []).find((m) => m && m.id === member);
+      return found && typeof found.name === 'string' ? found.name : '';
+    },
+    ownerAlive: documentAlive,
+    log: (level, message) => diag.write(level, 'agent-runs', message)
+  }).init();
+  if (process.env.SEM_HIDDEN) global.__semAgentRuns = agentRuns;
+  agentRuns.on('changed', (state) => send('agent-runs', state));
+  // Leaving a workspace, or losing it, stops its agents here and deletes their keys; a directory that no longer has
+  // an agent set up here, as after it was removed on another device, does too.
+  workspaces.on('event', (e) => {
+    if (e && e.kind === 'removed') agentRuns.forgetWorkspace(e.ws);
+    // Only right after the server's whole member list replaced the cached one (sync.js: members).
+    if (e && e.kind === 'directory' && e.members === true) agentRuns.reconcile(e.ws, chatDirectory(e.ws), { complete: true });
+  });
+  // Settings, Agents changed: a runner whose agent there names another program or address stops until it is run again.
+  hub.on('settings', () => agentRuns.settingsChanged());
+  powerMonitor.on('resume', () => agentRuns.resume());
+  // ---- /chat agents ----
   nativeTheme.on('updated', () => {
     applyTheme();
     broadcast('theme');
@@ -2795,11 +2942,15 @@ let quitWaited = false;
 // While those sends run, a second quit (Quit again in the tray, or the last window closing after a quit from a test)
 // waits for them too. Cut short, the emails on their way would be neither surely sent nor written down.
 let quitSending = false;
+// The team chat agents this computer runs (agent-runs.js) end a turn in flight before they exit: a program they started
+// ends with what it started, and a Runs API run gets its stop request. closeServices asked them to stop; the quit waits
+// for their exits, which close() bounds to STOP_WAIT and a second, and no longer.
+const AGENT_RUNS_QUIT_WAIT = 7000;
 app.on('will-quit', (event) => {
   if (quitSending) return event.preventDefault();
   // Moves, deletes and Undos send no further email; the one on its way settles within the wait below.
   const batches = engine ? engine.stopBatches() : null;
-  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length && !batches)) return;
+  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length && !batches && !(agentRuns && agentRuns.busy()))) return;
   quitWaited = true;
   event.preventDefault();
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2813,6 +2964,7 @@ app.on('will-quit', (event) => {
     quitSending = false;
   });
   const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
+  const runners = agentRuns ? Promise.race([agentRuns.close(), wait(AGENT_RUNS_QUIT_WAIT)]) : null;
   // The rows of the emails a stopped batch didn't send are back in the cache once it settles, and saved with it.
   const moves = batches ? Promise.race([batches, wait(QUIT_WAIT)]).then(() => engine.flush()) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
@@ -2820,7 +2972,7 @@ app.on('will-quit', (event) => {
   // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
   // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
   // installs, since Check now can still download one.
-  Promise.all([mail, agents, moves]).finally(() => {
+  Promise.all([mail, agents, runners, moves]).finally(() => {
     const offered = updates && updates.available;
     if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
       installer.install({ restart: restartForUpdate });

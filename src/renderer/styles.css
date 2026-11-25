@@ -12830,6 +12830,132 @@ button.ch-replies .ch-replies-n {
   color: var(--text);
   overflow-wrap: anywhere;
 }
+/* Run on this computer (agent-runs.js): the button, and in its place once the agent runs the line of what it does
+ * here, at the button's height so the step doesn't jump. The same line sits under an agent in the Agents dialog. The
+ * dot carries the state's color; the text stays grey. */
+.ch-agent-run-row {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  min-width: 0;
+}
+.ch-agent-run-row .btn svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-agent-run {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.ch-agent-run-row .ch-agent-run {
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ch-agent-run[hidden] {
+  display: none;
+}
+.ch-run-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--text-3);
+  transform: translateY(-1px);
+}
+.ch-agent-run[data-tone='ok'] .ch-run-dot {
+  background: var(--ok);
+}
+.ch-agent-run[data-tone='busy'] .ch-run-dot {
+  background: var(--warn);
+  animation: pulse 1s ease-in-out infinite;
+}
+.ch-agent-run[data-tone='warn'] .ch-run-dot {
+  background: var(--warn);
+}
+.ch-agent-run[data-tone='error'] .ch-run-dot {
+  background: var(--danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ch-agent-run[data-tone='busy'] .ch-run-dot {
+    animation: none;
+  }
+}
+/* Run it on another computer instead: the runner's config, closed under a summary with a turning chevron. */
+.ch-agent-elsewhere {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.ch-agent-elsewhere summary {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.ch-agent-elsewhere summary:hover {
+  color: var(--text);
+}
+.ch-agent-elsewhere summary::-webkit-details-marker {
+  display: none;
+}
+.ch-agent-elsewhere summary::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 10px 2px 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+.ch-agent-elsewhere[open] summary::before {
+  transform: rotate(45deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ch-agent-elsewhere summary::before {
+    transition: none;
+  }
+}
+.ch-agent-elsewhere-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 0 0 18px;
+}
+.ch-agent-elsewhere-body > .ch-label {
+  margin-top: 8px;
+}
+.ch-agent-elsewhere-body .ch-agent-cmd {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  user-select: text;
+}
+.ch-agent-elsewhere-body .ch-agent-get {
+  justify-self: start;
+}
+.ch-agent-elsewhere-body .ch-agent-get svg {
+  width: 15px;
+  height: 15px;
+}
+.dialog .ch-agent-key [data-no-keyring] {
+  margin: 12px 0 0;
+}
 /* Workspace settings: sections with a hairline between them. */
 .ch-set {
   display: grid;

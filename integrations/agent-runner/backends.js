@@ -20,8 +20,27 @@ const DEFAULT_TIMEOUT = 600;
 // What a process may write before the runner stops reading: far more than five messages.
 const STDOUT_MAX = 1024 * 1024;
 const STDERR_MAX = 16 * 1024;
+// The most of a server's answer the runner reads: a JSON answer, a streamed answer's text and an SSE line, and the body
+// of an error, of which the runner keeps the start.
+const JSON_MAX = 4 * 1024 * 1024;
+const ANSWER_MAX = STDOUT_MAX;
+const SSE_LINE_MAX = 1024 * 1024;
+const ERROR_MAX = 64 * 1024;
+// After a stop: how long a run's POST may still take to answer its id, and how long the request that stops the run
+// may take. Together within the runner's STOP_GRACE (runner.js).
+const SUBMIT_GRACE = 1000;
+const STOP_REQUEST = 2500;
 
-class BackendError extends Error {}
+// A backend that couldn't answer. code says what kind of failure it was, in words the runner defines, for a program
+// that shows it in its own words (Rukoo's desktop app): config, offline, timeout, http (with status), protocol,
+// too_large, failed (the backend said so), missing, start, exit, empty or stopped. message can quote the backend.
+class BackendError extends Error {
+  constructor(message, code = 'backend', status = null) {
+    super(message);
+    this.code = code;
+    if (Number.isSafeInteger(status)) this.status = status;
+  }
+}
 
 const clip = (text, max = 300) => {
   const s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
@@ -46,45 +65,88 @@ function timeoutMs(config) {
   return (Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT) * 1000;
 }
 
-// The URL of path on a server with an optional path prefix (Hermes serves profiles under /p/<name>/).
+// The URL of path on a server with an optional path prefix (Hermes serves profiles under /p/<name>/): the url's
+// origin, its path and route, without its query, fragment or credentials. Rukoo's desktop app shows what this builds
+// before it runs an agent. A path that starts with // would read as another server's name, so it is refused.
 function endpoint(base, route) {
   let url;
   try {
     url = new URL(String(base || '').trim());
   } catch {
     // Without the value, which can hold a token.
-    throw new BackendError('The backend\'s "url" is not an address');
+    throw new BackendError('The backend\'s "url" is not an address', 'config');
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BackendError('The backend\'s "url" must start with http:// or https://');
-  const out = new URL(url.pathname.replace(/\/+$/, '') + route, url.origin);
-  if (out.origin !== url.origin) throw new BackendError('Refusing a request outside the backend server');
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BackendError('The backend\'s "url" must start with http:// or https://', 'config');
+  const prefix = url.pathname.replace(/\/+$/, '');
+  if (prefix.startsWith('//')) throw new BackendError('The backend\'s "url" has a path that starts with //', 'config');
+  const out = new URL(`${url.origin}${prefix}${route}`);
+  if (out.origin !== url.origin || !out.pathname.startsWith(`${prefix}/`)) throw new BackendError('Refusing a request outside the backend server', 'config');
   return out;
 }
 
 // ---- Server-sent events ----
 
-// `event:`/`data:`/`id:` lines; a blank line ends a frame; lines starting with ':' are comments.
+// `event:`/`data:`/`id:` lines; a blank line ends a frame; lines starting with ':' are comments. The bytes of a line
+// and of a frame, its line ends included, are counted as they arrive, before anything is kept or handed on: a line or a
+// frame past SSE_LINE_MAX throws (too_large). Lines are split on the bytes CR and LF, which UTF-8 never uses inside a
+// character, so a line is decoded once it is whole.
 class SseParser {
   constructor(onEvent) {
     this.onEvent = onEvent;
-    this.buffer = '';
+    this.parts = [];
+    this.lineBytes = 0;
+    this.frameBytes = 0;
+    // The last byte was a CR, so an LF right after it ends no other line.
+    this.cr = false;
     this.event = '';
     this.data = [];
-    this.decoder = new TextDecoder('utf-8');
+  }
+
+  count(n) {
+    this.lineBytes += n;
+    this.frameBytes += n;
+    if (this.lineBytes > SSE_LINE_MAX) throw new BackendError('The stream sent a line that is too long', 'too_large');
+    if (this.frameBytes > SSE_LINE_MAX) throw new BackendError('The stream sent an event that is too large', 'too_large');
   }
 
   push(chunk) {
-    this.buffer += typeof chunk === 'string' ? chunk : this.decoder.decode(chunk, { stream: true });
-    const lines = this.buffer.split(/\r\n|\r|\n/);
-    this.buffer = lines.pop();
-    for (const line of lines) this.line(line);
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    let start = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const b = buf[i];
+      if (b !== 10 && b !== 13) continue;
+      if (b === 10 && this.cr && i === start) {
+        this.cr = false;
+        start = i + 1;
+        continue;
+      }
+      this.count(i - start);
+      if (i > start) this.parts.push(Buffer.from(buf.subarray(start, i)));
+      // The line end belongs to the frame.
+      this.lineBytes = 0;
+      this.count(1);
+      const text = Buffer.concat(this.parts).toString('utf8');
+      this.parts = [];
+      this.lineBytes = 0;
+      this.cr = b === 13;
+      start = i + 1;
+      this.line(text);
+    }
+    if (start < buf.length) {
+      this.count(buf.length - start);
+      this.parts.push(Buffer.from(buf.subarray(start)));
+      this.cr = false;
+    }
   }
 
   line(text) {
     if (text === '') {
-      if (this.data.length) this.onEvent({ event: this.event || 'message', data: this.data.join('\n') });
+      const data = this.data;
+      const event = this.event;
       this.event = '';
       this.data = [];
+      this.frameBytes = 0;
+      if (data.length) this.onEvent({ event: event || 'message', data: data.join('\n') });
       return;
     }
     if (text[0] === ':') return;
@@ -108,22 +170,61 @@ async function readStream(body, parser, signal) {
       parser.push(value);
     }
     parser.push('\n\n');
+  } catch (err) {
+    // A parser that refused what came, or an answer that broke off: nothing more is read.
+    cancel();
+    throw err;
   } finally {
     if (signal) signal.removeEventListener('abort', cancel);
+  }
+}
+
+// An answer's body as text, at most max bytes: { text, over }. over: there was more, which isn't read.
+async function readText(res, max) {
+  if (!res.body) return { text: '', over: false };
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (size + value.length > max) {
+        chunks.push(Buffer.from(value).subarray(0, max - size));
+        reader.cancel().catch(() => {});
+        return { text: Buffer.concat(chunks).toString('utf8'), over: true };
+      }
+      size += value.length;
+      chunks.push(Buffer.from(value));
+    }
+  } catch (err) {
+    throw new BackendError(`The answer broke off: ${clip(err.message, 200)}`, 'offline');
+  }
+  return { text: Buffer.concat(chunks).toString('utf8'), over: false };
+}
+
+// An answer's JSON body, or null when it isn't JSON; past JSON_MAX a BackendError (too_large).
+async function readJson(res) {
+  const { text, over } = await readText(res, JSON_MAX);
+  if (over) throw new BackendError('The answer was too large', 'too_large');
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
   }
 }
 
 async function errorOf(res) {
   let text = '';
   try {
-    text = await res.text();
+    text = (await readText(res, ERROR_MAX)).text;
   } catch {}
   let detail = text;
   try {
     const data = JSON.parse(text);
     detail = (data && data.error && (data.error.message || data.error)) || (data && data.message) || text;
   } catch {}
-  return new BackendError(`HTTP ${res.status}${detail ? `: ${clip(typeof detail === 'string' ? detail : JSON.stringify(detail), 200)}` : ''}`);
+  return new BackendError(`HTTP ${res.status}${detail ? `: ${clip(typeof detail === 'string' ? detail : JSON.stringify(detail), 200)}` : ''}`, 'http', res.status);
 }
 
 // ---- runs: Hermes Agent and Booper ----
@@ -134,7 +235,7 @@ async function errorOf(res) {
 class RunsBackend {
   constructor(config) {
     this.config = config;
-    if (!config.url) throw new BackendError('The runs backend needs "url"');
+    if (!config.url) throw new BackendError('The runs backend needs "url"', 'config');
   }
 
   // What every request carries; --check sends the same (env: where the key's variable is read).
@@ -156,6 +257,8 @@ class RunsBackend {
 
   async run(prompt, { id, signal } = {}) {
     const deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs(this.config)), ...(signal ? [signal] : [])]);
+    // Stopped before it was sent: no run starts on the server that nobody follows.
+    if (deadline.aborted) throw new BackendError('Stopped before the run started', 'stopped');
     const body = { input: prompt.input, instructions: prompt.instructions };
     // "provider::model", as Rukoo's model menu names a model of another provider.
     const model = String(this.config.model || '').trim();
@@ -169,22 +272,36 @@ class RunsBackend {
     // The same trigger with the same input gets the run it already has; the trigger with other input (more messages
     // came, or other settings) is another run.
     const digest = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 16);
+    // A run the server took goes on until it is stopped, and only its id can stop it. So a stop or the timeout while
+    // the POST is out gives its answer SUBMIT_GRACE more, and a run id that comes then is stopped below.
+    const submit = new AbortController();
+    let graceTimer = null;
+    const onDeadline = () => {
+      graceTimer = setTimeout(() => submit.abort(), SUBMIT_GRACE);
+    };
+    deadline.addEventListener('abort', onDeadline, { once: true });
     let res;
+    let started;
     try {
-      res = await this.call('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-agent-${id}-${digest}` }, signal: deadline });
-    } catch (err) {
-      throw new BackendError(`Could not start a run: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`);
+      try {
+        res = await this.call('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-agent-${id}-${digest}` }, signal: submit.signal, timeout: 30000 });
+      } catch (err) {
+        throw new BackendError(`Could not start a run: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
+      }
+      if (res.status !== 200 && res.status !== 202) throw await errorOf(res);
+      started = await readJson(res);
+    } finally {
+      clearTimeout(graceTimer);
+      deadline.removeEventListener('abort', onDeadline);
     }
-    if (res.status !== 200 && res.status !== 202) throw await errorOf(res);
-    const started = await res.json().catch(() => null);
     const runId = started && started.run_id;
-    if (!runId) throw new BackendError('The server did not return a run id');
+    if (!runId) throw new BackendError('The server did not return a run id', 'protocol');
     try {
       return await this.follow(runId, deadline);
     } catch (err) {
-      // Stopped or out of time: the run must not go on where nobody follows it.
-      await this.call('POST', `/v1/runs/${encodeURIComponent(runId)}/stop`, { timeout: 5000 }).catch(() => {});
-      throw err instanceof BackendError ? err : new BackendError(deadline.aborted ? 'The run took longer than the timeout and was stopped' : clip(err.message, 200));
+      // Stopped or out of time: the run must not go on where nobody follows it. Within the runner's STOP_GRACE.
+      await this.call('POST', `/v1/runs/${encodeURIComponent(runId)}/stop`, { timeout: STOP_REQUEST }).catch(() => {});
+      throw err instanceof BackendError ? err : new BackendError(deadline.aborted ? 'The run took longer than the timeout and was stopped' : clip(err.message, 200), deadline.aborted ? 'timeout' : 'failed');
     }
   }
 
@@ -199,7 +316,10 @@ class RunsBackend {
         return;
       }
       const kind = (d && d.event) || event;
-      if (kind === 'message.delta' || kind === 'assistant.delta') state.text += typeof d.delta === 'string' ? d.delta : '';
+      if (kind === 'message.delta' || kind === 'assistant.delta') {
+        state.text += typeof d.delta === 'string' ? d.delta : '';
+        if (state.text.length > ANSWER_MAX) throw new BackendError('The answer was too large', 'too_large');
+      }
       else if (kind === 'run.completed') state.end = { ok: true, output: typeof d.output === 'string' ? d.output : '' };
       else if (kind === 'run.failed' || kind === 'run.interrupted' || kind === 'error') state.end = { ok: false, detail: d.error || d.message || 'The run failed' };
       else if (kind === 'run.cancelled') state.end = { ok: false, detail: 'The run was cancelled' };
@@ -210,19 +330,19 @@ class RunsBackend {
       if (res.ok && res.body) await readStream(res.body, new SseParser(onEvent), signal);
       else res.body?.cancel().catch(() => {});
     } catch (err) {
-      if (signal.aborted) throw err;
+      if (signal.aborted || (err instanceof BackendError && err.code === 'too_large')) throw err;
     }
     while (!state.end) {
-      if (signal.aborted) throw new BackendError('The run took longer than the timeout and was stopped');
+      if (signal.aborted) throw new BackendError('The run took longer than the timeout and was stopped', 'timeout');
       const res = await this.call('GET', `/v1/runs/${encodeURIComponent(runId)}`, { signal }).catch(() => null);
-      const d = res && res.ok ? await res.json().catch(() => null) : null;
+      const d = res && res.ok ? await readJson(res).catch(() => null) : null;
       if (d && d.status === 'completed') state.end = { ok: true, output: d.output || '' };
       else if (d && (d.status === 'failed' || d.status === 'interrupted')) state.end = { ok: false, detail: d.error || d.message || 'The run failed' };
       else if (d && d.status === 'cancelled') state.end = { ok: false, detail: 'The run was cancelled' };
       else if (d && d.status === 'waiting_for_approval') this.deny(runId, null);
       if (!state.end) await sleep(3000, signal);
     }
-    if (!state.end.ok) throw new BackendError(clip(typeof state.end.detail === 'string' ? state.end.detail : JSON.stringify(state.end.detail), 200));
+    if (!state.end.ok) throw new BackendError(clip(typeof state.end.detail === 'string' ? state.end.detail : JSON.stringify(state.end.detail), 200), 'failed');
     return state.end.output || state.text;
   }
 
@@ -239,7 +359,7 @@ class RunsBackend {
 class OpenAiBackend {
   constructor(config) {
     this.config = config;
-    if (!config.url) throw new BackendError('The openai backend needs "url"');
+    if (!config.url) throw new BackendError('The openai backend needs "url"', 'config');
   }
 
   // The key and the config's own headers, which every request carries; --check sends the same.
@@ -271,14 +391,14 @@ class OpenAiBackend {
         signal: deadline
       });
     } catch (err) {
-      throw new BackendError(deadline.aborted ? 'No answer within the timeout' : `No answer from the server: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`);
+      throw new BackendError(deadline.aborted ? 'No answer within the timeout' : `No answer from the server: ${clip(err.cause ? err.cause.message || err.cause : err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
     }
     if (!res.ok) throw await errorOf(res);
     // A server that ignores stream answers one completion as JSON.
     if (!/text\/event-stream/i.test(res.headers.get('content-type') || '')) {
-      const data = await res.json().catch(() => null);
+      const data = await readJson(res);
       const content = data && Array.isArray(data.choices) && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      if (typeof content !== 'string') throw new BackendError('The server answered without a message');
+      if (typeof content !== 'string') throw new BackendError('The server answered without a message', 'protocol');
       return content;
     }
     const state = { text: '', error: null, done: false };
@@ -294,15 +414,17 @@ class OpenAiBackend {
       if (d && d.error) state.error = d.error.message || JSON.stringify(d.error);
       const choice = d && Array.isArray(d.choices) ? d.choices[0] : null;
       if (choice && choice.delta && typeof choice.delta.content === 'string') state.text += choice.delta.content;
+      if (state.text.length > ANSWER_MAX) throw new BackendError('The answer was too large', 'too_large');
       if (choice && choice.finish_reason) state.done = true;
     });
     try {
       await readStream(res.body, parser, deadline);
     } catch (err) {
-      throw new BackendError(deadline.aborted ? 'The answer took longer than the timeout' : `The connection broke off: ${clip(err.message, 200)}`);
+      if (err instanceof BackendError) throw err;
+      throw new BackendError(deadline.aborted ? 'The answer took longer than the timeout' : `The connection broke off: ${clip(err.message, 200)}`, deadline.aborted ? 'timeout' : 'offline');
     }
-    if (state.error) throw new BackendError(clip(state.error, 200));
-    if (!state.done) throw new BackendError('The connection closed before the answer was complete');
+    if (state.error) throw new BackendError(clip(state.error, 200), 'failed');
+    if (!state.done) throw new BackendError('The connection closed before the answer was complete', 'protocol');
     return state.text;
   }
 }
@@ -344,6 +466,19 @@ function executable(file) {
   } catch {
     return false;
   }
+}
+
+// A program a program that started the runner approved by its full path ("pin": true, as Rukoo's desktop app sets
+// it): the runner starts exactly that file, and only while the path is still absolute and canonical (no link, no
+// relative part, that file itself) and an executable file. Anything else throws a BackendError with code 'changed'.
+function pinned(file) {
+  const name = String(file || '');
+  let real = null;
+  try {
+    real = fs.realpathSync.native(name);
+  } catch {}
+  if (!name || !path.isAbsolute(name) || real !== name || !executable(name)) throw new BackendError('The program changed since it was approved', 'changed');
+  return name;
 }
 
 // The first existing file of candidates, else the first program called name on PATH. On Windows only a real .exe:
@@ -392,7 +527,7 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
     try {
       child = spawn(exe, args, { cwd, env, shell: false, windowsHide: true, detached: !WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
-      reject(new BackendError(`Could not start ${path.basename(exe)}: ${clip(err.message, 200)}`));
+      reject(new BackendError(`Could not start ${path.basename(exe)}: ${clip(err.message, 200)}`, 'start'));
       return;
     }
     const out = [];
@@ -438,7 +573,7 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
       clearTimeout(timer);
       clearTimeout(grace);
       if (signal) signal.removeEventListener('abort', onAbort);
-      reject(new BackendError(e.code === 'ENOENT' ? `${path.basename(exe)} is not installed or not on PATH` : `Could not start ${path.basename(exe)}: ${clip(e.message, 200)}`));
+      reject(new BackendError(e.code === 'ENOENT' ? `${path.basename(exe)} is not installed or not on PATH` : `Could not start ${path.basename(exe)}: ${clip(e.message, 200)}`, e.code === 'ENOENT' ? 'missing' : 'start'));
     });
     let settled = false;
     const finish = (code, sig) => {
@@ -447,8 +582,8 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
       clearTimeout(timer);
       clearTimeout(grace);
       if (signal) signal.removeEventListener('abort', onAbort);
-      if (ended === 'timeout') return reject(new BackendError(`${path.basename(exe)} took longer than ${Math.round(timeout / 1000)} s and was stopped`));
-      if (ended === 'stopped') return reject(new BackendError('Stopped'));
+      if (ended === 'timeout') return reject(new BackendError(`${path.basename(exe)} took longer than ${Math.round(timeout / 1000)} s and was stopped`, 'timeout'));
+      if (ended === 'stopped') return reject(new BackendError('Stopped', 'stopped'));
       resolve({ code: code === null ? -1 : code, signal: sig, stdout: Buffer.concat(out).toString('utf8'), stderr: err });
     };
     child.on('exit', letGo);
@@ -503,10 +638,11 @@ class ClaudeBackend {
   }
 
   exe() {
+    if (this.config.pin === true) return pinned(this.config.exe);
     const configured = String(this.config.exe || '').trim();
     const home = os.homedir();
     const found = configured ? (executable(configured) ? configured : null) : findExe([path.join(home, '.local', 'bin', WINDOWS ? 'claude.exe' : 'claude')], 'claude');
-    if (!found) throw new BackendError(configured ? `"exe" is not a program: ${configured}` : 'Claude Code is not installed: no claude on PATH or in ~/.local/bin. Set "exe".');
+    if (!found) throw new BackendError(configured ? `"exe" is not a program: ${configured}` : 'Claude Code is not installed: no claude on PATH or in ~/.local/bin. Set "exe".', 'missing');
     return found;
   }
 
@@ -524,8 +660,8 @@ class ClaudeBackend {
           break;
         } catch {}
       }
-      if (!data || typeof data !== 'object') throw new BackendError(`Claude Code answered no result (exit code ${res.code})${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`);
-      if (data.is_error || (data.subtype && data.subtype !== 'success')) throw new BackendError(`Claude Code failed: ${clip(data.result || data.subtype || 'error', 200)}`);
+      if (!data || typeof data !== 'object') throw new BackendError(`Claude Code answered no result (exit code ${res.code})${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`, 'exit');
+      if (data.is_error || (data.subtype && data.subtype !== 'success')) throw new BackendError(`Claude Code failed: ${clip(data.result || data.subtype || 'error', 200)}`, 'failed');
       return typeof data.result === 'string' ? data.result : '';
     } finally {
       removeDir(dir);
@@ -583,9 +719,10 @@ class CodexBackend {
   }
 
   exe() {
+    if (this.config.pin === true) return pinned(this.config.exe);
     const configured = String(this.config.exe || '').trim();
     if (configured) {
-      if (!executable(configured)) throw new BackendError(`"exe" is not a program: ${configured}`);
+      if (!executable(configured)) throw new BackendError(`"exe" is not a program: ${configured}`, 'missing');
       return configured;
     }
     const candidates = [];
@@ -599,7 +736,7 @@ class CodexBackend {
       candidates.push(path.join(os.homedir(), '.local', 'bin', 'codex'));
     }
     const found = findExe(candidates, 'codex');
-    if (!found) throw new BackendError('Codex is not installed: no codex found. Set "exe".');
+    if (!found) throw new BackendError('Codex is not installed: no codex found. Set "exe".', 'missing');
     return found;
   }
 
@@ -611,12 +748,12 @@ class CodexBackend {
     try {
       const env = childEnv({}, this.hide);
       const res = await runProcess(exe, codexArgs(this.config, { dir, last }), { input: prompt.text, cwd: dir, env, timeout: timeoutMs(this.config), signal });
-      if (res.code !== 0) throw new BackendError(`Codex stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr.split(/\r?\n/).filter(Boolean).slice(-3).join(' '), 200)}` : ''}`);
+      if (res.code !== 0) throw new BackendError(`Codex stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr.split(/\r?\n/).filter(Boolean).slice(-3).join(' '), 200)}` : ''}`, 'exit');
       let text = '';
       try {
         text = fs.readFileSync(last, 'utf8');
       } catch {
-        throw new BackendError('Codex wrote no answer');
+        throw new BackendError('Codex wrote no answer', 'empty');
       }
       return text;
     } finally {
@@ -632,7 +769,7 @@ class CommandBackend {
     this.config = config;
     this.hide = hide || {};
     const list = Array.isArray(config.command) ? config.command.map(String) : config.command ? [String(config.command)] : [];
-    if (!list.length || !list[0]) throw new BackendError('The command backend needs "command"');
+    if (!list.length || !list[0]) throw new BackendError('The command backend needs "command"', 'config');
     this.argv = [...list, ...(Array.isArray(config.args) ? config.args.map(String) : [])];
   }
 
@@ -641,18 +778,22 @@ class CommandBackend {
     const env = childEnv(this.config.env, this.hide);
     const cwd = this.config.cwd ? String(this.config.cwd) : undefined;
     const res = await runProcess(exe, args, { input: prompt.text, cwd, env, timeout: timeoutMs(this.config), signal });
-    if (res.code !== 0) throw new BackendError(`${path.basename(exe)} stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`);
+    if (res.code !== 0) throw new BackendError(`${path.basename(exe)} stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr, 200)}` : ''}`, 'exit');
     return res.stdout;
   }
 }
 
 // ---- Checks (--check) ----
 //
-// Whether a backend can answer before the first mention comes, as a list of { level, message }: 'error' when it can't
-// as configured, 'warn' when the check couldn't tell or something else is worth knowing, 'info' for what was found.
-// Each error says what to do next. The runner's --check prints them and exits with 1 for an error; a normal start
-// logs the errors and warnings as warnings and runs anyway, since a server can come up later. signal: the runner's
-// stop, which ends a check that still waits.
+// Whether a backend can answer before the first mention comes, as a list of { level, message, code }: 'error' when it
+// can't as configured, 'warn' when the check couldn't tell or something else is worth knowing, 'info' for what was
+// found. Each error says what to do next, and its code what kind of problem it is, for a program that shows it in its
+// own words (Rukoo's desktop app): missing (the program isn't there), placeholder (my-agent), config (a setting the
+// runner can't use), unreachable (nothing answers at its address), backend_key (the server there refused the key, or
+// asks for one), key_env (the variable for its secret is empty and the server asks for a key), protocol (an answer of
+// another kind, or a route that isn't there), http (another status) or other. The runner's --check prints them and
+// exits with 1 for an error; a normal start logs the errors and warnings as warnings and runs anyway, since a server
+// can come up later. signal: the runner's stop, which ends a check that still waits.
 //
 // A message names a backend's address by its origin only: a path or query can hold a token. A failed request is said
 // in the check's own words (a timeout, or the system's error code), never with the request's error text.
@@ -814,7 +955,7 @@ async function checkHttp(backend, { env, timeout, signal, headers, contract }) {
   const unset = unsetKeyEnv(config, env);
   const unsetWarn = { level: 'warn', message: `${unset} is not set, so the runner sends no key.` };
   const named = typeof config.keyEnv === 'string' && config.keyEnv.trim() ? config.keyEnv.trim() : '"key"';
-  const cannot = (message) => [{ level: 'error', message }];
+  const cannot = (message, code) => [{ level: 'error', code, message }];
   const cantTell = (route, why) => [
     { level: 'warn', message: `The check couldn't tell whether ${origin} can answer: ${why} on ${route}, a route a server can chat without. The runner tries anyway, and its log says when a request fails.` },
     ...(unset ? [unsetWarn] : [])
@@ -822,15 +963,15 @@ async function checkHttp(backend, { env, timeout, signal, headers, contract }) {
   for (const [i, r] of contract.routes.entries()) {
     const p = await probe(url, r.route, { headers, timeout, signal });
     if (p.stopped) return [];
-    if (p.bad) return cannot(p.reason);
+    if (p.bad) return cannot(p.reason, 'config');
     if (p.reason) {
-      if (i === 0) return cannot(`Nothing answers at ${origin} (${p.reason}). Start ${contract.what} there, or correct the backend's "url".`);
-      return r.required ? cannot(`${origin} doesn't answer ${r.route} (${p.reason}), which ${contract.what} answers.`) : cantTell(r.route, p.reason);
+      if (i === 0) return cannot(`Nothing answers at ${origin} (${p.reason}). Start ${contract.what} there, or correct the backend's "url".`, 'unreachable');
+      return r.required ? cannot(`${origin} doesn't answer ${r.route} (${p.reason}), which ${contract.what} answers.`, 'unreachable') : cantTell(r.route, p.reason);
     }
     if (p.status >= 200 && p.status < 300) {
-      if (!r.shape(p.data)) return cannot(`${origin} answered ${r.route} with ${answerKind(p)}, not ${r.expect}. Correct the backend's "url" so it points at ${contract.what}.`);
+      if (!r.shape(p.data)) return cannot(`${origin} answered ${r.route} with ${answerKind(p)}, not ${r.expect}. Correct the backend's "url" so it points at ${contract.what}.`, 'protocol');
       const problem = r.problem ? r.problem(p.data) : '';
-      if (problem) return cannot(`${origin} can't answer: ${problem}.`);
+      if (problem) return cannot(`${origin} can't answer: ${problem}.`, 'other');
       continue;
     }
     const status = `HTTP ${p.status}`;
@@ -841,11 +982,12 @@ async function checkHttp(backend, { env, timeout, signal, headers, contract }) {
           ? `${unset} is not set, and ${origin} asks for a key (${status} on ${r.route}). Set it in the terminal or service that starts the runner, then start it again.`
           : secret(config, env)
             ? `${origin} refused the backend's key (${status} on ${r.route}). Check the key or token in ${named}.`
-            : `${origin} asks for a key (${status} on ${r.route}). Add "keyEnv" to the backend and set that variable to its key or token.`
+            : `${origin} asks for a key (${status} on ${r.route}). Add "keyEnv" to the backend and set that variable to its key or token.`,
+        unset ? 'key_env' : 'backend_key'
       );
     }
-    if (p.status === 404) return cannot(`${origin} has no ${r.route} (HTTP 404), which ${contract.what} answers. ${r.missing || 'Correct the backend\'s "url".'}`);
-    return cannot(`${origin} answered ${r.route} with ${status}, where ${contract.what} answers 200.`);
+    if (p.status === 404) return cannot(`${origin} has no ${r.route} (HTTP 404), which ${contract.what} answers. ${r.missing || 'Correct the backend\'s "url".'}`, 'protocol');
+    return cannot(`${origin} answered ${r.route} with ${status}, where ${contract.what} answers 200.`, 'http');
   }
   const out = [{ level: 'info', message: `The backend answers at ${origin}` }];
   if (unset) out.push({ level: 'warn', message: `${unset} is not set, so the runner sends no key. ${origin} answered without one.` });
@@ -867,9 +1009,9 @@ async function checkCli() {
   try {
     exe = this.exe();
   } catch (err) {
-    return [{ level: 'error', message: err.message }];
+    return [{ level: 'error', code: err.code === 'changed' ? 'changed' : 'missing', message: err.message }];
   }
-  if (needsShell(exe)) return [{ level: 'error', message: `"exe" is ${exe}, a .cmd or .bat file, which the runner can't start: it starts programs without a shell. Set "exe" to the program's .exe.` }];
+  if (needsShell(exe)) return [{ level: 'error', code: 'config', message: `"exe" is ${exe}, a .cmd or .bat file, which the runner can't start: it starts programs without a shell. Set "exe" to the program's .exe.` }];
   return [{ level: 'info', message: `The backend runs ${exe}` }];
 }
 ClaudeBackend.prototype.check = checkCli;
@@ -878,16 +1020,16 @@ CodexBackend.prototype.check = checkCli;
 CommandBackend.prototype.check = async function check({ env = process.env } = {}) {
   const program = this.argv[0];
   if (program === PLACEHOLDER_COMMAND) {
-    return [{ level: 'error', message: `The backend's "command" is still ${PLACEHOLDER_COMMAND}, the placeholder from Rukoo. Put your own program there: it gets the prompt on stdin and answers on stdout. Or pick one of your agents when you copy the config.` }];
+    return [{ level: 'error', code: 'placeholder', message: `The backend's "command" is still ${PLACEHOLDER_COMMAND}, the placeholder from Rukoo. Put your own program there: it gets the prompt on stdin and answers on stdout. Or pick one of your agents when you copy the config.` }];
   }
   if (needsShell(program)) {
-    return [{ level: 'error', message: `The backend's program ${program} is a .cmd or .bat file, which the runner can't start: it starts programs without a shell. ${shellAdvice(program)}` }];
+    return [{ level: 'error', code: 'config', message: `The backend's program ${program} is a .cmd or .bat file, which the runner can't start: it starts programs without a shell. ${shellAdvice(program)}` }];
   }
   const cwd = this.config.cwd ? path.resolve(String(this.config.cwd)) : process.cwd();
   const found = findProgram(program, { cwd, env: { ...env, ...(this.config.env || {}) } });
   if (!found) {
     const shim = WINDOWS && !path.extname(program) ? ` ${shellAdvice(`${program}.cmd`)}` : '';
-    return [{ level: 'error', message: `The backend's program ${program} was not found${/[\\/]/.test(program) ? '' : ' on PATH'}. Set "command" to a program on this computer.${shim}` }];
+    return [{ level: 'error', code: 'missing', message: `The backend's program ${program} was not found${/[\\/]/.test(program) ? '' : ' on PATH'}. Set "command" to a program on this computer.${shim}` }];
   }
   return [{ level: 'info', message: `The backend runs ${found}` }];
 };
@@ -898,7 +1040,7 @@ const TYPES = { runs: RunsBackend, openai: OpenAiBackend, claude: ClaudeBackend,
 function makeBackend(config, { hide } = {}) {
   const c = config && typeof config === 'object' ? config : {};
   const Type = TYPES[c.type];
-  if (!Type) throw new BackendError(`"backend.type" must be one of ${Object.keys(TYPES).join(', ')}`);
+  if (!Type) throw new BackendError(`"backend.type" must be one of ${Object.keys(TYPES).join(', ')}`, 'config');
   return new Type(c, { hide });
 }
 
@@ -911,11 +1053,15 @@ module.exports = {
   CodexBackend,
   CommandBackend,
   SseParser,
+  readText,
+  readJson,
   childEnv,
   claudeArgs,
   codexArgs,
   runProcess,
   findExe,
   findProgram,
+  endpoint,
+  pinned,
   TYPES
 };

@@ -10,6 +10,8 @@ const TICKET_PREFIX = 'rukoo.ticket.';
 const KEY = /^rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
 // The wire versions the runner reads. Version 2 sends a message of files alone with empty text.
 const VERSIONS = [2, 1];
+// The most of an answer the runner reads: a page of 100 events of 16 KiB each, with room to spare.
+const RESPONSE_MAX = 8 * 1024 * 1024;
 
 class RukooError extends Error {
   constructor(status, body, message) {
@@ -22,6 +24,25 @@ class RukooError extends Error {
 
 // The key stopped working: replaced, the agent removed, its sponsor gone, or agents turned off. Nothing else helps.
 class KeyRefused extends RukooError {}
+
+// An answer's body as text, at most max bytes; null past it, and the rest isn't read.
+async function bodyOf(res, max = RESPONSE_MAX) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 
 // A lowercase UUIDv7 for time: the operation ID the server takes.
 function uuidv7(time = Date.now()) {
@@ -104,10 +125,15 @@ class Rukoo {
         redirect: 'error',
         signal: AbortSignal.any(signals)
       });
-      text = await res.text();
+      text = await bodyOf(res);
     } catch (err) {
       const e = new RukooError(0, null, `No answer from ${new URL(this.server).host}: ${err.cause ? err.cause.message || err.cause : err.message}`);
       e.network = true;
+      throw e;
+    }
+    if (text === null) {
+      const e = new RukooError(res.status, null, `The answer from ${new URL(this.server).host} was larger than ${RESPONSE_MAX / 1024 / 1024} MiB`);
+      e.tooLarge = true;
       throw e;
     }
     let data = null;
@@ -157,16 +183,16 @@ class Rukoo {
     return (await this.ok('GET', this.ws('/members'), { signal })).members || [];
   }
 
-  async channelMembers(conversation) {
-    return (await this.ok('GET', this.ws(`/channels/${conversation}/members`))).members || [];
+  async channelMembers(conversation, { signal } = {}) {
+    return (await this.ok('GET', this.ws(`/channels/${conversation}/members`), { signal })).members || [];
   }
 
   changes(after, signal) {
     return this.ok('GET', this.ws('/changes'), { query: { after: after || undefined, limit: 100 }, signal });
   }
 
-  events(conversation, { after, before, limit = 100 } = {}) {
-    return this.ok('GET', this.ws(`/conversations/${conversation}/events`), { query: before !== undefined ? { before, limit } : { after: after || 0, limit } });
+  events(conversation, { after, before, limit = 100, signal } = {}) {
+    return this.ok('GET', this.ws(`/conversations/${conversation}/events`), { query: before !== undefined ? { before, limit } : { after: after || 0, limit }, signal });
   }
 
   // { status, body, headers }: the runner decides what each refusal means.
@@ -178,8 +204,8 @@ class Rukoo {
     return this.ok('POST', this.ws(`/conversations/${conversation}/read`), { body: { seq } });
   }
 
-  async ticket() {
-    return this.ok('POST', this.ws('/socket-ticket'));
+  async ticket({ signal } = {}) {
+    return this.ok('POST', this.ws('/socket-ticket'), { signal });
   }
 
   // The wake socket, with the ticket offered as a subprotocol next to the protocol's own name, which any WebSocket
@@ -193,4 +219,4 @@ class Rukoo {
   }
 }
 
-module.exports = { Rukoo, RukooError, KeyRefused, uuidv7, serverAddress, retryAfter, KEY, PROTOCOL };
+module.exports = { Rukoo, RukooError, KeyRefused, uuidv7, serverAddress, retryAfter, bodyOf, KEY, PROTOCOL, RESPONSE_MAX };

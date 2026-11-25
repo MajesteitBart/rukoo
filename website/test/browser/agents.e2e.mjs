@@ -93,6 +93,10 @@ test('a: the Agents dialog makes an agent and shows a runner config with its key
   await expect(step.locator('h2')).toHaveText(tr('en', 'chat.agents.keyTitle', { name: 'Clark' }), { timeout: LIVE_MS });
   // The key is only in the config: no field repeats it, the server or the workspace.
   await expect(step.locator('[name="key"], [name="server"], [name="workspace"]')).toHaveCount(0);
+  // A browser runs no agents: no Run on this computer, and the config shows at once, with Copy config filled.
+  await expect(step.locator('[data-run], [data-elsewhere], [data-no-keyring]')).toHaveCount(0);
+  await expect(step.locator('[data-copy-config]')).toHaveClass(/\bprimary\b/);
+  await expect(step.locator('.ch-agent-step')).toHaveCount(3);
   // No Settings, Agents in a browser: Answers with offers what the runner finds on its computer by itself, Claude Code
   // first, and a program of one's own last.
   const use = step.locator('[name="use"]');

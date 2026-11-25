@@ -2,15 +2,28 @@
 
 const { t } = require('../i18n');
 
+// The Linux backends that keep a secret in the system keyring. Electron's basic_text backend reports encryption
+// available but uses a hardcoded password, which does not protect credentials.
+const LINUX_KEYRINGS = ['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'];
+
 function createSecrets(safeStorage, platform = process.platform) {
   return {
+    // Whether encrypt() keeps a secret encrypted (enc:) rather than refusing it or storing it readable (plain:). Only
+    // after the app is ready.
+    available() {
+      try {
+        if (!safeStorage.isEncryptionAvailable()) return false;
+        if (platform === 'linux') return LINUX_KEYRINGS.includes(safeStorage.getSelectedStorageBackend?.());
+        return true;
+      } catch (_) {
+        return false;
+      }
+    },
     encrypt(text) {
       const available = safeStorage.isEncryptionAvailable();
-      // Electron's basic_text backend reports encryption available but uses a
-      // hardcoded password. It does not protect credentials on Linux.
       if (platform === 'linux' && text) {
         const backend = safeStorage.getSelectedStorageBackend?.();
-        if (!available || !['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(backend)) {
+        if (!available || !LINUX_KEYRINGS.includes(backend)) {
           throw new Error(t('errors.credentials.linuxKeyring'));
         }
       }

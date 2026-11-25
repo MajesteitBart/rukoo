@@ -59,6 +59,10 @@
     "files": [
       "src/**/*",
       "skills/**/*",
+      "integrations/agent-runner/runner.js",
+      "integrations/agent-runner/rukoo.js",
+      "integrations/agent-runner/backends.js",
+      "integrations/agent-runner/prompt.js",
       "build/icon.png",
       "package.json"
     ],

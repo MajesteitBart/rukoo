@@ -231,9 +231,14 @@ test('the directory flags load members, channels and blocks again', async (t) =>
   assert.equal(svc.store.listMembers(ws.id).length, 3);
   assert.ok(svc.store.listMembers(ws.id).some((m) => m.id === carolMe.id && m.name === 'Carol'));
   assert.ok(ofKind(svc, 'directory').length > directory);
+  // The server's whole member list replaced the cache: the event says so, for what may act only on that.
+  assert.equal(ofKind(svc, 'directory').at(-1).members, true);
 
   await server.seedChannel(olga, ws.id, { name: 'open-to-all' });
+  const before = ofKind(svc, 'directory').length;
   await svc.sync(ws.id);
+  // Only the channels loaded again: the members in the cache are not the server's answer of now.
+  assert.ok(ofKind(svc, 'directory').slice(before).every((e) => e.members === undefined));
   const channels = svc.store.listChannels(ws.id);
   assert.equal(channels.length, 2);
   assert.ok(channels.some((c) => c.name === 'open-to-all' && c.joined === false));

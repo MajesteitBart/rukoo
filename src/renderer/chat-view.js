@@ -8,6 +8,7 @@ import { plainText } from './chat-markdown.js';
 import { mountChatInput } from './chat-input.js';
 import { agentSeenText } from './chat-agents.js';
 import { seenOf, needsAsk, refreshSeen, forgetSeen } from './chat-agent-seen.js';
+import { runOf } from './chat-agent-runs.js';
 import { draftSlotKey, draftWritten } from './chat-drafts.js';
 import { textEl as richText, filesEl, cardsEl, reactionsEl, openViewer, closeViewer, openEmojiPicker, closeEmojiPicker, busyCard, dragHasFiles } from './chat-rich.js';
 
@@ -775,8 +776,9 @@ export function mountView(section, H) {
 
   // A mention of an agent whose runner never connected gets no answer: once the server has the message (its sent
   // event), and a request that started after that and succeeded says the agent never connected, a toast says so,
-  // rather than leave the person waiting for a reply. A message still queued, a request that failed, and a message
-  // sent without its mentions or discarded say nothing. local → { ws, agents }.
+  // rather than leave the person waiting for a reply. So does one of an agent set up on this computer that doesn't run
+  // here now. A message still queued, a request that failed, and a message sent without its mentions or discarded say
+  // nothing of the runner elsewhere. local → { ws, agents }.
   const silentWatch = new Map();
   function watchSilentAgents(ws, local, mentions) {
     if (H.myRole() === 'guest') return;
@@ -791,9 +793,13 @@ export function mountView(section, H) {
   function noteSilentAgents(ws, agents) {
     // A request of its own: one the mention list started before the send can say the agent hadn't connected yet.
     refreshSeen(ws, { fresh: true }).then((seen) => {
-      if (!seen || V.ws !== ws || H.myRole() === 'guest') return;
-      const silent = agents.find((id) => seen.has(id) && seen.get(id) === null);
-      if (silent) toast(t('chat.agents.notConnectedSent', { name: displayName(members().get(silent), t) }), 6000);
+      if (V.ws !== ws || H.myRole() === 'guest') return;
+      const silent = seen ? agents.find((id) => seen.has(id) && seen.get(id) === null) : null;
+      if (silent) return toast(t('chat.agents.notConnectedSent', { name: displayName(members().get(silent), t) }), 6000);
+      // One set up on this computer that doesn't run here now (chat-agent-runs.js): stopped, its key stopped working,
+      // or what it answers with changed in Settings.
+      const run = agents.map((id) => runOf(ws, id)).find((r) => r && ['stopped', 'refused', 'error', 'changed'].includes(r.phase));
+      if (run) toast(t(run.phase === 'refused' ? 'chat.agents.refusedHereSent' : 'chat.agents.stoppedHereSent', { name: displayName(members().get(run.agent), t) }), 6000);
     });
   }
 

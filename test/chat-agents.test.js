@@ -213,6 +213,73 @@ test("an agent's line says whether its runner ever connected, and how long ago i
   assert.equal(agentSeenText(now - 5 * 60000, { t, locale: 'nl', now }), 'Last active 5 minuten geleden');
 });
 
+test('an agent this computer runs says what it does here in one line, with a tone for its dot, and in plain words for the codes the runner reports', async () => {
+  const { runStateText } = await loading;
+  const t = (key, v = {}) => `${key}${Object.keys(v).length ? ` ${JSON.stringify(v)}` : ''}`;
+  const now = Date.UTC(2026, 10, 24, 15, 0, 0);
+  const line = (run) => runStateText({ phase: 'running', problem: null, unreachable: null, failure: null, channels: 2, answeredAt: null, ...run }, { t, use: 'Claude Code', locale: 'en', now });
+  assert.equal(runStateText(null, { t }), null);
+  assert.deepEqual(line({ phase: 'starting' }), { text: 'chat.agents.run.starting', tone: 'busy' });
+  // A runner that can't reach the server while it starts says so, and doesn't look as if it were about to run.
+  assert.deepEqual(line({ phase: 'starting', unreachable: { code: 'offline', status: null, at: now } }), { text: 'chat.agents.run.startingOffline', tone: 'warn' });
+  assert.deepEqual(line({}), { text: 'chat.agents.run.running', tone: 'ok' });
+  // After the computer woke, the last status is stale until a fresh pass.
+  assert.deepEqual(line({ stale: true }), { text: 'chat.agents.run.stale', tone: 'busy' });
+  assert.deepEqual(line({ channels: 0 }), { text: 'chat.agents.run.noChannel', tone: 'warn' });
+  assert.deepEqual(line({ unreachable: { code: 'offline', status: null, at: now } }), { text: 'chat.agents.run.offline', tone: 'warn' });
+  // A failure is said by its code in the catalogs' words, never in the runner's.
+  assert.deepEqual(line({ failure: { code: 'http', status: 500, at: now } }), { text: 'chat.agents.run.failedHttp {"use":"Claude Code","status":500}', tone: 'warn' });
+  assert.deepEqual(line({ failure: { code: 'http', status: null, at: now } }), { text: 'chat.agents.run.failed {"use":"Claude Code"}', tone: 'warn' });
+  assert.deepEqual(line({ failure: { code: 'timeout', at: now } }), { text: 'chat.agents.run.failedTimeout {"use":"Claude Code"}', tone: 'warn' });
+  assert.deepEqual(line({ failure: { code: 'exit', at: now } }), { text: 'chat.agents.run.failedExit {"use":"Claude Code"}', tone: 'warn' });
+  assert.deepEqual(line({ failure: { code: 'empty', at: now } }), { text: 'chat.agents.run.failedEmpty {"use":"Claude Code"}', tone: 'warn' });
+  assert.deepEqual(line({ failure: { code: 'offline', at: now } }), { text: 'chat.agents.run.failedOffline {"use":"Claude Code"}', tone: 'warn' });
+  assert.deepEqual(line({ failure: { code: 'missing', at: now } }), { text: 'chat.agents.run.missing {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ failure: { code: 'other', message: 'never shown', at: now } }), { text: 'chat.agents.run.failed {"use":"Claude Code"}', tone: 'warn' });
+  // An answer after the failure clears it.
+  assert.deepEqual(line({ failure: { code: 'http', status: 500, at: now - 10 }, answeredAt: now }), { text: 'chat.agents.run.running', tone: 'ok' });
+  // The runner's check codes (backends.js) in the catalogs' words; another problem gets the general line.
+  assert.deepEqual(line({ problem: { code: 'missing' } }), { text: 'chat.agents.run.missing {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ problem: { code: 'unreachable' } }), { text: 'chat.agents.run.unreachable {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ problem: { code: 'backend_key' } }), { text: 'chat.agents.run.backendKey {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ problem: { code: 'other', message: 'Something new' } }), { text: 'chat.agents.run.problem {"use":"Claude Code"}', tone: 'error' });
+  // What it answers with changed in Settings, or went: it runs again only once someone runs it again.
+  assert.deepEqual(line({ phase: 'changed' }), { text: 'chat.agents.run.changed {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ phase: 'changed', gone: true }), { text: 'chat.agents.run.gone {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ phase: 'error', error: { code: 'missing' } }), { text: 'chat.agents.run.missing {"use":"Claude Code"}', tone: 'error' });
+  assert.deepEqual(line({ phase: 'waiting', retryAt: now + 30000 }), { text: 'chat.agents.run.waiting {"time":"in 30 seconds"}', tone: 'warn' });
+  assert.deepEqual(line({ phase: 'waiting', retryAt: now + 5 * 60000 }), { text: 'chat.agents.run.waiting {"time":"in 5 minutes"}', tone: 'warn' });
+  assert.deepEqual(line({ phase: 'stopped' }), { text: 'chat.agents.run.stopped', tone: 'off' });
+  assert.deepEqual(line({ phase: 'refused' }), { text: 'chat.agents.run.refused', tone: 'error' });
+  assert.deepEqual(line({ phase: 'error', error: { code: 'unknown_backend' } }), { text: 'chat.agents.run.unknownUse', tone: 'error' });
+  assert.deepEqual(line({ phase: 'error', error: { code: 'key_unreadable' } }), { text: 'chat.agents.run.keyUnreadable', tone: 'error' });
+  assert.deepEqual(line({ phase: 'error', error: { code: 'spawn' } }), { text: 'chat.agents.run.cantStart', tone: 'error' });
+  // Every key it uses is in the catalogs.
+  const en = fs.readFileSync(path.join(__dirname, '../src/i18n/en.js'), 'utf8');
+  for (const key of ['starting', 'startingOffline', 'running', 'stale', 'noChannel', 'offline', 'failed', 'failedHttp', 'failedTimeout', 'failedExit', 'failedEmpty', 'failedOffline', 'missing', 'unreachable', 'backendKey', 'problem', 'changed', 'gone', 'waiting', 'stopped', 'refused', 'unknownUse', 'keyUnreadable', 'cantStart']) {
+    assert.ok(en.includes(`"chat.agents.run.${key}"`), key);
+  }
+});
+
+test('starting here warns of a runner elsewhere only when the server saw the key lately, more than a minute after this computer last did', async () => {
+  const { ranElsewhere, useName } = await loading;
+  const now = Date.UTC(2026, 10, 24, 15, 0, 0);
+  const min = 60000;
+  const stopped = { stoppedAt: now - 5 * min, passAt: null, connectedAt: null };
+  assert.equal(ranElsewhere(null, stopped, now), false, 'never seen');
+  assert.equal(ranElsewhere(now - 5 * min, stopped, now), false, 'this computer was the last');
+  assert.equal(ranElsewhere(now - 4.5 * min, stopped, now), false, 'within the minute the server takes to write lastSeen');
+  assert.equal(ranElsewhere(now - 2 * min, stopped, now), true, 'used three minutes after it stopped here');
+  assert.equal(ranElsewhere(now - 20 * min, { stoppedAt: now - 60 * min }, now), false, 'too long ago to be running now');
+  assert.equal(ranElsewhere(now - 2 * min, { stoppedAt: null, passAt: now - 2.5 * min, connectedAt: now - 30 * min }, now), false, 'its last pass here');
+  assert.equal(ranElsewhere(now - 2 * min, null, now), true);
+  // The name of what it answers with, as Answers with shows it.
+  assert.equal(useName(config, 'clark'), 'Hermes');
+  assert.equal(useName(config, 'cx_abcdefghij'), 'Booper');
+  assert.equal(useName(null, 'codex'), 'Codex');
+  assert.equal(useName(null, 'cx_gonegonego'), 'cx_gonegonego');
+});
+
 // chat-agent-seen.js with ui.js's api() replaced: every chatAgents call waits until the test answers it. Each load is a
 // module of its own, so its cache starts empty.
 let seenLoads = 0;

@@ -4377,6 +4377,42 @@
     "message": "Save...",
     "description": "Save action in native attachment file dialogs in src/main/main.js. This action is separate from the composer draft-saving progress status."
   },
+  "native.agentRuns.thisAgent": {
+    "message": "this agent",
+    "description": "Native question about running a team chat agent on this computer: the agent's name when Rukoo doesn't know it yet. src/main/agent-runs.js"
+  },
+  "native.agentRuns.runTitle": {
+    "message": "Run {name} on this computer with {use}?",
+    "description": "Native question before Rukoo runs a team chat agent on this computer, or runs it again after its agent in Settings > Agents changed: the question. {name}: the team chat agent; {use}: the agent of Settings > Agents that answers for it (Claude Code, Codex, Hermes, OpenClaw or a custom agent). src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.runProgram": {
+    "message": "Rukoo starts this program for every mention {name} answers, and gives it what was written:\n{program}\n\nIt runs under your own {use} login on this computer, with its settings in {folder}.",
+    "description": "Native question before running a team chat agent with Claude Code or Codex: the detail. {name}: the team chat agent; {use}: Claude Code or Codex; {program}: the full path of the program; {folder}: the folder of its login and settings. src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.runServer": {
+    "message": "Rukoo sends every mention {name} answers, with what came before it in the channel, to this address:\n{address}\n\nThe key or token of {use} in Settings > Agents goes along. {use} keeps its own tools and can use them for anyone {name} answers.",
+    "description": "Native question before running a team chat agent with Hermes, OpenClaw or a custom agent on a server: the detail. {name}: the team chat agent; {use}: the agent of Settings > Agents; {address}: the address Rukoo sends to. src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.gatewayAgent": {
+    "message": "At that address, the gateway's agent {agent} answers.",
+    "description": "Native question before running a team chat agent with an OpenClaw gateway, which hosts several agents: the line under the address naming the one that answers. {agent}: its id at the gateway, such as openclaw/default. src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.run": {
+    "message": "Run on this computer",
+    "description": "Native question before running a team chat agent on this computer: the button that runs it. src/main/agent-runs.js (approvalQuestion)"
+  },
+  "native.agentRuns.exportTitle": {
+    "message": "Save the config with {name}'s key?",
+    "description": "Native question before Rukoo saves a team chat agent's runner config, with its key, to a file, to run it on another computer: the question. {name}: the agent. src/main/agent-runs.js (exportConfig)"
+  },
+  "native.agentRuns.exportBody": {
+    "message": "The config holds {name}'s key, which reads and posts in every channel {name} is in. Put it only on a computer you trust, and keep the file to yourself.",
+    "description": "Native question before exporting a team chat agent's runner config: the detail. {name}: the agent. src/main/agent-runs.js (exportConfig)"
+  },
+  "native.agentRuns.save": {
+    "message": "Save to a file…",
+    "description": "Native question before exporting a team chat agent's runner config: the button that opens a save dialog for it. src/main/agent-runs.js (exportConfig)"
+  },
   "native.export.defaultName": {
     "message": "message",
     "description": "Default filename stem for exporting an email without a subject."
@@ -12442,7 +12478,11 @@
   },
   "chat.agents.runsNote": {
     "message": "Next you choose who answers for it and copy a config for the runner, the program that connects the two.",
-    "description": "Add an agent: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
+    "description": "Add an agent, in the browser app, where the key step has Copy config: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.runsNoteSave": {
+    "message": "Next you choose who answers for it and save a config for the runner, the program that connects the two.",
+    "description": "Add an agent, on the computer where Rukoo can't run agents itself and the key step has Save config: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
   },
   "chat.agents.keyTitle": {
     "message": "Connect {name}",
@@ -12468,6 +12508,10 @@
     "message": "Copy config",
     "description": "Key step: the filled button that copies the runner config, until something was copied. src/renderer/chat-dialogs.js (showAgentKey)"
   },
+  "chat.agents.saveConfig": {
+    "message": "Save config",
+    "description": "Key step on the computer, where only Rukoo's main process has the agent's key: the button that, after a native question, saves the runner config with the key to a file. It takes the place of Copy config there. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
   "chat.agents.configCopied": {
     "message": "Config copied",
     "description": "Toast after Copy config. src/renderer/chat-dialogs.js (showAgentKey)"
@@ -12478,11 +12522,19 @@
   },
   "chat.agents.closeTitle": {
     "message": "Close without copying the config?",
-    "description": "Question when the key step closes before the config was copied: title. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Question when the key step closes before the config was copied, in the browser app, where the button is Copy config: title. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.closeBody": {
     "message": "You won't see this key again. Without it the agent can't connect, and you'd need a new key.",
-    "description": "Question when the key step closes before the config was copied: body. src/renderer/chat-dialogs.js (showAgentKey)"
+    "description": "Question when the key step closes before the config was copied, in the browser app: body. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeSaveTitle": {
+    "message": "Close without saving the config?",
+    "description": "Question when the key step closes before the config was saved, on the computer where Rukoo can't run the agent itself and the button is Save config: title. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeSaveBody": {
+    "message": "Rukoo lets go of this key when you close. Without it the agent can't connect, and you'd need a new key.",
+    "description": "Question when the key step closes before the agent runs on this computer or its config was saved, on the computer: body, under chat.agents.closeSaveTitle or chat.agents.closeRunTitle. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.useOwn": {
     "message": "A program of my own",
@@ -12519,6 +12571,242 @@
   "chat.agents.notConnectedSent": {
     "message": "{name} isn't connected yet, so it won't answer until its runner starts.",
     "description": "Toast after sending a message that mentions an agent whose runner never reached the server. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
+  },
+  "chat.agents.introHere": {
+    "message": "An agent answers when someone mentions it in a channel it was added to. Rukoo can run it on this computer, or you run it on a computer or server you choose, where it connects with a key.",
+    "description": "Agents dialog: line above the list on the computer, where Rukoo can run an agent itself (src/main/agent-runs.js). src/renderer/chat-dialogs.js (agentsDialog)"
+  },
+  "chat.agents.runsNoteHere": {
+    "message": "Next you choose who answers for it, and Rukoo runs it on this computer.",
+    "description": "Add an agent, on the computer where Rukoo can run agents: note above the buttons about the next step. src/renderer/chat-dialogs.js (agentForm)"
+  },
+  "chat.agents.runHere": {
+    "message": "Run on this computer",
+    "description": "Key step: the filled button that starts the agent on this computer, with the agent picked under Answers with; also the menu item of an agent that isn't set up here, which makes a new key first. src/renderer/chat-dialogs.js (showAgentKey, runItems)"
+  },
+  "chat.agents.runHereHelp": {
+    "message": "Rukoo runs {name} while it's open, also from the tray, and keeps its key encrypted on this computer. While this computer sleeps or Rukoo is closed, {name} doesn't answer.",
+    "description": "Key step: line under Run on this computer. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.runOwnHelp": {
+    "message": "Rukoo can run only the agents of Settings > Agents. For a program of your own, start the runner yourself with the config below.",
+    "description": "Key step: line under Answers with while A program of my own is picked, where Run on this computer is off. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.elsewhere": {
+    "message": "Run it on another computer instead",
+    "description": "Key step: the closed section with the runner's config, to run the agent somewhere else than this computer. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.noKeyring": {
+    "message": "To run agents on this computer, Rukoo needs a keyring to keep their keys, such as GNOME Keyring or KWallet.",
+    "description": "Key step on a computer that can't keep a key encrypted (Linux without a keyring): line under the steps, where Run on this computer isn't offered; also the error of a refused start. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyGone": {
+    "message": "Rukoo no longer holds this key. Make a new key for {name} to connect it.",
+    "description": "Key step: line under the config when Rukoo no longer holds the key: the step stayed open longer than 10 minutes, or the window reloaded. Also the error of a start without a key. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.closeRunTitle": {
+    "message": "Close without connecting {name}?",
+    "description": "Question when the key step closes before the agent runs on this computer or its config was saved: title. {name}: the agent. The body is chat.agents.closeSaveBody. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.newKeyBodyHere": {
+    "message": "The current key stops working at once, so a runner elsewhere that uses it disconnects. {name} keeps running on this computer with the new key.",
+    "description": "Confirmation before New key for an agent set up on this computer: body. {name}: the agent. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.runHereTitle": {
+    "message": "Run {name} on this computer?",
+    "description": "Confirmation before Run on this computer for an agent that isn't set up here, which needs a new key: title. {name}: the agent. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.runHereBody": {
+    "message": "Rukoo makes a new key for {name} and keeps it on this computer. The current key stops working at once, so a runner elsewhere that uses it disconnects.",
+    "description": "Confirmation before Run on this computer for an agent that isn't set up here: body. {name}: the agent. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.runHereConfirm": {
+    "message": "Make a new key",
+    "description": "Confirmation before Run on this computer for an agent that isn't set up here: the button, which makes the key and opens the key step. src/renderer/chat-dialogs.js (newAgentKey)"
+  },
+  "chat.agents.startHere": {
+    "message": "Start on this computer",
+    "description": "Agents dialog and Workspace members: menu item of an agent set up on this computer and stopped there. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.stopHere": {
+    "message": "Stop on this computer",
+    "description": "Agents dialog and Workspace members: menu item of an agent that runs on this computer. Its key stays, so Start runs it again. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.forgetHere": {
+    "message": "Remove from this computer",
+    "description": "Agents dialog and Workspace members: menu item that stops an agent on this computer and deletes its key there; the agent stays in the workspace. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.forgetHereTitle": {
+    "message": "Remove {name} from this computer?",
+    "description": "Confirmation before Remove from this computer: title. {name}: the agent. src/renderer/chat-dialogs.js (forgetHere)"
+  },
+  "chat.agents.forgetHereBody": {
+    "message": "Rukoo stops {name} here and deletes its key from this computer. {name} stays in the workspace. To run it here again, make a new key.",
+    "description": "Confirmation before Remove from this computer: body. {name}: the agent. src/renderer/chat-dialogs.js (forgetHere)"
+  },
+  "chat.agents.forgetHereConfirm": {
+    "message": "Remove",
+    "description": "Confirmation before Remove from this computer: the button. src/renderer/chat-dialogs.js (forgetHere)"
+  },
+  "chat.agents.elsewhereTitle": {
+    "message": "Is {name} running somewhere else?",
+    "description": "Question before Start on this computer when the agent's key was used elsewhere after it stopped here: title. {name}: the agent. src/renderer/chat-dialogs.js (startHere)"
+  },
+  "chat.agents.elsewhereBody": {
+    "message": "Its key was used {date}, after {name} stopped on this computer. If it runs in two places, both answer its mentions. Stop the other one first, or make a new key so only this computer has it.",
+    "description": "Question before Start on this computer when the agent's key was used elsewhere: body. {name}: the agent; {date}: how long ago, from the relative time format (\"2 minutes ago\"). src/renderer/chat-dialogs.js (startHere)"
+  },
+  "chat.agents.startAnyway": {
+    "message": "Start anyway",
+    "description": "Question before Start on this computer when the key ran elsewhere: the button that starts it here too. src/renderer/chat-dialogs.js (startHere)"
+  },
+  "chat.agents.runFailed": {
+    "message": "Couldn't start {name} on this computer.",
+    "description": "Error when Run on this computer or Start fails for a reason without its own line. {name}: the agent. src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.saveFailed": {
+    "message": "Rukoo couldn't save that on this computer.",
+    "description": "Key step or Agents dialog on the computer: the setups file or the exported config couldn't be written. src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.newKeyUnsaved": {
+    "message": "Rukoo couldn't keep the new key for {name} on this computer, so {name} doesn't run here now. Run on this computer tries again, and Save config saves the key to a file.",
+    "description": "Key step after New key for an agent set up on this computer: the new key could not be encrypted or written, so the setup here has none that works; main holds the new key for this window. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.stoppedHereSent": {
+    "message": "{name} is stopped on this computer, so it won't answer unless it runs somewhere else.",
+    "description": "Toast after sending a message that mentions an agent set up on this computer and stopped there. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
+  },
+  "chat.agents.refusedHereSent": {
+    "message": "{name}'s key no longer works on this computer, so it won't answer until you make a new key.",
+    "description": "Toast after sending a message that mentions an agent set up on this computer whose key stopped working. {name}: the agent. src/renderer/chat-view.js (noteSilentAgents)"
+  },
+  "chat.agents.run.starting": {
+    "message": "Starting on this computer…",
+    "description": "What an agent does on this computer, in the Agents dialog and the key step: its runner is starting. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.running": {
+    "message": "Running on this computer",
+    "description": "What an agent does on this computer: its runner is connected and answers mentions. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.noChannel": {
+    "message": "Running on this computer, in no channel yet",
+    "description": "What an agent does on this computer: connected, but in no channel, so no mention reaches it. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.offline": {
+    "message": "Running on this computer, but it can't reach the server",
+    "description": "What an agent does on this computer: its runner can't reach the account server now and tries again. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failed": {
+    "message": "Running on this computer. The last mention got no answer from {use}.",
+    "description": "What an agent does on this computer: the agent it answers with failed on the last mention, for a reason without a line of its own. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.missing": {
+    "message": "Can't answer: {use} isn't installed on this computer",
+    "description": "What an agent does on this computer: the program it answers with (Claude Code, Codex) is not installed. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.unreachable": {
+    "message": "Can't answer: nothing answers at {use}'s address. Check it in Settings > Agents.",
+    "description": "What an agent does on this computer: the server of the agent it answers with (Hermes, OpenClaw, a custom agent) does not answer. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.backendKey": {
+    "message": "Can't answer: {use} refused its key or token. Check it in Settings > Agents.",
+    "description": "What an agent does on this computer: the server of the agent it answers with refused the key from Settings, Agents. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.problem": {
+    "message": "Can't answer: {use} isn't ready. Check it in Settings > Agents.",
+    "description": "What an agent does on this computer: the agent it answers with has a problem without a line of its own. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.waiting": {
+    "message": "Stopped unexpectedly. Starting again {time}",
+    "description": "What an agent does on this computer: its runner ended by itself and starts again after a pause. {time}: when, from the relative time format (\"in 30 seconds\"). src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.stopped": {
+    "message": "Stopped on this computer",
+    "description": "What an agent does on this computer: stopped with Stop on this computer. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.refused": {
+    "message": "Stopped: its key was replaced or the agent was removed. Make a new key to run it here.",
+    "description": "What an agent does on this computer: the server refused its key. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.unknownUse": {
+    "message": "Can't start: the agent it answers with isn't in Settings > Agents any more.",
+    "description": "What an agent does on this computer: the agent of Settings, Agents it answers with was removed or lost its address. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.keyUnreadable": {
+    "message": "Can't start: its key can't be read on this computer. Make a new key to run it here.",
+    "description": "What an agent does on this computer: the stored key can't be decrypted, as after a profile was copied from another computer or user. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.cantStart": {
+    "message": "Couldn't start on this computer",
+    "description": "What an agent does on this computer: its runner couldn't start. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.unresolved": {
+    "message": "Can't start: Rukoo needs the full path of {use}'s program, an .exe on Windows, and of its settings folder. Set them in Settings > Agents.",
+    "description": "What an agent does on this computer, or why Run on this computer was refused: the program of Claude Code or Codex, or its settings folder, isn't given in full (a relative path, or a program found on PATH through a relative folder), or on Windows the program isn't an .exe. {use}: Claude Code or Codex. src/renderer/chat-agents.js (runStateText), src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.run.plainHttp": {
+    "message": "Can't start: Rukoo sends {use}'s key over plain http only to this computer or your own network. Use an https address in Settings > Agents.",
+    "description": "What an agent does on this computer, or why Run on this computer was refused: the agent of Settings > Agents it answers with has a key and an http address outside loopback, private and tailnet addresses. {use}: that agent. src/renderer/chat-agents.js (runStateText), src/renderer/chat-dialogs.js (runErrorText)"
+  },
+  "chat.agents.run.startingOffline": {
+    "message": "Starting on this computer, but it can't reach the server yet",
+    "description": "What an agent does on this computer: its runner is starting and can't reach the account server; it keeps trying. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.stale": {
+    "message": "Running on this computer. Checking again after sleep…",
+    "description": "What an agent does on this computer: the computer woke from sleep and the runner hasn't checked the workspace since. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedHttp": {
+    "message": "Running on this computer. The last mention got no answer: {use} answered with an error (HTTP {status}).",
+    "description": "What an agent does on this computer: the server of the agent it answers with answered the last mention with an HTTP error. {use}: that agent; {status}: the HTTP status. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedTimeout": {
+    "message": "Running on this computer. The last mention got no answer: {use} took too long.",
+    "description": "What an agent does on this computer: the agent it answers with didn't answer the last mention in time. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedExit": {
+    "message": "Running on this computer. The last mention got no answer: {use} stopped with an error.",
+    "description": "What an agent does on this computer: the program it answers with (Claude Code, Codex) ended with an error on the last mention. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedEmpty": {
+    "message": "Running on this computer. The last mention got no answer: {use} answered nothing.",
+    "description": "What an agent does on this computer: the agent it answers with gave an empty answer to the last mention. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.failedOffline": {
+    "message": "Running on this computer. The last mention got no answer: {use} couldn't be reached.",
+    "description": "What an agent does on this computer: the server of the agent it answers with couldn't be reached for the last mention. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.changed": {
+    "message": "Stopped: {use} changed in Settings > Agents. Run it again on this computer to approve it as it is now.",
+    "description": "What an agent does on this computer: the program or address of the agent it answers with changed in Settings > Agents since it was approved, so it stopped. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.run.gone": {
+    "message": "Stopped: {use} is off or no longer in Settings > Agents.",
+    "description": "What an agent does on this computer: the agent it answers with was turned off or removed in Settings > Agents, so it stopped. {use}: that agent. src/renderer/chat-agents.js (runStateText)"
+  },
+  "chat.agents.runAgainHere": {
+    "message": "Run again on this computer",
+    "description": "Agents dialog: menu item of an agent set up on this computer whose agent in Settings > Agents changed; it asks for approval again. src/renderer/chat-dialogs.js (runItems)"
+  },
+  "chat.agents.keyHidden": {
+    "message": "Rukoo keeps the key out of this window, so nothing shown here can read it. Save config asks you first, then saves the config with the key to a file.",
+    "description": "Key step on the computer: line under the config, whose key is hidden. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.keyKeptHere": {
+    "message": "Rukoo keeps this key for {name} on this computer now. To run {name} somewhere else instead, remove it from this computer and make a new key.",
+    "description": "Key step on the computer, once the agent runs here: line under the config, whose key now lives encrypted on this computer only. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.configSaved": {
+    "message": "Config saved",
+    "description": "Toast after the key step's config was saved to a file. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.toolsWarning": {
+    "message": "{use} keeps its own tools and can use them for anyone {name} answers in a channel.",
+    "description": "Key step: line under Answers with when the agent picked keeps tools of its own (Hermes, OpenClaw, a custom agent). {use}: that agent; {name}: the team chat agent. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
+  "chat.agents.runChanged": {
+    "message": "Settings > Agents changed while Rukoo asked. Run {name} again to approve it as it is now.",
+    "description": "Error when Run on this computer finds that the agent it answers with changed in Settings while the approval question was open. {name}: the agent. src/renderer/chat-dialogs.js (runErrorText)"
   },
   "chat.new.title": {
     "message": "New message",

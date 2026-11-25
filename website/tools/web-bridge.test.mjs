@@ -537,8 +537,24 @@ test('every method the chat, account, ui, i18n, diag and web shell modules call 
     for (const m of text.matchAll(/\b(?:api|invoke|call)\(\s*['"`]([A-Za-z]+)['"`]/g)) called.add(m[1]);
   }
   // agentConfig and agentStatus: the Settings, Agents a runner's backend comes from and which of them are ready, which
-  // chat-dialogs.js asks for only off the web.
-  const desktopOnly = new Set(['accountSetServer', 'accountSync', 'accountChangePassword', 'accountNewRecoveryKey', 'accountExport', 'nativeEdit', 'agentConfig', 'agentStatus']);
+  // chat-dialogs.js asks for only off the web. agentRun*: Run on this computer (src/main/agent-runs.js), which
+  // chat-dialogs.js and chat-agent-runs.js call only off the web.
+  const desktopOnly = new Set([
+    'accountSetServer',
+    'accountSync',
+    'accountChangePassword',
+    'accountNewRecoveryKey',
+    'accountExport',
+    'nativeEdit',
+    'agentConfig',
+    'agentStatus',
+    'agentRuns',
+    'agentRunStart',
+    'agentRunStop',
+    'agentRunForget',
+    'agentRunExport',
+    'agentRunRelease'
+  ]);
   const page = openPage();
   t.after(() => page.close());
   await page.ready();
