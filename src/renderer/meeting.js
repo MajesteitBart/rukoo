@@ -47,6 +47,8 @@ const M = {
   // The meeting the last meetingGet answered for: until then the view shows that it loads.
   fetched: null,
   loading: 0,
+  // Changes to the meeting on screen arrived while another mode showed: its rows are behind M.data until redrawn.
+  behind: false,
   // In a narrow window the transcript, the notes and the people share the view as tabs.
   tab: 'transcript',
   starting: false,
@@ -490,7 +492,10 @@ function applyDelta(p) {
   if (Array.isArray(p.speakers)) d.speakers = p.speakers;
   if (p.mic) d.mic = p.mic;
   if (p.notes) notesArrived(p.notes);
-  if (!M.open) return;
+  if (!M.open) {
+    M.behind = true;
+    return;
+  }
   renderHead();
   renderNotice();
   if (Array.isArray(p.speakers)) {
@@ -551,7 +556,7 @@ function renderView({ fetched = false } = {}) {
     notesMenu = editMenu(area);
     fillNotes(d);
     renderTranscript(true, { bottom: true });
-  } else if (fetched) {
+  } else if (fetched || M.behind) {
     renderTranscript(true);
     if (d.notes) notesArrived(d.notes);
   }
@@ -1062,6 +1067,7 @@ function renderTranscript(full, { bottom = false } = {}) {
   const list = $('.meeting .mt-transcript');
   const d = M.data;
   if (!list || !d || !full) return;
+  M.behind = false;
   forgetFrames(d.meeting.id);
   const sc = scroller();
   const stick = bottom || atBottom(sc);
