@@ -208,6 +208,8 @@
   "settings.keys.formOtherServer": "Dit is niet de server van {provider} zelf, dus je sleutel van {provider} uit API-sleutels gaat hier niet heen. Vul de sleutel van deze server in.",
   "settings.keys.alsoUse": "{provider} ook voor dicteren gebruiken",
   "settings.keys.alsoUseHelp": "Orukeet staat niet op deze computer, dus dicteren werkt nog niet. Dit zet dicteren op {model}.",
+  "settings.keys.waitingServer": "Wacht op een sleutel voor {host}.",
+  "settings.keys.waitingServerMeetings": "Wacht op een sleutel voor {host}. Vergaderingen worden wel opgenomen.",
   "settings.keys.waiting": "Wacht op een sleutel van {provider}.",
   "settings.keys.waitingMeetings": "Wacht op een sleutel van {provider}. Vergaderingen worden wel opgenomen.",
   "settings.transcription.intro": "Waar je stem tekst wordt: op deze computer met Orukeet, of via een provider met je eigen sleutel.",

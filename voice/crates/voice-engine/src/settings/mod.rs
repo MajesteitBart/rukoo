@@ -171,7 +171,7 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
         "locale": match looks.locale { Locale::En => "en", Locale::Nl => "nl" },
         "config": keys::view(&cfg, start_at_login, secret_saved),
         "providers": providers(),
-        "dictation": { "status": dictation_status(core, &cfg) },
+        "dictation": { "status": dictation_status(core, &cfg), "firstSetup": cfg.first_setup() },
         "rukoo": rukoo(core),
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
@@ -532,6 +532,7 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
             Purpose::Dictation => {
                 cfg.audio_api_key = key;
                 cfg.audio_provider = provider.clone();
+                cfg.audio_provider_chosen = true;
                 cfg.audio_endpoint = endpoint.clone();
                 cfg.audio_model = model.clone();
                 // Orukeet ignores the language; Ownkey saved it only for a cloud provider.

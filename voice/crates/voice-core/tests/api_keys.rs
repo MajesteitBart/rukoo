@@ -415,3 +415,32 @@ fn debug_output_never_shows_a_provider_s_key() {
     assert!(!text.contains("secret"), "{text}");
     assert!(text.contains("\"openai\":\"<redacted>\""), "{text}");
 }
+
+#[test]
+fn a_first_setup_is_orukeet_by_default_and_no_key_anywhere() {
+    // As the first start leaves it.
+    let mut cfg = Config::defaults(false);
+    cfg.switch_audio_provider("orukeet");
+    assert!(cfg.first_setup());
+    // A saved key ends it: an established profile never gets the dictation offer.
+    let mut keyed = cfg.clone();
+    keyed.set_shared_key("openai", "sk-openai");
+    assert!(!keyed.first_setup());
+    let mut custom = cfg.clone();
+    custom.rewrite_api_key = "server-key".into();
+    assert!(!custom.first_setup(), "a key of any form counts");
+    // So does choosing dictation's provider, Orukeet included.
+    cfg.audio_provider_chosen = true;
+    assert!(!cfg.first_setup());
+    // The flag survives a round trip, and an old config without it reads as not chosen.
+    let dir = TempDir::new("api-keys-chosen");
+    cfg.save(dir.path()).unwrap();
+    assert!(
+        Config::load_as(dir.path(), false)
+            .unwrap()
+            .audio_provider_chosen
+    );
+    let old = load(json!({"audio_provider": "orukeet"}));
+    assert!(!old.audio_provider_chosen);
+    assert!(old.first_setup());
+}

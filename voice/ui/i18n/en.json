@@ -802,6 +802,14 @@
     "message": "Orukeet isn't on this computer, so dictation doesn't work yet. This switches dictation to {model}.",
     "description": "Settings > API keys: under settings.keys.alsoUse. {model} is a model id such as \"voxtral-mini-latest\". voice/ui/settings.js (keyRows)."
   },
+  "settings.keys.waitingServer": {
+    "message": "Waiting for a key for {host}.",
+    "description": "Settings > top page: under Rewriting when its endpoint is a proxy or another server without a key; the key goes in the Rewriting form, not API keys. {host} is the server's host. voice/ui/settings.js (mainPage)."
+  },
+  "settings.keys.waitingServerMeetings": {
+    "message": "Waiting for a key for {host}. Meetings still record.",
+    "description": "Settings > top page: under Meetings > Transcription when its endpoint is a proxy or another server without a key; the key goes in the Meeting transcription form. {host} is the server's host. voice/ui/settings.js (mainPage)."
+  },
   "settings.keys.waiting": {
     "message": "Waiting for a {provider} key.",
     "description": "Settings > top page: under Rewriting when its provider has no key. voice/ui/settings.js (mainPage)."

@@ -446,13 +446,21 @@ function followsSharedKey(target) {
   return !c.ownKey && c.keySaved === keySavedFor(c.provider);
 }
 
-// The offer under a key field: dictation on Orukeet without the model can't work, and this provider ships a dictation
-// model, so saving the key can switch dictation to it in the same step. Rewriting starts on Mistral, so a Mistral key
-// is enough there; meeting transcription never switches without its consent (decision 10).
-function keyOffer(id) {
-  const tr = state.config.transcription;
-  return tr.provider === 'orukeet' && state.dictation.status === 'modelMissing' && Boolean(defaultModel('transcription', id));
+// The offer under a key field, on a first setup only (API.md, dictation.firstSetup): no key saved anywhere yet, and
+// dictation still on its first-run default, Orukeet, whose model isn't here, so it can't work. This provider ships a
+// dictation model, so saving the key can switch dictation to it in the same step. An established profile never gets it
+// and keeps the explicit "Use Mistral" button. Rewriting starts on Mistral, so a Mistral key is enough there; meeting
+// transcription never switches without its consent (decision 10).
+function dictationCanTakeKey() {
+  return state.config.transcription.provider === 'orukeet' && state.dictation.status === 'modelMissing';
 }
+function keyOffer(id) {
+  return state.dictation.firstSetup === true && dictationCanTakeKey() && Boolean(defaultModel('transcription', id));
+}
+
+// Whether a feature's missing key is one for API keys: its endpoint is its provider's own host. A key for a proxy or
+// another server goes in the feature's own form, which is where the way to it leads.
+const keyFromApiKeys = (target) => sharedKeyApplies(state.config[target].provider, state.config[target].endpoint);
 const featureNames = (targets) => list(targets.map((target) => t(FEATURES[target].name)));
 
 // Whether a feature works now, as the API keys page and its one-click fix see it.
@@ -565,7 +573,7 @@ function mainPage() {
 
   // The API keys row: the providers with a key, or which features wait for one. The Dictation row above already has
   // the red "Add an API key", so this row says which features wait, with a warning icon instead of a second pill.
-  const waiting = PROVIDER_FORMS.filter((target) => featureUsed(target) && waitsForKey(target));
+  const waiting = PROVIDER_FORMS.filter((target) => featureUsed(target) && waitsForKey(target) && keyFromApiKeys(target));
   const savedKeys = (state.providers.keys || []).filter(keySavedFor).map((id) => providerLabel(id));
   const keysRow = row({
     lead: waiting.length ? `<span class="lead warn top">${icons.warning}</span>` : '',
@@ -579,7 +587,7 @@ function mainPage() {
       title: t('settings.status.dictation'),
       descHtml: keysHtml,
       side: dictationStatus(),
-      action: ready ? null : state.dictation.status === 'noKey' ? 'go:keys' : 'go:transcription'
+      action: ready ? null : state.dictation.status === 'noKey' && keyFromApiKeys('transcription') ? 'go:keys' : 'go:transcription'
     }) +
       keysRow +
       row({ title: t('settings.status.rukoo'), side: rukooStatus(), action: 'go:rukoo' }) +
@@ -614,7 +622,12 @@ function mainPage() {
       row({ title: t('settings.dictation.fillers'), value: t(c.fillers.enabled ? 'common.on' : 'common.off'), action: 'go:fillers' }) +
       row({
         title: t('settings.dictation.rewriting'),
-        desc: rewritingUsed() && waitsForKey('rewriting') ? t('settings.keys.waiting', { provider: providerLabel(c.rewriting.provider, 'rewriting') }) : '',
+        desc:
+          rewritingUsed() && waitsForKey('rewriting')
+            ? keyFromApiKeys('rewriting')
+              ? t('settings.keys.waiting', { provider: providerLabel(c.rewriting.provider, 'rewriting') })
+              : t('settings.keys.waitingServer', { host: hostOf(c.rewriting.endpoint) })
+            : '',
         value: rewritingValue(),
         action: 'go:rewriting'
       })
@@ -640,7 +653,9 @@ function mainPage() {
       row({
         title: t('settings.meetings.transcription'),
         desc: waitsForKey('meetings')
-          ? t('settings.keys.waitingMeetings', { provider: providerLabel(c.meetings.provider, 'meetings') })
+          ? keyFromApiKeys('meetings')
+            ? t('settings.keys.waitingMeetings', { provider: providerLabel(c.meetings.provider, 'meetings') })
+            : t('settings.keys.waitingServerMeetings', { host: hostOf(c.meetings.endpoint) })
           : meetingsWaitForConsent()
             ? t('settings.meetings.consentWaiting')
             : '',
@@ -1843,7 +1858,9 @@ async function saveKey(id) {
     return render();
   }
   render();
-  if (alsoDictation) await useProvider('transcription', id);
+  // The state may have moved on while the key saved, such as Orukeet's download finishing: switch only while dictation
+  // still can't work.
+  if (alsoDictation && dictationCanTakeKey()) await useProvider('transcription', id);
 }
 
 // Removes a provider's key for every feature that uses it. While a feature uses it, Voice asks first.

@@ -221,6 +221,10 @@ pub struct Config {
 
     // Transcription
     pub audio_provider: String,
+    /// Whether the user chose dictation's provider: saved the Transcription form or imported
+    /// Ownkey's choice. Until then dictation is on its first-run default, and Settings may offer to
+    /// use the provider of a first API key for it (voice/ui/API.md, `dictation.firstSetup`).
+    pub audio_provider_chosen: bool,
     pub audio_api_key: String,
     pub audio_endpoint: String,
     pub audio_model: String,
@@ -328,6 +332,7 @@ impl Config {
             pill_edge: PillEdge::Bottom,
             pill_hide_from_capture: true,
             audio_provider: "mistral".into(),
+            audio_provider_chosen: false,
             audio_api_key: String::new(),
             audio_endpoint: DEFAULT_AUDIO_ENDPOINT.into(),
             audio_model: DEFAULT_AUDIO_MODEL.into(),
@@ -735,6 +740,18 @@ impl Config {
         true
     }
 
+    /// A first setup: dictation still on its first-run default, Orukeet, and no API key saved for
+    /// any provider or feature. Only then may saving a first key switch dictation to that provider
+    /// in the same step, as Settings offers.
+    pub fn first_setup(&self) -> bool {
+        !self.audio_provider_chosen
+            && self.audio_provider == "orukeet"
+            && self.api_keys.values().all(|key| key.trim().is_empty())
+            && KEY_FEATURES
+                .iter()
+                .all(|feature| self.key_of(*feature).trim().is_empty())
+    }
+
     /// Switches a feature to its provider's shared key, dropping a key of its own: it sends the
     /// key in Settings > API keys from now on, or none at a server that isn't the provider's own,
     /// such as a custom server.
@@ -1044,6 +1061,7 @@ pub(crate) fn normalize(value: &Value, dev_mode: bool) -> Map<String, Value> {
     cfg.insert("custom_fillers".into(), json!(custom.join(", ")));
 
     for key in [
+        "audio_provider_chosen",
         "paste_mode",
         "ready_chime",
         "pill_hide_from_capture",

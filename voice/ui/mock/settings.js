@@ -7,7 +7,7 @@
 //   (development copy), nokey (dictation and rewriting on Mistral without a key, Orukeet not downloaded), ownkey
 //   (everything on Mistral, rewriting and meetings with another key each from before keys were shared), cleared
 //   (everything on Mistral, rewriting's key removed in an older Voice), ollama (rewriting with Ollama on this computer and
-//   its own key, an Ollama cloud key on API keys).
+//   its own key, an Ollama cloud key on API keys), proxy (dictation on Mistral through a proxy without its key).
 //   platform=macos shows the macOS Permissions group and the Mac key names; permissions=granted, denied, notAsked
 //   or mixed (the default) picks the states the five rows show. System audio stays unknown, as it has no
 //   public preflight.
@@ -443,6 +443,11 @@ const SCENARIOS = {
     s.config.rewriting = { ...s.config.rewriting, provider: 'ollama', endpoint: 'http://localhost:11434/api/chat', model: 'llama3.2:3b', keySaved: true, ownKey: false };
     s.config.apiKeys.ollama.saved = true;
   },
+  // A key on API keys can't reach a proxy: its key goes in the form.
+  proxy: (s) => {
+    s.config.transcription = { provider: 'mistral', endpoint: 'https://proxy.example.com/v1/audio/transcriptions', model: 'voxtral-mini-latest', language: 'auto', keySaved: false, ownKey: false };
+    s.dictation.status = 'noKey';
+  },
   dev: (s) => {
     s.devMode = true;
     s.version = '0.1.0-dev';
@@ -616,8 +621,16 @@ export function createMock(params) {
   };
   resolve();
 
+  // dictation.firstSetup as the engine works it out: dictation not chosen yet, still on Orukeet, and no key anywhere.
+  let dictationChosen = false;
+  const firstSetup = () =>
+    !dictationChosen &&
+    state.config.transcription.provider === 'orukeet' &&
+    !Object.values(state.config.apiKeys).some((k) => k.saved) &&
+    !KEY_FORMS.some((target) => state.config[target].keySaved);
   const snapshot = () => {
     state.speakers = speakersState(state, forcedSpeakers);
+    state.dictation.firstSetup = firstSetup();
     return structuredClone(state);
   };
   // For dev/check.js: what the app would hold now.
@@ -767,6 +780,7 @@ export function createMock(params) {
         target.consent = save.consent ? { provider: save.provider, host: host(save.endpoint), mode } : null;
       }
       if (save.target === 'transcription') {
+        dictationChosen = true;
         state.models.orukeet.active = save.provider === 'orukeet' && state.models.orukeet.stage === 'installed' ? 'loaded' : null;
         state.dictation.status =
           save.provider === 'orukeet' ? (state.models.orukeet.stage === 'installed' ? 'ready' : 'modelMissing') : target.keySaved ? 'ready' : 'noKey';

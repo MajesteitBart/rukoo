@@ -830,7 +830,7 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
             "keys": SHARED_KEY_PROVIDERS,
             "keyHosts": SHARED_KEY_PROVIDERS.iter().map(|id| (id.to_string(), json!(voice_core::providers::key_hosts(id)))).collect::<Map<String, Value>>()
         },
-        "dictation": { "status": "ready" },
+        "dictation": { "status": "ready", "firstSetup": false },
         "rukoo": { "state": "notRunning", "clientVersion": null, "protocol": null, "port": null, "discoveryPath": discovery, "behind": null },
         "models": {
             "orukeet": installed_model("orukeet", data_dir),

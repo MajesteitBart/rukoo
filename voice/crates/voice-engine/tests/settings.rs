@@ -843,6 +843,31 @@ fn saving_or_removing_a_key_leaves_a_feature_s_own_key_alone() {
 }
 
 #[test]
+fn only_a_first_setup_is_offered_the_key_s_provider_for_dictation() {
+    let h = Harness::new("first-setup");
+    // As the first start leaves it: Orukeet for dictation, no key anywhere.
+    h.config(json!({}));
+    let engine = h.start();
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], true);
+    engine.settings_save_key("mistral", SECRET.into()).unwrap();
+    assert_eq!(
+        engine.settings_state()["dictation"]["firstSetup"],
+        false,
+        "a key is saved"
+    );
+    engine.settings_remove_key("mistral").unwrap();
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], true);
+    // Saving the Transcription form is a choice, Orukeet included.
+    save(&engine, json!({"target": "transcription", "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "apiKey": null})).unwrap();
+    assert!(h.saved_config().audio_provider_chosen);
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], false);
+    save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": null})).unwrap();
+    assert!(h.saved_config().audio_provider_chosen);
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], false);
+    engine.shutdown();
+}
+
+#[test]
 fn a_provider_s_key_never_reaches_another_server() {
     let h = Harness::new("api-keys-hosts");
     h.config(json!({}));

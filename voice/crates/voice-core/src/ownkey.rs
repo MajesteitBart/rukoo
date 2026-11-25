@@ -187,6 +187,8 @@ impl ImportResult {
         );
 
         cfg.audio_provider = ownkey.audio_provider.clone();
+        // Ownkey's dictation provider was the user's choice.
+        cfg.audio_provider_chosen = true;
         cfg.audio_api_key = ownkey.audio_api_key.clone();
         cfg.audio_endpoint = ownkey.audio_endpoint.clone();
         cfg.audio_model = ownkey.audio_model.clone();

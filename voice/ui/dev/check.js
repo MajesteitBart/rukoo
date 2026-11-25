@@ -329,6 +329,60 @@ check('the offer can be cleared, and the feature row offers the key later', asyn
   assert.equal(await page.locator('[data-also]').count(), 0, 'dictation on Mistral needs no offer');
 });
 
+check('an established profile never gets the ticked dictation offer', async ({ open, page, mockState, calls }) => {
+  // The reviewer's case: Orukeet was installed and a Mistral key saved; then the model went away.
+  await open('settings.html?mock=1&lang=en&page=keys');
+  await page.evaluate(() =>
+    window.__settingsMockEdit((s) => {
+      Object.assign(s.models.orukeet, { stage: 'missing', location: null, path: null, active: null });
+      s.dictation.status = 'modelMissing';
+    })
+  );
+  await page.waitForSelector('[data-a="key-use:transcription:mistral"]');
+  await page.click('[data-a="key-edit:mistral"]');
+  assert.equal(await page.locator('[data-also]').count(), 0, 'no offer when replacing a key');
+  await page.fill('[data-field="key.mistral"]', 'sk-test-replace');
+  await page.click('[data-a="key-save:mistral"]');
+  await page.waitForSelector('[data-a="key-remove:mistral"]');
+  await page.waitForTimeout(200);
+  assert.ok(!(await calls()).some(([command]) => command === 'settings_save_provider'), 'dictation isn\'t switched');
+  assert.equal((await mockState()).config.transcription.provider, 'orukeet');
+  // The explicit button stays.
+  assert.equal(await page.locator('[data-a="key-use:transcription:mistral"]').count(), 1);
+});
+
+check('the offer is checked again before it switches dictation', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=keys&scenario=fresh');
+  assert.equal(await page.locator('[data-also="mistral"]').isChecked(), true);
+  await page.evaluate(() => (window.__settingsMockSlow.settings_save_key = 400));
+  await page.fill('[data-field="key.mistral"]', 'sk-test-recheck');
+  await page.click('[data-a="key-save:mistral"]');
+  // Orukeet's download finishes while the key saves: dictation works on its own now.
+  await page.evaluate(() =>
+    window.__settingsMockEdit((s) => {
+      Object.assign(s.models.orukeet, { stage: 'installed', location: 'voice', active: 'unloaded' });
+      s.dictation.status = 'ready';
+    })
+  );
+  await page.waitForSelector('[data-a="key-remove:mistral"]');
+  await page.waitForTimeout(200);
+  assert.ok(!(await calls()).some(([command]) => command === 'settings_save_provider'));
+});
+
+check('a missing key for a proxy leads to the feature\'s form, not API keys', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&scenario=proxy');
+  const status = page.locator('[data-section="status"] .row').first();
+  assert.equal(await status.getAttribute('data-a'), 'go:transcription');
+  const keysRow = page.locator('[data-section="status"] [data-a="go:keys"]', { hasText: 'API keys' });
+  assert.doesNotMatch(await keysRow.innerText(), /dictation/);
+  await status.click();
+  assert.equal(await page.locator('h1').innerText(), 'Transcription');
+  assert.equal(await page.locator('[data-field="transcription.apiKey"]').count(), 1);
+  assert.match(await page.locator('[data-form="transcription"]').innerText(), /This isn't Mistral's own server/);
+  await open('settings.html?mock=1&lang=en&scenario=proxy&page=keys');
+  assert.match(await page.locator('[data-section="used"]').innerText(), /Mistral\s*Used for rewriting\./);
+});
+
 check('a provider\'s key never goes to another server', async ({ open, page, mockState, calls }) => {
   // Rewriting on Ollama at this computer, with its own key, and an Ollama cloud key on API keys.
   await open('settings.html?mock=1&lang=en&page=keys&scenario=ollama');

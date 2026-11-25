@@ -383,6 +383,9 @@ fn the_import_keeps_a_voice_key_for_a_provider_ownkey_has_none_for() {
     assert_eq!(cfg.shared_key("openai"), "sk-entered-in-voice");
     assert_eq!(cfg.rewrite().api_key, "sk-entered-in-voice");
     assert_eq!(cfg.dictation_audio().api_key, AUDIO_KEY);
+    // Ownkey's dictation provider was a choice, so Settings never offers to replace it.
+    assert!(cfg.audio_provider_chosen);
+    assert!(!cfg.first_setup());
     // Ownkey's meetings followed dictation: Mistral, with Mistral's one key.
     assert_eq!(cfg.meetings_audio_provider, "mistral");
     assert_eq!(cfg.meeting_audio().api_key, AUDIO_KEY);
