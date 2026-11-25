@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use voice_engine::{EngineApi, Theme, UiOptions};
 
@@ -49,6 +49,17 @@ pub fn url(page: Option<&str>) -> String {
     }
 }
 
+/// The event that moves an open Settings window to a page or group (voice/ui/API.md,
+/// `settings://page`).
+pub const PAGE_EVENT: &str = "settings://page";
+
+/// What an open Settings window is told when it comes forward for `page`: a known page or group,
+/// or nothing, which leaves it where it is.
+pub fn page_event(page: Option<&str>) -> Option<serde_json::Value> {
+    page.filter(|page| PAGES.contains(page))
+        .map(|page| serde_json::json!({ "page": page }))
+}
+
 /// The page's `--bg`.
 pub fn background(theme: Theme) -> Color {
     match theme {
@@ -87,6 +98,11 @@ pub fn open(
         window.show()?;
         if focus {
             window.set_focus()?;
+        }
+        // An open window goes to the page it was opened for, such as API keys after a dictation
+        // without a key; without a page it stays where the user left it.
+        if let Some(payload) = page_event(page.as_deref()) {
+            let _ = app.emit_to(LABEL, PAGE_EVENT, payload);
         }
         // On macOS Settings' pushed states read the privacy permissions while it exists.
         #[cfg(target_os = "macos")]
@@ -184,6 +200,21 @@ mod tests {
             "settings.html?page=meetingTranscription"
         );
         assert_eq!(url(Some("../../etc")), "settings.html");
+        assert_eq!(url(Some("keys")), "settings.html?page=keys");
+    }
+
+    #[test]
+    fn an_open_window_moves_only_to_a_known_page() {
+        assert_eq!(
+            page_event(Some("keys")),
+            Some(serde_json::json!({ "page": "keys" }))
+        );
+        assert_eq!(
+            page_event(Some("meetings")),
+            Some(serde_json::json!({ "page": "meetings" }))
+        );
+        assert_eq!(page_event(Some("../../etc")), None);
+        assert_eq!(page_event(None), None);
     }
 
     #[test]

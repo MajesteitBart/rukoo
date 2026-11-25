@@ -197,6 +197,8 @@ const keyStatus = {};
 const syncPending = new Set();
 const syncRefused = new Set();
 let keyDialog = null;
+// API keys: whether the offer under a key field to use that provider for dictation too is ticked, by "<provider>".
+const keyAlso = {};
 
 // ---------- small helpers ----------
 
@@ -385,6 +387,35 @@ function meetingsWaitForConsent() {
 const sharesKey = (provider) => (state.providers.keys || []).includes(provider);
 const keySavedFor = (provider) => Boolean(state.config.apiKeys?.[provider]?.saved);
 
+// Whether a request for this provider to this endpoint may carry the provider's key from API keys: only over HTTPS to
+// one of the provider's own hosts (API.md, providers.keyHosts), on the default port. A form pointed at any other server,
+// such as Ollama on this computer or a proxy, keeps a key of its own for that server.
+function sharedKeyApplies(provider, endpoint) {
+  if (!sharesKey(provider)) return false;
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    return (
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      (url.port === '' || url.port === '443') &&
+      (state.providers.keyHosts?.[provider] || []).includes(url.hostname.toLowerCase())
+    );
+  } catch {
+    return false;
+  }
+}
+
+// The server a key a form keeps belongs to: scheme, host and port.
+function serverOf(endpoint) {
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return '';
+  }
+}
+
 // Whether Voice refuses this provider without a key: voice-core's provider_requires_key. Ollama needs one only at
 // ollama.com.
 function keyNeeded(provider, endpoint) {
@@ -403,8 +434,25 @@ function waitsForKey(target) {
   return keyNeeded(c.provider, c.endpoint) && !c.keySaved;
 }
 
-// The features that use a provider now, by their saved settings.
-const featuresOn = (provider) => PROVIDER_FORMS.filter((target) => state.config[target].provider === provider);
+// The features that use a provider's key from API keys now, by their saved settings: on that provider, at one of its
+// own hosts.
+const featuresOn = (provider) =>
+  PROVIDER_FORMS.filter((target) => state.config[target].provider === provider && sharedKeyApplies(provider, state.config[target].endpoint));
+
+// Whether a feature sends its provider's key from API keys, or would as soon as there is one. A feature with its own key
+// from before, or without a key while the provider has one (an older Voice removed it), doesn't (API.md, ownKey).
+function followsSharedKey(target) {
+  const c = state.config[target];
+  return !c.ownKey && c.keySaved === keySavedFor(c.provider);
+}
+
+// The offer under a key field: dictation on Orukeet without the model can't work, and this provider ships a dictation
+// model, so saving the key can switch dictation to it in the same step. Rewriting starts on Mistral, so a Mistral key
+// is enough there; meeting transcription never switches without its consent (decision 10).
+function keyOffer(id) {
+  const tr = state.config.transcription;
+  return tr.provider === 'orukeet' && state.dictation.status === 'modelMissing' && Boolean(defaultModel('transcription', id));
+}
 const featureNames = (targets) => list(targets.map((target) => t(FEATURES[target].name)));
 
 // Whether a feature works now, as the API keys page and its one-click fix see it.
@@ -673,7 +721,9 @@ function providerForm(target) {
   const provider = formValue(target, 'provider');
   const local = provider === 'orukeet';
   const ids = providerIds(target);
-  const keySaved = saved.keySaved && provider === saved.provider && !d.replacingKey;
+  // A key the form keeps belongs to its provider at its server: another provider or server starts without one.
+  const sameServer = provider === saved.provider && serverOf(formValue(target, 'endpoint')) === serverOf(saved.endpoint);
+  const keySaved = saved.keySaved && sameServer && !d.replacingKey;
   const presets = presetEndpoints(target, provider);
   const models = modelLists[target];
   // Only the meetings form offers realtime models; the other two would refuse them on Save.
@@ -685,15 +735,19 @@ function providerForm(target) {
 
   if (!local) {
     const keyOptional = provider === 'custom' || provider === 'ollama';
-    const key = sharesKey(provider)
-      ? sharedKeyField(target, provider, formValue(target, 'endpoint'))
+    // A provider's own key never goes to another server; say so where the form asks for that server's key.
+    const otherServer = !keyOptional && sharesKey(provider) && !sharedKeyApplies(provider, formValue(target, 'endpoint'));
+    const key = sharedKeyApplies(provider, formValue(target, 'endpoint'))
+      ? sharedKeyField(target, provider)
       : keySaved
         ? `<div class="field"><span>${esc(t('settings.provider.apiKey'))}</span><div class="key-saved"><span>${icons.check}${esc(t('settings.provider.keySaved'))}</span>
           <button class="btn sm secondary" data-a="replace-key:${target}">${esc(t('common.replace'))}</button>
           <button class="btn sm secondary danger" data-a="remove-key:${target}">${esc(t('common.remove'))}</button></div></div>`
         : `<label>${esc(t('settings.provider.apiKey'))}<input type="password" data-field="${target}.apiKey" autocomplete="off" spellcheck="false" placeholder="${esc(
             t('settings.provider.keyPlaceholder')
-          )}" />${keyOptional ? `<span class="field-help">${esc(t('settings.provider.keyOptional'))}</span>` : ''}</label>`;
+          )}" />${keyOptional ? `<span class="field-help">${esc(t('settings.provider.keyOptional'))}</span>` : ''}${
+            otherServer ? `<span class="field-help">${esc(t('settings.keys.formOtherServer', { provider: providerLabel(provider, target) }))}</span>` : ''
+          }</label>`;
     const modelHelp = !models
       ? ''
       : models.status === 'failed'
@@ -734,21 +788,22 @@ function providerForm(target) {
 
 // A provider form's key, for a provider whose key is on the API keys page: whether there is one, with the way there. A
 // feature that kept another key from before says so, and can switch to the one key.
-function sharedKeyField(target, provider, endpoint) {
+function sharedKeyField(target, provider) {
   const saved = state.config[target];
   const name = providerLabel(provider, target);
-  const own = saved.ownKey && provider === saved.provider;
+  // The form's provider at the saved server: the feature's own key, or its missing one, is what it sends there.
+  const here = provider === saved.provider && sharedKeyApplies(provider, saved.endpoint);
   const has = keySavedFor(provider);
   let line;
   let button;
-  if (own) {
+  if (here && saved.ownKey) {
     line = `<span>${icons.check}${esc(t('settings.keys.formOwn', { provider: name }))}</span>`;
     button = has ? `<button class="btn sm secondary" data-a="remove-key:${target}">${esc(t('settings.keys.useShared', { provider: name }))}</button>` : '';
+  } else if (here && has && !saved.keySaved) {
+    line = `<span class="missing">${icons.warning}${esc(t('settings.keys.formNotUsing', { provider: name }))}</span>`;
+    button = `<button class="btn sm secondary" data-a="remove-key:${target}">${esc(t('settings.keys.useShared', { provider: name }))}</button>`;
   } else if (has) {
     line = `<span>${icons.check}${esc(t('settings.keys.formSaved', { provider: name }))}</span>`;
-    button = `<button class="btn sm secondary" data-a="go:keys">${esc(t('settings.keys.title'))}</button>`;
-  } else if (!keyNeeded(provider, endpoint)) {
-    line = `<span class="plain">${esc(t('settings.keys.formLocal'))}</span>`;
     button = `<button class="btn sm secondary" data-a="go:keys">${esc(t('settings.keys.title'))}</button>`;
   } else {
     line = `<span class="missing">${icons.warning}${esc(t('settings.keys.formMissing', { provider: name }))}</span>`;
@@ -1039,7 +1094,9 @@ function keyRows(id, primary) {
   const waiting = users.filter((target) => featureUsed(target) && waitsForKey(target));
   const editing = keyFieldOpen(id);
   const ks = keyStatus[id];
-  const desc = [users.length ? t('settings.keys.usedFor', { features: featureNames(users) }) : t('settings.keys.notUsed')];
+  // "Used for" names the features that send this key; one with another key, or none, has its own note below.
+  const sending = users.filter(followsSharedKey);
+  const desc = [sending.length ? t('settings.keys.usedFor', { features: featureNames(sending) }) : t('settings.keys.notUsed')];
   if (id === 'ollama') desc.push(t('settings.keys.ollama'));
   const side = editing
     ? ''
@@ -1064,18 +1121,26 @@ function keyRows(id, primary) {
         }</span>`
       : '';
     const cancel = saved || keyEditing.has(id) ? `<button class="btn secondary" data-a="key-cancel:${id}">${esc(t('common.cancel'))}</button>` : '';
+    // Dictation that can't work yet switches to this provider in the same step, unless the box is cleared.
+    const offer = keyOffer(id)
+      ? `<label class="check-row key-also"><input type="checkbox" data-also="${id}" ${keyAlso[id] !== false ? 'checked' : ''} /><span>${esc(
+          t('settings.keys.alsoUse', { provider: name })
+        )}</span></label><span class="field-help">${esc(t('settings.keys.alsoUseHelp', { model: defaultModel('transcription', id) }))}</span>`
+      : '';
     html += `<div class="form key-form" data-form="key-${id}"><label>${esc(t('settings.keys.keyFor', { provider: name }))}<input type="password" data-field="key.${id}" autocomplete="off" spellcheck="false" placeholder="${esc(
       t('settings.provider.keyPlaceholder')
-    )}" ${failed ? 'aria-invalid="true"' : ''} /></label><div class="form-actions">${message}${cancel}<button class="btn ${primary ? 'primary' : 'secondary'}" data-a="key-save:${id}" ${
+    )}" ${failed ? 'aria-invalid="true"' : ''} /></label>${offer}<div class="form-actions">${message}${cancel}<button class="btn ${primary ? 'primary' : 'secondary'}" data-a="key-save:${id}" ${
       ks?.kind === 'saving' ? 'disabled' : ''
     }>${esc(t('common.save'))}</button></div></div>`;
   }
-  // A feature that kept another key for this provider from before keys were shared.
-  for (const target of users.filter((target) => state.config[target].ownKey)) {
+  // A feature that kept another key for this provider from before keys were shared, or whose key an older Voice
+  // removed: it keeps doing that until the user switches it to the key above.
+  for (const target of users.filter((target) => !followsSharedKey(target))) {
+    const own = state.config[target].ownKey;
     html += row({
       lead: `<span class="lead warn top">${icons.info}</span>`,
-      title: t('settings.keys.ownKey', { feature: t(FEATURES[target].title), provider: name }),
-      desc: t('settings.keys.ownKeyHelp'),
+      title: t(own ? 'settings.keys.ownKey' : 'settings.keys.notUsing', { feature: t(FEATURES[target].title), provider: name }),
+      desc: t(own ? 'settings.keys.ownKeyHelp' : 'settings.keys.notUsingHelp'),
       side: saved ? `<div class="side"><button class="btn sm secondary" data-a="remove-key:${target}">${esc(t('settings.keys.useThis'))}</button></div>` : '',
       cls: 'key-own'
     });
@@ -1733,9 +1798,10 @@ async function saveProvider(target) {
   }
   // null keeps the saved key, "" saves none, text replaces it. The app never keeps a key across providers.
   const typed = String(d.apiKey || '').trim();
-  const showingSaved = saved.keySaved && provider === saved.provider && !d.replacingKey;
-  // A provider on the API keys page brings its own key: null. A custom server's key is the form's.
-  values.apiKey = local ? '' : sharesKey(provider) ? null : typed ? typed : showingSaved || (saved.keySaved && provider === saved.provider) ? null : '';
+  const sameServer = provider === saved.provider && serverOf(values.endpoint) === serverOf(saved.endpoint);
+  // A provider's own host gets its key from API keys: null. Any other server's key is the form's, kept only for the same
+  // provider at the same server.
+  values.apiKey = local ? '' : sharedKeyApplies(provider, values.endpoint) ? null : typed ? typed : saved.keySaved && sameServer ? null : '';
   if (target === 'transcription') values.language = local ? 'auto' : formValue('transcription', 'language') || 'auto';
   if (target === 'meetings') values.consent = consentNeeded(provider, values.endpoint) ? consentValue(provider, values.endpoint, values.model) : false;
   formStatus[target] = { kind: local ? 'loading' : 'saving', message: t(local ? 'settings.provider.loadingOrukeet' : 'settings.provider.saving') };
@@ -1758,29 +1824,39 @@ async function saveKey(id) {
     render();
     return focusField(`key.${id}`);
   }
+  // Read before the save changes the state: whether dictation switches to this provider in the same step.
+  const alsoDictation = keyOffer(id) && keyAlso[id] !== false;
+  const following = featuresOn(id).filter(followsSharedKey);
   keyStatus[id] = { kind: 'saving' };
   render();
   try {
     await invoke('settings_save_key', { provider: id, key });
     delete drafts.key[id];
     keyEditing.delete(id);
+    delete keyAlso[id];
     keyStatus[id] = { kind: 'saved' };
-    // The app's state says so too; this shows it at once.
+    // The app's state says so too; this shows it at once. A feature with its own key keeps it.
     state.config.apiKeys[id] = { saved: true };
-    for (const target of featuresOn(id)) Object.assign(state.config[target], { keySaved: true, ownKey: false });
+    for (const target of following) state.config[target].keySaved = true;
   } catch (error) {
     keyStatus[id] = { kind: 'failed', message: t('settings.provider.failed'), detail: error?.message || String(error) };
+    return render();
   }
   render();
+  if (alsoDictation) await useProvider('transcription', id);
 }
 
 // Removes a provider's key for every feature that uses it. While a feature uses it, Voice asks first.
 async function removeKey(id) {
-  const users = featuresOn(id);
+  // Only the features that send this key lose it; one with its own key keeps that, and the dialog says so.
+  const users = featuresOn(id).filter((target) => followsSharedKey(target) && state.config[target].keySaved);
+  const keeping = featuresOn(id).filter((target) => state.config[target].ownKey);
   if (users.length) {
     const ok = await dialog({
       title: t('settings.keys.removeTitle', { provider: providerLabel(id) }),
-      body: `<p>${esc(t('settings.keys.removeBody', { features: featureNames(users) }))}</p>`,
+      body: `<p>${esc(t('settings.keys.removeBody', { features: featureNames(users) }))}${
+        keeping.length ? ` ${esc(t('settings.keys.removeKeeps', { features: featureNames(keeping) }))}` : ''
+      }</p>`,
       buttons: [
         { label: t('common.cancel'), value: false },
         { label: t('common.remove'), value: true, primary: true, danger: true }
@@ -1792,7 +1868,7 @@ async function removeKey(id) {
     await invoke('settings_remove_key', { target: id });
     delete keyStatus[id];
     state.config.apiKeys[id] = { saved: false };
-    for (const target of users) Object.assign(state.config[target], { keySaved: false, ownKey: false });
+    for (const target of users) state.config[target].keySaved = false;
     render();
   } catch (error) {
     await showError(t('settings.errors.failed'), error?.message);
@@ -1955,7 +2031,7 @@ async function act(action, button) {
       try {
         await invoke('settings_remove_key', { target: arg });
         const c = state.config[arg];
-        if (sharesKey(c.provider)) Object.assign(c, { keySaved: keySavedFor(c.provider), ownKey: false });
+        if (sharedKeyApplies(c.provider, c.endpoint)) Object.assign(c, { keySaved: keySavedFor(c.provider), ownKey: false });
         else c.keySaved = false;
         render();
       } catch (error) {
@@ -2490,6 +2566,7 @@ function back() {
     if (leaving === 'keys') {
       delete drafts.key;
       keyEditing.clear();
+      for (const id of Object.keys(keyAlso)) delete keyAlso[id];
       for (const id of Object.keys(keyStatus)) delete keyStatus[id];
     }
     // Leaving Storage starts its forms afresh next time. A field focused as the page goes still saves, as on blur.
@@ -2552,6 +2629,10 @@ page.addEventListener('input', (e) => {
 });
 
 page.addEventListener('change', (e) => {
+  if (e.target.dataset?.also) {
+    keyAlso[e.target.dataset.also] = e.target.checked;
+    return;
+  }
   const field = e.target.dataset?.field;
   if (!field) return;
   const [form, ...rest] = field.split('.');
@@ -2646,17 +2727,29 @@ async function refreshPermissions() {
 }
 window.addEventListener('focus', refreshPermissions);
 
+// Opens a sub-page, or the top page scrolled to a group (status, dictation, meetings, general, about). From
+// ?page=<page> when Settings opens, and from settings://page when the app brings an open window forward for a page,
+// such as API keys after a dictation without a key (API.md).
+function openAt(wanted) {
+  if (wanted === 'meetingtranscription' || wanted === 'meeting-transcription') wanted = 'meetingTranscription';
+  if (PAGES.includes(wanted) && wanted !== 'main') {
+    if (current() !== wanted) go(wanted);
+    return;
+  }
+  if (!GROUP_ANCHORS.includes(wanted) && wanted !== 'main') return;
+  while (stack.length > 1) back();
+  if (GROUP_ANCHORS.includes(wanted)) page.querySelector(`#group-${wanted}`)?.scrollIntoView({ block: 'start' });
+}
+
 async function start() {
   await connect('settings');
   await loadCatalogs();
   await listen('settings://state', (next) => applyState(next));
+  await listen('settings://page', (payload) => state && openAt(payload?.page));
   applyState(await invoke('settings_state'), { first: true });
-  // ?page=<page> opens a sub-page, ?page=<group> scrolls the top page to a group (status, dictation, meetings,
-  // general, about). The app uses it to open Settings at the Ownkey import, for example.
+  // The app uses ?page= to open Settings at the Ownkey import or at API keys, for example.
   const wanted = params.get('page');
-  if (wanted === 'meetingtranscription' || wanted === 'meeting-transcription') go('meetingTranscription');
-  else if (PAGES.includes(wanted) && wanted !== 'main') go(wanted);
-  else if (GROUP_ANCHORS.includes(wanted)) page.querySelector(`#group-${wanted}`)?.scrollIntoView({ block: 'start' });
+  if (wanted) openAt(wanted);
   schedulePreview();
 }
 

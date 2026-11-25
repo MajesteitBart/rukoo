@@ -281,15 +281,17 @@ check('a form without its key links to API keys, and the top page says what wait
   assert.match(await page.locator('[data-form="transcription"] .key-saved').innerText(), /Nog geen sleutel van Mistral/);
 });
 
-check('a feature that doesn\'t work offers a saved key in one click, and meetings ask first', async ({ open, page, mockState, calls }) => {
+check('on a fresh install, saving a Mistral key makes dictation work in the same step', async ({ open, page, mockState, calls }) => {
   await open('settings.html?mock=1&lang=en&page=keys&scenario=fresh');
-  // Orukeet isn't downloaded and there's no key: nothing to offer yet. Rewriting waits for Mistral, whose field is open.
+  // Orukeet isn't downloaded and there's no key: nothing to offer yet. Rewriting waits for Mistral, whose field is open,
+  // with the offer to use Mistral for dictation too, ticked.
   assert.equal(await page.locator('[data-a^="key-use:"]').count(), 0);
+  const offer = page.locator('[data-also="mistral"]');
+  assert.equal(await offer.isChecked(), true);
+  assert.match(await page.locator('[data-form="key-mistral"]').innerText(), /Use Mistral for dictation too[\s\S]*voxtral-mini-latest/);
   await page.fill('[data-field="key.mistral"]', 'sk-test-fix');
   await page.click('[data-a="key-save:mistral"]');
-  await page.waitForSelector('[data-a="key-use:transcription:mistral"]');
-  await page.click('[data-a="key-use:transcription:mistral"]');
-  await page.waitForFunction(() => !document.querySelector('[data-a="key-use:transcription:mistral"]'));
+  await page.waitForFunction(() => window.__settingsMockState().dictation.status === 'ready');
   const save = (await calls()).filter(([command]) => command === 'settings_save_provider').pop()[1].save;
   assert.deepEqual(
     { target: save.target, provider: save.provider, model: save.model, apiKey: save.apiKey },
@@ -310,6 +312,98 @@ check('a feature that doesn\'t work offers a saved key in one click, and meeting
   await page.waitForFunction(() => !document.querySelector('[data-a="key-use:meetings:mistral"]'));
   const meetings = (await mockState()).config.meetings;
   assert.deepEqual([meetings.provider, meetings.consent], ['mistral', { provider: 'mistral', host: 'api.mistral.ai', mode: 'windows' }]);
+});
+
+check('the offer can be cleared, and the feature row offers the key later', async ({ open, page, mockState, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=keys&scenario=fresh');
+  await page.locator('[data-also="mistral"]').uncheck();
+  await page.fill('[data-field="key.mistral"]', 'sk-test-no-offer');
+  await page.click('[data-a="key-save:mistral"]');
+  await page.waitForSelector('[data-a="key-use:transcription:mistral"]');
+  assert.ok(!(await calls()).some(([command]) => command === 'settings_save_provider'), 'dictation stays on Orukeet');
+  assert.equal((await mockState()).config.transcription.provider, 'orukeet');
+  await page.click('[data-a="key-use:transcription:mistral"]');
+  await page.waitForFunction(() => window.__settingsMockState().config.transcription.provider === 'mistral');
+  // Meetings never get the offer: their key form has none for them, and their row asks for consent (checked above).
+  await open('settings.html?mock=1&lang=en&page=keys&scenario=nokey');
+  assert.equal(await page.locator('[data-also]').count(), 0, 'dictation on Mistral needs no offer');
+});
+
+check('a provider\'s key never goes to another server', async ({ open, page, mockState, calls }) => {
+  // Rewriting on Ollama at this computer, with its own key, and an Ollama cloud key on API keys.
+  await open('settings.html?mock=1&lang=en&page=keys&scenario=ollama');
+  assert.match(await page.locator('[data-section="other"]').innerText(), /Ollama\s*Not used yet/);
+  await page.click('[data-a="go:rewriting"]');
+  // The form keeps the local server's key as its own, with Replace and Remove.
+  assert.equal(await page.locator('[data-form="rewriting"] [data-a="replace-key:rewriting"]').count(), 1);
+  assert.doesNotMatch(await page.locator('[data-form="rewriting"]').innerText(), /Uses your Ollama key/);
+  // At ollama.com the cloud key applies.
+  await page.fill('[data-field="rewriting.endpoint"]', 'https://ollama.com/api/chat');
+  await page.locator('[data-field="rewriting.endpoint"]').blur();
+  assert.match(await page.locator('[data-form="rewriting"] .key-saved').innerText(), /Uses your Ollama key/);
+  // Model refresh at a server that isn't the provider's own sends no key of its own: the app decides, and gets null.
+  await open('settings.html?mock=1&lang=en&page=transcription&scenario=cloud');
+  await page.fill('[data-field="transcription.endpoint"]', 'https://proxy.example.com/v1/audio/transcriptions');
+  await page.locator('[data-field="transcription.endpoint"]').blur();
+  const form = page.locator('[data-form="transcription"]');
+  assert.equal(await page.locator('[data-field="transcription.apiKey"]').count(), 1, 'the proxy gets a key field of its own');
+  assert.match(await form.innerText(), /This isn't OpenAI's own server/);
+  await page.click('[data-a="save:transcription"]');
+  await page.waitForSelector('.form-status.ok');
+  assert.equal((await page.evaluate(() => window.__lastSave)).apiKey, '', "OpenAI's key isn't kept for the proxy");
+  assert.equal((await mockState()).config.transcription.keySaved, false);
+});
+
+check('saving or removing a key on API keys leaves an own key alone', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=keys&scenario=ownkey');
+  await page.click('[data-a="key-edit:mistral"]');
+  await page.fill('[data-field="key.mistral"]', 'sk-test-new');
+  await page.click('[data-a="key-save:mistral"]');
+  await page.waitForSelector('[data-a="key-remove:mistral"]');
+  let state = await mockState();
+  assert.deepEqual([state.config.rewriting.ownKey, state.config.meetings.ownKey], [true, true]);
+  assert.equal(await page.locator('.key-own').count(), 2);
+  assert.match(await page.locator('.key-own').first().innerText(), /Saving or removing the key above doesn't change it/);
+  // The dialog names only the feature that sends this key.
+  await page.click('[data-a="key-remove:mistral"]');
+  const text = await page.locator('.dialog').innerText();
+  assert.match(text, /for dictation until you add a key again\./);
+  assert.match(text, /Own keys stay as they are: rewriting and meeting transcription\./);
+  await page.click('.dialog .buttons .btn.primary');
+  await page.waitForFunction(() => !window.__settingsMockState().config.apiKeys.mistral.saved);
+  state = await mockState();
+  assert.deepEqual(
+    [state.config.transcription.keySaved, state.config.rewriting.keySaved, state.config.meetings.keySaved],
+    [false, true, true]
+  );
+});
+
+check('a key an older Voice removed stays removed until the feature is switched back', async ({ open, page, mockState, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=keys&scenario=cleared');
+  assert.match(await page.locator('.key-own').innerText(), /Rewriting doesn't use the Mistral key/);
+  await page.click('[data-a="key-edit:mistral"]');
+  await page.fill('[data-field="key.mistral"]', 'sk-test-again');
+  await page.click('[data-a="key-save:mistral"]');
+  await page.waitForSelector('[data-a="key-remove:mistral"]');
+  assert.equal((await mockState()).config.rewriting.keySaved, false, 'a new key doesn\'t bring it back');
+  await page.click('[data-a="go:rewriting"]');
+  assert.match(await page.locator('[data-form="rewriting"] .key-saved').innerText(), /Doesn't use your Mistral key/);
+  await page.click('[data-form="rewriting"] [data-a="remove-key:rewriting"]');
+  await page.waitForFunction(() => window.__settingsMockState().config.rewriting.keySaved);
+  assert.ok((await calls()).some(([command, args]) => command === 'settings_remove_key' && args.target === 'rewriting'));
+});
+
+check('the app can move an open Settings window to API keys', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=transcription');
+  await page.evaluate(() => window.__settingsMockOpenPage('keys'));
+  await page.waitForSelector('h1:text("API keys")');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('h1').innerText(), 'Transcription', 'back returns to where the user was');
+  // A group goes to the top page; an unknown page changes nothing.
+  await page.evaluate(() => window.__settingsMockOpenPage('nonsense'));
+  assert.equal(await page.locator('h1').innerText(), 'Transcription');
+  await page.evaluate(() => window.__settingsMockOpenPage('meetings'));
+  await page.waitForSelector('h1:text("Rukoo Voice")');
 });
 
 check('removing a key a feature uses asks first, and removes it for every feature', async ({ open, page, mockState, calls }) => {

@@ -723,24 +723,28 @@
     "description": "Settings > API keys: a row under a provider when a feature kept a different key for it from before keys were shared, such as \"Meeting transcription still uses another Mistral key from before\". {feature} is a feature's title. voice/ui/settings.js (keyRows)."
   },
   "settings.keys.ownKeyHelp": {
-    "message": "Both keys work. Saving or removing a key here replaces that one too.",
+    "message": "It keeps working with that key. Saving or removing the key above doesn't change it.",
     "description": "Settings > API keys: under settings.keys.ownKey. voice/ui/settings.js (keyRows)."
   },
   "settings.keys.useThis": {
     "message": "Use the key above",
-    "description": "Settings > API keys: button on settings.keys.ownKey's row that makes that feature use the provider's key on this page. voice/ui/settings.js (keyRows)."
+    "description": "Settings > API keys: button on the settings.keys.ownKey and settings.keys.notUsing rows that makes that feature use the provider's key on this page. voice/ui/settings.js (keyRows)."
   },
   "settings.keys.useShared": {
     "message": "Use the {provider} key from API keys",
-    "description": "Settings > a provider form: button beside settings.keys.formOwn that makes this feature use the provider's key on the API keys page. voice/ui/settings.js (sharedKeyField)."
+    "description": "Settings > a provider form: button beside settings.keys.formOwn or settings.keys.formNotUsing that makes this feature use the provider's key on the API keys page. voice/ui/settings.js (sharedKeyField)."
   },
   "settings.keys.removeTitle": {
     "message": "Remove the {provider} key?",
     "description": "Settings > API keys: title of the dialog before a key that features use is removed. voice/ui/settings.js (removeKey)."
   },
   "settings.keys.removeBody": {
-    "message": "Voice stops sending it for {features}. They wait until you add a key again.",
+    "message": "Voice stops sending it for {features} until you add a key again.",
     "description": "Settings > API keys: body of the remove dialog. {features} is a list such as \"dictation and rewriting\". voice/ui/settings.js (removeKey)."
+  },
+  "settings.keys.removeKeeps": {
+    "message": "Own keys stay as they are: {features}.",
+    "description": "Settings > API keys: after settings.keys.removeBody in the remove dialog, when features kept their own key for this provider from before keys were shared. {features} is a list such as \"rewriting and meeting transcription\". voice/ui/settings.js (removeKey)."
   },
   "settings.keys.features": {
     "message": "Provider per feature",
@@ -774,9 +778,29 @@
     "message": "No {provider} key yet. Add it once in API keys.",
     "description": "Settings > a provider form: the key line when the provider has no key yet, with a button to API keys. voice/ui/settings.js (sharedKeyField)."
   },
-  "settings.keys.formLocal": {
-    "message": "No key needed for a server on this computer.",
-    "description": "Settings > a provider form: the key line for Ollama on this computer without a key. voice/ui/settings.js (sharedKeyField)."
+  "settings.keys.notUsing": {
+    "message": "{feature} doesn't use the {provider} key",
+    "description": "Settings > API keys: a row under a provider when a feature on that provider has no key while the provider has one, because an older version of Voice removed the feature's key. {feature} is a feature's title. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.notUsingHelp": {
+    "message": "An earlier version of Voice removed its key, so it waits for one.",
+    "description": "Settings > API keys: under settings.keys.notUsing. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.formNotUsing": {
+    "message": "Doesn't use your {provider} key",
+    "description": "Settings > a provider form: the key line when this feature has no key while the provider has one on the API keys page, because an older Voice removed it. voice/ui/settings.js (sharedKeyField)."
+  },
+  "settings.keys.formOtherServer": {
+    "message": "This isn't {provider}'s own server, so your {provider} key from API keys doesn't go here. Enter this server's key.",
+    "description": "Settings > a provider form: under the key field when the endpoint isn't one of the provider's own hosts, such as a proxy in front of OpenAI. voice/ui/settings.js (providerForm)."
+  },
+  "settings.keys.alsoUse": {
+    "message": "Use {provider} for dictation too",
+    "description": "Settings > API keys: checkbox under a key field, ticked by default, when dictation can't work because Orukeet isn't downloaded. Saving the key then switches dictation to that provider in the same step. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.alsoUseHelp": {
+    "message": "Orukeet isn't on this computer, so dictation doesn't work yet. This switches dictation to {model}.",
+    "description": "Settings > API keys: under settings.keys.alsoUse. {model} is a model id such as \"voxtral-mini-latest\". voice/ui/settings.js (keyRows)."
   },
   "settings.keys.waiting": {
     "message": "Waiting for a {provider} key.",

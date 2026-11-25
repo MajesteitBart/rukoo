@@ -5,7 +5,9 @@
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy), nokey (dictation and rewriting on Mistral without a key, Orukeet not downloaded), ownkey
-//   (everything on Mistral, rewriting and meetings with another key each from before keys were shared).
+//   (everything on Mistral, rewriting and meetings with another key each from before keys were shared), cleared
+//   (everything on Mistral, rewriting's key removed in an older Voice), ollama (rewriting with Ollama on this computer and
+//   its own key, an Ollama cloud key on API keys).
 //   platform=macos shows the macOS Permissions group and the Mac key names; permissions=granted, denied, notAsked
 //   or mixed (the default) picks the states the five rows show. System audio stays unknown, as it has no
 //   public preflight.
@@ -39,8 +41,36 @@ const REALTIME_MODEL = 'voxtral-mini-transcribe-realtime-3';
 const KEY_PROVIDERS = ['openai', 'anthropic', 'google', 'mistral', 'ollama', 'openrouter'];
 const KEY_FORMS = ['transcription', 'rewriting', 'meetings'];
 
+// The hosts each provider's key from API keys may go to (API.md, providers.keyHosts).
+const KEY_HOSTS = {
+  openai: ['api.openai.com'],
+  anthropic: ['api.anthropic.com'],
+  google: ['generativelanguage.googleapis.com'],
+  mistral: ['api.mistral.ai'],
+  ollama: ['ollama.com'],
+  openrouter: ['openrouter.ai']
+};
+// As voice-core's shared_key_applies: HTTPS to one of the provider's own hosts, on the default port.
+function keyApplies(provider, endpoint) {
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    return url.protocol === 'https:' && !url.username && (url.port === '' || url.port === '443') && (KEY_HOSTS[provider] || []).includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+const serverOf = (endpoint) => {
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    return `${url.protocol}//${url.hostname}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return '';
+  }
+};
+
 const PROVIDERS = {
   keys: KEY_PROVIDERS,
+  keyHosts: KEY_HOSTS,
   audio: [
     { id: 'openai', endpoints: ['https://api.openai.com/v1/audio/transcriptions'], streamingPrefix: null },
     { id: 'google', endpoints: ['https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'], streamingPrefix: null },
@@ -402,6 +432,17 @@ const SCENARIOS = {
     };
     Object.assign(s.models.orukeet, { active: null });
   },
+  // An older Voice removed rewriting's key; the Mistral key stays for the others.
+  cleared: (s) => {
+    SCENARIOS.ownkey(s);
+    s.config.rewriting = { ...s.config.rewriting, keySaved: false, ownKey: false };
+    s.config.meetings.ownKey = false;
+  },
+  // Ollama on this computer keeps its own key; the Ollama cloud key on API keys never goes there.
+  ollama: (s) => {
+    s.config.rewriting = { ...s.config.rewriting, provider: 'ollama', endpoint: 'http://localhost:11434/api/chat', model: 'llama3.2:3b', keySaved: true, ownKey: false };
+    s.config.apiKeys.ollama.saved = true;
+  },
   dev: (s) => {
     s.devMode = true;
     s.version = '0.1.0-dev';
@@ -553,6 +594,9 @@ export function createMock(params) {
   let ownUploads = params.has('sync') ? (SYNC_SCENARIOS[params.get('sync')] || SYNC_SCENARIOS.fresh)(state) : false;
   const forced = { theme: params.get('theme'), locale: params.get('lang') };
   const handlers = [];
+  // For dev/check.js: the app bringing an open Settings window forward for a page (API.md, settings://page).
+  const pageHandlers = [];
+  window.__settingsMockOpenPage = (page) => pageHandlers.forEach((handler) => handler({ page }));
   let downloadTimer = 0;
   let syncTimer = 0;
   let protectedWindow = false;
@@ -701,14 +745,18 @@ export function createMock(params) {
       if (save.provider !== 'orukeet' && save.model === 'fail') fail('failed', 'HTTP 401 from api.mistral.ai: Unauthorized. Check the API key.');
       if (save.target !== 'meetings' && String(save.model).startsWith(REALTIME)) fail('invalid_value', 'Realtime models work for meeting transcription only.');
       const target = state.config[save.target];
-      const sameProvider = target.provider === save.provider;
-      const shared = KEY_PROVIDERS.includes(save.provider);
+      // A key the form keeps belongs to its provider at its server; a provider's own key goes only to its own hosts.
+      const sameProvider = target.provider === save.provider && serverOf(target.endpoint) === serverOf(save.endpoint);
+      const shared = save.provider !== 'orukeet' && keyApplies(save.provider, save.endpoint);
       Object.assign(target, { provider: save.provider, endpoint: save.endpoint, model: save.model });
       // As the engine: a provider on the API keys page brings its key; a custom server's key is the form's.
       if (shared) {
         target.keySaved = sameProvider ? target.keySaved : state.config.apiKeys[save.provider].saved;
         target.ownKey = sameProvider && target.ownKey;
-        if (save.apiKey) sharedKey(save.provider, true);
+        if (save.apiKey) {
+          sharedKey(save.provider, true);
+          target.keySaved = true;
+        }
       } else {
         target.keySaved = save.apiKey === null ? sameProvider && target.keySaved : Boolean(save.apiKey);
         target.ownKey = false;
@@ -734,7 +782,7 @@ export function createMock(params) {
       else if (KEY_FORMS.includes(target)) {
         // A feature drops the key it sends: a custom server's goes, another one from before gives way to API keys'.
         const form = state.config[target];
-        form.keySaved = KEY_PROVIDERS.includes(form.provider) && state.config.apiKeys[form.provider].saved;
+        form.keySaved = keyApplies(form.provider, form.endpoint) && state.config.apiKeys[form.provider].saved;
         form.ownKey = false;
         if (target === 'transcription') state.dictation.status = dictationStatus();
       } else fail('invalid_value', `Unknown key ${target}.`);
@@ -894,12 +942,14 @@ export function createMock(params) {
     return needsKey && !tr.keySaved ? 'noKey' : 'ready';
   }
 
-  // Saves or removes a provider's key on the API keys page: every form on that provider sends it, or none.
+  // Saves or removes a provider's key on the API keys page, for the forms that follow it: on that provider at one of its
+  // own hosts, without an own key, and with a key exactly when there was one.
   function sharedKey(provider, saved) {
+    const was = state.config.apiKeys[provider].saved;
     state.config.apiKeys[provider] = { saved };
     for (const target of KEY_FORMS) {
       const form = state.config[target];
-      if (form.provider === provider) Object.assign(form, { keySaved: saved, ownKey: false });
+      if (form.provider === provider && keyApplies(provider, form.endpoint) && !form.ownKey && form.keySaved === was) form.keySaved = saved;
     }
     state.dictation.status = dictationStatus();
   }
@@ -929,6 +979,7 @@ export function createMock(params) {
     },
     listen: async (name, handler) => {
       if (name === 'settings://state') handlers.push(handler);
+      if (name === 'settings://page') pageHandlers.push(handler);
       return () => {};
     }
   };
