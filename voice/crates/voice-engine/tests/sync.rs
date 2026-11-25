@@ -1320,6 +1320,18 @@ fn changes_and_deletions_reach_the_other_computer() {
         .unwrap()
         .to_string();
 
+    // B had changed the same passage on its own, to a higher revision: what A's newer text says
+    // still has to win in Rukoo there.
+    {
+        let first = &passages[0];
+        let mut stale = first.clone();
+        stale["text"] = "Stale words from this computer".into();
+        stale["revision"] = (first["revision"].as_u64().unwrap() + 5).into();
+        EventLog::open(&b.data())
+            .unwrap()
+            .append("passage", Some(&id), stale)
+            .unwrap();
+    }
     // Newer text on A, as another transcription would leave it: one passage reworded, one gone.
     {
         let db =
@@ -1335,10 +1347,12 @@ fn changes_and_deletions_reach_the_other_computer() {
     }
     wait_long("B hears of the newer text", Duration::from_secs(60), || {
         let events = events_of(&b.data(), &id);
-        let reworded = events.iter().any(|(e, d)| {
-            e == "passage"
-                && d["id"] == kept.as_str()
-                && d["text"] == "Reworded on the other computer"
+        let last = events
+            .iter()
+            .rev()
+            .find(|(e, d)| e == "passage" && d["id"] == kept.as_str());
+        let reworded = last.is_some_and(|(_, d)| {
+            d["text"] == "Reworded on the other computer" && d["replace"] == true
         });
         let removed = events
             .iter()

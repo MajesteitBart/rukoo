@@ -385,6 +385,7 @@ pub(crate) fn clear_partial(meetings: &Path) {
                 continue;
             }
             match crate::pull::finish_install(meetings, id) {
+                // The folder stays until a pull noted the version (crate::pull).
                 Ok(true) => log::info!("sync: finished putting a meeting's newer text in place"),
                 Ok(false) => {
                     if let Err(e) = fs::remove_dir_all(entry.path()) {

@@ -692,3 +692,14 @@ test('a correction hides only the pieces a later split cut from it, also one mad
   assert.deepEqual(again.meeting(M).passages.map((p) => p.id), ['mic-000005000', 'mic-000007000']);
   again.close();
 });
+
+test("a passage Voice replaces with another computer's text wins whatever its revision", () => {
+  const s = store();
+  s.apply(started());
+  s.apply(passage('call', 65320, 'Stale words from this computer', 6));
+  assert.equal(s.apply(passage('call', 65320, 'Older revision, ignored', 2)), null);
+  assert.deepEqual(s.apply(passage('call', 65320, 'Let us move it to Friday.', 2, { replace: true })), { meeting: M, kind: 'passage', id: 'call-000065320' });
+  const p = s.meeting(M).passages[0];
+  assert.equal(p.text, 'Let us move it to Friday.');
+  assert.equal(p.revision, 2);
+});

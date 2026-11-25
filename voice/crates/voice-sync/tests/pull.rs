@@ -78,7 +78,9 @@ impl PullHooks for Hooks {
         if *self.refuse_delete.lock().unwrap() {
             return false;
         }
-        fs::remove_dir_all(self.meetings.join(meeting)).unwrap();
+        // As the engine's deletion does, also for one that stopped after renaming the folder.
+        let _ = fs::remove_dir_all(self.meetings.join(meeting));
+        let _ = fs::remove_dir_all(self.meetings.join(format!(".deleted-{meeting}")));
         self.deleted.lock().unwrap().push(meeting.to_owned());
         true
     }
@@ -454,8 +456,12 @@ fn a_replacement_a_crash_cut_off_goes_on_at_the_next_start() {
         let n = Meeting::new(&other, "Halfway", 3_600_000);
         n.transcript(&[("mic", 0, 400, "Newer text")], now_ms());
         let tmp = b.meetings().join(format!(".update-{}", m.id));
-        fs::create_dir_all(&tmp).unwrap();
-        fs::copy(n.path("transcript.db"), tmp.join("transcript.db")).unwrap();
+        fs::create_dir_all(tmp.join("files")).unwrap();
+        fs::copy(
+            n.path("transcript.db"),
+            tmp.join("files").join("transcript.db"),
+        )
+        .unwrap();
         let newer = Meeting::passages(&n.dir);
         fs::remove_dir_all(&other).unwrap();
         fs::write(tmp.join("install.json"), br#"["transcript.db"]"#).unwrap();
@@ -466,14 +472,94 @@ fn a_replacement_a_crash_cut_off_goes_on_at_the_next_start() {
     let b = Voice::open(&data);
     assert_eq!(Meeting::passages(&m.dir), newer);
     assert!(m.path(".pulled").is_file(), "the engine follows it again");
-    assert!(!b.meetings().join(format!(".update-{}", m.id)).exists());
+    // Until a pull notes the version, the worker leaves the meeting alone.
+    let tmp = b.meetings().join(format!(".update-{}", m.id));
+    assert!(voice_sync::pull::pending_install(&b.meetings(), &m.id));
+    assert!(!tmp.join("files").join("transcript.db").exists());
+    drop(b);
 
     // An update folder without its list never replaced anything: it just goes.
-    let tmp = b.meetings().join(format!(".update-{}", m.id));
-    fs::create_dir_all(&tmp).unwrap();
-    fs::write(tmp.join("transcript.db"), b"half a download").unwrap();
-    drop(b);
+    fs::remove_file(tmp.join("install.json")).unwrap();
+    fs::create_dir_all(tmp.join("files")).unwrap();
+    fs::write(tmp.join("files").join("transcript.db"), b"half a download").unwrap();
     let _b = Voice::open(&data);
     assert!(!tmp.exists());
     assert_eq!(Meeting::passages(&m.dir), newer);
+}
+
+#[test]
+fn newer_text_a_crash_left_unnoted_is_noted_and_never_sent_back() {
+    let fake = fake();
+    let root = scratch("pull-unnoted");
+    let _c = Cleanup(root.clone());
+    let slow = || Setup {
+        timing: voice_sync::SyncTiming {
+            pull_every: Duration::from_secs(3_600),
+            ..timing()
+        },
+        ..Setup::default()
+    };
+    let a = Voice::open(&root.join("a"));
+    let (m, _) = finished(&a.meetings(), "Unnoted", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    let (b, hooks) = second_computer(&fake, &root, &a, slow());
+    assert!(wait_for(WAIT, || hooks.restored() == vec![m.id.clone()]));
+    let dir = b.meetings().join(&m.id);
+
+    rewrite(&m.dir, 500, "Second thing, settled");
+    let gen = manifest(&fake, &a.key(), &m.id).unwrap().gen;
+    assert!(wait_for(WAIT, || manifest(&fake, &a.key(), &m.id)
+        .is_some_and(|x| x.gen > gen)
+        && indexes(&fake, &a.key()).iter().any(|i| i
+            .meetings
+            .iter()
+            .any(|e| e.id == m.id && e.gen > gen))));
+    let newer = manifest(&fake, &a.key(), &m.id).unwrap().gen;
+    // B crashed after the newer transcript was in place, before its version was noted.
+    let _ = fs::remove_file(dir.join("transcript.db-wal"));
+    fs::copy(m.path("transcript.db"), dir.join("transcript.db")).unwrap();
+    let tmp = b.meetings().join(format!(".update-{}", m.id));
+    fs::create_dir_all(tmp.join("files")).unwrap();
+    fs::write(tmp.join("install.json"), br#"["transcript.db"]"#).unwrap();
+    let before = puts(&fake).len();
+    // The worker's scans leave it alone meanwhile.
+    std::thread::sleep(Duration::from_millis(800));
+    b.sync.pull_now();
+    assert!(
+        wait_for(WAIT, || !tmp.exists()),
+        "the version was never noted: {:?}",
+        b.sync.status()
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    let sent: Vec<String> = puts(&fake)
+        .split_off(before)
+        .into_iter()
+        .filter(|k| k.contains("/m/"))
+        .collect();
+    assert!(sent.is_empty(), "B sent the newer text back: {sent:?}");
+    assert_eq!(manifest(&fake, &a.key(), &m.id).unwrap().gen, newer);
+    assert_eq!(Meeting::passages(&dir), Meeting::passages(&m.dir));
+}
+
+#[test]
+fn a_deletion_that_stopped_halfway_goes_on() {
+    let fake = fake();
+    let root = scratch("pull-delete-halfway");
+    let _c = Cleanup(root.clone());
+    let (a, b, hooks, m, _) = two_computers(&fake, &root, "Half gone");
+    assert!(wait_for(WAIT, || hooks.restored() == vec![m.id.clone()]));
+    // B's deletion renamed the folder and stopped there.
+    let pending = b.meetings().join(format!(".deleted-{}", m.id));
+    fs::rename(b.meetings().join(&m.id), &pending).unwrap();
+    a.sync.mark_deleted(&m.id).unwrap();
+    fs::remove_dir_all(&m.dir).unwrap();
+    assert!(
+        wait_for(WAIT, || hooks.deleted() == vec![m.id.clone()]),
+        "B left the deletion halfway: {:?}",
+        b.sync.status()
+    );
+    assert!(!pending.exists());
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(hooks.restored().len(), 1, "it doesn't come back");
 }

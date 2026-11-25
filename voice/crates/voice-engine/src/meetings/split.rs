@@ -109,6 +109,17 @@ impl SplitService {
             .dir(id)
             .ok_or_else(|| ControlError::not_found(NO_MEETING))?;
         let key = (id.to_owned(), track);
+        if self
+            .replacing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
+        {
+            return Err(ControlError::busy(
+                id,
+                "Voice is taking newer text of the meeting from another computer.",
+            ));
+        }
         if let Some(answer) = self.known(&key) {
             return answer;
         }

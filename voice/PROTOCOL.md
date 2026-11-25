@@ -197,6 +197,7 @@ A stretch of transcript.
 - `speaker` is a speaker id, or `null` while Voice doesn't know. With speaker labels, a call passage can arrive with `null` when Voice couldn't tell whose words they were, and a later revision can name the speaker. Voice never moves a passage from one speaker id to another, with one exception: `speakers.split` moves a microphone passage from `mic` to the voice that said it, or cuts it where the voice changes.
 - `dictation` is true when the user was dictating into another app while the meeting recorded. Those words reached the call, but weren't part of the conversation.
 - `language` is a BCP 47 code when the recognizer reports one, otherwise `null`.
+- `replace`, optional, is `true` when newer text of the meeting from another computer replaced its transcript here and this version must win whatever its revision: both computers can have changed the passage to the same revision with other words, or this one to a higher revision. Rukoo takes it in place of the passage it has. An older Rukoo ignores the field and keeps a passage with a higher revision.
 
 ### `passage.removed`
 

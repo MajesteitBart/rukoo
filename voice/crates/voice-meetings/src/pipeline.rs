@@ -1205,7 +1205,10 @@ impl Worker {
 
         let count = self.tracks.len();
         let mut complete = true;
-        for k in 0..count {
+        // A transcribed meeting, such as one from another computer, only sends what it has: audio
+        // here past what its transcript covers never goes to a provider from this computer.
+        let tracks = if transcribed { 0 } else { count };
+        for k in 0..tracks {
             let i = (self.next_track + k) % count;
             match self.advance(self.tracks[i], stop.is_some(), shared)? {
                 Advance::Moved => {
@@ -1787,6 +1790,7 @@ impl Worker {
                 text: draft.text,
                 revision: 1,
                 language,
+                replace: false,
             },
             tokens: draft.tokens,
         }

@@ -587,6 +587,10 @@ pub struct Passage {
     pub revision: u64,
     pub dictation: bool,
     pub language: Option<String>,
+    /// This version wins whatever its revision: newer text of the meeting from another computer
+    /// replaced its transcript here (PROTOCOL.md, passage). Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace: bool,
 }
 
 /// `passage.removed`.

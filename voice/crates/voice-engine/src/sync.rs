@@ -66,10 +66,12 @@ impl PullHooks for EnginePull {
         }
         core.meetings.stop_following(meeting);
         let swapped = swap();
-        core.meetings.end_replace(meeting);
         if swapped.is_ok() {
-            core.meetings.send_removed_passages(meeting);
+            // Before anything follows the meeting again. Whatever doesn't make it, settling the
+            // meeting's `.pulled` file sends later.
+            core.meetings.reconcile_replaced(meeting);
         }
+        core.meetings.end_replace(meeting);
         // Again either way: with the newer text it sends what changed. The meeting's `.pulled`
         // file keeps it followed until Rukoo can get all of it (Meetings::settle_pulled).
         core.follow(meeting);

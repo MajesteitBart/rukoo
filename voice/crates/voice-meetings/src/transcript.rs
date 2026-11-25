@@ -644,6 +644,7 @@ impl Transcript {
                         revision: 1,
                         dictation: passage.dictation,
                         language: passage.language.clone(),
+                        replace: false,
                     },
                     tokens: piece.tokens.clone(),
                 };
@@ -1065,6 +1066,7 @@ fn query_passages(
                 revision: to_u64(row.get(6)?),
                 dictation: row.get(7)?,
                 language: row.get(8)?,
+                replace: false,
             },
             tokens: tokens.as_deref().map(decode_tokens).unwrap_or_default(),
         })
@@ -1230,6 +1232,7 @@ mod tests {
                 revision: 1,
                 dictation: false,
                 language: None,
+                replace: false,
             },
             tokens: vec![Token {
                 text: " Hi".into(),

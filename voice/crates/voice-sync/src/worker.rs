@@ -80,6 +80,8 @@ pub(crate) struct Shared {
     /// Held while one meeting is restored: a pull and a restore from Settings would otherwise
     /// write the same `.restore-<id>` folder.
     pub(crate) restoring_one: Mutex<()>,
+    /// The worker's connection and the settings generation it was made for.
+    connected: Mutex<Option<(u64, Arc<Remote>)>>,
     notifier: Notifier,
 }
 
@@ -176,6 +178,7 @@ impl Shared {
             secret_generation: AtomicU64::new(0),
             pull_hooks: Mutex::new(None),
             restoring_one: Mutex::new(()),
+            connected: Mutex::new(None),
             notifier: Notifier {
                 inner: Mutex::new((None, false)),
             },
@@ -237,6 +240,39 @@ impl Shared {
 
     pub(crate) fn stopping(&self) -> bool {
         self.lock().stopping
+    }
+
+    /// The worker's connection, for the settings generation it was made for.
+    pub(crate) fn connected(&self) -> Option<(u64, Arc<Remote>)> {
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_connected(&self, connected: Option<(u64, Arc<Remote>)>) {
+        *self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = connected;
+    }
+
+    /// What reads through `remote` now are bound to: the bucket sync uses and the key `remote`
+    /// opens. `None` while sync is off.
+    pub(crate) fn binding(&self, remote: &Remote) -> Option<Binding> {
+        let st = self.lock();
+        let cfg = st.cfg.as_ref()?;
+        Some(Binding {
+            place: st.place,
+            target: cfg.target(),
+            kid: remote.kid.clone(),
+        })
+    }
+
+    /// Scan every meeting soon: one changed here.
+    pub(crate) fn rescan_soon(&self) {
+        self.lock().rescan = true;
+        self.poke();
     }
 
     pub(crate) fn pull_hooks(&self) -> Option<Arc<dyn PullHooks>> {
@@ -609,10 +645,10 @@ struct Worker {
     /// The generation the key, the secret and the bucket below belong to.
     generation: Option<u64>,
     cfg: Option<SyncConfig>,
-    remote: Option<Remote>,
+    remote: Option<Arc<Remote>>,
     /// The last connection before this one, until the next connect: when it was to another
     /// bucket, the uploads left open there are cancelled with it.
-    previous: Option<Remote>,
+    previous: Option<Arc<Remote>>,
     scanned_live: Option<Instant>,
     scanned_all: Option<Instant>,
     /// The live lane's token bucket in bytes, never above 0: a request may put it into debt by
@@ -783,6 +819,10 @@ impl Worker {
         match self.connect(&cfg, now, unlocked) {
             Ok((remote, left_open)) => {
                 self.cancel_left_open(left_open);
+                let remote = Arc::new(remote);
+                // The pull reads the bucket over this connection: the key and the secret were read
+                // once for these settings.
+                shared.set_connected(Some((generation, remote.clone())));
                 self.remote = Some(remote);
                 self.cfg = Some(cfg);
                 self.generation = Some(generation);
@@ -846,6 +886,7 @@ impl Worker {
     /// The connection Voice stops using, so a change of bucket can still cancel the uploads it left
     /// open there.
     fn keep_previous(&mut self) {
+        self.shared.set_connected(None);
         if let Some(remote) = self.remote.take() {
             self.previous = Some(remote);
         }
@@ -941,6 +982,11 @@ impl Worker {
             // Explicit deletion survives a full rescan, including the short interval before
             // the engine renames the local folder out of the library.
             if row.is_some_and(|r| r.phase == "forgotten") {
+                continue;
+            }
+            // Newer text from the bucket is in place and its version not noted yet: it isn't a
+            // change of this computer's to send back.
+            if crate::pull::pending_install(&shared.opts.meetings_dir, &id) {
                 continue;
             }
             if !all
