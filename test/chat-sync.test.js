@@ -812,18 +812,32 @@ test('a restore takes read and alert positions from the restored feed, and keeps
   await svc.sync(ws.id);
   const before = svc.store.getRoom(ws.id, ws.general);
   assert.ok(before.unread >= 2);
-  // As if this device had read and been alerted through the head in a generation the server then discarded.
-  const ahead = before.head;
+  // As if this device had read and been alerted well past this head, in a generation the server then discarded.
+  const ahead = before.head + 5;
   svc.store.setRoomFields(ws.id, ws.general, { read: ahead, readLocal: ahead, readSent: ahead, notified: ahead, unread: 0, muted: 1 });
   svc.store.putDraft(ws.id, ws.general, null, { text: 'kept draft', mentions: [] });
-  svc.store.updateWs(ws.id, { generation: 'OldGenerationXXXXXXXXX' });
+  const old = 'OldGenerationXXXXXXXXX';
+  svc.store.updateWs(ws.id, { generation: old });
+  // The alert position as the restore left it: read when the notifier's run after the pass starts, before that run
+  // counts this muted channel as looked at.
+  let restored = null;
+  const afterRun = svc.notifier.afterRun.bind(svc.notifier);
+  svc.notifier.afterRun = async (...args) => {
+    const row = svc.store.getWs(ws.id);
+    if (restored === null && row.generation !== old && row.passing === 0) restored = svc.store.getRoom(ws.id, ws.general).notified;
+    return afterRun(...args);
+  };
   await svc.details(ws.id);
   await until(() => passDone(svc, ws.id), 10000, 'the pass after the restore');
   const after = svc.store.getRoom(ws.id, ws.general);
   assert.equal(after.read, before.read, 'the restored feed\'s read position');
   assert.equal(after.readLocal, after.read);
   assert.equal(after.readSent, after.read);
-  assert.ok(after.notified <= after.read, `notified ${after.notified} counts from the restored read ${after.read}`);
+  // The alert position starts again at the restored read position, so the restored unread messages can alert.
+  assert.ok(restored !== null && restored <= before.read, `notified ${restored} counts from the restored read ${before.read}`);
+  // The notifier's run after the pass then finds this muted channel with unread messages and counts it as looked at,
+  // through the restored head and no further.
+  assert.ok(after.notified <= before.head, `notified ${after.notified} stays within the restored head ${before.head}`);
   assert.equal(after.unread, before.unread, 'the unread messages show again');
   assert.equal(after.muted, 1);
   assert.equal(svc.store.getDraft(ws.id, ws.general, null).text, 'kept draft');

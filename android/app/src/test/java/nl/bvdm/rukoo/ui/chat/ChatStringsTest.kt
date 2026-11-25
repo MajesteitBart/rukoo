@@ -183,7 +183,11 @@ class ChatStringsTest {
     fun chatStringsInSharedFilesAreInBothLanguages() {
         val wanted = mapOf(
             "strings_common.xml" to listOf("notification_channel_chat", "notification_channel_chat_description"),
-            "strings_settings.xml" to listOf("settings_general_chat_notifications", "settings_general_chat_notifications_help"),
+            "strings_settings.xml" to listOf(
+                "settings_general_chat_notifications", "settings_general_chat_notifications_help",
+                "settings_notifications_chat_battery_help", "settings_notifications_chat_battery_help_phone_tools",
+                "settings_notifications_chat_battery_help_off",
+            ),
             "strings_account.xml" to listOf("settings_rukoo_invite_chat_help", "settings_rukoo_delete_chat_note", "settings_rukoo_unsent_chat"),
         )
         val problems = mutableListOf<String>()
@@ -201,6 +205,29 @@ class ChatStringsTest {
             }
             val unsent = english.plurals["settings_rukoo_unsent_chat"]
             if (file == "strings_account.xml" && unsent?.keys != setOf("one", "other")) problems += "settings_rukoo_unsent_chat quantities: ${unsent?.keys}"
+        }
+        assertNoProblems(problems)
+    }
+
+    // Android can hold network access back while the phone dozes, Phone tools or not, and the window can be closed with
+    // Phone tools running: the Battery row's lines promise no seconds and no connection that may not be there.
+    @Test
+    fun teamChatBatteryLinesPromiseNoSecondsAndNoStandingConnection() {
+        val names = listOf(
+            "settings_notifications_chat_battery_help",
+            "settings_notifications_chat_battery_help_phone_tools",
+            "settings_notifications_chat_battery_help_off",
+        )
+        val promises = Regex("""second|seconde|stays connected|remains connected|blijft[^.]*verbonden|always|altijd|instantly|direct""", RegexOption.IGNORE_CASE)
+        val problems = mutableListOf<String>()
+        for (dir in listOf("values", "values-nl")) {
+            val catalog = Catalog(dir, "strings_settings.xml")
+            for (name in names) {
+                val text = catalog.strings[name] ?: continue
+                promises.find(text)?.let { problems += "$dir/$name promises \"${it.value}\": $text" }
+            }
+            val phoneTools = catalog.strings["settings_notifications_chat_battery_help_phone_tools"].orEmpty()
+            if (!Regex("Android", RegexOption.IGNORE_CASE).containsMatchIn(phoneTools)) problems += "$dir: the Phone tools line doesn't say Android can hold messages back"
         }
         assertNoProblems(problems)
     }
