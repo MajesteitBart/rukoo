@@ -666,10 +666,7 @@ impl BucketSync {
                     ));
                 }
             }
-            shared.queue.drop_meeting(meeting, true)?;
-            shared
-                .queue
-                .set_meta("index_due", Some(&shared.now().to_string()))?;
+            shared.queue.drop_meeting(meeting, Some(shared.now()))?;
         }
         shared.changed();
         shared.poke();

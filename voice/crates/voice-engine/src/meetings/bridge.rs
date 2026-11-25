@@ -145,6 +145,7 @@ impl Control {
             self.media.keep_meeting(id);
             return Err(e);
         }
+        self.media.evict_meeting(id);
         if !pending.is_dir() {
             fs::rename(&source, &pending).map_err(|e| {
                 ControlError::failed(format!(

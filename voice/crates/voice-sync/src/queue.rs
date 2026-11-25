@@ -1363,9 +1363,13 @@ impl Queue {
         })
     }
 
-    /// Forgets a meeting's rows. With `tombstone` its `meetings` row stays as `forgotten`, so the
-    /// next index marks it deleted.
-    pub(crate) fn drop_meeting(&self, meeting: &str, tombstone: bool) -> Result<(), SyncError> {
+    /// Forgets a meeting's rows. With `tombstone`, the time now, its `meetings` row stays as
+    /// `forgotten` and the next index, due from then, marks it deleted.
+    pub(crate) fn drop_meeting(
+        &self,
+        meeting: &str,
+        tombstone: Option<u64>,
+    ) -> Result<(), SyncError> {
         self.with(|c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute(
@@ -1381,10 +1385,16 @@ impl Queue {
                     format!("mid:{meeting}"),
                 ],
             )?;
-            if tombstone {
+            if let Some(now) = tombstone {
                 tx.execute(
                     "UPDATE meetings SET phase = 'forgotten', manifest_dirty = 0 WHERE id = ?1",
                     [meeting],
+                )?;
+                // In the same transaction: a tombstone the next index doesn't carry would stay
+                // forgotten here and never reach the other computers.
+                tx.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('index_due', ?1)",
+                    [now.to_string()],
                 )?;
             } else {
                 tx.execute("DELETE FROM meetings WHERE id = ?1", [meeting])?;

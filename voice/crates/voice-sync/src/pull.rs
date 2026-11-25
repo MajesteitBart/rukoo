@@ -821,6 +821,11 @@ fn write_install(tmp: &Path, journal: &Journal) -> io::Result<()> {
     file.sync_all()?;
     drop(file);
     fs::rename(&part, &path)?;
+    // Windows can't flush a folder (`sync_dir`). Flushing the journal's own handle after its
+    // rename does the same there: NTFS keeps one log per volume, and a flush writes it through
+    // this rename and every change before it, the staged files' names included, so no move that
+    // comes after can outlive the journal.
+    fs::OpenOptions::new().write(true).open(&path)?.sync_all()?;
     sync_dir(tmp)
 }
 
@@ -892,7 +897,7 @@ pub(crate) fn write_marker(dir: &Path) -> io::Result<()> {
 }
 
 /// A rename in `dir` survives a power cut once the folder itself is flushed. Windows can't open a
-/// folder for that, and its renames are durable already.
+/// folder for that; `write_install` flushes the journal there instead.
 fn sync_dir(dir: &Path) -> io::Result<()> {
     if cfg!(windows) {
         return Ok(());
