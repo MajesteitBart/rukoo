@@ -132,8 +132,14 @@ fun NotificationsPage(app: AppViewModel) {
             // It shows with the switch on or off, while someone is signed in; its line says what the switch's state means.
             if (BatteryTexts.showUnderChat(chatAvailable, signedIn = chatState?.signedIn == true)) {
                 val phoneTools = s.mcp.status.collectAsStateWithLifecycle().value.running
-                val through = (pushState?.delivery as? ChatDelivery.Instant)?.let { distributorLabel(context, it.distributor) }
-                BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools, notifyChat = settings.notifyChat, pushThrough = through)
+                val instant = pushState?.delivery as? ChatDelivery.Instant
+                BatteryRow(
+                    BatteryPlace.TeamChat,
+                    phoneTools = phoneTools,
+                    notifyChat = settings.notifyChat,
+                    pushThrough = instant?.let { distributorLabel(context, it.distributor) },
+                    pushEmbedded = instant?.distributor == context.packageName,
+                )
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -261,6 +267,7 @@ private val LICENSES = listOf(
     License("OkHttp", "Apache 2.0", "https://square.github.io/okhttp/"),
     License("Bouncy Castle", "MIT", "https://www.bouncycastle.org/about/license/"),
     License("UnifiedPush connector", "Apache 2.0", "https://codeberg.org/UnifiedPush/android-connector"),
+    License("UnifiedPush embedded FCM distributor", "Apache 2.0", "https://codeberg.org/UnifiedPush/android-embedded_fcm_distributor"),
     License("Tink", "Apache 2.0", "https://github.com/tink-crypto/tink-java"),
     License("AndroidX, Jetpack Compose, Kotlin", "Apache 2.0", "https://developer.android.com/jetpack/androidx"),
 )

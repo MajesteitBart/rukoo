@@ -51,6 +51,11 @@ class BatteryTextsTest {
                 BatteryTexts.help(BatteryPlace.TeamChat, samsung = true, phoneTools = phoneTools, push = true),
             )
         }
+        // Through Google Play services only Rukoo needs it.
+        assertEquals(
+            R.string.settings_notifications_chat_battery_help_fcm,
+            BatteryTexts.help(BatteryPlace.TeamChat, samsung = true, phoneTools = false, push = true, embedded = true),
+        )
         // Off is off, whatever came before.
         assertEquals(
             R.string.settings_notifications_chat_battery_help_off,

@@ -397,11 +397,17 @@ describe('the privacy statement', () => {
     en: 'Rukoo for Android can ask this server to wake it',
     nl: 'Rukoo voor Android kan deze server vragen hem te wekken'
   };
+  // What the route through Google's FCM shares, which phones without a UnifiedPush app take.
+  const google = {
+    en: 'Google LLC then gets from this server, with each wake, the token Google gave that phone',
+    nl: 'Google LLC krijgt dan bij elk wekbericht van deze server het token dat Google die telefoon gaf'
+  };
 
   it('says what a wake shares, in English and Dutch, while push wakes are on', async () => {
     for (const [lang, line] of Object.entries(lines)) {
       const on = await call('GET', `/privacy?lang=${lang}`, { vars: ON });
       expect(on.text, lang).toContain(line);
+      expect(on.text, lang).toContain(google[lang]);
       const off = await call('GET', `/privacy?lang=${lang}`, { vars: { ...ON, WORKSPACE_PUSH: 'off' } });
       expect(off.text, lang).not.toContain(line);
       // Without team chat there is nothing to wake for.

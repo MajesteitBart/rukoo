@@ -572,6 +572,8 @@ Both take the session's token, as every account route does, and answer `401 unau
 
 **The request.** `POST` to the endpoint with `Content-Encoding: aes128gcm`, `Content-Type: application/octet-stream`, `TTL: 86400`, `Urgency: high`, `Topic: rukoo-wake`, so a newer wake replaces one still waiting where the service supports it, and `Authorization: vapid t=<JWT>, k=<public key>`. The JWT is ES256, for the endpoint's origin as `aud`, valid for 12 hours, with the operator's `OPERATOR_CONTACT` or `OPERATOR_URL` as `sub` when it is an `https:` or `mailto:` address. The body is one record of the RFC 8291 encoding, salt and sender key fresh for each wake, 115 bytes. The server waits 10 seconds at most, follows no redirect and doesn't read the answer. A `404` or `410` means the registration is gone, and the endpoint goes with it unless the session registered another meanwhile; any other failure is logged without the address and the next wake tries again.
 
+**FCM.** An endpoint at `https://fcm.googleapis.com/fcm/send/…` is FCM's Web Push endpoint, which Rukoo for Android's built-in distributor gets from Google Play services. FCM takes the request above as it is and requires its VAPID header, and its registration only accepts wakes signed with the key it was made with. So the FCM route needs no Firebase project, server key or gateway. `Urgency: high` makes it a high-priority message, which Android delivers during Doze.
+
 **The VAPID key** is derived from `PEPPER`: the first HMAC-SHA-256 of `vapid-key\n<n>` that is a valid P-256 private key. It never changes while the pepper doesn't, which matters for FCM, which ties each registration to the key it was made with. `GET /v1/info` hands it out as `workspace.push.vapid`.
 
 ### Limits on requests

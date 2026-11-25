@@ -15,6 +15,12 @@ val signingProps = Properties().apply {
     if (file.exists()) file.inputStream().use { load(it) }
 }
 
+// Push wakes through Google's FCM for phones without a UnifiedPush app (workspaces/ChatPush.kt, docs/android.md): the
+// embedded distributor registers with Google Play services under the account server's VAPID key, so it needs no
+// Firebase project, no google-services.json and no gateway. A build for a store that takes no Google services, such as
+// F-Droid, leaves it out with -Prukoo.fcm=off; such a build gets wakes only through a UnifiedPush app.
+val embeddedFcm = providers.gradleProperty("rukoo.fcm").orElse("on").get() != "off"
+
 android {
     namespace = "nl.bvdm.rukoo"
     compileSdk = 36
@@ -167,8 +173,10 @@ dependencies {
     implementation(libs.jsoup)
     // Argon2id for the Rukoo account's password key (account/AccountKeys.kt).
     implementation(libs.bouncycastle.prov)
-    // Push wakes for team chat through a UnifiedPush distributor such as ntfy (workspaces/ChatPush.kt).
+    // Push wakes for team chat through a UnifiedPush distributor such as ntfy (workspaces/ChatPush.kt), and through
+    // Google's FCM on a phone without one, unless the build leaves that out (embeddedFcm above).
     implementation(libs.unifiedpush.connector)
+    if (embeddedFcm) implementation(libs.unifiedpush.fcm)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

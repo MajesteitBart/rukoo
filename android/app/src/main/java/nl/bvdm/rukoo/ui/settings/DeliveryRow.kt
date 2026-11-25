@@ -62,19 +62,25 @@ object DeliveryTexts {
 
     /**
      * With several distributors a tap picks one; a distributor that needs the person opens; without one, the tap shows
-     * where to get one. [count] is how many distributors are installed.
+     * where to get one. [count] is how many distributors are installed; [own] is Rukoo's package, whose embedded
+     * distributor has no app to open.
      */
-    fun tap(delivery: ChatDelivery, count: Int): Tap = when {
+    fun tap(delivery: ChatDelivery, count: Int, own: String? = null): Tap = when {
         delivery == ChatDelivery.NoDistributor -> Tap.LEARN
         distributor(delivery) != null && count > 1 -> Tap.CHOOSE
-        delivery is ChatDelivery.Failed && delivery.reason == "ACTION_REQUIRED" -> Tap.OPEN_DISTRIBUTOR
+        delivery is ChatDelivery.Failed && delivery.reason == "ACTION_REQUIRED" && delivery.distributor != own -> Tap.OPEN_DISTRIBUTOR
         else -> Tap.NONE
     }
 }
 
-/** A distributor's name as the launcher shows it; the package name when Android doesn't know it. */
+/**
+ * A distributor's name as the launcher shows it; the package name when Android doesn't know it. Rukoo's own package is
+ * the embedded distributor, which receives through Google Play services.
+ */
 @Suppress("DEPRECATION")
-fun distributorLabel(context: Context, pkg: String): String = try {
+fun distributorLabel(context: Context, pkg: String): String = if (pkg == context.packageName) {
+    context.getString(R.string.push_embedded_distributor)
+} else try {
     val pm = context.packageManager
     pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
 } catch (e: PackageManager.NameNotFoundException) {
@@ -91,7 +97,7 @@ fun DeliveryRow(push: ChatPushControl, state: PushState) {
     var choosing by remember { mutableStateOf(false) }
     val delivery = state.delivery
     val name = DeliveryTexts.distributor(delivery)?.let { distributorLabel(context, it) }
-    val tap = DeliveryTexts.tap(delivery, state.distributors.size)
+    val tap = DeliveryTexts.tap(delivery, state.distributors.size, own = context.packageName)
     val value = stringResource(DeliveryTexts.value(delivery))
     // A row that does something shows its value as the settings' accent line; one that doesn't, as plain text at its
     // end, so it doesn't look like a link.

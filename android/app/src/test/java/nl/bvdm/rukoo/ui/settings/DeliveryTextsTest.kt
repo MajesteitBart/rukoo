@@ -41,6 +41,8 @@ class DeliveryTextsTest {
         assertEquals(DeliveryTexts.Tap.CHOOSE, DeliveryTexts.tap(ChatDelivery.Instant(ntfy), 2))
         assertEquals(DeliveryTexts.Tap.OPEN_DISTRIBUTOR, DeliveryTexts.tap(ChatDelivery.Failed(ntfy, "ACTION_REQUIRED"), 1))
         assertEquals(DeliveryTexts.Tap.NONE, DeliveryTexts.tap(ChatDelivery.ServerWithout, 2))
+        // Rukoo's own embedded distributor has no app to open.
+        assertEquals(DeliveryTexts.Tap.NONE, DeliveryTexts.tap(ChatDelivery.Failed("nl.bvdm.rukoo", "ACTION_REQUIRED"), 1, own = "nl.bvdm.rukoo"))
     }
 
     @Test

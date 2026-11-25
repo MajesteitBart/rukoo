@@ -165,12 +165,14 @@ internal object PushPlan {
     fun key(session: String, endpoint: PushEndpoint): String = "$session\n${endpoint.url}"
 
     /**
-     * The distributor to use: the one picked in Settings, else the one registered with, while installed; else an app
-     * the person installed for it, before the one embedded in Rukoo.
+     * The distributor to use: the one picked in Settings while installed; else an app the person installed for it, the
+     * one registered with first, before the one embedded in Rukoo. So installing ntfy moves Rukoo off Google's FCM,
+     * unless the person picked that in Settings.
      */
     fun pick(inputs: Inputs, record: PushRecord): String? {
         val installed = inputs.installed
-        return listOfNotNull(record.preferred, record.distributor).firstOrNull { it in installed }
+        return record.preferred?.takeIf { it in installed }
+            ?: record.distributor?.takeIf { it in installed && it != inputs.own }
             ?: installed.firstOrNull { it != inputs.own }
             ?: inputs.own.takeIf { it in installed }
     }

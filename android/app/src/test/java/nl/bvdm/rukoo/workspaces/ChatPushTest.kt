@@ -114,8 +114,11 @@ class ChatPushTest {
     fun `an app the person installed comes before the distributor embedded in Rukoo`() {
         assertEquals(NTFY, PushPlan.pick(inputs(installed = listOf(OWN, NTFY)), PushRecord()))
         assertEquals(OWN, PushPlan.pick(inputs(installed = listOf(OWN)), PushRecord()))
-        // Once registered, it stays with that one while it is installed.
-        assertEquals(OWN, PushPlan.pick(inputs(installed = listOf(OWN, NTFY)), PushRecord(distributor = OWN)))
+        // Installing ntfy moves Rukoo off the embedded one, unless the person picked that in Settings.
+        assertEquals(NTFY, PushPlan.pick(inputs(installed = listOf(OWN, NTFY)), PushRecord(distributor = OWN)))
+        assertEquals(OWN, PushPlan.pick(inputs(installed = listOf(OWN, NTFY)), PushRecord(distributor = OWN, preferred = OWN)))
+        // Between apps the person installed, it stays with the one it registered with.
+        assertEquals(NEXTPUSH, PushPlan.pick(inputs(installed = listOf(OWN, NTFY, NEXTPUSH)), PushRecord(distributor = NEXTPUSH)))
         assertEquals(NTFY, PushPlan.pick(inputs(installed = listOf(NTFY)), PushRecord(distributor = OWN)))
     }
 

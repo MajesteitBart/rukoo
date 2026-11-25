@@ -282,6 +282,9 @@
     <string name="settings_notifications_delivery_help_refused">Your Rukoo server can\'t send to %1$s\'s server.</string>
     <string name="settings_notifications_delivery_choose">Receive through</string>
     <string name="settings_notifications_chat_battery_help_push">If messages come late, set both Rukoo and %1$s to Unrestricted.</string>
+    <!-- The distributor built into Rukoo, which receives wakes through Google's FCM. -->
+    <string name="push_embedded_distributor">Google Play services</string>
+    <string name="settings_notifications_chat_battery_help_fcm">If messages come late, set Rukoo to Unrestricted.</string>
     <string name="settings_notifications_system">Notification settings</string>
     <string name="settings_notifications_system_help">Sounds, the lock screen and each kind of notification, in Android\'s settings</string>
 
