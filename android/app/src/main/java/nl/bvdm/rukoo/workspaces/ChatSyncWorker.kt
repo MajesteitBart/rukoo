@@ -7,6 +7,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CancellationException
@@ -29,8 +30,10 @@ class ChatSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
             val container = applicationContext.appContainer
             // Workspaces a push wake named run first, and a wake that comes in meanwhile makes it run once more.
             container.push.catchUpRounds { first ->
-                val ran = container.workspaces.backgroundCatchUp(BUDGET_MS, first)
+                val caught = mutableSetOf<String>()
+                val ran = container.workspaces.backgroundCatchUp(BUDGET_MS, first) { caught += it }
                 AppLog.i(TAG, if (ran == null) "Chat catch-up skipped: no team chat session" else "Chat catch-up ran $ran workspaces")
+                caught
             }
             container.push.run()
         } catch (e: CancellationException) {
@@ -65,7 +68,11 @@ class ChatSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
             try {
-                WorkManager.getInstance(context).enqueueUniqueWork(PUSH_WORK, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+                val work = WorkManager.getInstance(context)
+                // A run still waiting to start takes every wake that came before it (ChatPush keeps them), so a steady
+                // stream of wakes queues one run, not one per wake.
+                val queued = work.getWorkInfosForUniqueWork(PUSH_WORK).get().any { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }
+                if (!queued) work.enqueueUniqueWork(PUSH_WORK, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
             } catch (e: IllegalStateException) {
                 AppLog.w(TAG, "WorkManager unavailable for a push wake", e)
             }

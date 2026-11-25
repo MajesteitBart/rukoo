@@ -115,9 +115,16 @@ interface PushDistributors {
 @Serializable
 internal data class PushRefusal(val key: String, val reason: String, val distributor: String, val server: String, val at: Long)
 
-/** Wakes not caught up with yet: [seq] counts every wake, [workspaces] are the ones they named. */
+/** A workspace a wake named: the [seq] of the last wake that named it, when it first did, and catch-ups that missed it. */
 @Serializable
-internal data class PendingWake(val seq: Long = 0, val workspaces: Set<String> = emptySet())
+internal data class NamedWake(val seq: Long, val at: Long, val tries: Int = 0)
+
+/**
+ * Wakes not caught up with yet: [seq] counts every wake, [workspaces] are the ones they named, kept until a catch-up
+ * has fetched them or [PushPlan.NAMED_TRIES] catch-ups or a day went by without.
+ */
+@Serializable
+internal data class PendingWake(val seq: Long = 0, val workspaces: Map<String, NamedWake> = emptyMap())
 
 /** What ChatPush keeps between runs (chat-push.json). */
 @Serializable
@@ -138,6 +145,14 @@ internal data class PushRecord(
     val sentAt: Long = 0,
     /** The server's 400 for a registration, tried again when anything about it changes, or a day later. */
     val refused: PushRefusal? = null,
+    /**
+     * The session the server may hold an endpoint for: set before each PUT, since one whose answer got lost may have
+     * committed, and cleared only by a DELETE the server confirmed or the end of that session.
+     */
+    val withdrawFor: String? = null,
+    /** PUTs and DELETEs in a row that failed for a reason that passes, and when the next may go: Retry-After or the backoff. */
+    val sendFailures: Int = 0,
+    val retryAt: Long = 0,
     val wake: PendingWake = PendingWake(),
 )
 
@@ -157,6 +172,10 @@ internal object PushPlan {
 
     /** Returning to Rukoo or the network coming back tries a failed registration again, at most this often. */
     const val FORCE_GAP = 30 * 1000L
+
+    /** Catch-ups a named workspace may miss before its hint goes, and the longest it is kept. */
+    const val NAMED_TRIES = 3
+    const val NAMED_AGE = 24 * 60 * 60 * 1000L
 
     /** A failure of the distributor's server, which it says with TEMP_UNAVAILABLE. */
     const val UNAVAILABLE = "TEMP_UNAVAILABLE"
@@ -248,8 +267,7 @@ internal object PushPlan {
         if (pick == null) {
             val steps = mutableListOf<Step>()
             if (record.distributor != null) steps += Step.Unregister
-            val session = inputs.session
-            if (session != null && record.sentFor?.startsWith("$session\n") == true) steps += Step.Withdraw
+            if (withdrawDue(inputs, record) && now >= record.retryAt) steps += Step.Withdraw
             return steps
         }
         val vapid = inputs.vapid!!
@@ -260,10 +278,26 @@ internal object PushPlan {
         val endpoint = record.endpoint ?: return steps
         val session = inputs.session ?: return steps
         val key = key(session, endpoint)
-        if (!refusalHolds(inputs, record, pick, key, now) && (record.sentFor != key || now - record.sentAt >= RESEND)) {
-            steps += Step.Send(session, endpoint)
-        }
+        val due = record.sentFor != key || now - record.sentAt >= RESEND
+        if (due && now >= record.retryAt && !refusalHolds(inputs, record, pick, key, now)) steps += Step.Send(session, endpoint)
         return steps
+    }
+
+    /** Whether this session may hold an endpoint on the server that should go: one it took, or a PUT whose answer was lost. */
+    fun withdrawDue(inputs: Inputs, record: PushRecord): Boolean {
+        val session = inputs.session ?: return false
+        return record.withdrawFor == session || record.sentFor?.startsWith("$session\n") == true
+    }
+
+    /**
+     * When the retry job should run ChatPush again, or null for none: when a PUT or DELETE that failed may go again,
+     * and when a registration waiting for the distributor's answer is due again.
+     */
+    fun nextRetry(inputs: Inputs, record: PushRecord, now: Long): Long? {
+        val times = mutableListOf<Long>()
+        if (record.retryAt > now) times += record.retryAt
+        if (record.distributor != null && inputs.attempted && !inputs.confirmed) times += record.attemptAt + backoff(record.failures)
+        return times.minOrNull()
     }
 
     fun delivery(inputs: Inputs, record: PushRecord, now: Long): ChatDelivery {
@@ -312,6 +346,11 @@ internal class ChatPush(
     private val scope: CoroutineScope,
     private val catchUp: () -> Unit,
     private val clock: Clock = Clock.System,
+    /**
+     * Runs ChatPush again after a wait in milliseconds, as unique work with a network (PushRetryWorker); null takes back
+     * a retry that hasn't started.
+     */
+    private val retryLater: (Long?) -> Unit = {},
 ) : ChatPushControl {
     private val lock = Mutex()
     private var record: PushRecord = JsonFiles.read(file, PushRecord.serializer(), PushRecord(), clock)
@@ -319,11 +358,23 @@ internal class ChatPush(
     // This process sent a registration, and the distributor answered it with an endpoint.
     private var attempted = false
     private var confirmed = false
+
+    // This process planned a retry that may still wait.
+    private var retryPlanned = false
     private val _state = MutableStateFlow(PushState())
     override val state: StateFlow<PushState> = _state.asStateFlow()
 
-    /** Follows the account and the notifications switch for as long as [scope] lives. */
+    /**
+     * Follows the account and the notifications switch for as long as [scope] lives. The end of a session takes along
+     * what this phone knew of its endpoint on the server: the server removed it, or, after an offline sign-out, there is
+     * no session left to remove it with.
+     */
     fun start(): Job = scope.launch {
+        launch {
+            account.sessionEnded.collect {
+                lock.withLock { update { it.copy(sentFor = null, sentAt = 0, withdrawFor = null, sendFailures = 0, retryAt = 0) } }
+            }
+        }
         combine(account.status, settings) { status, s -> Triple(status.signedIn, PushPlan.vapid(status), s.notifyChat) }
             .distinctUntilChanged()
             .collect { run() }
@@ -354,6 +405,14 @@ internal class ChatPush(
                 if (steps.isEmpty() || !steps.all { take(it) }) break
             }
             publish()
+            val next = PushPlan.nextRetry(inputs(), record, clock.now())
+            if (next != null) {
+                retryLater((next - clock.now()).coerceAtLeast(0))
+                retryPlanned = true
+            } else if (retryPlanned) {
+                retryLater(null)
+                retryPlanned = false
+            }
         }
     }
 
@@ -424,9 +483,11 @@ internal class ChatPush(
             put("auth", JsonPrimitive(step.endpoint.auth))
         }
         val key = PushPlan.key(step.session, step.endpoint)
+        // From here the server may hold it, also when the answer gets lost.
+        update { it.copy(withdrawFor = step.session) }
         return try {
             http.request(session.server, "PUT", ENDPOINT_PATH, body, session.token, null)
-            update { it.copy(sentFor = key, sentAt = clock.now(), refused = null) }
+            update { it.copy(sentFor = key, sentAt = clock.now(), refused = null, sendFailures = 0, retryAt = 0) }
             true
         } catch (e: AccountError) {
             when {
@@ -437,13 +498,26 @@ internal class ChatPush(
                     val server = account.status.value.info?.version.orEmpty()
                     update { it.copy(refused = PushRefusal(key, reason, record.distributor.orEmpty(), server, clock.now())) }
                 }
-                // 429, 503 and the like pass: the next check tries again.
-                else -> AppLog.w(TAG, "The server didn't take the push endpoint now: ${e.code} (${e.status})")
+                // 429, 503, no network and the like pass: the retry job tries again after Retry-After or the backoff.
+                else -> {
+                    AppLog.w(TAG, "The server didn't take the push endpoint now: ${e.code} (${e.status})")
+                    failedForNow(e.retryAfter)
+                }
             }
             false
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not give the server the push endpoint", e)
+            failedForNow(null)
             false
+        }
+    }
+
+    /** A PUT or DELETE that may work later: the next goes after [retryAfter] seconds, or after the backoff. */
+    private fun failedForNow(retryAfter: Long?) {
+        val now = clock.now()
+        update {
+            val failures = it.sendFailures + 1
+            it.copy(sendFailures = failures, retryAt = now + (retryAfter?.times(1000) ?: PushPlan.backoff(failures)))
         }
     }
 
@@ -461,14 +535,16 @@ internal class ChatPush(
                 if (e.status == 401) account.sessionRefused(session)
                 else {
                     AppLog.w(TAG, "Could not take the push endpoint back: ${e.code} (${e.status})")
+                    failedForNow(e.retryAfter)
                     return false
                 }
             } catch (e: Exception) {
                 AppLog.w(TAG, "Could not take the push endpoint back", e)
+                failedForNow(null)
                 return false
             }
         }
-        update { it.copy(sentFor = null, sentAt = 0) }
+        update { it.copy(sentFor = null, sentAt = 0, withdrawFor = null, sendFailures = 0, retryAt = 0) }
         return true
     }
 
@@ -521,7 +597,7 @@ internal class ChatPush(
                 confirmed = false
                 update { it.copy(distributor = null, vapid = null, endpoint = null, failure = null, failures = 0) }
                 val tag = account.borrowSession()?.tag
-                if (tag != null && record.sentFor?.startsWith("$tag\n") == true) withdraw()
+                if (tag != null && (record.withdrawFor == tag || record.sentFor?.startsWith("$tag\n") == true)) withdraw()
             }
             run()
         }
@@ -534,7 +610,14 @@ internal class ChatPush(
     fun message(workspaces: Set<String> = emptySet()) {
         scope.launch {
             lock.withLock {
-                update { it.copy(wake = PendingWake(it.wake.seq + 1, (it.wake.workspaces + workspaces).take(MAX_PENDING).toSet())) }
+                val now = clock.now()
+                update { r ->
+                    val seq = r.wake.seq + 1
+                    // A workspace named again is a fresh hint: its misses start over, from when it was first named.
+                    val named = r.wake.workspaces + workspaces.associateWith { id -> NamedWake(seq, r.wake.workspaces[id]?.at ?: now) }
+                    val newest = named.entries.sortedByDescending { e -> e.value.seq }.take(MAX_PENDING)
+                    r.copy(wake = PendingWake(seq, newest.associate { e -> e.key to e.value }))
+                }
             }
             catchUp()
         }
@@ -543,18 +626,30 @@ internal class ChatPush(
     /**
      * Runs [run] with the workspaces the wakes so far named, and again while wakes came in during it, at most [rounds]
      * times. ChatSyncWorker runs its catch-up through this, so a wake that comes while one runs is never lost and never
-     * cancels it.
+     * cancels it. [run] answers which of them it caught up with; the others stay for the next catch-ups, until
+     * [PushPlan.NAMED_TRIES] missed them or a day went by, as when a workspace just joined isn't listed yet.
      */
-    suspend fun catchUpRounds(rounds: Int = 3, run: suspend (Set<String>) -> Unit) {
+    suspend fun catchUpRounds(rounds: Int = 3, run: suspend (Set<String>) -> Set<String>) {
         repeat(rounds) {
-            val wake = lock.withLock {
-                val taken = record.wake
-                update { it.copy(wake = it.wake.copy(workspaces = emptySet())) }
-                taken
+            val wake = lock.withLock { record.wake }
+            val caught = run(wake.workspaces.keys)
+            val more = lock.withLock {
+                val now = clock.now()
+                update { r ->
+                    val kept = r.wake.workspaces.mapNotNull { (id, named) ->
+                        when {
+                            // Named again, or first, by a wake that came during the run: it waits for the next.
+                            named.seq > wake.seq -> id to named
+                            id in caught -> null
+                            named.tries + 1 >= PushPlan.NAMED_TRIES || now - named.at >= PushPlan.NAMED_AGE -> null
+                            else -> id to named.copy(tries = named.tries + 1)
+                        }
+                    }.toMap()
+                    r.copy(wake = r.wake.copy(workspaces = kept))
+                }
+                record.wake.seq > wake.seq
             }
-            run(wake.workspaces)
-            val since = lock.withLock { record.wake.seq }
-            if (since <= wake.seq) return
+            if (!more) return
         }
     }
 

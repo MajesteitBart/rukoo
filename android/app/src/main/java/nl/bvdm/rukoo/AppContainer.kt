@@ -65,6 +65,7 @@ import nl.bvdm.rukoo.workspaces.ChatPushControl
 import nl.bvdm.rukoo.workspaces.ChatSyncWorker
 import nl.bvdm.rukoo.workspaces.OkHttpChatSockets
 import nl.bvdm.rukoo.workspaces.OkHttpWorkspaceHttp
+import nl.bvdm.rukoo.workspaces.PushRetryWorker
 import nl.bvdm.rukoo.workspaces.UnifiedPushDistributors
 import nl.bvdm.rukoo.workspaces.WorkspaceService
 import nl.bvdm.rukoo.workspaces.Workspaces
@@ -251,6 +252,7 @@ class AppContainer(context: Context) : AppServices {
             scope = CoroutineScope(appScope.coroutineContext + Dispatchers.IO),
             catchUp = { ChatSyncWorker.runNow(appContext) },
             clock = clock,
+            retryLater = { wait -> PushRetryWorker.schedule(appContext, wait) },
         )
     }
 

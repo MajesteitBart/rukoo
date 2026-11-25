@@ -179,6 +179,21 @@ class ChatPushTest {
     }
 
     @Test
+    fun `a session that may hold an endpoint is due a withdrawal, and the retry time is the sooner of what waits`() {
+        assertTrue(PushPlan.withdrawDue(inputs(), PushRecord(withdrawFor = "s1")))
+        assertFalse(PushPlan.withdrawDue(inputs(), PushRecord(withdrawFor = "s0")))
+        assertFalse(PushPlan.withdrawDue(inputs(session = null), PushRecord(withdrawFor = "s1")))
+        assertEquals(listOf(PushPlan.Step.Withdraw), PushPlan.steps(inputs(wanted = false), PushRecord(withdrawFor = "s1"), NOW))
+        assertEquals("held back by Retry-After", emptyList<PushPlan.Step>(), PushPlan.steps(inputs(wanted = false), PushRecord(withdrawFor = "s1", retryAt = NOW + 1), NOW))
+
+        assertNull(PushPlan.nextRetry(inputs(), registered(), NOW))
+        assertEquals(NOW + 5_000, PushPlan.nextRetry(inputs(), registered().copy(retryAt = NOW + 5_000), NOW))
+        val waiting = inputs(confirmed = false)
+        assertEquals(NOW + PushPlan.backoff(2), PushPlan.nextRetry(waiting, registered(failures = 2), NOW))
+        assertEquals(NOW + 5_000, PushPlan.nextRetry(waiting, registered(failures = 2).copy(retryAt = NOW + 5_000), NOW))
+    }
+
+    @Test
     fun `the VAPID key comes from the server's info only with the push-wake capability`() {
         assertEquals(VAPID, PushPlan.vapid(status(info(push = true))))
         assertNull(PushPlan.vapid(status(info(push = false))))
@@ -230,8 +245,15 @@ class ChatPushTest {
         val statusFlow = MutableStateFlow(AccountStatus(server = SERVER, info = info))
         var session: BorrowedSession? = null
         val refused = CopyOnWriteArrayList<BorrowedSession>()
+        private val ended = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
         override val status: StateFlow<AccountStatus> get() = statusFlow
-        override val sessionEnded: SharedFlow<Unit> = MutableSharedFlow()
+        override val sessionEnded: SharedFlow<Unit> = ended
+        /** Signs out here, as offline: the session ends without the server hearing of it. */
+        fun endSession() {
+            session = null
+            ended.tryEmit(Unit)
+            statusFlow.value = statusFlow.value.copy(signedIn = false)
+        }
         override fun borrowSession() = session
         override fun sessionRefused(session: BorrowedSession) {
             refused += session
@@ -253,7 +275,9 @@ class ChatPushTest {
         val distributors = FakeDistributors(installed)
         val http = FakeHttp()
         var catchUps = 0
-        val push = ChatPush(account, settings, distributors, http, File(dir, ChatPush.FILE_NAME), work, { catchUps += 1 }, Clock { now })
+        /** The waits the retry job was planned for; null took it back. */
+        val retries = CopyOnWriteArrayList<Long?>()
+        val push = ChatPush(account, settings, distributors, http, File(dir, ChatPush.FILE_NAME), work, { catchUps += 1 }, Clock { now }, { retries += it })
     }
 
     private fun TestScope.harness(installed: List<String> = listOf(NTFY)) = Harness(this, dir, installed).also { harnesses += it }
@@ -348,8 +372,12 @@ class ChatPushTest {
         advanceUntilIdle()
         assertEquals(1, h.distributors.unregistered)
         assertEquals(1, h.http.deletes().size)
-        // The withdrawal is still pending: the next check sends it again.
+        // The withdrawal is still pending: once the backoff passed, the next check sends it again.
         h.http.fail = null
+        h.push.check()
+        advanceUntilIdle()
+        assertEquals("not before the backoff", 1, h.http.deletes().size)
+        h.now += PushPlan.backoff(1)
         h.push.check()
         advanceUntilIdle()
         assertEquals(2, h.http.deletes().size)
@@ -391,6 +419,7 @@ class ChatPushTest {
         advanceUntilIdle()
         assertEquals(ChatDelivery.Connecting(NTFY), h.push.state.value.delivery)
         h.http.fail = null
+        h.now += PushPlan.backoff(1)
         h.push.check()
         advanceUntilIdle()
         assertEquals(ChatDelivery.Instant(NTFY), h.push.state.value.delivery)
@@ -507,17 +536,18 @@ class ChatPushTest {
         val runs = mutableListOf<Set<String>>()
         h.push.catchUpRounds { first ->
             runs += first
-            // A wake comes in while the first round runs.
+            // A wake for a comes in while the first round runs.
             if (runs.size == 1) {
                 h.push.message(setOf(a))
                 advanceUntilIdle()
             }
+            first
         }
         assertEquals(listOf(setOf(a, b), setOf(a)), runs)
 
-        // Without wakes in between, one round.
+        // Without wakes in between, one round, and nothing named any more.
         runs.clear()
-        h.push.catchUpRounds { runs += it }
+        h.push.catchUpRounds { runs += it; it }
         assertEquals(listOf(emptySet<String>()), runs)
 
         // Wakes that keep coming stop after three rounds.
@@ -526,8 +556,131 @@ class ChatPushTest {
             runs += first
             h.push.message()
             advanceUntilIdle()
+            first
         }
         assertEquals(3, runs.size)
+    }
+
+    @Test
+    fun `a named workspace the catch-up couldn't fetch stays for the next ones, at most three or a day`() = runTest {
+        val h = harness()
+        val joined = "w_" + "J".repeat(22)
+        val done = "w_" + "D".repeat(22)
+        h.push.message(setOf(joined, done))
+        advanceUntilIdle()
+        val seen = mutableListOf<Set<String>>()
+        // The new workspace isn't listed yet: only the other is caught up.
+        h.push.catchUpRounds { seen += it; setOf(done) }
+        h.push.catchUpRounds { seen += it; emptySet() }
+        h.push.catchUpRounds { seen += it; emptySet() }
+        h.push.catchUpRounds { seen += it; emptySet() }
+        assertEquals(listOf(setOf(joined, done), setOf(joined), setOf(joined), emptySet()), seen)
+
+        // A day without catching it up lets it go as well.
+        h.push.message(setOf(joined))
+        advanceUntilIdle()
+        h.now += PushPlan.NAMED_AGE
+        seen.clear()
+        h.push.catchUpRounds { seen += it; emptySet() }
+        h.push.catchUpRounds { seen += it; emptySet() }
+        assertEquals(listOf(setOf(joined), emptySet()), seen)
+
+        // Named again, its misses start over.
+        h.push.message(setOf(joined))
+        advanceUntilIdle()
+        h.push.catchUpRounds { emptySet() }
+        h.push.message(setOf(joined))
+        advanceUntilIdle()
+        seen.clear()
+        h.push.catchUpRounds { seen += it; emptySet() }
+        h.push.catchUpRounds { seen += it; emptySet() }
+        assertEquals(listOf(setOf(joined), setOf(joined)), seen)
+    }
+
+    @Test
+    fun `a PUT whose answer was lost is taken back when notifications go off`() = runTest {
+        val h = harness()
+        h.account.signIn("s1")
+        h.push.start()
+        advanceUntilIdle()
+        // The server may have stored it; the phone never heard.
+        h.http.fail = AccountError("network", 0)
+        h.push.newEndpoint(endpoint)
+        advanceUntilIdle()
+        assertEquals(1, h.http.puts().size)
+
+        h.http.fail = null
+        h.now += PushPlan.backoff(1)
+        h.settings.value = h.settings.value.copy(notifyChat = false)
+        advanceUntilIdle()
+        assertEquals("withdrawn although no PUT was confirmed", 1, h.http.deletes().size)
+        h.push.check()
+        advanceUntilIdle()
+        assertEquals("and only until the server confirmed it", 1, h.http.deletes().size)
+    }
+
+    @Test
+    fun `the end of a session lets go of what the server may hold for it`() = runTest {
+        val h = harness()
+        h.account.signIn("s1")
+        h.push.start()
+        advanceUntilIdle()
+        h.http.fail = AccountError("network", 0)
+        h.push.newEndpoint(endpoint)
+        advanceUntilIdle()
+        h.account.endSession()
+        advanceUntilIdle()
+        h.http.fail = null
+        h.account.signIn("s2")
+        advanceUntilIdle()
+        h.settings.value = h.settings.value.copy(notifyChat = false)
+        advanceUntilIdle()
+        assertEquals("the new session has nothing to take back", 0, h.http.deletes().size)
+    }
+
+    @Test
+    fun `a PUT or DELETE the server can't take now is planned again after Retry-After or the backoff`() = runTest {
+        val h = harness()
+        h.account.signIn("s1")
+        h.push.start()
+        advanceUntilIdle()
+        h.http.fail = AccountError("unavailable", 503, retryAfter = 120)
+        h.push.newEndpoint(endpoint)
+        advanceUntilIdle()
+        assertEquals(120_000L, h.retries.last())
+        h.http.fail = null
+        h.push.check(force = true)
+        advanceUntilIdle()
+        assertEquals("not before Retry-After, even when forced", 1, h.http.puts().size)
+        h.now += 120_000
+        h.push.run()
+        assertEquals(2, h.http.puts().size)
+        assertEquals(ChatDelivery.Instant(NTFY), h.push.state.value.delivery)
+
+        // Without Retry-After, the backoff: a minute, then two.
+        h.http.fail = AccountError("rate_limited", 429)
+        h.settings.value = h.settings.value.copy(notifyChat = false)
+        advanceUntilIdle()
+        assertEquals(PushPlan.backoff(1), h.retries.last())
+        h.now += PushPlan.backoff(1)
+        h.push.run()
+        assertEquals(PushPlan.backoff(2), h.retries.last())
+        h.http.fail = null
+        h.now += PushPlan.backoff(2)
+        h.push.run()
+        assertEquals(3, h.http.deletes().size)
+    }
+
+    @Test
+    fun `a registration waiting for the distributor plans a retry, and an answer takes it back`() = runTest {
+        val h = harness()
+        h.account.signIn("s1")
+        h.push.start()
+        advanceUntilIdle()
+        assertEquals(PushPlan.ANSWER_TIME, h.retries.last())
+        h.push.newEndpoint(endpoint)
+        advanceUntilIdle()
+        assertNull(h.retries.last())
     }
 
     @Test

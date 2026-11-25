@@ -1227,10 +1227,18 @@ class WorkspaceServiceTest {
         assertEquals(1, s.backgroundCatchUp(60_000))
         assertTrue("the older workspace waits without a wake", h.http.calls("GET", h.route(Ids.WS2, "/changes")).isEmpty())
 
-        assertEquals(2, s.backgroundCatchUp(60_000, first = setOf(Ids.WS2)))
+        val caught = mutableListOf<String>()
+        assertEquals(2, s.backgroundCatchUp(60_000, first = setOf(Ids.WS2)) { caught += it })
         assertEquals(1, h.http.calls("GET", h.route(Ids.WS2, "/changes")).size)
         val order = h.http.calls.filter { it.route.endsWith("/changes") }.map { it.route }
         assertEquals("the named workspace goes first", h.route(Ids.WS2, "/changes"), order[order.size - 2])
+        assertEquals("and was caught up; the other wasn't named", listOf(Ids.WS2), caught)
+
+        // A named workspace whose feed fails, or that isn't cached yet, isn't caught up.
+        repeat(5) { h.http.once("GET", h.route(Ids.WS2, "/changes")) { throw WorkspaceError("network") } }
+        caught.clear()
+        s.backgroundCatchUp(60_000, first = setOf(Ids.WS2, "w_" + "N".repeat(22))) { caught += it }
+        assertEquals(emptyList<String>(), caught)
     }
 
     @Test
