@@ -40,7 +40,7 @@ pub const HOTKEYS: [&str; 8] = [
     "scroll lock",
 ];
 /// The keys a Mac accepts on load, as stored: Ownkey's and Right Command, so a config copied from
-/// Windows keeps its key.
+/// Windows, or saved when Settings still offered F13 to F15 and Right Control, keeps its key.
 #[cfg(target_os = "macos")]
 pub const HOTKEYS: [&str; 9] = [
     "right alt",
@@ -53,18 +53,12 @@ pub const HOTKEYS: [&str; 9] = [
     "pause",
     "scroll lock",
 ];
-/// The keys a Mac keyboard has. Pause and Scroll Lock don't exist there; Right Command is the one
-/// Mac key Voice adds, and Right Option is the same key as Right Alt.
-#[cfg(target_os = "macos")]
-pub const MACOS_HOTKEYS: [&str; 7] = [
-    "right alt",
-    "right command",
-    "right ctrl",
-    "right shift",
-    "f13",
-    "f14",
-    "f15",
-];
+/// The keys every Mac keyboard has, which Settings offers there: those of a MacBook and of the
+/// compact Magic Keyboard. Right Option is the same key as Right Alt, and Right Command is the one
+/// Mac key Voice adds. Right Control and F13 to F15 exist only on extended and PC keyboards, and
+/// Pause and Scroll Lock not at all, so none of them is offered. A Mac still loads a stored one
+/// (see [`HOTKEYS`]), and Voice keeps answering it.
+pub const MACOS_HOTKEYS: [&str; 3] = ["right alt", "right command", "right shift"];
 
 /// The keys this platform can offer in Settings, so a key the keyboard lacks can't be chosen:
 /// [`HOTKEYS`] off macOS, as before.

@@ -25,7 +25,6 @@ const PROTECT_DELAY_MS = 100;
 // How often Rukoo tries again to hide or show its windows after a window didn't take it.
 const PROTECT_RETRY_MS = 1000;
 const EMIT_MS = 150;
-const LINK_WITHIN_MS = 12 * 60 * 60 * 1000;
 const EVENT_ID_MAX = 4000;
 // How long a meeting.starting keeps the windows hidden by itself, besides the status it sets: until the meeting's
 // state arrives, or this long.
@@ -390,7 +389,8 @@ class VoiceService extends EventEmitter {
     }
     if (moved || screenChange || change.kind === 'status' || ev.event === 'meeting.state' || ev.event === 'meeting.removed') this.statusChanged();
     if (change.meeting) this.note(change, before);
-    if (ev.event === 'meeting.started') this.linkEvent(ev.meeting).catch(() => {});
+    // A meeting Voice starts on its own stays without a calendar event: a guess from the time can put a recording on
+    // the wrong meeting (#362). The person links one from the meeting view; a start from an event card links that one.
     if (ev.event === 'speaker') this.autoName(ev.meeting);
   }
 
@@ -921,7 +921,8 @@ class VoiceService extends EventEmitter {
     return { type: 'audio/wav', data: Buffer.concat(parts).toString('base64'), start: count(r.start) ? r.start : start, end: count(r.end) ? r.end : end };
   }
 
-  // The calendar events this meeting can be, nearest first. {events, failed}.
+  // The calendar events this meeting can be, nearest first, for the meeting view's Link and Change menu: the person
+  // picks one, Rukoo never does. {events, failed}.
   async events(id) {
     const e = this.store.entry(id);
     if (!e || !this.calendars || !Number.isFinite(e.startedAt)) return { events: [], failed: [] };
@@ -944,18 +945,6 @@ class VoiceService extends EventEmitter {
   eventSummary(eventId) {
     const e = this.calendarEvent(eventId);
     return e ? { id: e.id, title: e.title || '', start: e.start, end: e.end, video: Boolean(e.meeting) } : eventId ? { id: eventId, missing: true } : null;
-  }
-
-  // A meeting Voice started on its own: when exactly one calendar event fits, link it; the user can change it. Only a
-  // recent one: the first replay brings every meeting Voice has, and an old one isn't worth a calendar read each.
-  async linkEvent(id) {
-    const e = this.store.entry(id);
-    if (!e || e.eventId || !this.calendars || !Number.isFinite(e.startedAt) || this.now() - e.startedAt > LINK_WITHIN_MS) return;
-    const { events } = await this.events(id);
-    if (events.length !== 1 || this.closed) return;
-    const now = this.store.entry(id);
-    if (!now || now.eventId) return;
-    this.setEvent(id, events[0].id);
   }
 
   // A 1:1 gets its name without asking: one voice on the call and one guest who can be it, and no name yet. When a

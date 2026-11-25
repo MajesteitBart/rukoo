@@ -8,6 +8,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { END_OF_LINE, END_OF_TEXT } = require('./keys');
 const { FakeVoice, startVoiceServer, syntheticMedia } = require('../fixtures/voice-server');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -28,20 +29,17 @@ async function launch(size = [1500, 950]) {
   delete env.RUKOO_VOICE_BRIDGE;
   app = await electron.launch({ args: ['.'], cwd: ROOT, env });
   win = await app.firstWindow();
-  // Rukoo links a meeting Voice starts to the one calendar event around its start and names a 1:1's voice after the
-  // guest. The demo calendar's events sit at fixed times of the week, so a meeting that starts "now" would be linked
-  // or not depending on the clock (#216). Here it isn't, unless the test calls linkEvents(); again after each launch.
   await expect.poll(() => app.evaluate(() => Boolean(global.__semVoice))).toBe(true);
-  await app.evaluate(() => {
-    const v = global.__semVoice;
-    const link = v.linkEvent.bind(v);
-    v.linkEvent = async (id) => (global.__semLinkEvents ? link(id) : undefined);
-  });
   await setSize(...size);
 }
 
-// Lets Rukoo link the meetings Voice starts from now on, as it does outside the tests, until the next launch.
-const linkEvents = () => app.evaluate(() => (global.__semLinkEvents = true));
+// Links the meeting on screen to a calendar event from the Link button beside "Calendar event", as a person does.
+// Rukoo never links a meeting Voice starts by itself (#362).
+async function linkTo(title) {
+  await win.locator('.meeting [data-mt="event"]').click();
+  await win.locator('.menu button', { hasText: title }).click();
+  await expect(win.locator('.meeting .mt-event-title')).toHaveText(title, { timeout: 10000 });
+}
 
 const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
 
@@ -66,6 +64,19 @@ async function resizeTo(width, height, zoom = 1) {
 
 const connected = () => app.evaluate(() => global.__semVoice.connected);
 const isProtected = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected()));
+// What Rukoo last asked of each window (protectWindows in main.js), after watchProtection(); null for a window it
+// asked nothing yet. For a Mac, where the window may not report what it was asked (#327, #329).
+const askedProtection = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => (typeof w.__askedProtection === 'boolean' ? w.__askedProtection : null)));
+const watchProtection = () =>
+  app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      const set = w.setContentProtection.bind(w);
+      w.setContentProtection = (on) => {
+        w.__askedProtection = on;
+        return set(on);
+      };
+    }
+  });
 
 // ---------- demo screen frames ----------
 
@@ -175,7 +186,7 @@ const callVoice = (n) => ({ id: `call-${n}`, track: 'call', label: `Speaker ${n}
 
 // A meeting Voice starts on its own, as from its pill: the events Voice sends. screen: what it records of the screen.
 // speakers: the voices it sends at the start; without speaker labels that is you and the whole call as one voice.
-// Rukoo doesn't link it to a calendar event unless the test called linkEvents() first.
+// Rukoo doesn't link it to a calendar event; a test that needs one calls linkTo().
 function voiceStarts({ title = '', startedAt = Date.now(), context = null, screen = 'off', speakers = [MIC, CALL_1] } = {}) {
   const id = voice.meetingId();
   voice.append('meeting.started', id, { title, startedAt, tracks: ['mic', 'call'], screen, startedBy: 'voice', context });
@@ -198,8 +209,7 @@ function frameAt(id, at, text, { width = 1920, height = 1080, push = true } = {}
 // The at of every frame.get Rukoo sent, in order.
 const frameGets = () => voice.commands.filter((c) => c.command === 'frame.get').map((c) => c.args.at);
 
-// The stand-up the demo calendar has every weekday at 09:30: today's while it isn't long past, else the next one. A
-// meeting at that time stays within the 12 hours in which Rukoo links a meeting Voice started to its event.
+// The stand-up the demo calendar has every weekday at 09:30: today's while it isn't long past, else the next one.
 function standupAt(now = new Date()) {
   const d = new Date(now);
   d.setHours(9, 30, 0, 0);
@@ -559,20 +569,20 @@ test('notes share composer formatting, save Markdown and survive a restart, with
   await openMeetings();
   const notes = () => view().locator('.mt-notes-input');
   await notes().fill('Launch decisions');
-  await notes().press('Control+a');
+  await notes().press('ControlOrMeta+a');
   await view().locator('[data-cmd="formatBlock"]').click();
   await expect(notes().locator('h2')).toHaveText('Launch decisions');
-  await notes().press('End');
+  await notes().press(END_OF_LINE);
   await notes().press('Enter');
-  await notes().press('Control+b');
+  await notes().press('ControlOrMeta+b');
   await win.keyboard.type('Thursday');
-  await notes().press('Control+b');
+  await notes().press('ControlOrMeta+b');
   await notes().press('Enter');
   await view().locator('[data-cmd="insertUnorderedList"]').click();
   await win.keyboard.type('Tell support on Monday');
   await notes().press('Enter');
   await win.keyboard.type('Publish the checklist');
-  await notes().press('Control+k');
+  await notes().press('ControlOrMeta+k');
   await win.locator('.link-pop [data-f="url"]').fill('https://example.com/checklist');
   await win.locator('.link-pop [data-f="url"]').press('Enter');
   await notes().blur();
@@ -816,7 +826,7 @@ test('blank list continuations and long escaped notes survive editing and restar
   }, { id, original });
   await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(50010);
   expect(await notes().evaluate((el) => el.textContent.endsWith('End marker'))).toBe(true);
-  await notes().press('Control+End');
+  await notes().press(END_OF_TEXT);
   await win.keyboard.type(' revised');
   await notes().blur();
   const expected = original + ' revised';
@@ -861,7 +871,7 @@ test('escaped notes over the storage limit keep their saved original and a recov
   const original = '_'.repeat(60000) + '\nEnd marker';
   await app.evaluate((_e, { id, original }) => global.__semVoice.saveNotes(id, original, 0), { id, original });
   await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(60010);
-  await notes().press('Control+End');
+  await notes().press(END_OF_TEXT);
   await win.keyboard.type(' revised');
   await notes().blur();
   await expect(view().locator('.mt-notes-status')).toHaveText('Not saved: shorten the notes');
@@ -896,9 +906,9 @@ test('soft breaks preserve note formatting and linked labels after restart', asy
   await openMeetings();
   const notes = () => view().locator('.mt-notes-input');
   await notes().fill('First bold line');
-  await notes().press('Control+a');
-  await notes().press('Control+b');
-  await notes().press('End');
+  await notes().press('ControlOrMeta+a');
+  await notes().press('ControlOrMeta+b');
+  await notes().press(END_OF_LINE);
   await notes().press('Shift+Enter');
   await win.keyboard.type('Second bold line');
   await notes().blur();
@@ -985,6 +995,7 @@ test('records the Stand-up from its card: Rukoo hides first, the transcript stre
       return command(name, args);
     };
   });
+  await watchProtection();
 
   await win.keyboard.press('Control+2');
   await win.locator('[data-cal-view="day"]').click();
@@ -1053,23 +1064,40 @@ test('records the Stand-up from its card: Rukoo hides first, the transcript stre
   await expect(view().locator('.mt-state')).toHaveText('Finishing the transcript');
   expect(voice.commands.find((c) => c.command === 'meeting.stop').args.meeting).toBe(id);
   await expect(indicator()).toBeHidden();
-  if (CAN_HIDE) await expect.poll(isProtected).toEqual([false]);
+  // Rukoo asks every window to show in recordings again. A Mac may keep the window hidden anyway: on macOS 27.2.1
+  // isContentProtected() still returned true after the stop (#327), and Rukoo Voice leaves Rukoo out of its
+  // recordings on a Mac whatever the setting (#329). So on a Mac the test checks what Rukoo asked; on Windows, what
+  // the window took.
+  if (process.platform === 'darwin') await expect.poll(askedProtection).toEqual([false]);
+  else if (CAN_HIDE) await expect.poll(isProtected).toEqual([false]);
   voice.append('meeting.state', id, { state: 'done', at: 16000, endedAt: Date.now() + offset });
   await expect(view().locator('.mt-state')).toHaveCount(0);
   await expect(view().locator('[data-mt="stop"]')).toHaveCount(0);
 });
 
-test('a meeting Rukoo Voice starts links the Stand-up, hides Rukoo, and the names picked from its guests survive a restart', async () => {
+test('a meeting Rukoo Voice starts during the Stand-up stays unlinked until you link it, hides Rukoo, and the names picked from its guests survive a restart', async () => {
   test.setTimeout(120000);
-  await linkEvents();
   await openMeetings();
   await expect(view().locator('.mt-empty .t')).toHaveText('Record a meeting');
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000 });
   say(id, 'call', 1500, 'Shall we start? Joris is still on his way.');
   say(id, 'mic', 5200, 'Yes, let us go through the launch first.');
 
-  // The view opens the new recording, and Rukoo links the one event that fits.
+  // The view opens the new recording. The Stand-up is the one event around its start, but Rukoo doesn't guess
+  // (#362): the meeting is named after its start and the call keeps Voice's label.
   await expect(view().locator('.mt-state')).toHaveText('Recording');
+  await expect(view().locator('.mt-event-box .mt-quiet')).toHaveText('Not linked to an event');
+  await expect(view().locator('[data-mt="event"]')).toHaveText('Link');
+  await expect(view().locator('.mt-title')).toHaveText('Meeting at 09:31');
+  await expect(person('call-1').locator('.mt-person-name')).toHaveText('Speaker 1');
+  await win.waitForTimeout(1000);
+  expect(await app.evaluate((_e, id) => global.__semVoice.get(id).meeting.eventId, id)).toBe(null);
+  await expect(view().locator('.mt-event-title')).toHaveCount(0);
+
+  // The person links it: Link offers the events around the start.
+  await view().locator('[data-mt="event"]').click();
+  await expect(win.locator('.menu .menu-heading')).toHaveText('Events around the start');
+  await win.locator('.menu button', { hasText: 'Stand-up' }).click();
   await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
   await expect(view().locator('.mt-title')).toHaveText('Stand-up');
   if (CAN_HIDE) await expect.poll(isProtected).toEqual([true]);
@@ -1125,11 +1153,10 @@ test('a meeting Rukoo Voice starts links the Stand-up, hides Rukoo, and the name
 
 test('three voices on the call keep their names', async () => {
   test.setTimeout(180000);
-  await linkEvents();
   await openMeetings();
   // With speaker labels Voice sends a call voice right before its first passage: at the start there is only you.
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
-  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  await linkTo('Stand-up');
   voice.append('speaker', id, callVoice(1));
   say(id, 'call', 1500, 'Shall we start with the numbers?');
   say(id, 'mic', 4000, 'Yes, go ahead.');
@@ -1212,10 +1239,9 @@ const audioAsked = () => voice.commands.filter((c) => c.command === 'media.open'
 
 test('each voice has a player: it plays a clip of that voice, steps through its clips, and Assign moves on to the next voice', async () => {
   test.setTimeout(240000);
-  await linkEvents();
   await openMeetings();
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
-  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  await linkTo('Stand-up');
   voice.append('speaker', id, callVoice(1));
   say(id, 'call', 1000, 'Shall we start with the numbers?');
   say(id, 'mic', 4500, 'Yes, go ahead.');
@@ -1328,10 +1354,9 @@ test('each voice has a player: it plays a clip of that voice, steps through its 
 
 test('the microphone splits into the voices of the people next to you, who can be named, be you, or be one voice again', async () => {
   test.setTimeout(240000);
-  await linkEvents();
   await openMeetings();
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
-  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  await linkTo('Stand-up');
   voice.append('speaker', id, callVoice(1));
   say(id, 'call', 1000, 'Can someone pull the churn figures before Thursday?');
   say(id, 'mic', 4500, 'I can do that, I have the export open already.');
@@ -1442,10 +1467,9 @@ test('the microphone splits into the voices of the people next to you, who can b
 
 test('a voice whose words a correction hides after a split can still be heard, and other clips leave its speech out', async () => {
   test.setTimeout(120000);
-  await linkEvents();
   await openMeetings();
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
-  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  await linkTo('Stand-up');
   voice.append('speaker', id, callVoice(1));
   say(id, 'mic', 1000, 'Thanks, Pieter. I can do that.', { end: 6000 });
   say(id, 'call', 4500, 'Great. Then the launch checklist.', { end: 9000 });
@@ -1486,7 +1510,6 @@ test('a voice whose words a correction hides after a split can still be heard, a
 });
 
 test("a 1:1's guessed name stays when a second voice joins, and the People card asks to check it", async () => {
-  await linkEvents();
   await openMeetings();
   // The Stand-up as if only Sanne were invited: one voice on the call and one guest, so Rukoo fills in her name.
   await app.evaluate(() => {
@@ -1499,7 +1522,7 @@ test("a 1:1's guessed name stays when a second voice joins, and the People card 
   });
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000 });
   say(id, 'call', 1500, 'Hi, just the two of us today.');
-  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  await linkTo('Stand-up');
   await expect(person('call-1').locator('.mt-person-name')).toHaveText('Sanne de Vries');
   await expect(person('call-1').locator('.mt-person-sub')).toHaveText('sanne@example.com');
   // Someone else joins the call: the guess stays, and the card asks to check it.
@@ -1524,28 +1547,34 @@ test("a 1:1's guessed name stays when a second voice joins, and the People card 
   await expect(person('call-1').locator('.mt-person-sub')).toHaveText('sanne@example.com');
 });
 
-test("a meeting during a 1:1 keeps Voice's labels here until the test turns the linking on", async () => {
+test("a meeting Voice starts during a 1:1 keeps Voice's label and no event until the person links it, and unlinking takes the event off again", async () => {
   await openMeetings();
-  const at = followUpAt();
   const names = () => view().locator('.mt-people .mt-person-name');
   const eventOf = (id) => app.evaluate((_e, id) => global.__semVoice.get(id).meeting.eventId || null, id);
 
-  // As in every other test here: no event, so the call keeps its label whatever the demo calendar has at that time.
-  const first = voiceStarts({ title: 'Unlinked follow-up', startedAt: at });
-  await expect(view().locator('.mt-title')).toHaveText('Unlinked follow-up');
+  // The follow-up with Joris is the only event around this moment and Joris its only other guest: exactly the case
+  // Rukoo used to link and name by itself. It doesn't any more (#362).
+  const id = voiceStarts({ startedAt: followUpAt() });
+  await expect(view().locator('.mt-state')).toHaveText('Recording');
+  await expect(view().locator('.mt-title')).toHaveText('Meeting at 11:01');
+  await expect(view().locator('.mt-event-box .mt-quiet')).toHaveText('Not linked to an event');
   await expect(names()).toHaveText(['You', 'Speaker 1']);
-  voice.append('meeting.state', first, { state: 'done', at: 5000, endedAt: at + 5000 });
-  voice.append('status', null, { recording: null, dictating: false });
-  await expect(indicator()).toBeHidden();
+  await win.waitForTimeout(1000);
+  expect(await eventOf(id)).toBe(null);
+  await expect(names()).toHaveText(['You', 'Speaker 1']);
 
-  // With the linking on, a meeting at the same moment is the 1:1 with Joris, so that moment does fall in an event.
-  await linkEvents();
-  const second = voiceStarts({ title: 'Linked follow-up', startedAt: at });
-  await expect(view().locator('.mt-title')).toHaveText('Linked follow-up');
-  await expect(view().locator('.mt-event-title')).toHaveText('Quarterly planning follow-up', { timeout: 10000 });
+  // The person links it from the meeting view: the event names the meeting and its one guest the voice on the call.
+  await linkTo('Quarterly planning follow-up');
+  await expect(view().locator('.mt-title')).toHaveText('Quarterly planning follow-up');
   await expect(names()).toHaveText(['You', 'Joris Bakker']);
-  expect(await eventOf(second)).toBeTruthy();
-  expect(await eventOf(first)).toBe(null);
+  expect(await eventOf(id)).toBeTruthy();
+
+  // Unlink takes it off again.
+  await view().locator('[data-mt="event"]').click();
+  await menu().locator('button', { hasText: 'Unlink the event' }).click();
+  await expect(view().locator('.mt-event-box .mt-quiet')).toHaveText('Not linked to an event');
+  await expect(view().locator('.mt-title')).toHaveText('Meeting at 11:01');
+  expect(await eventOf(id)).toBe(null);
 });
 
 test('the chat follows the meeting: the fake agent reads the transcript, and its second turn gets only what is new', async () => {

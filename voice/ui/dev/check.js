@@ -37,15 +37,69 @@ check('a Mac key list shows Mac names and only the keys a Mac has', async ({ ope
   assert.match(await page.locator('[data-section="status"]').innerText(), /Hold Right Option to dictate\. Hold Right Command to change selected text\./);
   await page.click('[data-a="choose:dictation.hotkey"]');
   const labels = await page.locator('.radio-row .rl').allInnerTexts();
-  for (const name of ['Right Option', 'Right Command', 'Right Control', 'Right Shift', 'F13', 'F14', 'F15']) {
-    assert.ok(labels.includes(name), `${name} is offered on a Mac: ${labels.join()}`);
-  }
-  for (const name of ['Right Alt', 'Pause', 'Scroll Lock']) {
-    assert.ok(!labels.includes(name), `${name} isn't a Mac key: ${labels.join()}`);
-  }
+  // Only the keys every Mac keyboard has, a MacBook's included (#360).
+  assert.deepEqual(labels, ['Right Option', 'Right Command', 'Right Shift']);
   assert.equal(await page.locator('.radio-row', { hasText: 'Right Command' }).isDisabled(), true, 'the rewrite key is taken');
-  await page.locator('.radio-row', { hasText: 'F15' }).click();
-  assert.equal((await mockState()).config.dictation.hotkey, 'f15');
+  await page.locator('.radio-row', { hasText: 'Right Shift' }).click();
+  assert.equal((await mockState()).config.dictation.hotkey, 'right shift');
+});
+
+check('a Mac stop key list has no F13 to F15 and still shows a stored one as the current choice', async ({ open, page, mockState }) => {
+  const stopKeys = async () => {
+    await page.click('[data-a="choose:meetings.stopKey"]');
+    const rows = page.locator('.radio-row');
+    const labels = await rows.locator('.rl').allInnerTexts();
+    const checked = await page.locator('.radio-row[aria-checked="true"] .rl').innerText();
+    return { labels, checked };
+  };
+  await open('settings.html?mock=1&lang=en&platform=macos');
+  let list = await stopKeys();
+  assert.deepEqual(list.labels, ['Off', 'Right Option', 'Right Command', 'Right Shift']);
+  assert.equal(list.checked, 'Off');
+  await page.keyboard.press('Escape');
+  // A stop key saved by an earlier Voice, or from an extended keyboard, stays and shows in its place.
+  await page.evaluate(() => window.__settingsMockEdit((state) => (state.config.meetings.stopKey = 'f13')));
+  await page.waitForSelector('[data-a="choose:meetings.stopKey"] .value:text("F13")');
+  list = await stopKeys();
+  assert.deepEqual(list.labels, ['Off', 'Right Option', 'Right Command', 'Right Shift', 'F13']);
+  assert.equal(list.checked, 'F13');
+  await page.locator('.radio-row', { hasText: 'Right Shift' }).click();
+  assert.equal((await mockState()).config.meetings.stopKey, 'right shift');
+  list = await stopKeys();
+  assert.deepEqual(list.labels, ['Off', 'Right Option', 'Right Command', 'Right Shift'], 'F13 goes once another key is chosen');
+  await page.keyboard.press('Escape');
+  // Windows keeps every key Ownkey had.
+  await open('settings.html?mock=1&lang=en');
+  list = await stopKeys();
+  assert.deepEqual(list.labels, ['Off', 'Right Alt', 'Right Ctrl', 'Right Shift', 'F13', 'F14', 'F15', 'Pause', 'Scroll Lock']);
+});
+
+check('the rewrite key sits beside the dictation key and agrees with the Rewriting page', async ({ open, page, mockState }) => {
+  for (const [platform, before, after] of [
+    ['', 'Right Ctrl', 'F14'],
+    ['&platform=macos', 'Right Command', 'Right Shift']
+  ]) {
+    await open(`settings.html?mock=1&lang=en${platform}`);
+    const rows = page.locator('[data-section="dictation"] .row');
+    assert.match(await rows.nth(0).innerText(), /Dictation key/);
+    assert.match(await rows.nth(1).innerText(), new RegExp(`Rewrite key[\\s\\S]*${before}`), 'the second row of Dictation is the rewrite key');
+    // The same picker the dictation key has.
+    await page.click('[data-section="dictation"] [data-a="choose:dictation.rewriteHotkey"]');
+    assert.equal(await page.locator('#dialog-title').innerText(), 'Rewrite key');
+    assert.equal(await page.locator('.radio-row', { hasText: platform ? 'Right Option' : 'Right Alt' }).isDisabled(), true, 'the dictation key is taken');
+    await page.locator('.radio-row', { hasText: after }).click();
+    const value = (await mockState()).config.dictation.rewriteHotkey;
+    assert.equal(value, after.toLowerCase());
+    await page.waitForSelector(`[data-section="dictation"] [data-a="choose:dictation.rewriteHotkey"] .value:text("${after}")`);
+    // The Rewriting page shows the same key, and a change there shows here.
+    await page.click('[data-a="go:rewriting"]');
+    await page.waitForSelector(`[data-a="choose:dictation.rewriteHotkey"] .value:text("${after}")`);
+    await page.click('[data-a="choose:dictation.rewriteHotkey"]');
+    await page.locator('.radio-row', { hasText: 'Off' }).click();
+    await page.waitForSelector('[data-a="choose:dictation.rewriteHotkey"] .value:text("Off")');
+    await page.click('[data-a="back"]');
+    await page.waitForSelector('[data-section="dictation"] [data-a="choose:dictation.rewriteHotkey"] .value:text("Off")');
+  }
 });
 
 check('the Permissions group shows each macOS state and opens its pane', async ({ open, page, calls }) => {
