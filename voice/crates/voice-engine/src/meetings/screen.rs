@@ -25,6 +25,7 @@ use voice_bridge::{ControlError, EventLog};
 use voice_meetings::Library;
 use voice_protocol::{events, ScreenMode, StartedBy};
 use voice_screen_files::caps::Capabilities;
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::journal::{self, JournalReader, Line};
 use voice_screen_files::monitors::{self, MonitorInfo};
 use voice_screen_files::policy::{Part, Reason};
@@ -101,8 +102,9 @@ pub type FreeBytes = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 /// app run.
 pub type RukooClients = Box<dyn Fn() -> (usize, bool) + Send + Sync>;
 pub type ProtectionClients = Box<dyn Fn() -> Vec<u64> + Send + Sync>;
-/// The pids whose windows the screen process leaves out, as `--exclude-pid`.
-pub type ExcludePids = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
+/// Whose windows the screen process leaves out, as `--exclude-pid`, and the Rukoo processes it
+/// keeps in, as `--show-pid`.
+pub type ExcludePids = Box<dyn Fn() -> Exclusions + Send + Sync>;
 
 pub struct ScreenOptions {
     pub data_dir: PathBuf,
@@ -195,11 +197,11 @@ struct ScreenLive {
     /// that follow aren't a graphics device: their reason has a notice of its own.
     no_permission: bool,
     monitors: Option<usize>,
-    /// The pids the screen process with this pid was last told to leave out, by `exclude` or on
-    /// its command line. Another process, or other pids, and the watchdog tells it again. macOS
-    /// only.
+    /// What the screen process with this pid was last told to leave out and keep in, by
+    /// `exclude` or on its command line. Another process, or other pids, and the watchdog tells
+    /// it again. macOS only.
     #[cfg(target_os = "macos")]
-    excluded: Option<(u32, Vec<u32>)>,
+    excluded: Option<(u32, Exclusions)>,
 }
 
 impl ScreenLive {
@@ -453,10 +455,11 @@ impl ScreenSupervisor {
         *lock(&self.protection_clients) = Some(clients);
     }
 
-    /// The pids the screen process leaves out of its capture, on macOS. A launch passes them on
-    /// its command line, and the watchdog sends the running process `exclude` when they change,
-    /// as when a Rukoo connects, reconnects with another pid or quits mid-meeting. Nothing sets
-    /// them elsewhere, so the command line stays as before and no `exclude` goes out.
+    /// The pids the screen process leaves out of its capture, and the Rukoo pids it keeps in, on
+    /// macOS. A launch passes them on its command line, and the watchdog sends the running
+    /// process `exclude` when they change, as when a Rukoo connects, reconnects with another pid,
+    /// quits or turns hiding on or off mid-meeting. Nothing sets them elsewhere, so the command
+    /// line stays as before and no `exclude` goes out.
     pub fn set_exclude_pids(&self, pids: ExcludePids) {
         *lock(&self.exclude_pids) = Some(pids);
     }
@@ -467,23 +470,23 @@ impl ScreenSupervisor {
             .map_or_else(HashSet::new, |clients| clients().into_iter().collect())
     }
 
-    fn exclude_pids(&self) -> Vec<u32> {
-        let mut pids = lock(&self.exclude_pids)
+    fn exclusions(&self) -> Exclusions {
+        let wanted = lock(&self.exclude_pids)
             .as_ref()
-            .map_or_else(Vec::new, |pids| pids());
-        pids.sort_unstable();
-        pids.dedup();
-        pids
+            .map_or_else(Exclusions::default, |pids| pids());
+        // Sorted, without repeats, and a pid both hidden and shown stays hidden.
+        Exclusions::new(wanted.hidden, wanted.shown)
     }
 
-    /// Tells the running screen process which pids to leave out. A process that doesn't know
-    /// the command, from an older Voice, keeps what its command line said; only a request that
-    /// didn't arrive is tried again on the next round. macOS only.
+    /// Tells the running screen process which pids to leave out and which Rukoo pids to keep
+    /// in. A process that doesn't know the command keeps what its command line said, and one
+    /// from before `shown` existed reads only `pids` and keeps leaving Rukoo out; only a request
+    /// that didn't arrive is tried again on the next round. macOS only.
     #[cfg(target_os = "macos")]
-    fn send_exclude(&self, id: &str, file: &ScreenFile, pids: Vec<u32>) {
+    fn send_exclude(&self, id: &str, file: &ScreenFile, wanted: Exclusions) {
         let reply = match request(
             file,
-            json!({ "cmd": "exclude", "pids": pids }),
+            json!({ "cmd": "exclude", "pids": wanted.hidden, "shown": wanted.shown }),
             REQUEST_WAIT,
         ) {
             Ok(reply) => reply,
@@ -500,7 +503,7 @@ impl ScreenSupervisor {
             .as_mut()
             .filter(|l| l.id == id && l.file.as_ref() == Some(file))
         {
-            live.excluded = Some((file.pid, pids));
+            live.excluded = Some((file.pid, wanted));
         }
     }
 
@@ -1528,7 +1531,7 @@ impl ScreenSupervisor {
             resume,
             self.test_monitor.as_deref(),
             self.test.as_deref(),
-            &self.exclude_pids(),
+            &self.exclusions(),
         ));
         let log_name = format!("screen-{id}.log");
         command
@@ -1603,7 +1606,7 @@ impl ScreenSupervisor {
     fn check(&self) {
         // Read before the slot's lock: the bridge answers it under a lock of its own. macOS only.
         #[cfg(target_os = "macos")]
-        let wanted = self.exclude_pids();
+        let wanted = self.exclusions();
         let (id, file, exited, mut changes) = {
             let mut slot = self.lock();
             let Some(live) = slot.as_mut() else {
@@ -1778,7 +1781,7 @@ fn record_args(
     resume: bool,
     test_monitor: Option<&str>,
     test: Option<&str>,
-    exclude_pids: &[u32],
+    exclusions: &Exclusions,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "record".into(),
@@ -1798,9 +1801,14 @@ fn record_args(
         args.push("--test".into());
         args.push(test.into());
     }
-    // Every connected Rukoo's pid, so its windows stay out of the recording.
-    for pid in exclude_pids {
+    // Every connected Rukoo's pid, so its windows stay out of the recording, unless its user
+    // turned hiding off: then the recording keeps it in.
+    for pid in &exclusions.hidden {
         args.push("--exclude-pid".into());
+        args.push(pid.to_string().into());
+    }
+    for pid in &exclusions.shown {
+        args.push("--show-pid".into());
         args.push(pid.to_string().into());
     }
     args
@@ -1935,7 +1943,6 @@ mod tests {
         assert_eq!(timing.end_wait, Duration::from_secs(10));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn the_screen_process_learns_the_pids_to_leave_out() {
         let args = record_args(
@@ -1944,7 +1951,7 @@ mod tests {
             false,
             None,
             None,
-            &[4821, 77],
+            &Exclusions::new([4821, 77], [90]),
         );
         assert_eq!(
             args,
@@ -1955,9 +1962,11 @@ mod tests {
                 "--mode",
                 "frames",
                 "--exclude-pid",
-                "4821",
-                "--exclude-pid",
                 "77",
+                "--exclude-pid",
+                "4821",
+                "--show-pid",
+                "90",
             ]
             .map(OsString::from)
         );
@@ -1968,7 +1977,7 @@ mod tests {
             true,
             Some("display-2"),
             Some("synthetic:640x480"),
-            &[],
+            &Exclusions::default(),
         );
         assert_eq!(
             none,

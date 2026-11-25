@@ -7,6 +7,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 use voice_screen_files::clock::Now;
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::frames::Thumb;
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 
@@ -196,7 +197,7 @@ impl Displays for WinDisplays {
         }
     }
 
-    fn z_order(&self, _exclude_pids: &[u32]) -> Vec<WindowInfo> {
+    fn z_order(&self, _exclusions: &Exclusions) -> Vec<WindowInfo> {
         monitors_win::z_order()
     }
 

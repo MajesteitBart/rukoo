@@ -125,6 +125,7 @@ fn hello(f: &Fields) -> Checked<Hello> {
         Some(0) => return invalid("pid"),
         pid => pid,
     };
+    let hide_windows = f.optional_boolean("hideWindows")?;
     let instance = match f.nullable_string("instance")? {
         Some(instance) if !is_instance(instance) => return invalid("instance"),
         instance => instance.map(str::to_owned),
@@ -136,6 +137,7 @@ fn hello(f: &Fields) -> Checked<Hello> {
         client,
         client_version,
         pid,
+        hide_windows,
         instance,
         after,
     })
@@ -447,6 +449,9 @@ fn command(f: &Fields) -> Checked<Command> {
             };
             CommandBody::SpeakersSplit { meeting, track }
         }
+        commands::WINDOWS_HIDE => CommandBody::WindowsHide {
+            hide: a.boolean("hide")?,
+        },
         unknown => CommandBody::Unknown {
             command: unknown.to_owned(),
             args: args.clone(),
@@ -588,6 +593,13 @@ impl<'a> Fields<'a> {
         self.present(key)?
             .as_bool()
             .ok_or_else(|| Invalid::new(key))
+    }
+
+    /// A boolean, or `None` when the key is missing or `null`.
+    fn optional_boolean(&self, key: &str) -> Checked<Option<bool>> {
+        self.optional(key)
+            .map(|value| value.as_bool().ok_or_else(|| Invalid::new(key)))
+            .transpose()
     }
 
     fn string(&self, key: &str) -> Checked<&'a str> {
@@ -762,6 +774,7 @@ mod tests {
                 client: "rukoo".into(),
                 client_version: None,
                 pid: Some(4821),
+                hide_windows: None,
                 instance: None,
                 after: 0,
             })
@@ -773,6 +786,42 @@ mod tests {
                 panic!("not a hello")
             };
             assert_eq!(hello.pid, None);
+        }
+    }
+
+    #[test]
+    fn hello_takes_an_optional_hide_windows() {
+        let hello = |hide: Value| json!({ "type": "hello", "protocol": 2, "token": TOKEN, "client": "rukoo", "pid": 4821, "hideWindows": hide, "instance": null, "after": 0 });
+        let read = |value: Value| match validate_incoming(Side::Rukoo, &value).unwrap() {
+            Message::Hello(hello) => hello.hide_windows,
+            other => panic!("not a hello: {other:?}"),
+        };
+        assert_eq!(read(hello(json!(false))), Some(false));
+        assert_eq!(read(hello(json!(true))), Some(true));
+        // Left out or null, as from an older Rukoo.
+        assert_eq!(read(hello(Value::Null)), None);
+        assert_eq!(reason(Side::Rukoo, hello(json!("false"))), "hideWindows");
+        assert_eq!(reason(Side::Rukoo, hello(json!(0))), "hideWindows");
+    }
+
+    #[test]
+    fn windows_hide_takes_a_boolean() {
+        let check = |args: Value| {
+            validate_incoming(Side::Rukoo, &command("c-1", "windows.hide", args)).map(|m| match m {
+                Message::Command(Command { body, .. }) => body,
+                other => panic!("not a command: {other:?}"),
+            })
+        };
+        let body = check(json!({ "hide": false })).unwrap();
+        assert_eq!(body, CommandBody::WindowsHide { hide: false });
+        assert_eq!(body.name(), "windows.hide");
+        assert_eq!(body.args(), json!({ "hide": false }));
+        assert_eq!(
+            check(json!({ "hide": true })).unwrap(),
+            CommandBody::WindowsHide { hide: true }
+        );
+        for args in [json!({}), json!({ "hide": null }), json!({ "hide": "no" })] {
+            assert_eq!(check(args.clone()).unwrap_err().reason, "hide", "{args}");
         }
     }
 

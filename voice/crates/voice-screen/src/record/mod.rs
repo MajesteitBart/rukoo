@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use voice_screen_files::clock::ScreenClock;
 use voice_screen_files::control::{self, Request};
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::frames::Saver;
 use voice_screen_files::gate::VideoGate;
 use voice_screen_files::journal::{self, History, JournalWriter, Line, OpenError, FORMAT_VERSION};
@@ -250,7 +251,7 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
             &platform,
             opts.test.as_ref(),
             &monitor_list,
-            &opts.exclude_pids,
+            &opts.exclusions,
         )
     });
     let video_seq = history
@@ -291,7 +292,7 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
         monitor_cache: (Instant::now(), monitor_list),
         monitor,
         pinned: opts.monitor,
-        exclude_pids: opts.exclude_pids,
+        exclusions: opts.exclusions,
         video: None,
         gate: VideoGate::new(),
         video_seq,
@@ -380,12 +381,12 @@ fn choose_monitor<P: Platform>(
     platform: &P,
     test: Option<&TestSpec>,
     list: &[MonitorInfo],
-    exclude_pids: &[u32],
+    exclusions: &Exclusions,
 ) -> MonitorInfo {
     let id = match test {
         Some(_) => monitors::choose(&[], None, list),
         None => monitors::choose(
-            &platform.displays().z_order(exclude_pids),
+            &platform.displays().z_order(exclusions),
             platform.displays().cursor_monitor().as_deref(),
             list,
         ),

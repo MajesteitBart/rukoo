@@ -24,6 +24,7 @@ use objc2_core_graphics::{
     CGDisplayPixelsWide, CGError, CGEvent, CGGetActiveDisplayList, CGPreflightScreenCaptureAccess,
     CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption,
 };
+use voice_screen_files::exclude::{self, Exclusions};
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 
 /// The ids of the active displays.
@@ -218,34 +219,30 @@ fn overlap(frame: &CGRect, bounds: CGRect) -> f64 {
     (right - left).max(0.0) * (bottom - top).max(0.0)
 }
 
-/// Top-level windows from the front window down the Z-order, as the window server lists them.
-pub fn z_order(exclude_pids: &[u32]) -> Vec<WindowInfo> {
-    z_order_without(exclude_pids, &[])
-}
-
-/// `z_order`, with the windows of the apps whose bundle ids are `bundles` excluded too: the
-/// windows the stream's filter leaves out. The bundle of a window's owner comes from its
-/// executable's path, so this asks neither ScreenCaptureKit nor the Screen Recording grant, and
-/// never waits on either.
-pub fn z_order_without(exclude_pids: &[u32], bundles: &[&str]) -> Vec<WindowInfo> {
+/// Top-level windows from the front window down the Z-order, as the window server lists them,
+/// with the windows the stream's filter leaves out marked excluded: those `exclusions` hides,
+/// Voice's, and Rukoo's unless `exclusions` shows them. The bundle of a window's owner comes from
+/// its executable's path, so this asks neither ScreenCaptureKit nor the Screen Recording grant,
+/// and never waits on either.
+pub fn z_order(exclusions: &Exclusions) -> Vec<WindowInfo> {
     let entries = entries();
     if entries.is_empty() {
         return Vec::new();
     }
-    let mut pids = exclude_pids.to_vec();
-    if !bundles.is_empty() {
-        let mut owners: Vec<i32> = entries.iter().map(|e| e.pid).collect();
-        owners.sort_unstable();
-        owners.dedup();
-        for owner in owners.into_iter().filter(|&pid| pid > 0) {
-            let ids = executable(owner)
+    let mut owners: Vec<i32> = entries.iter().map(|e| e.pid).collect();
+    owners.sort_unstable();
+    owners.dedup();
+    let owners: Vec<(i32, Vec<String>)> = owners
+        .into_iter()
+        .filter(|&pid| pid > 0)
+        .map(|pid| {
+            let ids = executable(pid)
                 .map(|path| bundle_ids_at(&path))
                 .unwrap_or_default();
-            if ids.iter().any(|id| bundles.contains(&id.as_str())) {
-                pids.push(owner as u32);
-            }
-        }
-    }
+            (pid, ids)
+        })
+        .collect();
+    let pids = exclude::owners_left_out(&owners, exclusions);
     windows(&entries, &frames(), &pids)
 }
 
@@ -447,8 +444,8 @@ mod tests {
         );
         assert!(bundle_ids_at(&me).is_empty(), "{me:?}");
         assert!(executable(-1).is_none());
-        // Nothing in the list belongs to a bundle that isn't there.
-        let _ = z_order_without(&[], &["nl.bvdm.rukoo.no-such-app"]);
+        // The list reads with Rukoo shown and hidden alike.
+        let _ = z_order(&Exclusions::new([], [std::process::id()]));
     }
 
     /// A GUI session has at least one display; a CI runner's may have none, which is allowed.
@@ -473,7 +470,7 @@ mod tests {
     #[test]
     fn the_window_list_reads() {
         let monitors = list();
-        let windows = z_order(&[]);
+        let windows = z_order(&Exclusions::default());
         for window in &windows {
             assert!(
                 window.monitor.is_empty() || monitors.iter().any(|m| m.id == window.monitor),

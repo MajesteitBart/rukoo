@@ -98,14 +98,18 @@ impl Meetings {
                 .and_then(std::sync::Weak::upgrade)
                 .map_or_else(Vec::new, |bridge| bridge.protection_clients())
         }));
-        // On macOS the screen process leaves every connected Rukoo's windows out of its capture.
+        // On macOS the screen process leaves every connected Rukoo's windows out of its capture,
+        // and keeps those of a Rukoo whose user turned hiding off.
         #[cfg(target_os = "macos")]
         let weak = bridge.as_ref().map(Arc::downgrade);
         #[cfg(target_os = "macos")]
         screen.set_exclude_pids(Box::new(move || {
-            weak.as_ref()
+            let windows = weak
+                .as_ref()
                 .and_then(std::sync::Weak::upgrade)
-                .map_or_else(Vec::new, |bridge| bridge.rukoo_pids())
+                .map(|bridge| bridge.rukoo_windows())
+                .unwrap_or_default();
+            voice_screen_files::exclude::Exclusions::new(windows.hidden, windows.shown)
         }));
         Meetings {
             controller,

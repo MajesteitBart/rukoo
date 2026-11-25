@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::policy::Part;
 
 use crate::ExitError;
@@ -14,11 +15,12 @@ usage:
   rukoo-voice-screen probe
   rukoo-voice-screen inspect <file.mp4>";
 
-/// macOS also takes `--exclude-pid`, the processes whose windows ScreenCaptureKit leaves out.
+/// macOS also takes `--exclude-pid`, the processes whose windows ScreenCaptureKit leaves out,
+/// and `--show-pid`, the Rukoo processes it keeps in.
 #[cfg(target_os = "macos")]
 pub const USAGE: &str = "\
 usage:
-  rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
+  rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--show-pid <pid>]... [--test <spec>]
   rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
   rukoo-voice-screen probe
   rukoo-voice-screen inspect <file.mp4>";
@@ -200,10 +202,11 @@ pub struct RecordOptions {
     pub resume: bool,
     /// `--monitor`: record this monitor or exit 1.
     pub monitor: Option<String>,
-    /// `--exclude-pid`: leave the windows of each of these processes out of the recording. macOS
-    /// only; Windows leaves Rukoo out through Rukoo's own content protection, and its list stays
+    /// `--exclude-pid` and `--show-pid`: leave the windows of each process of the first out of
+    /// the recording, and keep those of each Rukoo process of the second in it. macOS only;
+    /// Windows leaves Rukoo out through Rukoo's own content protection, and both lists stay
     /// empty.
-    pub exclude_pids: Vec<u32>,
+    pub exclusions: Exclusions,
     pub test: Option<TestSpec>,
 }
 
@@ -242,6 +245,8 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
     let mut monitor = None;
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut exclude_pids: Vec<u32> = Vec::new();
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut show_pids: Vec<u32> = Vec::new();
     let mut test = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -259,21 +264,9 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
             }
             "--resume" => resume = true,
             #[cfg(target_os = "macos")]
-            "--exclude-pid" => {
-                let v = value()?;
-                let pid = v
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|&pid| pid != 0)
-                    .ok_or_else(|| {
-                        ExitError::usage(format!(
-                            "--exclude-pid takes a process id of 1 or more, got {v:?}"
-                        ))
-                    })?;
-                if !exclude_pids.contains(&pid) {
-                    exclude_pids.push(pid);
-                }
-            }
+            "--exclude-pid" => exclude_pids.push(pid_value(arg, value()?)?),
+            #[cfg(target_os = "macos")]
+            "--show-pid" => show_pids.push(pid_value(arg, value()?)?),
             "--monitor" => {
                 let v = value()?;
                 if v.is_empty() || v.chars().count() > 64 {
@@ -305,9 +298,20 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
         mode: mode.ok_or_else(|| ExitError::usage(format!("--mode is required\n{USAGE}")))?,
         resume,
         monitor,
-        exclude_pids,
+        exclusions: Exclusions::new(exclude_pids, show_pids),
         test,
     })
+}
+
+/// The process id after `--exclude-pid` or `--show-pid`.
+#[cfg(target_os = "macos")]
+fn pid_value(arg: &str, v: &str) -> Result<u32, ExitError> {
+    v.parse::<u32>()
+        .ok()
+        .filter(|&pid| pid != 0)
+        .ok_or_else(|| {
+            ExitError::usage(format!("{arg} takes a process id of 1 or more, got {v:?}"))
+        })
 }
 
 fn parse_finalize(args: &[String]) -> Result<Cmd, ExitError> {
@@ -372,7 +376,7 @@ mod tests {
                 mode: Mode::Video,
                 resume: true,
                 monitor: Some(r"\\.\DISPLAY2".into()),
-                exclude_pids: Vec::new(),
+                exclusions: Exclusions::default(),
                 test: None,
             })
         );
@@ -395,6 +399,10 @@ mod tests {
                 "77",
                 "--exclude-pid",
                 "4821",
+                "--show-pid",
+                "90",
+                "--show-pid",
+                "77",
             ]),
             false,
         )
@@ -402,15 +410,16 @@ mod tests {
         let Cmd::Record(opts) = cmd else {
             panic!("not a record command")
         };
-        assert_eq!(opts.exclude_pids, vec![4821, 77]);
-        // A line without the switch excludes nothing but this process, which the screen process
-        // adds itself.
+        // A pid both hidden and shown stays hidden.
+        assert_eq!(opts.exclusions, Exclusions::new([77, 4821], [90]));
+        // A line without the switches excludes nothing but this process, which the screen
+        // process adds itself.
         let Cmd::Record(opts) =
             parse(&args(&["record", "--meeting", "m", "--mode", "off"]), false).unwrap()
         else {
             panic!("not a record command")
         };
-        assert!(opts.exclude_pids.is_empty());
+        assert_eq!(opts.exclusions, Exclusions::default());
     }
 
     /// The synthetic screen's `format` and the bad `--exclude-pid` values, which only macOS reads.
@@ -430,6 +439,8 @@ mod tests {
             &["--exclude-pid", "-3"],
             &["--exclude-pid", "rukoo"],
             &["--exclude-pid"],
+            &["--show-pid", "0"],
+            &["--show-pid"],
         ] {
             let mut line = args(&["record", "--meeting", "m", "--mode", "frames"]);
             line.extend(args(bad));

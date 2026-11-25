@@ -20,6 +20,7 @@ use voice_screen::platform::{
 };
 use voice_screen::record::{record, CaptureStop, Ev};
 use voice_screen_files::clock::Now;
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::frames::Thumb;
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 use voice_screen_files::paths;
@@ -94,9 +95,11 @@ impl Displays for FakeDisplays {
         }]
     }
 
-    fn z_order(&self, exclude_pids: &[u32]) -> Vec<WindowInfo> {
-        self.windows
-            .store(exclude_pids.len() as u32, Ordering::SeqCst);
+    fn z_order(&self, exclusions: &Exclusions) -> Vec<WindowInfo> {
+        self.windows.store(
+            (exclusions.hidden.len() + exclusions.shown.len()) as u32,
+            Ordering::SeqCst,
+        );
         Vec::new()
     }
 
@@ -337,8 +340,8 @@ struct FakeSource {
     /// The stop never reaches the queue, as when it is full; `health` has it.
     loses_notice: bool,
     kept: Arc<Mutex<Option<CaptureStop>>>,
-    /// The pids `exclude` gave the source.
-    excluded: Arc<Mutex<Option<Vec<u32>>>>,
+    /// What `exclude` gave the source.
+    excluded: Arc<Mutex<Option<Exclusions>>>,
     worker: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
@@ -423,8 +426,8 @@ impl Source for FakeSource {
         self.kept.lock().unwrap().take()
     }
 
-    fn exclude(&mut self, pids: &[u32]) {
-        *self.excluded.lock().unwrap() = Some(pids.to_vec());
+    fn exclude(&mut self, exclusions: &Exclusions) {
+        *self.excluded.lock().unwrap() = Some(exclusions.clone());
     }
 }
 
@@ -461,7 +464,7 @@ struct FakePlatform {
     /// How many times a capture was started.
     starts: Arc<AtomicU32>,
     /// What the source's `exclude` was last given.
-    excluded: Arc<Mutex<Option<Vec<u32>>>>,
+    excluded: Arc<Mutex<Option<Exclusions>>>,
 }
 
 impl FakePlatform {
@@ -712,7 +715,7 @@ impl Meeting {
             mode: Mode::Video,
             resume: false,
             monitor: None,
-            exclude_pids: Vec::new(),
+            exclusions: Exclusions::default(),
             test: None,
         }
     }
@@ -1245,18 +1248,19 @@ fn the_exclusions_reach_the_display_choice() {
     let platform = FakePlatform::new(true);
     let seen = platform.windows();
     let mut opts = meeting.opts();
-    opts.exclude_pids = vec![4821, 77];
+    opts.exclusions = Exclusions::new([4821, 77], [90]);
     let handle = std::thread::spawn(move || record(platform, opts));
     meeting.wait_for("capture", |lines| {
         kinds(lines).iter().any(|k| k == "capture")
     });
     meeting.line(r#"{"kind":"stop","t":4000,"wall":1790000001000,"reason":"user"}"#);
     handle.join().unwrap().expect("record failed");
-    assert_eq!(seen.load(Ordering::SeqCst), 2);
+    assert_eq!(seen.load(Ordering::SeqCst), 3);
 }
 
 /// A Rukoo that connects to Voice mid-meeting: Voice sends its pid over the control port, and
-/// the capture leaves its windows out from then on. A bad list is refused by the port.
+/// the capture leaves its windows out from then on. When its user turns hiding off, Voice moves
+/// it to `shown` and the capture keeps it in. A bad list is refused by the port.
 #[test]
 fn exclusions_arrive_over_the_control_port() {
     let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -1275,10 +1279,19 @@ fn exclusions_arrive_over_the_control_port() {
     };
     let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [4821, 77] }));
     assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(*excluded.lock().unwrap(), Some(vec![77, 4821]));
+    let hidden = Exclusions::new([77, 4821], []);
+    assert_eq!(*excluded.lock().unwrap(), Some(hidden.clone()));
     let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [0] }));
     assert_eq!(reply["error"], "bad_request", "{reply}");
-    assert_eq!(*excluded.lock().unwrap(), Some(vec![77, 4821]));
+    assert_eq!(*excluded.lock().unwrap(), Some(hidden));
+    let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [77], "shown": [4821] }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(
+        *excluded.lock().unwrap(),
+        Some(Exclusions::new([77], [4821]))
+    );
+    let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [], "shown": ["4821"] }));
+    assert_eq!(reply["error"], "bad_request", "{reply}");
     meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
     handle.join().unwrap().expect("record failed");
 }

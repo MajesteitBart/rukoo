@@ -11,6 +11,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 use voice_screen_files::clock::Now;
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::frames::Thumb;
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 
@@ -83,9 +84,10 @@ pub trait Source: Send {
     fn health(&mut self) -> Option<crate::record::CaptureStop> {
         None
     }
-    /// The processes whose windows stay out of the recording from now on, as when a Rukoo
-    /// connects to Voice mid-meeting. A platform that can't filter by process ignores it.
-    fn exclude(&mut self, _pids: &[u32]) {}
+    /// Whose windows stay out of the recording from now on, as when a Rukoo connects to Voice
+    /// mid-meeting or its user turns hiding off. A platform that can't filter by process
+    /// ignores it.
+    fn exclude(&mut self, _exclusions: &Exclusions) {}
 }
 
 /// What a source needs besides the device it captures on.
@@ -93,9 +95,9 @@ pub trait Source: Send {
 pub struct SourceOptions {
     /// The test's synthetic screen instead of the real one.
     pub test: Option<TestSpec>,
-    /// The processes whose windows stay out of the recording; a platform that can't filter by
-    /// process ignores it.
-    pub exclude_pids: Vec<u32>,
+    /// Whose windows stay out of the recording; a platform that can't filter by process ignores
+    /// it.
+    pub exclusions: Exclusions,
 }
 
 /// What ended a video file early.
@@ -236,10 +238,10 @@ pub trait Clocks: Send + Sync {
 pub trait Displays: Send + Sync {
     /// Every monitor, synthetic ones when a test spec asks for them.
     fn list(&self, test: Option<&TestSpec>) -> Vec<MonitorInfo>;
-    /// Top-level windows from the foreground window down the Z-order. A window of a process in
-    /// `exclude_pids` counts as excluded from the recording, like one that hides itself from
-    /// capture, so a meeting started from that app picks the display behind it.
-    fn z_order(&self, exclude_pids: &[u32]) -> Vec<WindowInfo>;
+    /// Top-level windows from the foreground window down the Z-order. A window that
+    /// `exclusions` leaves out of the recording counts as excluded, like one that hides itself
+    /// from capture, so a meeting started from that app picks the display behind it.
+    fn z_order(&self, exclusions: &Exclusions) -> Vec<WindowInfo>;
     /// The cursor's monitor.
     fn cursor_monitor(&self) -> Option<String>;
     /// Whether this computer can capture the screen at all: the platform has a capture.

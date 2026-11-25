@@ -3,13 +3,14 @@
 //! `rukoo-voice-screen` writes `screen/` inside a meeting folder; the app, the pipeline and bucket
 //! sync read it. Everything here is platform-neutral: paths, the journal and its readers, the
 //! mapping from the recorder's clock to meeting time, when a frame is saved, which frames go to
-//! the video encoder, which part to drop
-//! when the disk fills, the monitor choice, the fragmented MP4 box walker, the control port, and
-//! the answers to `frame.get` and `clip.get`. macOS adds the fragmented MP4 writer (`fmp4`).
+//! the video encoder, which part to drop when the disk fills, the monitor choice, whose windows
+//! a recording on macOS leaves out, the fragmented MP4 box walker, the control port, and the
+//! answers to `frame.get` and `clip.get`. macOS adds the fragmented MP4 writer (`fmp4`).
 
 pub mod caps;
 pub mod clock;
 pub mod control;
+pub mod exclude;
 #[cfg(target_os = "macos")]
 pub mod fmp4;
 mod follow;

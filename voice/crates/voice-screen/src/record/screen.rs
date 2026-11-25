@@ -17,6 +17,7 @@ use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
 #[cfg(target_os = "macos")]
 use voice_screen_files::control;
 use voice_screen_files::control::Request;
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::frames::{own_thumb, Decision, Saver, Thumb};
 use voice_screen_files::gate::{Gate, VideoGate};
 use voice_screen_files::journal::{JournalWriter, Line};
@@ -155,8 +156,9 @@ pub(crate) struct Screen<P: Platform> {
     pub(crate) monitor: MonitorInfo,
     /// `--monitor`: the only monitor this process may record (spec 2.7).
     pub(crate) pinned: Option<String>,
-    /// `--exclude-pid`: the processes whose windows stay out of the recording.
-    pub(crate) exclude_pids: Vec<u32>,
+    /// `--exclude-pid` and `--show-pid`, or the last `exclude`: whose windows stay out of the
+    /// recording.
+    pub(crate) exclusions: Exclusions,
     pub(crate) video: Option<VideoThread<P::Video>>,
     /// Which frames of the open video file go to the encoder.
     pub(crate) gate: VideoGate,
@@ -329,7 +331,7 @@ impl<P: Platform> Screen<P> {
         if self.source.is_none() {
             let options = SourceOptions {
                 test: self.test.clone(),
-                exclude_pids: self.exclude_pids.clone(),
+                exclusions: self.exclusions.clone(),
             };
             self.source = Some(self.platform.source(device, &options, self.events.clone()));
         }
@@ -650,7 +652,7 @@ impl<P: Platform> Screen<P> {
         let next = match &self.test {
             Some(_) => list.first().map(|m| m.id.clone()),
             None => monitors::choose(
-                &self.platform.displays().z_order(&self.exclude_pids),
+                &self.platform.displays().z_order(&self.exclusions),
                 self.platform.displays().cursor_monitor().as_deref(),
                 &list,
             ),
@@ -1607,18 +1609,22 @@ impl<P: Platform> Screen<P> {
                 self.request_stop(t, "meeting", Some(request.reply));
                 return;
             }
-            // Voice's connected Rukoo clients changed: their windows stay out from now on. The
-            // port checked the list. macOS only, as the port is.
+            // Voice's connected Rukoo clients changed, or one of them turned hiding on or off:
+            // what stays out follows from now on. The port checked the lists. macOS only, as the
+            // port is.
             #[cfg(target_os = "macos")]
-            Some("exclude") => match control::excluded_pids(&request.body) {
-                Some(pids) => {
-                    if pids != self.exclude_pids {
-                        log(format_args!("leaving out the windows of pids {pids:?}"));
+            Some("exclude") => match control::exclusions(&request.body) {
+                Some(exclusions) => {
+                    if exclusions != self.exclusions {
+                        log(format_args!(
+                            "leaving out the windows of pids {:?}, keeping Rukoo pids {:?}",
+                            exclusions.hidden, exclusions.shown
+                        ));
                     }
                     if let Some(source) = self.source.as_mut() {
-                        source.exclude(&pids);
+                        source.exclude(&exclusions);
                     }
-                    self.exclude_pids = pids;
+                    self.exclusions = exclusions;
                     json!({ "ok": true })
                 }
                 None => error("bad_request"),

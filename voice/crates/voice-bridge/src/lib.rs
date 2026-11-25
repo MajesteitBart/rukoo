@@ -26,7 +26,7 @@ use serde_json::Value;
 
 pub use discovery::Discovery;
 pub use log::{EventLog, LogError, Stored, DB_FILE};
-pub use server::{BridgeServer, Client, Clients, Handle, Options, Refused};
+pub use server::{BridgeServer, Client, Clients, Handle, Options, Refused, RukooWindows};
 pub use voice_protocol::{
     split_reasons, ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, SplitResult, StartArgs,
     Status, Track,

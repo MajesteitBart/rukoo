@@ -81,8 +81,11 @@ pub struct Client {
     pub client: String,
     pub client_version: Option<String>,
     /// Rukoo's process id from its hello, when it sent one: the process that owns its windows,
-    /// which Voice leaves out of its screen recording.
+    /// which Voice on macOS leaves out of its screen recording or keeps in it.
     pub pid: Option<u64>,
+    /// `hideWindows` from its hello, `true` when it left it out, as `windows.hide` last changed
+    /// it.
+    pub hide_windows: bool,
     /// The protocol version the connection speaks.
     pub protocol: u32,
     /// `after` from its hello: the last event it had seen.
@@ -96,6 +99,42 @@ pub struct Client {
     pub welcomed: bool,
     /// When it connected, in ms since the epoch.
     pub connected_at: u64,
+}
+
+/// The Rukoo processes whose windows a screen recording on macOS leaves out, and the ones it
+/// keeps in, from the connected Rukoo clients that sent a pid.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RukooWindows {
+    /// Sorted, without repeats.
+    pub hidden: Vec<u32>,
+    /// Sorted, without repeats, and none of them in `hidden`.
+    pub shown: Vec<u32>,
+}
+
+impl RukooWindows {
+    /// From each client's pid and whether it hides its windows. A process that one connection
+    /// hides and another shows, such as a Rukoo whose old connection hasn't closed yet, is
+    /// hidden.
+    pub fn of(clients: impl IntoIterator<Item = (u32, bool)>) -> RukooWindows {
+        let mut windows = RukooWindows::default();
+        for (pid, hide) in clients {
+            if pid == 0 {
+                continue;
+            }
+            if hide {
+                windows.hidden.push(pid);
+            } else {
+                windows.shown.push(pid);
+            }
+        }
+        windows.hidden.sort_unstable();
+        windows.hidden.dedup();
+        let hidden = &windows.hidden;
+        windows.shown.retain(|pid| !hidden.contains(pid));
+        windows.shown.sort_unstable();
+        windows.shown.dedup();
+        windows
+    }
 }
 
 /// A `hello` the server turned away for its token or its protocol version.
@@ -135,6 +174,8 @@ struct Entry {
     client: Client,
     sent: AtomicU64,
     welcomed: AtomicBool,
+    /// `hideWindows`, which `windows.hide` changes while the connection lasts.
+    hide_windows: AtomicBool,
 }
 
 /// Removes a connection from the registry when its task ends, also when it is aborted.
@@ -300,25 +341,19 @@ impl Handle {
             .collect()
     }
 
-    /// The process ids of the `rukoo` clients that completed their `hello` and sent a pid,
-    /// oldest connection first, without repeats: the processes whose windows a screen recording
-    /// leaves out. macOS only, where the screen process can leave windows out by process.
-    #[cfg(target_os = "macos")]
-    pub fn rukoo_pids(&self) -> Vec<u32> {
+    /// The process ids of the `rukoo` clients that completed their `hello` and sent a pid, split
+    /// by `hideWindows`: the processes whose windows a screen recording leaves out, and the ones
+    /// it keeps in. Only the macOS screen process uses them, since only ScreenCaptureKit can
+    /// leave windows out by process.
+    pub fn rukoo_windows(&self) -> RukooWindows {
         let registry = lock(&self.registry);
-        let mut pids: Vec<u32> = Vec::new();
-        for entry in registry.connected.values() {
+        RukooWindows::of(registry.connected.values().filter_map(|entry| {
             if entry.client.client != "rukoo" || !entry.welcomed.load(Ordering::SeqCst) {
-                continue;
+                return None;
             }
-            let pid = entry.client.pid.and_then(|pid| u32::try_from(pid).ok());
-            if let Some(pid) = pid.filter(|&pid| pid != 0) {
-                if !pids.contains(&pid) {
-                    pids.push(pid);
-                }
-            }
-        }
-        pids
+            let pid = entry.client.pid.and_then(|pid| u32::try_from(pid).ok())?;
+            Some((pid, entry.hide_windows.load(Ordering::SeqCst)))
+        }))
     }
 
     /// The clients connected now, and the newest hello refused for its token or version.
@@ -331,6 +366,7 @@ impl Handle {
                 .map(|entry| Client {
                     sent: entry.sent.load(Ordering::SeqCst),
                     welcomed: entry.welcomed.load(Ordering::SeqCst),
+                    hide_windows: entry.hide_windows.load(Ordering::SeqCst),
                     ..entry.client.clone()
                 })
                 .collect(),
@@ -392,11 +428,13 @@ struct Shared {
 impl Shared {
     /// Keeps a client that was admitted, until its connection ends.
     fn register(&self, hello: &Hello) -> (Arc<Entry>, Registered) {
+        let hide_windows = hello.hide_windows.unwrap_or(true);
         let entry = Arc::new(Entry {
             client: Client {
                 client: hello.client.clone(),
                 client_version: hello.client_version.clone(),
                 pid: hello.pid,
+                hide_windows,
                 protocol: hello.protocol,
                 after: hello.after,
                 sent: hello.after,
@@ -405,6 +443,7 @@ impl Shared {
             },
             sent: AtomicU64::new(hello.after),
             welcomed: AtomicBool::new(false),
+            hide_windows: AtomicBool::new(hide_windows),
         });
         let mut registry = lock(&self.registry);
         registry.last_admitted_at = Some(entry.client.connected_at);
@@ -779,7 +818,17 @@ impl Session {
                         if let Some(job) = read_command(&text, received) {
                             // screen.set waits for all clients, including this one. An ack
                             // behind it in the ordinary queue would deadlock that protection.
+                            // windows.hide only changes this connection, and a Rukoo that hides
+                            // its windows again shouldn't wait for a clip behind it.
                             match job {
+                                Job::Run(Command { id, body: CommandBody::WindowsHide { hide } }, _) => {
+                                    self.client.hide_windows.store(hide, Ordering::SeqCst);
+                                    let answered = Answered {
+                                        json: within_limit(Reply::ok(id, Object::new())),
+                                        head: self.shared.log.head(),
+                                    };
+                                    behind |= self.answer(answered).await?;
+                                }
                                 Job::Run(Command { id, body: CommandBody::MeetingProtected { meeting, request } }, _) => {
                                     let answer = self.shared.control.protected_for(meeting.as_str(), request.as_deref(), self.connection);
                                     let reply = match answer {
@@ -1075,6 +1124,8 @@ fn dispatch(
             monitor.as_deref(),
             received + std::time::Duration::from_secs(15),
         )?,
+        // The connection answers it before it reaches the queue.
+        CommandBody::WindowsHide { .. } => json!({}),
         CommandBody::Unknown { command, .. } => {
             return Err(ControlError::new(
                 ErrorCode::UnknownCommand,
