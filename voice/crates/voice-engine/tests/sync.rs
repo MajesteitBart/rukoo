@@ -112,6 +112,10 @@ fn main() {
             a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit,
         ),
         (
+            "fetching_ahead_leaves_the_room_rukoo_s_own_fetch_took",
+            fetching_ahead_leaves_the_room_rukoo_s_own_fetch_took,
+        ),
+        (
             "a_passage_from_the_bucket_starts_after_its_first_segment",
             a_passage_from_the_bucket_starts_after_its_first_segment,
         ),
@@ -1643,6 +1647,79 @@ fn a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit() {
     control.keep_media(&id, Some(true)).unwrap();
     control.delete(&id).unwrap();
     assert_eq!(code_of(control.keep_media(&id, None)), ErrorCode::NotFound);
+    engine_b.shutdown();
+    fake.stop();
+}
+
+/// Frames fetched ahead wait while Rukoo's own fetch runs, and make room only once it is done: a
+/// frame an agent's link fetched meanwhile, and reads, fills the cache, so nothing comes ahead
+/// and the cache stays within its limit.
+fn fetching_ahead_leaves_the_room_rukoo_s_own_fetch_took() {
+    let fake = fake_s3();
+    let a = harness("ahead-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    write_shots(&meeting_dir(&a.data(), &id), 3000);
+    wait_long("the frames in the bucket", Duration::from_secs(60), || {
+        bucket_kinds(&fake, &code)
+            .iter()
+            .filter(|k| **k == "jpeg")
+            .count()
+            == SHOTS.len()
+    });
+    wait_uploaded(&engine_a);
+    engine_a.shutdown();
+
+    // B: 2 GB is 12,000 bytes here, room for one frame and a half.
+    let mut b = harness("ahead-b", json!({"meetings_retention": "keep"}));
+    b.sync_timing.cache_gb = 6_000;
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    engine_b
+        .settings_set("storage.sync.cache", json!("gb2"))
+        .unwrap();
+    let limit = 12_000;
+    let dir = meeting_dir(&b.data(), &id);
+    let control = engine_b.meeting_control().unwrap();
+
+    // An agent's link to the last frame waits for the bucket; Rukoo asks for the frames ahead
+    // meanwhile, starting with the first.
+    fake.faults().stall = Some(Duration::from_secs(2));
+    let link = MediaOpenArgs {
+        kind: MediaKind::Frame,
+        ..audio(&id, 2500, None)
+    };
+    assert_eq!(control.media_open(&link).unwrap()["ready"], false);
+    assert_eq!(control.prefetch_frames(&id).unwrap(), json!({}));
+    // The link's fetch is on its way; what comes after it is quick.
+    std::thread::sleep(Duration::from_millis(500));
+    fake.faults().stall = None;
+    open_ready(&*control, &link);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !dir.join(shot(500)).exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let cached: u64 = SHOTS
+        .iter()
+        .filter_map(|at| std::fs::metadata(dir.join(shot(*at))).ok())
+        .map(|m| m.len())
+        .sum();
+    assert!(
+        cached <= limit,
+        "the cache holds {cached} bytes, over its limit of {limit}"
+    );
+    assert!(
+        dir.join(shot(2500)).is_file(),
+        "the frame the link reads stays"
+    );
+    assert!(!dir.join(shot(500)).exists(), "no room to fetch ahead");
     engine_b.shutdown();
     fake.stop();
 }

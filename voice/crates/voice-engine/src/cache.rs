@@ -66,6 +66,9 @@ pub struct MediaCache {
     media: Weak<MediaService>,
     /// Bytes; 0 until the engine sets it from Settings.
     limit: AtomicU64,
+    /// Bytes a frame fetched ahead made room for and is fetching now: every trim leaves room for
+    /// them, so what Rukoo fetches meanwhile can't take that room.
+    reserved: AtomicU64,
     inner: Mutex<Inner>,
     idle: Condvar,
     stopping: AtomicBool,
@@ -83,6 +86,7 @@ impl MediaCache {
             controller,
             media,
             limit: AtomicU64::new(0),
+            reserved: AtomicU64::new(0),
             inner: Mutex::new(Inner::default()),
             idle: Condvar::new(),
             stopping: AtomicBool::new(false),
@@ -100,13 +104,15 @@ impl MediaCache {
     }
 
     /// Removes fetched media over the limit, least recently used first (voice-sync
-    /// `trim_cache`), except what a media job reads now. Nothing before the engine set a limit.
+    /// `trim_cache`), except what a media job reads now, and keeps room for a frame being
+    /// fetched ahead. Nothing before the engine set a limit.
     pub fn trim(&self) -> u64 {
         let limit = self.limit.load(Ordering::SeqCst);
         match &self.sync {
-            Some(sync) if limit > 0 => {
-                sync.trim_cache(limit, &|meeting, path| self.in_use(meeting, path))
-            }
+            Some(sync) if limit > 0 => sync.trim_cache(
+                limit.saturating_sub(self.reserved.load(Ordering::SeqCst)),
+                &|meeting, path| self.in_use(meeting, path),
+            ),
             _ => 0,
         }
     }
@@ -359,6 +365,13 @@ impl MediaCache {
             let Some(dir) = self.controller.library().dir(meeting) else {
                 return false;
             };
+            // What Rukoo asks for now goes first, and may bring this file or fill the cache.
+            while self.media.upgrade().is_some_and(|media| media.busy()) {
+                if stop() {
+                    return false;
+                }
+                thread::sleep(YIELD);
+            }
             if dir.path().join(&path).is_file() {
                 continue;
             }
@@ -369,31 +382,52 @@ impl MediaCache {
                 return true;
             }
             // Nobody asked for these frames yet: they come only while they fit within the limit
-            // (a kept meeting's media doesn't count against it).
+            // (a kept meeting's media doesn't count against it). The room stays reserved until
+            // the frame is here, so what Rukoo fetches meanwhile trims to leave it.
             let limit = self.limit.load(Ordering::SeqCst);
-            if matches!(task, Task::Frames(_))
-                && limit > 0
-                && !sync.cache_room(limit, bytes, began, &|m, p| self.in_use(m, p))
-            {
+            let ahead = matches!(task, Task::Frames(_)) && limit > 0;
+            let reserved = ahead.then(|| Reserved::new(&self.reserved, bytes));
+            if ahead && !sync.cache_room(limit, bytes, began, &|m, p| self.in_use(m, p)) {
                 log::info!("media: fetching {meeting}'s frames ahead stopped at the cache limit");
                 return false;
             }
-            // What Rukoo asks for now goes first.
-            while self.media.upgrade().is_some_and(|media| media.busy()) {
-                if stop() {
-                    return false;
-                }
-                thread::sleep(YIELD);
-            }
-            if let Err(e) = sync.ensure_local(meeting, std::slice::from_ref(&path), cancel) {
+            let fetched = sync.ensure_local(meeting, std::slice::from_ref(&path), cancel);
+            drop(reserved);
+            if let Err(e) = fetched {
                 if stop() {
                     return false;
                 }
                 log::info!("media: fetching {meeting} in the background stopped: {e}");
                 return true;
             }
+            // Something read now may have kept the cache from making all the room: once the frame
+            // is here, the limit removes what was used before the task began, never what it
+            // fetched, and fetching ahead stops while the cache is over.
+            if ahead && !sync.cache_room(limit, 0, began, &|m, p| self.in_use(m, p)) {
+                log::info!("media: fetching {meeting}'s frames ahead stopped at the cache limit");
+                return false;
+            }
         }
         false
+    }
+}
+
+/// Bytes reserved in [`MediaCache::reserved`] while it lives.
+struct Reserved<'a> {
+    total: &'a AtomicU64,
+    bytes: u64,
+}
+
+impl<'a> Reserved<'a> {
+    fn new(total: &'a AtomicU64, bytes: u64) -> Reserved<'a> {
+        total.fetch_add(bytes, Ordering::SeqCst);
+        Reserved { total, bytes }
+    }
+}
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        self.total.fetch_sub(self.bytes, Ordering::SeqCst);
     }
 }
 
