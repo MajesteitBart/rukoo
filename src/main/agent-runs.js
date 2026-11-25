@@ -1144,6 +1144,8 @@ class AgentRuns extends EventEmitter {
       case 'answered':
         s.answeredAt = now;
         s.failure = null;
+        // An answer went out: what the check at the start found, such as a backend that didn't answer yet, is over.
+        s.problems = [];
         break;
       case 'failed':
         s.failure = coded();

@@ -715,6 +715,21 @@ test('what a runner reports reaches the window as codes and a status number, nev
   assert.ok(!a.lines.join('\n').includes('SECRET'), 'nor in the log');
 });
 
+test('a backend that could not answer at the start and answers later is no problem any more', async (t) => {
+  const forks = fakeForks();
+  const a = makeRuns({ fork: forks, backendFor: fakeBackends() });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  await a.runs.start(W, A, { use: 'claude', owner: 1 });
+  const c = forks.all[0];
+  c.say({ type: 'connected' });
+  c.say({ type: 'problems', problems: [{ code: 'unreachable' }] });
+  assert.deepEqual(viewOf(a.runs, W, A).problem, { code: 'unreachable' });
+  // The runner keeps trying; once the backend is up, a mention gets its answer.
+  c.say({ type: 'answered' });
+  assert.equal(viewOf(a.runs, W, A).problem, null);
+});
+
 // ---- Review round 3 ----
 
 const C = `u_${'c'.repeat(22)}`;
