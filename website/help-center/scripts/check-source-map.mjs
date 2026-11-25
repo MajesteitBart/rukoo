@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import Ajv2020 from 'ajv/dist/2020.js';
+const file=process.argv[2] || 'editorial/source-map.example.json';
+const schema=JSON.parse(fs.readFileSync('editorial/source-map.schema.json'));
+const data=JSON.parse(fs.readFileSync(file));
+const validate=new Ajv2020({strict:false}).compile(schema);
+if(!validate(data)) throw new Error(JSON.stringify(validate.errors));
+const ids=new Set(Object.keys(JSON.parse(fs.readFileSync('page-registry.json'))));
+for(const change of data.changes)for(const id of change.pageIds)if(!ids.has(id))throw new Error('Unknown page ID in source map: '+id);
+console.log('PASS: source-map schema, released-evidence gate and page ID references.');

@@ -1,0 +1,25 @@
+{
+  "name": "rukoo-help-center",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev --host 127.0.0.1",
+    "build": "npm run validate && ASTRO_TELEMETRY_DISABLED=1 astro build && npm run check:output",
+    "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview --host 127.0.0.1",
+    "validate": "node scripts/validate.mjs && node scripts/check-source-map.mjs",
+    "check:output": "node scripts/check-output.mjs",
+    "test": "node scripts/test-validators.mjs && node scripts/test-source-map.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.43.1",
+    "astro": "7.4.13"
+  },
+  "devDependencies": {
+    "ajv": "8.17.1",
+    "yaml": "2.9.1"
+  }
+}
