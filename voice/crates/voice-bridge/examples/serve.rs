@@ -889,6 +889,7 @@ impl MeetingControl for ScriptedVoice {
                 .and_then(MeetingId::parse),
             dictating: false,
             screen_default: Some(ScreenMode::Off),
+            rukoo_windows: None,
         }
     }
 }

@@ -426,6 +426,35 @@ pub struct Status {
         skip_serializing_if = "Option::is_none"
     )]
     pub screen_default: Option<ScreenMode>,
+    /// What the screen recording does with Rukoo's windows, from a Mac Voice that knows
+    /// `windows.hide`. Voice elsewhere, and an older one, leaves it out.
+    #[serde(
+        rename = "rukooWindows",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rukoo_windows: Option<RukooWindowsReport>,
+}
+
+/// `rukooWindows` in a status: the Rukoo processes whose windows the screen recording keeps in
+/// now, as its screen process confirmed, and whether it can keep one in at all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RukooWindowsReport {
+    /// Sorted pids; empty while nothing records the screen or every Rukoo is left out.
+    pub shown: Vec<u32>,
+    /// False while the screen process that records can't keep a Rukoo in: one an older Voice
+    /// started, reattached after Voice started again, which leaves Rukoo out until it ends.
+    pub can_show: bool,
+}
+
+impl Default for RukooWindowsReport {
+    fn default() -> RukooWindowsReport {
+        RukooWindowsReport {
+            shown: Vec::new(),
+            can_show: true,
+        }
+    }
 }
 
 /// The message Voice sends before it closes a connection it refuses.

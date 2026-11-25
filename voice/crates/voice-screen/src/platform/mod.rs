@@ -85,9 +85,15 @@ pub trait Source: Send {
         None
     }
     /// Whose windows stay out of the recording from now on, as when a Rukoo connects to Voice
-    /// mid-meeting or its user turns hiding off. A platform that can't filter by process
-    /// ignores it.
-    fn exclude(&mut self, _exclusions: &Exclusions) {}
+    /// mid-meeting or its user turns hiding off, as the change of `revision`. A platform that
+    /// can't filter by process ignores it.
+    fn exclude(&mut self, _exclusions: &Exclusions, _revision: u64) {}
+    /// The newest revision whose filter the capture has in place, and the boot time it confirmed
+    /// that, so frames captured before it can be told apart. `None` for a source that applies a
+    /// change at once or has no filter, such as the synthetic screen.
+    fn applied(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 /// What a source needs besides the device it captures on.
@@ -95,9 +101,10 @@ pub trait Source: Send {
 pub struct SourceOptions {
     /// The test's synthetic screen instead of the real one.
     pub test: Option<TestSpec>,
-    /// Whose windows stay out of the recording; a platform that can't filter by process ignores
-    /// it.
+    /// Whose windows stay out of the recording, as the change of `revision`; a platform that
+    /// can't filter by process ignores both.
     pub exclusions: Exclusions,
+    pub revision: u64,
 }
 
 /// What ended a video file early.

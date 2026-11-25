@@ -23,9 +23,11 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use voice_bridge::{ControlError, EventLog};
 use voice_meetings::Library;
-use voice_protocol::{events, ScreenMode, StartedBy};
+use voice_protocol::{events, RukooWindowsReport, ScreenMode, StartedBy};
 use voice_screen_files::caps::Capabilities;
 use voice_screen_files::exclude::Exclusions;
+#[cfg(target_os = "macos")]
+use voice_screen_files::exclude::SHOWN_RENEW;
 use voice_screen_files::journal::{self, JournalReader, Line};
 use voice_screen_files::monitors::{self, MonitorInfo};
 use voice_screen_files::policy::{Part, Reason};
@@ -159,6 +161,9 @@ pub enum ScreenChange {
     Monitors {
         count: usize,
     },
+    /// What the screen recording does with Rukoo's windows changed, as `rukoo_windows` reports
+    /// it. macOS only.
+    Windows,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,6 +207,10 @@ struct ScreenLive {
     /// it again. macOS only.
     #[cfg(target_os = "macos")]
     excluded: Option<(u32, Exclusions)>,
+    /// When that was last said, for renewing the permission to keep a Rukoo in, which lapses
+    /// in the screen process without it. macOS only.
+    #[cfg(target_os = "macos")]
+    renewed: Option<Instant>,
 }
 
 impl ScreenLive {
@@ -226,6 +235,8 @@ impl ScreenLive {
             monitors: None,
             #[cfg(target_os = "macos")]
             excluded: None,
+            #[cfg(target_os = "macos")]
+            renewed: None,
         }
     }
 
@@ -397,6 +408,9 @@ pub struct ScreenSupervisor {
     on_change: Box<dyn Fn(ScreenChange) + Send + Sync>,
     stopped: AtomicBool,
     watchdog: Mutex<Option<JoinHandle<()>>>,
+    /// The last `rukoo_windows` reported through `ScreenChange::Windows`. macOS only.
+    #[cfg(target_os = "macos")]
+    windows: Mutex<Option<RukooWindowsReport>>,
 }
 
 struct ModeProtection {
@@ -436,6 +450,8 @@ impl ScreenSupervisor {
             on_change: Box::new(on_change),
             stopped: AtomicBool::new(false),
             watchdog: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            windows: Mutex::new(None),
         });
         let weak = Arc::downgrade(&supervisor);
         let thread = thread::Builder::new()
@@ -504,6 +520,58 @@ impl ScreenSupervisor {
             .filter(|l| l.id == id && l.file.as_ref() == Some(file))
         {
             live.excluded = Some((file.pid, wanted));
+            live.renewed = Some(Instant::now());
+        }
+    }
+
+    /// What the screen recording does with Rukoo's windows, for Rukoo's `status`: the Rukoo pids
+    /// its screen process confirmed it keeps in, and whether it can keep one in. A screen process
+    /// from before `shown` existed, reattached after Voice started again, has no `shown` in its
+    /// status and leaves Rukoo out until it ends. `None` off macOS, where Voice can't filter by
+    /// process.
+    pub fn rukoo_windows(&self) -> Option<RukooWindowsReport> {
+        #[cfg(target_os = "macos")]
+        {
+            let slot = self.lock();
+            let status = slot
+                .as_ref()
+                .filter(|live| live.phase == Phase::Running && live.file.is_some())
+                .and_then(|live| live.status.as_ref());
+            Some(windows_report(status))
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
+    }
+
+    /// Reports a change of `rukoo_windows` once, as `ScreenChange::Windows`. macOS only.
+    #[cfg(target_os = "macos")]
+    fn report_windows(&self) {
+        let now = self.rukoo_windows();
+        let mut last = lock(&self.windows);
+        if *last == now {
+            return;
+        }
+        *last = now;
+        drop(last);
+        (self.on_change)(ScreenChange::Windows);
+    }
+
+    /// Voice is quitting: a screen process that keeps a Rukoo in leaves it out from now on,
+    /// instead of when Voice's permission lapses. The watchdog has stopped, so no renewal
+    /// follows. macOS only.
+    #[cfg(target_os = "macos")]
+    fn revoke_shown(&self) {
+        let target = {
+            let slot = self.lock();
+            slot.as_ref().and_then(|live| {
+                let file = live.file.clone()?;
+                let (_, said) = live.excluded.as_ref()?;
+                (!said.shown.is_empty()).then(|| (live.id.clone(), file, said.hiding_shown()))
+            })
+        };
+        if let Some((id, file, hidden)) = target {
+            log::info!("screen: {id}: Voice quits; leaving every Rukoo out");
+            self.send_exclude(&id, &file, hidden);
         }
     }
 
@@ -1493,6 +1561,8 @@ impl ScreenSupervisor {
     }
 
     /// Stops watching. A screen process that records goes on; the next start reattaches to it.
+    /// On macOS it leaves every Rukoo out from now on: without Voice nothing renews the
+    /// permission to keep one in.
     pub fn shutdown(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.changed.notify_all();
@@ -1503,6 +1573,8 @@ impl ScreenSupervisor {
                 let _ = thread.join();
             }
         }
+        #[cfg(target_os = "macos")]
+        self.revoke_shown();
     }
 
     // The process ----------------------------------------------------------------------------
@@ -1601,9 +1673,17 @@ impl ScreenSupervisor {
 
     // The watchdog ---------------------------------------------------------------------------
 
-    /// One watchdog round. The status request runs without the slot's lock, so a screen process
-    /// that is slow to answer doesn't hold up `screen.get`, `screen.select` or the pill.
+    /// One watchdog round, and on macOS a report when what the recording does with Rukoo's
+    /// windows changed.
     fn check(&self) {
+        self.check_live();
+        #[cfg(target_os = "macos")]
+        self.report_windows();
+    }
+
+    /// The status request runs without the slot's lock, so a screen process that is slow to
+    /// answer doesn't hold up `screen.get`, `screen.select` or the pill.
+    fn check_live(&self) {
         // Read before the slot's lock: the bridge answers it under a lock of its own. macOS only.
         #[cfg(target_os = "macos")]
         let wanted = self.exclusions();
@@ -1651,10 +1731,14 @@ impl ScreenSupervisor {
                 });
             }
             live.status = Some(status);
+            // Changed, or a Rukoo is kept in and the screen process needs the permission renewed
+            // before it lapses.
             #[cfg(target_os = "macos")]
-            let exclude = file
-                .clone()
-                .filter(|file| live.excluded.as_ref() != Some(&(file.pid, wanted.clone())));
+            let exclude = file.clone().filter(|file| {
+                live.excluded.as_ref() != Some(&(file.pid, wanted.clone()))
+                    || (!wanted.shown.is_empty()
+                        && live.renewed.is_none_or(|at| at.elapsed() >= SHOWN_RENEW))
+            });
             drop(slot);
             #[cfg(target_os = "macos")]
             if let Some(file) = exclude {
@@ -1812,6 +1896,35 @@ fn record_args(
         args.push(pid.to_string().into());
     }
     args
+}
+
+/// The `rukooWindows` of a status from a screen process's status reply: `shown` there is what
+/// its capture confirmed. A reply without it comes from a screen process that can't keep Rukoo
+/// in; no reply, from no running screen process, keeps nothing in and could.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn windows_report(status: Option<&Value>) -> RukooWindowsReport {
+    let Some(status) = status else {
+        return RukooWindowsReport::default();
+    };
+    match status["shown"].as_array() {
+        Some(list) => {
+            let mut shown: Vec<u32> = list
+                .iter()
+                .filter_map(|pid| pid.as_u64().and_then(|pid| u32::try_from(pid).ok()))
+                .filter(|&pid| pid > 0)
+                .collect();
+            shown.sort_unstable();
+            shown.dedup();
+            RukooWindowsReport {
+                shown,
+                can_show: true,
+            }
+        }
+        None => RukooWindowsReport {
+            shown: Vec::new(),
+            can_show: false,
+        },
+    }
 }
 
 fn watch(supervisor: Weak<ScreenSupervisor>) {
@@ -1994,6 +2107,32 @@ mod tests {
                 "synthetic:640x480",
             ]
             .map(OsString::from)
+        );
+    }
+
+    /// Rukoo hears what the screen process confirmed it keeps in, and that a screen process
+    /// from before `shown` can't keep it in.
+    #[test]
+    fn the_windows_report_follows_the_screen_process_status() {
+        assert_eq!(windows_report(None), RukooWindowsReport::default());
+        assert_eq!(
+            windows_report(Some(&json!({ "ok": true, "shown": [4821, 77, 4821] }))),
+            RukooWindowsReport {
+                shown: vec![77, 4821],
+                can_show: true,
+            }
+        );
+        assert_eq!(
+            windows_report(Some(&json!({ "ok": true, "shown": [] }))),
+            RukooWindowsReport::default()
+        );
+        // An older screen process: its status says nothing about Rukoo.
+        assert_eq!(
+            windows_report(Some(&json!({ "ok": true, "state": "recording" }))),
+            RukooWindowsReport {
+                shown: Vec::new(),
+                can_show: false,
+            }
         );
     }
 

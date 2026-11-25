@@ -32,7 +32,7 @@ use voice_engine::meetings::split::SplitService;
 use voice_engine::PillPhase;
 use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
 #[cfg(target_os = "macos")]
-use voice_screen_files::exclude::Exclusions;
+use voice_screen_files::exclude::{Exclusions, SHOWN_LEASE};
 use voice_screen_files::journal::{self, Line};
 use voice_screen_files::{control, screenfile};
 
@@ -777,6 +777,12 @@ fn a_rukoo_that_connects_later_is_left_out() {
     wait_for("the screen process to keep Rukoo in", || {
         logged("leaving out the windows of pids [77], keeping Rukoo pids [4821]")
     });
+    // The watchdog renews the permission, so it doesn't lapse while Voice runs.
+    thread::sleep(SHOWN_LEASE + Duration::from_secs(1));
+    assert!(
+        !logged("didn't renew"),
+        "the permission to keep Rukoo in lapsed while Voice ran"
+    );
     *lock(&wanted) = Exclusions::default();
     wait_for("the screen process to let Rukoo go", || {
         logged("leaving out the windows of pids [], keeping Rukoo pids []")

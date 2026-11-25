@@ -619,6 +619,8 @@ impl Core {
                 self.meetings.publish_status();
                 self.settings_changed();
             }
+            // Rukoo hears in Voice's status which Rukoo the recording keeps in.
+            ScreenChange::Windows => self.meetings.publish_status(),
         }
     }
 

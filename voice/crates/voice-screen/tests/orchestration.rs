@@ -20,7 +20,7 @@ use voice_screen::platform::{
 };
 use voice_screen::record::{record, CaptureStop, Ev};
 use voice_screen_files::clock::Now;
-use voice_screen_files::exclude::Exclusions;
+use voice_screen_files::exclude::{Exclusions, SHOWN_LEASE};
 use voice_screen_files::frames::Thumb;
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 use voice_screen_files::paths;
@@ -342,6 +342,8 @@ struct FakeSource {
     kept: Arc<Mutex<Option<CaptureStop>>>,
     /// What `exclude` gave the source.
     excluded: Arc<Mutex<Option<Exclusions>>>,
+    /// What `applied` answers: `None` applies every change at once.
+    applied: Arc<Mutex<Option<(u64, u64)>>>,
     worker: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
@@ -426,8 +428,12 @@ impl Source for FakeSource {
         self.kept.lock().unwrap().take()
     }
 
-    fn exclude(&mut self, exclusions: &Exclusions) {
+    fn exclude(&mut self, exclusions: &Exclusions, _revision: u64) {
         *self.excluded.lock().unwrap() = Some(exclusions.clone());
+    }
+
+    fn applied(&self) -> Option<(u64, u64)> {
+        *self.applied.lock().unwrap()
     }
 }
 
@@ -465,6 +471,8 @@ struct FakePlatform {
     starts: Arc<AtomicU32>,
     /// What the source's `exclude` was last given.
     excluded: Arc<Mutex<Option<Exclusions>>>,
+    /// What the source says it has in place, for a filter the test applies by hand.
+    applied: Arc<Mutex<Option<(u64, u64)>>>,
 }
 
 impl FakePlatform {
@@ -489,6 +497,7 @@ impl FakePlatform {
             revoke_after: None,
             by_user: false,
             excluded: Arc::new(Mutex::new(None)),
+            applied: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -633,6 +642,7 @@ impl Platform for FakePlatform {
             loses_notice: self.loses_notice,
             kept: Arc::new(Mutex::new(None)),
             excluded: self.excluded.clone(),
+            applied: self.applied.clone(),
             worker: None,
         })
     }
@@ -1292,6 +1302,117 @@ fn exclusions_arrive_over_the_control_port() {
     );
     let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [], "shown": ["4821"] }));
     assert_eq!(reply["error"], "bad_request", "{reply}");
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
+}
+
+/// A change that takes Rukoo out of the recording holds frames and video until the capture has
+/// its filter in place: the open video file ends with reason `hide`, nothing is saved or
+/// encoded meanwhile, the status still says Rukoo is kept in, and once the filter is in place
+/// a new video file starts and the status says it is out.
+#[test]
+fn a_change_that_hides_waits_for_its_filter() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("hide-waits");
+    let platform = FakePlatform::new(true);
+    let (applied, clock) = (platform.applied.clone(), platform.clock.clone());
+    // A filtering capture: the command line's revision 1 is in place from the start.
+    *applied.lock().unwrap() = Some((1, 0));
+    let mut opts = meeting.opts();
+    opts.exclusions = Exclusions::new([], [4821]);
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("video", |lines| kinds(lines).iter().any(|k| k == "video"));
+    let file = voice_screen_files::screenfile::read(&meeting.dir).expect("screen.json");
+    let ask = |body: serde_json::Value| {
+        voice_screen_files::control::request(file.port, &file.token, body, Duration::from_secs(5))
+            .unwrap()
+    };
+    assert_eq!(
+        ask(serde_json::json!({ "cmd": "status" }))["shown"],
+        serde_json::json!([4821])
+    );
+
+    let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [4821], "shown": [] }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let lines = meeting.wait_for("the video to end", |lines| {
+        lines
+            .iter()
+            .any(|l| l["kind"] == "video_end" && l["reason"] == "hide")
+    });
+    let videos = kinds(&lines).iter().filter(|k| *k == "video").count();
+    let saved = ask(serde_json::json!({ "cmd": "status" }))["saved"].clone();
+    std::thread::sleep(Duration::from_millis(600));
+    let status = ask(serde_json::json!({ "cmd": "status" }));
+    assert_eq!(
+        status["saved"], saved,
+        "a frame was saved while the filter changed"
+    );
+    assert_eq!(
+        status["shown"],
+        serde_json::json!([4821]),
+        "not confirmed yet"
+    );
+    let lines = meeting.journal();
+    assert_eq!(
+        kinds(&lines).iter().filter(|k| *k == "video").count(),
+        videos
+    );
+
+    // The filter of revision 2 is in place from now on: recording goes on, without Rukoo.
+    *applied.lock().unwrap() = Some((2, clock.boot_100ns()));
+    meeting.wait_for("a new video file", |lines| {
+        kinds(lines).iter().filter(|k| *k == "video").count() > videos
+    });
+    assert_eq!(
+        ask(serde_json::json!({ "cmd": "status" }))["shown"],
+        serde_json::json!([])
+    );
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
+}
+
+/// Voice's permission to keep Rukoo in is a lease: without a renewal it lapses and Rukoo is
+/// hidden again, by its pid too, so a Voice that quits or crashes doesn't leave it shown.
+#[test]
+fn the_permission_to_show_rukoo_lapses_without_voice() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("show-lapses");
+    let platform = FakePlatform::new(true);
+    let excluded = platform.excluded.clone();
+    let mut opts = meeting.opts();
+    opts.exclusions = Exclusions::new([77], [4821]);
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("capture", |lines| {
+        kinds(lines).iter().any(|k| k == "capture")
+    });
+    let file = voice_screen_files::screenfile::read(&meeting.dir).expect("screen.json");
+    let ask = |body: serde_json::Value| {
+        voice_screen_files::control::request(file.port, &file.token, body, Duration::from_secs(5))
+            .unwrap()
+    };
+    // Renewed halfway: still shown after the first lease would have run out.
+    std::thread::sleep(SHOWN_LEASE / 2);
+    ask(serde_json::json!({ "cmd": "exclude", "pids": [77], "shown": [4821] }));
+    std::thread::sleep(SHOWN_LEASE * 3 / 4);
+    assert_eq!(
+        ask(serde_json::json!({ "cmd": "status" }))["shown"],
+        serde_json::json!([4821])
+    );
+    assert_eq!(*excluded.lock().unwrap(), None, "nothing changed yet");
+    // No more renewals.
+    let deadline = Instant::now() + SHOWN_LEASE + Duration::from_secs(2);
+    while excluded.lock().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the permission didn't lapse");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        *excluded.lock().unwrap(),
+        Some(Exclusions::new([77, 4821], []))
+    );
+    assert_eq!(
+        ask(serde_json::json!({ "cmd": "status" }))["shown"],
+        serde_json::json!([])
+    );
     meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
     handle.join().unwrap().expect("record failed");
 }

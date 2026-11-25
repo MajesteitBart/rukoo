@@ -73,6 +73,9 @@ const STALL_AFTER: Duration = Duration::from_secs(10);
 /// How often the running stream's exclusions are read again: an app that starts, restarts or
 /// connects after the stream began must stay out of the recording too.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
+/// How long a read waits after one that failed, in 100 ns units: half a second. A change that
+/// hides holds the frames meanwhile.
+const REFRESH_RETRY_100NS: u64 = 5_000_000;
 
 /// The real screen. `start` hands the work to a thread of its own, so the main thread, which
 /// answers the control port, never waits on ScreenCaptureKit to start a stream: the shareable
@@ -81,8 +84,9 @@ const REFRESH_EVERY: Duration = Duration::from_secs(2);
 /// stops by itself does.
 pub struct ScreenSource {
     to_main: SyncSender<Ev<PixelBuffer>>,
-    /// `--exclude-pid` and `--show-pid`, or the last `exclude`.
+    /// `--exclude-pid` and `--show-pid`, or the last `exclude`, and that change's revision.
     exclusions: Exclusions,
+    revision: u64,
     shared: Arc<Mutex<Shared>>,
     /// The display and size of the last start, for starting a stalled stream again.
     last_start: Option<(u32, (u32, u32))>,
@@ -105,6 +109,22 @@ struct Shared {
     refreshing: bool,
     /// The last reason a re-read failed, so the log says it once.
     refresh_error: Option<String>,
+    /// The newest revision asked for: a re-read made for an older one installs nothing.
+    latest: u64,
+    /// After a read or a filter that failed, the next read waits until then, on the awake clock.
+    retry_at: Option<u64>,
+    /// The newest revision whose filter a stream has in place, and the boot time it was
+    /// confirmed; frames captured before it may come from the filter before.
+    applied: (u64, u64),
+}
+
+impl Shared {
+    /// A stream has the filter of `revision` in place from `boot` on.
+    fn applied(&mut self, revision: u64, boot: u64) {
+        if revision > self.applied.0 {
+            self.applied = (revision, boot);
+        }
+    }
 }
 
 /// A running stream and what it needs to keep running.
@@ -115,8 +135,9 @@ struct Live {
     /// The stream was started again after the one before it stalled.
     restarted: bool,
     display: u32,
-    /// What the stream's filter leaves out.
+    /// What the stream's filter leaves out, and the revision it was made for.
     applied: Matched,
+    revision: u64,
     stream: Retained<SCStream>,
     /// The stream's output and delegate. `Live` holds it until the stream stopped: whether a
     /// stream retains its delegate isn't in the header.
@@ -131,11 +152,20 @@ struct Live {
 unsafe impl Send for Live {}
 
 impl ScreenSource {
-    pub fn new(to_main: SyncSender<Ev<PixelBuffer>>, exclusions: Exclusions) -> ScreenSource {
+    pub fn new(
+        to_main: SyncSender<Ev<PixelBuffer>>,
+        exclusions: Exclusions,
+        revision: u64,
+    ) -> ScreenSource {
+        let shared = Shared {
+            latest: revision,
+            ..Shared::default()
+        };
         ScreenSource {
             to_main,
             exclusions,
-            shared: Arc::new(Mutex::new(Shared::default())),
+            revision,
+            shared: Arc::new(Mutex::new(shared)),
             last_start: None,
             next_refresh: 0,
         }
@@ -143,27 +173,30 @@ impl ScreenSource {
 
     /// Reads the shareable content again on a thread of its own, at most every `REFRESH_EVERY`
     /// and one read at a time, and gives the running stream a new filter when what it must leave
-    /// out changed.
+    /// out changed. A stream whose filter is older than the newest change is due at once, also
+    /// while a read runs: the next tick after it starts the next one.
     fn refresh(&mut self) {
         let now = clock_mac::awake_100ns();
-        if now < self.next_refresh {
-            return;
-        }
-        self.next_refresh = now + REFRESH_EVERY.as_nanos() as u64 / 100;
         let generation = {
             let mut shared = lock(&self.shared);
             let Some(live) = shared.live.as_ref() else {
                 return;
             };
-            if shared.refreshing {
+            if shared.refreshing || shared.retry_at.is_some_and(|at| now < at) {
+                return;
+            }
+            if now < self.next_refresh && live.revision >= self.revision {
                 return;
             }
             let generation = live.generation;
             shared.refreshing = true;
+            shared.retry_at = None;
             generation
         };
+        self.next_refresh = now + REFRESH_EVERY.as_nanos() as u64 / 100;
         let job = RefreshJob {
             generation,
+            revision: self.revision,
             exclusions: ScreenSource::exclusions(&self.exclusions),
             shared: self.shared.clone(),
         };
@@ -188,6 +221,7 @@ impl ScreenSource {
             display,
             fallback,
             exclusions: ScreenSource::exclusions(&self.exclusions),
+            revision: self.revision,
             generation,
             restarted,
             to_main: self.to_main.clone(),
@@ -242,10 +276,16 @@ impl Source for ScreenSource {
         }
     }
 
-    fn exclude(&mut self, exclusions: &Exclusions) {
+    fn exclude(&mut self, exclusions: &Exclusions, revision: u64) {
         self.exclusions = exclusions.clone();
-        // The next tick reads the exclusions again.
+        self.revision = revision;
+        lock(&self.shared).latest = revision;
+        // The next tick reads the exclusions again, or the one after a read that runs.
         self.next_refresh = 0;
+    }
+
+    fn applied(&self) -> Option<(u64, u64)> {
+        Some(lock(&self.shared).applied)
     }
 
     fn health(&mut self) -> Option<CaptureStop> {
@@ -295,9 +335,10 @@ impl Source for ScreenSource {
     }
 }
 
-/// One re-read of the exclusions of a running stream.
+/// One re-read of the exclusions of a running stream, for the change of `revision`.
 struct RefreshJob {
     generation: u64,
+    revision: u64,
     exclusions: Exclusions,
     shared: Arc<Mutex<Shared>>,
 }
@@ -330,6 +371,7 @@ impl RefreshJob {
                     ));
                     shared.refresh_error = Some(e.message.clone());
                 }
+                shared.retry_at = Some(clock_mac::awake_100ns() + REFRESH_RETRY_100NS);
                 return;
             }
         };
@@ -337,14 +379,21 @@ impl RefreshJob {
         let (stream, display) = {
             let mut shared = lock(&self.shared);
             shared.refresh_error = None;
+            // A newer change came while the applications were read: the read for it follows.
+            if self.revision < shared.latest {
+                return;
+            }
             let Some(live) = shared
                 .live
-                .as_ref()
+                .as_mut()
                 .filter(|live| live.generation == self.generation)
             else {
                 return;
             };
             if live.applied == exclusions.matched {
+                // The stream's filter already leaves out what this revision asks.
+                live.revision = live.revision.max(self.revision);
+                shared.applied(self.revision, clock_mac::boot_100ns());
                 return;
             }
             (live.stream.clone(), live.display)
@@ -372,7 +421,14 @@ impl RefreshJob {
         });
         match updated {
             Ok(()) => {
-                crate::log(format_args!("the capture now {}", exclusions.describe()));
+                // Frames from here on have this filter. A newer change that came meanwhile
+                // finds this revision older and is read next; frames wait for it if it hides.
+                let boot = clock_mac::boot_100ns();
+                crate::log(format_args!(
+                    "the capture now {} (revision {})",
+                    exclusions.describe(),
+                    self.revision
+                ));
                 let mut shared = lock(&self.shared);
                 if let Some(live) = shared
                     .live
@@ -380,10 +436,13 @@ impl RefreshJob {
                     .filter(|live| live.generation == self.generation)
                 {
                     live.applied = exclusions.matched;
+                    live.revision = self.revision;
+                    shared.applied(self.revision, boot);
                 }
             }
             Err(e) => {
                 let mut shared = lock(&self.shared);
+                shared.retry_at = Some(clock_mac::awake_100ns() + REFRESH_RETRY_100NS);
                 if e.permission && shared.wanted == self.generation {
                     shared.failed = Some((
                         self.generation,
@@ -418,7 +477,9 @@ struct StartJob {
     display: u32,
     /// The monitor's pixels, for a filter that doesn't say its own size.
     fallback: (u32, u32),
+    /// What the filter leaves out, and the change it was made for.
     exclusions: Exclusions,
+    revision: u64,
     generation: u64,
     /// A stream started again after the one before it stalled.
     restarted: bool,
@@ -430,8 +491,12 @@ impl StartJob {
     fn run(self) {
         match self.open() {
             Opened::Running(live) => {
+                let boot = clock_mac::boot_100ns();
                 let mut shared = lock(&self.shared);
                 if shared.wanted == self.generation {
+                    // The stream captures with this revision's filter from its start. When a
+                    // newer change came meanwhile, the next tick reads it.
+                    shared.applied(self.revision, boot);
                     shared.live = Some(live);
                 } else {
                     // Stopped, or started again, while this start ran.
@@ -554,6 +619,7 @@ impl StartJob {
             restarted: self.restarted,
             display: self.display,
             applied: exclusions.matched.clone(),
+            revision: self.revision,
             stream,
             output,
             _queue: queue,
@@ -1455,7 +1521,7 @@ mod tests {
             return;
         };
         let (sender, receiver) = mpsc::sync_channel(8);
-        let mut source = ScreenSource::new(sender, Exclusions::default());
+        let mut source = ScreenSource::new(sender, Exclusions::default(), 1);
         // The start runs on a thread of its own; a failure comes back as an event.
         source.start(monitor, 1).expect("the capture didn't start");
         let deadline = std::time::Instant::now() + Duration::from_secs(8);

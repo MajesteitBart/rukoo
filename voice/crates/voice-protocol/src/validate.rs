@@ -12,12 +12,13 @@ use crate::message::{
     commands, events, Command, CommandBody, Discovery, ErrorMessage, Event, EventBody, Frame,
     Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingStarting,
     MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply,
-    ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status, Track, Welcome,
+    ReplyError, RukooWindowsReport, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status,
+    Track, Welcome,
 };
 use crate::{
     is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
     MAX_CONTEXT_BYTES, MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_MEDIA_READ, MAX_MEDIA_SPAN_MS,
-    MAX_TITLE_CHARS,
+    MAX_TITLE_CHARS, MAX_WINDOWS_PIDS,
 };
 
 /// A message that breaks a rule. `reason` names the field, as the fixtures do.
@@ -179,10 +180,34 @@ fn status(f: &Fields) -> Checked<Status> {
             None => return invalid("screenDefault"),
         },
     };
+    let rukoo_windows = match f.optional("rukooWindows") {
+        None => None,
+        Some(Value::Object(windows)) => {
+            let w = Fields(windows);
+            let shown = w.present("shown")?;
+            let shown = shown
+                .as_array()
+                .filter(|list| list.len() <= MAX_WINDOWS_PIDS)
+                .and_then(|list| {
+                    list.iter()
+                        .map(|pid| {
+                            uint_value(pid)
+                                .and_then(|pid| u32::try_from(pid).ok())
+                                .filter(|&pid| pid > 0)
+                        })
+                        .collect::<Option<Vec<u32>>>()
+                })
+                .ok_or_else(|| Invalid::new("shown"))?;
+            let can_show = w.boolean("canShow")?;
+            Some(RukooWindowsReport { shown, can_show })
+        }
+        Some(_) => return invalid("rukooWindows"),
+    };
     Ok(Status {
         recording,
         dictating,
         screen_default,
+        rukoo_windows,
     })
 }
 
@@ -939,6 +964,67 @@ mod tests {
         let starting = json!({ "type": "event", "seq": 5, "event": "meeting.starting", "createdAt": 0,
             "data": { "screen": "frames" } });
         assert_eq!(reason(Side::Voice, starting), "meeting");
+    }
+
+    #[test]
+    fn status_rukoo_windows_is_optional() {
+        let status = |windows: Value| {
+            json!({ "type": "event", "seq": 5, "event": "status", "createdAt": 0,
+            "data": { "recording": null, "dictating": false, "rukooWindows": windows } })
+        };
+        let read = |windows: Value| match validate_incoming(Side::Voice, &status(windows)).unwrap()
+        {
+            Message::Event(Event {
+                body: EventBody::Status(status),
+                ..
+            }) => status.rukoo_windows,
+            other => panic!("not a status: {other:?}"),
+        };
+        assert_eq!(
+            read(json!({ "shown": [4821], "canShow": true })),
+            Some(RukooWindowsReport {
+                shown: vec![4821],
+                can_show: true,
+            })
+        );
+        assert_eq!(
+            read(json!({ "shown": [], "canShow": false })),
+            Some(RukooWindowsReport {
+                shown: Vec::new(),
+                can_show: false,
+            })
+        );
+        assert_eq!(read(Value::Null), None);
+        for (windows, why) in [
+            (json!({ "canShow": true }), "shown"),
+            (json!({ "shown": [0], "canShow": true }), "shown"),
+            (json!({ "shown": ["4821"], "canShow": true }), "shown"),
+            (
+                json!({ "shown": vec![7; MAX_WINDOWS_PIDS + 1], "canShow": true }),
+                "shown",
+            ),
+            (json!({ "shown": [] }), "canShow"),
+            (json!([4821]), "rukooWindows"),
+        ] {
+            assert_eq!(
+                reason(Side::Voice, status(windows.clone())),
+                why,
+                "{windows}"
+            );
+        }
+        // It round-trips, and a status without it serializes as before.
+        let report = RukooWindowsReport {
+            shown: vec![4821],
+            can_show: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            json!({ "shown": [4821], "canShow": false })
+        );
+        assert_eq!(
+            serde_json::to_value(Status::default()).unwrap(),
+            json!({ "recording": null, "dictating": false })
+        );
     }
 
     #[test]

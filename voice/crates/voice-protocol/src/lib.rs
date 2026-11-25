@@ -53,6 +53,8 @@ pub const MAX_LABEL_CHARS: usize = 200;
 pub const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 /// The longest command id and `client` name, in characters.
 pub const MAX_ID_CHARS: usize = 64;
+/// The most pids `rukooWindows.shown` in a status lists.
+pub const MAX_WINDOWS_PIDS: usize = 64;
 /// The most characters of screen text a `frame` carries.
 pub const MAX_FRAME_TEXT_CHARS: usize = 8_000;
 /// The longest stretch `clip.get` cuts, in ms from `start`. RUK-110's video media links share it.

@@ -136,7 +136,11 @@ impl Platform for MacPlatform {
     ) -> Box<dyn Source> {
         match &options.test {
             Some(spec) => Box::new(synthetic_mac::new(to_main, spec)),
-            None => Box::new(ScreenSource::new(to_main, options.exclusions.clone())),
+            None => Box::new(ScreenSource::new(
+                to_main,
+                options.exclusions.clone(),
+                options.revision,
+            )),
         }
     }
 

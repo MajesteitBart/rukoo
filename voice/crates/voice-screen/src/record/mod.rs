@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use voice_screen_files::clock::ScreenClock;
 use voice_screen_files::control::{self, Request};
-use voice_screen_files::exclude::Exclusions;
+use voice_screen_files::exclude::{Applying, Exclusions, Policy};
 use voice_screen_files::frames::Saver;
 use voice_screen_files::gate::VideoGate;
 use voice_screen_files::journal::{self, History, JournalWriter, Line, OpenError, FORMAT_VERSION};
@@ -292,7 +292,8 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
         monitor_cache: (Instant::now(), monitor_list),
         monitor,
         pinned: opts.monitor,
-        exclusions: opts.exclusions,
+        applying: Applying::new(&opts.exclusions),
+        policy: Policy::new(opts.exclusions, Instant::now()),
         video: None,
         gate: VideoGate::new(),
         video_seq,

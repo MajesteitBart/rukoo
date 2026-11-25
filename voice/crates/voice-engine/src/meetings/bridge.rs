@@ -144,6 +144,7 @@ impl Control {
                 .and_then(|r| MeetingId::parse(&r.id)),
             dictating: self.dictating.load(Ordering::SeqCst),
             screen_default: Some(self.controller.screen_default()),
+            rukoo_windows: self.screen.rukoo_windows(),
         }
     }
 
