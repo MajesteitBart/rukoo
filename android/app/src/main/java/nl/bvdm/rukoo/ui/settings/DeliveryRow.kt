@@ -14,7 +14,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.core.net.toUri
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.SettingsRow
-import nl.bvdm.rukoo.ui.icons.PanelIcons
+import nl.bvdm.rukoo.ui.components.SettingsTrailingValue
+import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.workspaces.ChatDelivery
 import nl.bvdm.rukoo.workspaces.ChatPushControl
@@ -91,11 +92,15 @@ fun DeliveryRow(push: ChatPushControl, state: PushState) {
     val delivery = state.delivery
     val name = DeliveryTexts.distributor(delivery)?.let { distributorLabel(context, it) }
     val tap = DeliveryTexts.tap(delivery, state.distributors.size)
+    val value = stringResource(DeliveryTexts.value(delivery))
+    // A row that does something shows its value as the settings' accent line; one that doesn't, as plain text at its
+    // end, so it doesn't look like a link.
     SettingsRow(
         title = stringResource(R.string.settings_notifications_delivery),
         description = if (name != null) stringResource(DeliveryTexts.help(delivery), name) else stringResource(DeliveryTexts.help(delivery)),
-        value = stringResource(DeliveryTexts.value(delivery)),
-        leading = { RowIcon(PanelIcons.Send, if (delivery is ChatDelivery.Instant) Rk.colors.accent else Rk.colors.text2) },
+        value = value.takeIf { tap != DeliveryTexts.Tap.NONE },
+        trailing = if (tap == DeliveryTexts.Tap.NONE) ({ SettingsTrailingValue(value) }) else null,
+        leading = { RowIcon(RukooIcons.Bell, if (delivery is ChatDelivery.Instant) Rk.colors.accent else Rk.colors.text2) },
         onClick = when (tap) {
             DeliveryTexts.Tap.NONE -> null
             DeliveryTexts.Tap.CHOOSE -> ({ choosing = true })
