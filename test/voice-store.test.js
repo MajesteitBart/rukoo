@@ -948,13 +948,22 @@ test("notes that lose to newer ones before Voice took them still reach the other
   a.applyData(M, b.dataDoc(M));
   assert.equal(a.meeting(M).notes.text, 'Written on the desktop');
   assert.equal(a.meeting(M).notesOther.text, 'Written on the laptop');
-  assert.equal(a.dataDoc(M).fields.notes.v, 'Written on the laptop', 'its own notes go, not the desktop text back');
+  assert.equal(a.dataDoc(M).fields.notes.v, 'Written on the desktop');
+  assert.equal(a.dataDoc(M).draft.v, 'Written on the laptop', 'its own notes go along as a draft');
   b.applyData(M, a.dataDoc(M));
   assert.equal(b.meeting(M).notes.text, 'Written on the desktop');
   assert.equal(b.meeting(M).notesOther.text, 'Written on the laptop');
-  // Picking on the laptop ends it there: the desktop's text goes, and the bar on the desktop clears once it matches.
+  // An edit on the laptop meanwhile still travels as the notes.
+  clock.a += 10000;
+  a.saveNotes(M, 'Written on the desktop, and more', a.meeting(M).notes.rev);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Written on the desktop, and more');
+  assert.equal(b.meeting(M).notesOther.text, 'Written on the laptop');
+  // Dismissed on the laptop, the draft goes on the desktop too.
   a.resolveNotes(M, 'dismiss');
-  assert.equal(a.dataDoc(M).fields.notes.v, 'Written on the desktop');
+  assert.equal(a.dataDoc(M).draft, undefined);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther, null);
 });
 
 test('dismissed notes stay dismissed when the same document comes again', () => {
@@ -1027,4 +1036,112 @@ test('a link the user removed stays removed when Voice sends the start again', (
   assert.equal(s.meeting(M).meeting.eventId, null);
   assert.equal(s.dataDoc(M).fields.event.v, null);
   s.close();
+});
+
+// A profile as an older Rukoo left it: no stamps, no data flag, and its cursor at lastSeq.
+function legacy(dir, lastSeq) {
+  const indexFile = path.join(dir, 'voice.json');
+  const index = JSON.parse(fs.readFileSync(indexFile, 'utf8'));
+  delete index.data;
+  delete index.unsent;
+  delete index.catchUp;
+  index.lastSeq = lastSeq;
+  fs.writeFileSync(indexFile, JSON.stringify(index));
+  const file = path.join(dir, 'meetings', `${M}.json`);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.stamps = {};
+  raw.dataRev = 0;
+  raw.dataSent = 0;
+  fs.writeFileSync(file, JSON.stringify(raw));
+}
+
+test('a catch-up that could not save a meeting runs again at the next start', () => {
+  const dir = tempDir('rukoo-data-upgrade-retry-');
+  const s = store(dir);
+  s.apply(started());
+  s.setTitle(M, 'Old title');
+  s.close();
+  legacy(dir, 40);
+  // The meeting file can't be written for a moment: a folder holds the name it is written under first.
+  const blocker = path.join(dir, 'meetings', `${M}.json.tmp`);
+  fs.mkdirSync(blocker);
+  const first = store(dir);
+  assert.equal(first.index.data, 0, 'not caught up while a meeting is missing its stamps on disk');
+  first.close();
+  fs.rmSync(blocker, { recursive: true });
+  const again = store(dir);
+  assert.equal(again.index.data, 1);
+  assert.equal(again.dataDoc(M).fields.title.v, 'Old title');
+  assert.equal(again.index.catchUp, 40, 'the old cursor stays what it was');
+  again.close();
+});
+
+test("the catch-up's replay applies only meeting.data up to the old cursor", () => {
+  const dir = tempDir('rukoo-data-upgrade-replay-');
+  const s = store(dir);
+  const begin = started();
+  s.apply(begin);
+  const first = passage('call', 1000, 'First words');
+  s.apply(first);
+  s.correct(M, 'call-000001000', 'First words, corrected');
+  s.close();
+  legacy(dir, first.seq);
+  const again = store(dir);
+  // Voice replays from its oldest event: a removal Rukoo applied long ago doesn't undo what came after it.
+  assert.equal(again.apply({ ...ev('passage.removed', M, { id: 'call-000001000' }), seq: 1 }), null);
+  assert.equal(again.meeting(M).passages[0].text, 'First words, corrected');
+  // meeting.data it skipped then applies now.
+  const other = { v: 1, device: 'b'.repeat(32), name: 'Desktop', fields: { title: { v: 'From the desktop', at: 1793000900000, by: 'b'.repeat(32) } } };
+  assert.deepEqual(again.apply({ ...ev('meeting.data', M, { writer: 'a'.repeat(32), data: other }), seq: 2 }), { meeting: M, kind: 'data' });
+  assert.equal(again.meeting(M).meeting.title, 'From the desktop');
+  // Past the old cursor, everything applies again.
+  again.apply({ ...passage('call', 3000, 'New words'), seq: first.seq + 1 });
+  assert.equal(again.index.catchUp, 0);
+  assert.equal(again.meeting(M).passages.length, 2);
+  again.close();
+});
+
+test('a link removed before the upgrade goes to the other computers as removed', () => {
+  const dir = tempDir('rukoo-data-upgrade-unlink-');
+  const s = store(dir);
+  s.apply(started());
+  s.setEvent(M, null);
+  s.close();
+  legacy(dir, 10);
+  const again = store(dir);
+  assert.equal(again.dataDoc(M).fields.event.v, null);
+  again.apply(started());
+  assert.equal(again.meeting(M).meeting.eventId, null);
+  again.close();
+});
+
+test('a correction from another computer keeps a passage that overlapped it from the start, and its span when it comes first', () => {
+  const { a, b } = twoComputers();
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+    s.apply(passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+    s.apply(passage('mic', 7000, 'Right.', 1, { end: 7600 }));
+  }
+  a.correct(M, 'mic-000005000', 'I can do that. Thanks, Pieter!');
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+    s.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+    s.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  }
+  assert.deepEqual(a.dataDoc(M).fields['correction:mic-000005000'].v, { text: 'I can do that. Thanks, Pieter!', end: 9000, keep: ['mic-000007000'] });
+  b.applyData(M, a.dataDoc(M));
+  const mic = (s) => s.meeting(M).passages.filter((p) => p.track === 'mic').map((p) => p.id);
+  assert.deepEqual(mic(b), mic(a));
+  assert.deepEqual(mic(b), ['mic-000000000', 'mic-000005000', 'mic-000007000']);
+
+  // A computer that gets the correction before the passage itself still hides the pieces once they come.
+  const c = store(tempDir('rukoo-data-c-'), { deviceName: 'Tablet' });
+  c.apply(started());
+  c.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+  c.applyData(M, a.dataDoc(M));
+  c.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+  c.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  c.apply(passage('mic', 7000, 'Right.', 1, { end: 7600 }));
+  assert.deepEqual(mic(c), ['mic-000005000', 'mic-000007000']);
+  c.close();
 });
