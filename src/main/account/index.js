@@ -40,6 +40,9 @@ const RECORD_BYTES = 16384;
 const FIRST_WRITE_WINS = new Set(['classification', 'bookingkey']);
 // Collections whose keys name the Rukoo account they belong to (<acct>); see bookingAcct().
 const PER_ACCOUNT = new Set(['booking', 'bookingkey']);
+// Collections that hold keys: a booking page's key pair, and Rukoo Voice's bucket secret and recovery code
+// (voice/share.js). They leave this device with the session and stay out of "Export my data".
+const SECRET_COLLECTIONS = new Set(['bookingkey', 'voicesync']);
 // Addresses Rukoo used as its default server before. A device signed in at one keeps it (pin()) while the session
 // lasts; once it ends, the device goes back to the default (forget()).
 const FORMER_SERVERS = ['https://rukoo-account.bvdm.ai'];
@@ -794,9 +797,9 @@ class AccountService extends EventEmitter {
     clearTimeout(this.timers.push);
     this.ids.clear();
     for (const [key, e] of this.entries) {
-      // A booking page's private key leaves with the session; signing in again brings it back from the account.
-      // Dropped here only, not deleted: a deletion would go up at the next sign-in.
-      if (e.c === 'bookingkey') {
+      // A booking page's private key and Rukoo Voice's bucket keys leave with the session; signing in again brings
+      // them back from the account. Dropped here only, not deleted: a deletion would go up at the next sign-in.
+      if (SECRET_COLLECTIONS.has(e.c)) {
         this.entries.delete(key);
         continue;
       }
@@ -892,13 +895,14 @@ class AccountService extends EventEmitter {
     }
   }
 
-  // Everything this device keeps, readable: what "Export my data" saves. Not a booking page's key pair: its private
-  // key opens guests' details, and an export is a file anyone may come across. Booking records only of the account
-  // signed in now: another Rukoo account's (someone else on a shared computer) hold its guests' names and notes.
+  // Everything this device keeps, readable: what "Export my data" saves. Not a booking page's key pair, whose private
+  // key opens guests' details, nor Rukoo Voice's bucket secret and recovery code, which open the user's meetings: an
+  // export is a file anyone may come across. Booking records only of the account signed in now: another Rukoo
+  // account's (someone else on a shared computer) hold its guests' names and notes.
   exportData() {
     const acct = this.acct;
     const records = [...this.entries.values()]
-      .filter((e) => !e.deleted && e.c !== 'bookingkey' && (!PER_ACCOUNT.has(e.c) || (acct && acctOfKey(e.c, e.k) === acct)))
+      .filter((e) => !e.deleted && !SECRET_COLLECTIONS.has(e.c) && (!PER_ACCOUNT.has(e.c) || (acct && acctOfKey(e.c, e.k) === acct)))
       .map((e) => ({ collection: e.c, key: e.k, value: e.v, changed: new Date(e.t).toISOString() }));
     return {
       exportedAt: new Date(this.now()).toISOString(),

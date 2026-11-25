@@ -46,7 +46,7 @@ Settings → Rukoo account → **What's stored and shared** shows this for the s
 | Your mail providers | Nothing from the account. A booking page's events are in your calendar, and they hold the guest's links to move or cancel the booking (see below) |
 | Anyone else | Nothing. Rukoo uses no analytics, advertising or tracking services |
 
-The server sees how many records you have, how large they are and when they change. It can't see your categories, your corrections, which email went where or anything in your mail. Your booking page's settings, its key pair and the record of which event each booking became are records too, encrypted like the rest.
+The server sees how many records you have, how large they are and when they change. It can't see your categories, your corrections, which email went where or anything in your mail. Your booking page's settings, its key pair and the record of which event each booking became are records too, encrypted like the rest. So is Rukoo Voice's bucket when you share it with your other computers ([Meetings](meetings.md#your-other-computers)): its details, its secret and the encryption key of your meetings. The server can't read them.
 
 Turning a booking page on changes what the server sees, because it has to offer times and take bookings while your computers are off. It then keeps your name, introduction, time zone and meeting types, your open hours and the busy times within them (to the quarter hour, without titles), and each booking's time, type and status, readable. A guest's name, email, note and assistant name pass through the server readable at the moment of booking. The server then seals them to a key only your devices hold and keeps only that sealed copy, so a later leak of its storage doesn't reveal them. The operator, or someone who broke into the server at that moment, could read them then. [Booking page](booking.md#what-the-server-sees-and-keeps) has the details.
 
@@ -54,13 +54,13 @@ Each booking also gives the guest a key to move or cancel it. The server keeps o
 
 Cloudflare is a company in the United States. The server in this repository keeps its data in the EU by default (`JURISDICTION` in `server/wrangler.jsonc`), but as a US company Cloudflare falls under US law, also for data stored in the EU. The page in Settings shows where the server you use keeps its data.
 
-**Export my data** saves everything in your account as a readable JSON file, except your booking page's key pair: its private key opens your guests' details. **Delete account** checks your password and turns your booking page off, which deletes the page and its bookings from the server. Then it removes the account and everything in it at once. When the booking page can't be turned off, the account stays. Your devices keep their own copies.
+**Export my data** saves everything in your account as a readable JSON file, except your booking page's key pair and Rukoo Voice's bucket: the private key opens your guests' details, and the bucket's secret and encryption key open your meetings. **Delete account** checks your password and turns your booking page off, which deletes the page and its bookings from the server. Then it removes the account and everything in it at once. When the booking page can't be turned off, the account stays. Your devices keep their own copies.
 
 [Team chat](chat.md) works differently. Its messages live in each workspace, readable by whoever runs the server, and they aren't part of your account's encrypted records or of the export. When you delete your account, you leave every workspace you're in: your direct messages close, and the messages you wrote stay in their workspaces under "Deleted member" until each workspace's retention removes them, after 90 days by default. A workspace where you're the only member stays on the server with nobody in it. Retention removes its messages, but the workspace and its name stay, so delete it in Chat first if you want it gone. Each device deletes its copy of team chat when its session ends.
 
 ## Signing out
 
-**Sign out** stops this computer from syncing. It keeps its own copy, so your categories keep working. Signing in again brings it back in step.
+**Sign out** stops this computer from syncing. It keeps its own copy, so your categories keep working, except your booking page's key pair and Rukoo Voice's bucket, which leave with the session. Signing in again brings it back in step.
 
 ## The server Rukoo uses
 

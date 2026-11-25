@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { validate, validateDiscovery, negotiate, replayPlan, PROTOCOL, MEDIA_KINDS, MEDIA_ID, MEDIA_SPAN_MAX, MEDIA_READ_MAX } = require('../src/main/voice/protocol');
+const { validate, validateDiscovery, negotiate, replayPlan, syncSettingsResult, Invalid, PROTOCOL, MEDIA_KINDS, MEDIA_ID, MEDIA_SPAN_MAX, MEDIA_READ_MAX } = require('../src/main/voice/protocol');
 const { bridgePath, bridgePathHere } = require('../src/main/voice/paths');
 
 const VECTORS = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'voice', 'fixtures', 'protocol-vectors.json'), 'utf8'));
@@ -126,4 +126,24 @@ test('the replay plan matches the table', () => {
   for (const v of VECTORS.replay) {
     assert.deepEqual(replayPlan(v.hello.instance, v.hello.after, v.voice.instance, v.voice.head, v.voice.oldest), v.expected, v.name);
   }
+});
+
+// A reply doesn't say which command it answers: the replies with the id of a sync.settings.get hold settings or null,
+// as Voice's tests check them too.
+test('the replies to sync.settings.get hold settings or null, and a refusal says why', () => {
+  const ids = new Set(VECTORS.valid.filter((v) => v.message.command === 'sync.settings.get').map((v) => v.message.id));
+  assert.ok(ids.size);
+  const found = [];
+  for (const v of VECTORS.valid) {
+    if (v.message.type !== 'reply' || !ids.has(v.message.id)) continue;
+    if (v.message.ok) found.push(syncSettingsResult(v.message.result));
+    else assert.equal(typeof v.message.error.reason, 'string', v.name);
+  }
+  assert.ok(found.includes(null));
+  const settings = found.find(Boolean);
+  assert.equal(settings.bucket, 'meetings');
+  assert.match(settings.key, /^RKV1-/);
+  assert.throws(() => syncSettingsResult({}), Invalid);
+  assert.throws(() => syncSettingsResult({ settings: { ...settings, secret: ' ' } }), (err) => err.reason === 'secret');
+  assert.throws(() => syncSettingsResult({ settings: { ...settings, region: 'r'.repeat(1025) } }), (err) => err.reason === 'region');
 });

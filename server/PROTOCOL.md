@@ -76,8 +76,9 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | `setting` | a setting's name, such as `categories` | that setting's value, such as `{ enabled, unsure, seeded }` | last write wins |
 | `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became; `meeting:<acct>:<bookingId>`, a video meeting made for a booking whose event isn't written yet | see [Booking pages](#booking-pages) | last write wins |
 | `bookingkey` | `<acct>` | the booking page's key pair: `{ current, keys: { <keyId>: { privatePkcs8, publicRaw, createdAt } } }` | first write wins (`ifAbsent`) |
+| `voicesync` | `bucket` | Rukoo Voice's bucket for the person's other computers: `{ settings, at, device }`, where `settings` is the object of `sync.settings.*` in [voice/PROTOCOL.md](../voice/PROTOCOL.md) with the bucket's secret and the encryption key, `at` when it was written and `device` the name of the computer that wrote it | last write wins |
 
-`<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device leaves `bookingkey` out of "Export my data" and removes it locally when it signs out.
+`<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device leaves `bookingkey` and `voicesync` out of "Export my data" and removes them locally when it signs out.
 
 A device ignores collections it doesn't know, so a newer app can add one without breaking older ones.
 

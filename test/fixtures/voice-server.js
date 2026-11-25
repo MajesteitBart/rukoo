@@ -135,6 +135,11 @@ class FakeVoice {
     // Commands left unanswered, for timeouts. handlers: replies a test sets per command.
     this.silent = new Set();
     this.handlers = {};
+    // Bucket sync as sync.settings.get and sync.settings.set see it: the settings, or null while sync is off; the
+    // refusal a set answers with while a test sets one; how long a set takes. A test refuses a get with a handler.
+    this.syncSettings = null;
+    this.syncRefusal = null;
+    this.syncSetMs = 0;
     this.server = null;
     this.port = null;
     this.nextMeeting = 0;
@@ -224,8 +229,13 @@ class FakeVoice {
     } catch (err) {
       out = { error: { code: err.code || 'failed', message: err.message, ...(err.meeting ? { meeting: err.meeting } : {}) } };
     }
-    if (out && out.error) peer.send({ type: 'reply', id: res.message.id, ok: false, error: out.error });
-    else peer.send({ type: 'reply', id: res.message.id, ok: true, result: out || {} });
+    const answer = (out) => {
+      if (out && out.error) peer.send({ type: 'reply', id: res.message.id, ok: false, error: out.error });
+      else peer.send({ type: 'reply', id: res.message.id, ok: true, result: out || {} });
+    };
+    // A handler may answer later, as sync.settings.set does while it tests the bucket.
+    if (out && typeof out.then === 'function') out.then(answer, (err) => answer({ error: { code: err.code || 'failed', message: err.message } }));
+    else answer(out);
   }
 
   oldest() {
@@ -330,6 +340,16 @@ const DEFAULTS = {
   },
   // Voice looks in the bucket on its own; what it finds arrives as ordinary events.
   'sync.pull'() {
+    return {};
+  },
+  'sync.settings.get'() {
+    return { settings: this.syncSettings };
+  },
+  // Uses the settings as Voice's Settings would: a refusal leaves everything as it was.
+  async 'sync.settings.set'(args) {
+    if (this.syncSetMs) await new Promise((resolve) => setTimeout(resolve, this.syncSetMs));
+    if (this.syncRefusal) return { error: this.syncRefusal };
+    this.syncSettings = { ...args.settings };
     return {};
   },
   'meeting.get'(args) {
