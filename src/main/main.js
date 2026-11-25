@@ -2246,6 +2246,8 @@ Object.assign(api, {
   // Keep all of the meeting's media on this computer (keep true or false), or ask how it stands (keep left out):
   // {keep, have, total, stalled} in bytes, or null when Voice can't keep media.
   meetingKeep: (id, keep) => voiceService().keepMedia(meetingId(id), typeof keep === 'boolean' ? keep : undefined),
+  // Asks Voice to fetch the meeting's frame images that aren't here ahead; false from a Voice that can't.
+  meetingPrefetch: (id) => voiceService().prefetchFrames(meetingId(id)),
   // The meeting's screen recording and the monitors it can move to (voice/index.js screenInfo).
   meetingScreen: (id) => voiceService().screenInfo(meetingId(id)),
   meetingScreenSet: (id, screen, monitor = null) => voiceService().setScreen(meetingId(id), screen, typeof monitor === 'string' ? monitor : null),
@@ -2256,10 +2258,11 @@ Object.assign(api, {
   },
   meetingEvents: (id) => voiceService().events(meetingId(id)),
   // A few seconds of one voice for the People card's player, as a data URL the renderer's CSP takes (media-src data:).
-  // start and end are meeting ms, at most 30 s apart.
-  meetingClip: async (id, start, end) => {
+  // start and end are meeting ms, at most 30 s apart. With piece, the answer's end can come before end: the rest of the
+  // stretch still comes from the bucket, and the player asks for it from there.
+  meetingClip: async (id, start, end, piece) => {
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) throw new Error('invalid');
-    const clip = await voiceService().audioClip(meetingId(id), start, end);
+    const clip = await voiceService().audioClip(meetingId(id), start, end, piece === true);
     return { url: `data:audio/wav;base64,${clip.data}`, start: clip.start, end: clip.end };
   },
   // Asks Voice to tell apart the people who shared the microphone; returns the microphone's state at once.

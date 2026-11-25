@@ -112,6 +112,10 @@ fn main() {
             a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit,
         ),
         (
+            "a_passage_from_the_bucket_starts_after_its_first_segment",
+            a_passage_from_the_bucket_starts_after_its_first_segment,
+        ),
+        (
             "media_open_for_video_answers_within_50_ms",
             media_open_for_video_answers_within_50_ms,
         ),
@@ -290,6 +294,7 @@ fn audio(meeting: &str, start: u64, end: Option<u64>) -> MediaOpenArgs {
         kind: MediaKind::Audio,
         start,
         end,
+        piece: false,
     }
 }
 
@@ -1511,7 +1516,6 @@ fn a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit() {
     // B: a GB of the cache limit is 5,000 bytes here, so the default limit, 5 GB, is 25,000.
     let mut b = harness("keep-b", json!({"meetings_retention": "keep"}));
     b.sync_timing.cache_gb = 5_000;
-    b.sync_timing.cache_in_use = Duration::ZERO;
     let engine_b = b.start();
     engine_b
         .settings_sync_key("import", Some(code.clone()))
@@ -1549,7 +1553,15 @@ fn a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit() {
     wait_long("the frames fetched ahead", Duration::from_secs(30), || {
         SHOTS.iter().all(|at| dir.join(shot(*at)).is_file())
     });
-    // The last frame is the one used last.
+    // An agent's link reads the first frame where it is; then the others are used, the last one
+    // last.
+    let link = MediaOpenArgs {
+        kind: MediaKind::Frame,
+        ..audio(&id, 500, None)
+    };
+    assert_eq!(control.media_open(&link).unwrap()["ready"], true);
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!control.frame(&id, 1600).unwrap()["image"].is_null());
     std::thread::sleep(Duration::from_millis(20));
     assert!(!control.frame(&id, 2600).unwrap()["image"].is_null());
 
@@ -1559,16 +1571,29 @@ fn a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit() {
     let own_media = media_files(&meeting_dir(&b.data(), &own));
     assert!(!own_media.is_empty());
 
-    // 2 GB is 10,000 bytes here: the two frames used longest ago go, the newest stays, and so does
+    // 2 GB is 10,000 bytes here, room for one frame. Use a moment ago keeps nothing: the frames
+    // nobody reads go, the one used last too, and the one the link has open stays, as does
     // everything B recorded itself.
     engine_b
         .settings_set("storage.sync.cache", json!("gb2"))
         .unwrap();
     wait_long("the cache limit", Duration::from_secs(30), || {
-        !dir.join(shot(500)).exists() && !dir.join(shot(1500)).exists()
+        !dir.join(shot(1500)).exists() && !dir.join(shot(2500)).exists()
     });
-    assert!(dir.join(shot(2500)).is_file(), "the frame used last stays");
+    assert!(
+        dir.join(shot(500)).is_file(),
+        "the frame a link reads stays"
+    );
     assert_eq!(media_files(&meeting_dir(&b.data(), &own)), own_media);
+    // Fetching ahead stops at the limit rather than going past it.
+    fake.faults().refuse = false;
+    assert_eq!(control.prefetch_frames(&id).unwrap(), json!({}));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !dir.join(shot(1500)).exists() && !dir.join(shot(2500)).exists(),
+        "nothing fetched ahead past the limit"
+    );
+    fake.faults().refuse = true;
     wait_long(
         "Settings to show the cache",
         Duration::from_secs(30),
@@ -1618,6 +1643,77 @@ fn a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit() {
     control.keep_media(&id, Some(true)).unwrap();
     control.delete(&id).unwrap();
     assert_eq!(code_of(control.keep_media(&id, None)), ErrorCode::NotFound);
+    engine_b.shutdown();
+    fake.stop();
+}
+
+/// A passage that spans two segments of a meeting from the bucket: the player's `piece` of it is
+/// ready once the segments its start falls in are here, while the next one still comes, and ends
+/// where they end; the rest follows. A link's `media.open` still waits for the whole range.
+fn a_passage_from_the_bucket_starts_after_its_first_segment() {
+    let fake = fake_s3();
+    let a = harness("piece-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    wait_uploaded(&engine_a);
+    engine_a.shutdown();
+    let recorded = meeting_dir(&a.data(), &id);
+
+    let b = harness("piece-b", json!({"meetings_retention": "keep"}));
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    let control = engine_b.meeting_control().unwrap();
+    // An earlier clip brought the first second back.
+    open_ready(&*control, &audio(&id, 200, Some(600)));
+    let piece = |start, end| MediaOpenArgs {
+        piece: true,
+        ..audio(&id, start, Some(end))
+    };
+
+    // The bucket holds every answer for 6 s: the first piece doesn't need it.
+    fake.faults().stall = Some(Duration::from_secs(6));
+    let asked = Instant::now();
+    let first = open_ready(&*control, &piece(700, 1700));
+    assert!(
+        asked.elapsed() < Duration::from_secs(3),
+        "the first piece took {:?}",
+        asked.elapsed()
+    );
+    let boundary = first["end"].as_u64().unwrap();
+    assert!(boundary > 700 && boundary < 1700, "{first}");
+    assert_eq!(first["start"], 700);
+    assert_eq!(
+        read_all(&*control, &first, 1 << 20),
+        expected_mix(&recorded, 700, boundary)
+    );
+
+    // The rest waits for the next segment, which comes once the bucket answers.
+    let rest = piece(boundary, 1700);
+    assert_eq!(control.media_open(&rest).unwrap()["ready"], false);
+    fake.faults().stall = None;
+    let second = open_ready(&*control, &rest);
+    assert_eq!(
+        (&second["start"], &second["end"]),
+        (&json!(boundary), &json!(1700))
+    );
+    assert_eq!(
+        read_all(&*control, &second, 1 << 20),
+        expected_mix(&recorded, boundary, 1700)
+    );
+
+    // A link gets the whole range in one file, as before.
+    let whole = open_ready(&*control, &audio(&id, 700, Some(1700)));
+    assert_eq!(whole["end"], 1700);
+    assert_eq!(
+        read_all(&*control, &whole, 1 << 20),
+        expected_mix(&recorded, 700, 1700)
+    );
     engine_b.shutdown();
     fake.stop();
 }

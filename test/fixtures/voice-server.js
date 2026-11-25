@@ -143,6 +143,9 @@ class FakeVoice {
     this.mediaIds = new Map();
     // media.keep: each meeting's { keep, have, total, stalled }; a meeting without one has all its media here.
     this.keeps = new Map();
+    // media.open with piece: audio ends at the next multiple of this many ms, as a segment from the bucket would; 0
+    // gives the whole range, as for audio on this computer.
+    this.pieceMs = 0;
   }
 
   async listen(port = 0) {
@@ -406,9 +409,10 @@ const DEFAULTS = {
   // through Rukoo's polling. The same arguments keep their id; a frame ignores `end`.
   'media.open'(args) {
     if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
-    const file = syntheticMedia(args);
+    const boundary = args.kind === 'audio' && args.piece === true && this.pieceMs > 0 ? (Math.floor(args.start / this.pieceMs) + 1) * this.pieceMs : null;
+    const file = syntheticMedia(boundary !== null && boundary < args.end ? { ...args, end: boundary } : args);
     if (file.error) return file;
-    const key = JSON.stringify([args.meeting, args.kind, args.start, args.kind === 'frame' || args.end === undefined ? null : args.end]);
+    const key = JSON.stringify([args.meeting, args.kind, args.start, args.kind === 'frame' || args.end === undefined ? null : args.end, args.piece === true]);
     const id = this.mediaIds.get(key);
     if (!id) {
       const media = `md-${b64u(16)}`;
@@ -494,4 +498,5 @@ async function startVoiceServer(options) {
   return new FakeVoice(options).listen();
 }
 
-module.exports = { FakeVoice, startVoiceServer, syntheticMedia };
+// DEFAULTS: what each command does unless a test sets its own handler, for a handler that changes some answers only.
+module.exports = { FakeVoice, startVoiceServer, syntheticMedia, DEFAULTS };

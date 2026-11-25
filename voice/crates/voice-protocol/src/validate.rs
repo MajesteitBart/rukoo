@@ -417,11 +417,17 @@ fn command(f: &Fields) -> Checked<Command> {
             if end.is_some_and(|end| end < start || end - start > MAX_MEDIA_SPAN_MS) {
                 return invalid("end");
             }
+            let piece = a
+                .optional("piece")
+                .map(|value| value.as_bool().ok_or_else(|| Invalid::new("piece")))
+                .transpose()?
+                .unwrap_or(false);
             CommandBody::MediaOpen(MediaOpenArgs {
                 meeting,
                 kind,
                 start,
                 end,
+                piece,
             })
         }
         commands::MEDIA_READ => {
@@ -948,6 +954,7 @@ mod tests {
                 kind,
                 start,
                 end,
+                piece: false,
             }))
         };
         let args = |kind: &str, start: Value, end: Option<Value>| {

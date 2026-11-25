@@ -174,8 +174,6 @@ class VoiceService extends EventEmitter {
     // The microphone splits Rukoo follows, by meeting (splitMic): {state: 'running', at, end} or {state: 'error', code,
     // reason}. A finished split lives in the store.
     this.splits = new Map();
-    // Meetings whose frames Voice was asked to fetch ahead on this connection (prefetchFrames).
-    this.prefetched = new Set();
     this.closed = false;
   }
 
@@ -186,7 +184,6 @@ class VoiceService extends EventEmitter {
     // A new connection has nothing in flight: its clips don't wait for the old one's.
     this.bridge.on('closed', () => {
       this.clipChain = null;
-      this.prefetched.clear();
     });
     this.bridge.on('welcome', (msg) => this.onWelcome(msg));
     this.bridge.on('event', (ev) => this.onEvent(ev));
@@ -616,22 +613,29 @@ class VoiceService extends EventEmitter {
   // The frame at or before at (meeting time in ms): {frame, image: {type, data}}, with pending while Voice fetches
   // the image back from the bucket and inBucket when the bucket has it but Voice can't reach it now. A frame Rukoo has
   // without its text (a snapshot left it out) gets the text from the answer, and the renderer hears of it with the
-  // next delta. The first frame of a meeting that comes from the bucket asks Voice to fetch the others ahead.
+  // next delta.
   async frame(id, at) {
     this.mustConnect();
     const res = await this.bridge.command('frame.get', { meeting: id, at });
     const before = this.revOf(id);
     const change = this.store.frameText(id, res && res.frame);
     if (change) this.note(change, before);
-    if (res && res.pending === true) this.prefetchFrames(id);
     return res;
   }
 
-  // media.prefetch, once per meeting while connected. An older Voice answers unknown_command; nothing changes then.
-  prefetchFrames(id) {
-    if (!this.connected || this.prefetched.has(id)) return;
-    this.prefetched.add(id);
-    this.bridge.command('media.prefetch', { meeting: id, kind: 'frames' }).catch(() => {});
+  // media.prefetch: Voice fetches the meeting's frame images that aren't on this computer ahead, and finds which those
+  // are itself. The meeting view asks each time it opens a meeting whose media is partly in the bucket, so work a
+  // disconnect or the bucket cut short goes on. true once Voice took it; false from an older Voice
+  // (unknown_command) or for a meeting it doesn't have.
+  async prefetchFrames(id) {
+    this.mustConnect();
+    try {
+      await this.bridge.command('media.prefetch', { meeting: id, kind: 'frames' });
+      return true;
+    } catch (err) {
+      if (err.code === 'unknown_command' || err.code === 'not_found') return false;
+      throw err;
+    }
   }
 
   // media.keep: keep all of the meeting's media on this computer (keep true), let Voice's cache limit apply again
@@ -795,10 +799,11 @@ class VoiceService extends EventEmitter {
 
   // media.open: { media, ready, type?, size?, start?, end? }. Voice answers at once; call again until ready is true.
   // start and end are meeting ms; end is left out for a frame.
-  async mediaOpen({ meeting, kind, start, end }) {
+  async mediaOpen({ meeting, kind, start, end, piece }) {
     this.mustConnect();
     const args = { meeting, kind, start };
     if (Number.isInteger(end)) args.end = end;
+    if (piece === true) args.piece = true;
     return this.bridge.command('media.open', args, { timeoutMs: this.mediaTimeoutMs });
   }
 
@@ -942,8 +947,10 @@ class VoiceService extends EventEmitter {
   }
 
   // A few seconds of the meeting's audio, for the People card's player: {type, data (base64), start, end}. Voice
-  // mixes the tracks (media.open); a clip is a stretch where one voice speaks.
-  async audioClip(id, start, end) {
+  // mixes the tracks (media.open); a clip is a stretch where one voice speaks. With piece, Voice may end the mix at a
+  // segment boundary while the rest still comes from the bucket, and end says where: the player starts on it and asks
+  // for the rest from there.
+  async audioClip(id, start, end, piece = false) {
     const e = this.store.entry(id);
     if (!e || e.removed) throw new VoiceError('not_found', 'No such meeting.');
     if (!count(start) || !count(end) || end <= start || end - start > AUDIO_CLIP_MAX_MS) throw new VoiceError('bad_request', 'A clip is 30 s at most.');
@@ -951,7 +958,7 @@ class VoiceService extends EventEmitter {
     const until = this.now() + AUDIO_PREPARE_MS;
     let r;
     for (let wait = 250; ; wait = Math.min(1000, wait * 2)) {
-      r = await this.mediaOpen({ meeting: id, kind: 'audio', start, end });
+      r = await this.mediaOpen({ meeting: id, kind: 'audio', start, end, piece });
       if (r && r.ready === true) break;
       if (!r || r.ready !== false) throw badReply('a media file');
       if (this.now() > until) throw new VoiceError('timeout', 'Rukoo Voice took too long to prepare the clip.');
@@ -968,7 +975,8 @@ class VoiceService extends EventEmitter {
       parts.push(data);
       offset += data.length;
     }
-    return { type: 'audio/wav', data: Buffer.concat(parts).toString('base64'), start: count(r.start) ? r.start : start, end: count(r.end) ? r.end : end };
+    const stop = count(r.end) && r.end > start && r.end <= end ? r.end : end;
+    return { type: 'audio/wav', data: Buffer.concat(parts).toString('base64'), start: count(r.start) ? r.start : start, end: stop };
   }
 
   // The calendar events this meeting can be, nearest first, for the meeting view's Link and Change menu: the person

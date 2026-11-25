@@ -388,6 +388,11 @@
       "message": { "type": "command", "id": "c-50", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 600000, "end": 1200000 } }
     },
     {
+      "name": "open the first piece of a range of audio",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-55", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 61000, "end": 73000, "piece": true } }
+    },
+    {
       "name": "open the frame at a moment",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-51", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "frame", "start": 412500 } }
@@ -502,6 +507,7 @@
     { "name": "prefetch of another kind than frames", "from": "rukoo", "reason": "kind", "message": { "type": "command", "id": "c-62", "command": "media.prefetch", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio" } } },
     { "name": "prefetch without a kind", "from": "rukoo", "reason": "kind", "message": { "type": "command", "id": "c-62", "command": "media.prefetch", "args": { "meeting": "m-20261030-171203-4f2a" } } },
     { "name": "keep without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-63", "command": "media.keep", "args": { "keep": true } } },
+    { "name": "piece that isn't true or false", "from": "rukoo", "reason": "piece", "message": { "type": "command", "id": "c-55", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 61000, "end": 73000, "piece": 1 } } },
     { "name": "keep that isn't true or false", "from": "rukoo", "reason": "keep", "message": { "type": "command", "id": "c-63", "command": "media.keep", "args": { "meeting": "m-20261030-171203-4f2a", "keep": "yes" } } },
     { "name": "split without a track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a" } } },
     { "name": "split of the call track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a", "track": "call" } } },

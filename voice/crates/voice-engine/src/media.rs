@@ -210,6 +210,8 @@ struct JobKey {
     start: u64,
     /// `None` for a frame, which ignores it.
     end: Option<u64>,
+    /// Audio that may end at a segment boundary (`piece`): another job than the whole range.
+    piece: bool,
 }
 
 impl JobKey {
@@ -223,6 +225,7 @@ impl JobKey {
             } else {
                 args.end
             },
+            piece: args.kind == MediaKind::Audio && args.piece,
         }
     }
 }
@@ -257,6 +260,11 @@ struct Job {
     reserved: u64,
     /// At least one open delivered this completed file before a growing live range replaces it.
     answered_ready: bool,
+    /// A `media.open` asked for it, so a link may read it; `frame.get`'s own fetches don't count.
+    link: bool,
+    /// The meeting's files it reads: while it prepares, and for a frame read where it is, while
+    /// it is known. A path that ends in `/` stands for the files under it.
+    reads: Vec<String>,
 }
 
 /// What a `media-prepare` thread does for a job.
@@ -351,6 +359,24 @@ impl MediaService {
             .any(|job| matches!(job.state, State::Preparing))
     }
 
+    /// Whether a job reads this file of the meeting now: the cache limit leaves it alone.
+    pub(crate) fn in_use(&self, meeting: &str, path: &str) -> bool {
+        self.lock().jobs.values().any(|job| {
+            let reading = match &job.state {
+                State::Preparing => true,
+                // A frame is served from the meeting folder; mixes and clips are files of their own.
+                State::Ready(ready) => job.link && !ready.owned && !ready.clip,
+                State::Failed(_) => false,
+            };
+            reading
+                && job.key.meeting == meeting
+                && job
+                    .reads
+                    .iter()
+                    .any(|r| r == path || (r.ends_with('/') && path.starts_with(r.as_str())))
+        })
+    }
+
     /// The image of the frame at or before `at` for `frame.get`, whose own reply found it missing
     /// here: a fetch from the bucket starts on a `media-prepare` thread, as for `media.open`, and
     /// this answers at once.
@@ -363,8 +389,9 @@ impl MediaService {
             kind: MediaKind::Frame,
             start: at,
             end: None,
+            piece: false,
         };
-        match self.open(&args) {
+        match self.open_as(&args, false) {
             Ok(answer) if answer["ready"] == true => FrameFetch::Ready,
             Ok(_) => FrameFetch::Pending,
             Err(e) if e.code == ErrorCode::NotFound => FrameFetch::Gone,
@@ -462,13 +489,18 @@ impl MediaService {
     /// `{ media, ready: false }` while the file is prepared, then `{ media, ready: true, type,
     /// size, start, end }`. Answers within milliseconds: anything slow runs as a job.
     pub fn open(&self, args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        self.open_as(args, true)
+    }
+
+    /// `open`; `link` when a link may read what it prepares.
+    fn open_as(&self, args: &MediaOpenArgs, link: bool) -> Result<Value, ControlError> {
         if self.lock().deleted.contains(args.meeting.as_str()) {
             return Err(ControlError::not_found(NO_MEETING));
         }
         self.sweep();
         let key = JobKey::of(args);
         self.rekey_grown_audio(&key, args);
-        if let Some(answer) = self.known(&key)? {
+        if let Some(answer) = self.known(&key, link)? {
             return Ok(answer);
         }
         let dir = self
@@ -479,13 +511,14 @@ impl MediaService {
         match args.kind {
             MediaKind::Audio => {
                 let end = args.end.ok_or_else(|| bad_request("Audio needs an end."))?;
-                let plan = self.audio_plan(&dir, args.start, end)?;
+                let plan = self.audio_plan(&dir, args.start, end, key.piece)?;
                 let size = plan.size();
                 if !self.may_write(size) {
                     return Err(ControlError::failed(NO_DISK));
                 }
                 self.make_room(size)?;
-                self.start_job(key, Work::Audio(plan), size)
+                let reads = plan.needed.clone();
+                self.start_job(key, Work::Audio(plan), size, link, reads)
             }
             MediaKind::Frame => {
                 if !self.screen.recorded(dir.path()).0 {
@@ -510,7 +543,7 @@ impl MediaService {
                         owned: false,
                         clip: false,
                     };
-                    return self.insert_ready(key, ready);
+                    return self.insert_ready(key, ready, link, vec![path]);
                 }
                 let meeting = args.meeting.as_str().to_owned();
                 if !self.can_fetch(&meeting, std::slice::from_ref(&path)) {
@@ -518,13 +551,14 @@ impl MediaService {
                         "This frame is no longer on this computer and isn't in a synced bucket.",
                     ));
                 }
+                let reads = vec![path.clone()];
                 let work = Work::Frame {
                     meeting,
                     dir: dir.path().to_path_buf(),
                     path,
                     at,
                 };
-                self.start_job(key, work, 0)
+                self.start_job(key, work, 0, link, reads)
             }
             MediaKind::Video => {
                 let end = args.end.ok_or_else(|| bad_request("Video needs an end."))?;
@@ -542,7 +576,13 @@ impl MediaService {
                     start: args.start,
                     end,
                 };
-                self.start_job(key, work, 0)
+                // The fragments a cut reads are found while it prepares.
+                let reads = vec![format!(
+                    "{}/{}/",
+                    screen_paths::SCREEN_DIR,
+                    screen_paths::VIDEO_DIR
+                )];
+                self.start_job(key, work, 0, link, reads)
             }
         }
     }
@@ -552,7 +592,11 @@ impl MediaService {
     /// arguments mix again up to the new end. The old file stays for a link still reading it, and
     /// the sweep removes it once nobody uses it.
     fn rekey_grown_audio(&self, key: &JobKey, args: &MediaOpenArgs) {
-        let Some(wanted) = key.end.filter(|_| key.kind == MediaKind::Audio) else {
+        // A piece ends early on purpose; the rest is another open.
+        let Some(wanted) = key
+            .end
+            .filter(|_| key.kind == MediaKind::Audio && !key.piece)
+        else {
             return;
         };
         let clamped = self
@@ -573,7 +617,7 @@ impl MediaService {
         let Some(dir) = self.controller.library().dir(args.meeting.as_str()) else {
             return;
         };
-        match self.audio_plan(&dir, args.start, wanted) {
+        match self.audio_plan(&dir, args.start, wanted, false) {
             Ok(plan) if plan.end > held => {}
             _ => return,
         }
@@ -585,7 +629,7 @@ impl MediaService {
     }
 
     /// The answer for arguments Voice already knows, or `None` to start again.
-    fn known(&self, key: &JobKey) -> Result<Option<Value>, ControlError> {
+    fn known(&self, key: &JobKey, link: bool) -> Result<Option<Value>, ControlError> {
         let mut inner = self.lock();
         let Some(id) = inner
             .jobs
@@ -596,6 +640,7 @@ impl MediaService {
             return Ok(None);
         };
         let job = inner.jobs.get_mut(&id).expect("found above");
+        job.link |= link;
         match &job.state {
             State::Preparing => Ok(Some(json!({ "media": id, "ready": false }))),
             State::Ready(ready) if ready.path.is_file() => {
@@ -621,12 +666,16 @@ impl MediaService {
         }
     }
 
-    /// Checks an audio range and finds what it needs, without reading any audio.
+    /// Checks an audio range and finds what it needs, without reading any audio. A `piece` ends
+    /// at the first segment boundary after `start` when audio after it still has to come back
+    /// from the bucket: it waits for the segments `start` falls in only, and a player starts on
+    /// it while the rest comes.
     fn audio_plan(
         &self,
         dir: &MeetingDir,
         start: u64,
         end: u64,
+        piece: bool,
     ) -> Result<AudioPlan, ControlError> {
         let meeting = dir
             .meeting()
@@ -656,16 +705,30 @@ impl MediaService {
                 "Nothing was recorded at that time.",
             ));
         }
-        let end = end.min(recorded_end);
-        let needed: Vec<String> = segments
-            .iter()
-            .filter(|s| {
-                let from = s.t;
-                let to = (s.t * PER_MS + samples(s)).div_ceil(PER_MS);
-                from < end && to > start
-            })
-            .map(|s| s.file.clone())
-            .collect();
+        let mut end = end.min(recorded_end);
+        // Each segment the range touches: (from, to, file).
+        let touched = |end: u64| -> Vec<(u64, u64, String)> {
+            segments
+                .iter()
+                .map(|s| (s.t, (s.t * PER_MS + samples(s)).div_ceil(PER_MS), &s.file))
+                .filter(|(from, to, _)| *from < end && *to > start)
+                .map(|(from, to, file)| (from, to, file.clone()))
+                .collect()
+        };
+        let mut needed: Vec<String> = touched(end).into_iter().map(|t| t.2).collect();
+        if piece {
+            let all = touched(end);
+            // The earliest segment end after start: before it, every track reads one segment.
+            if let Some(boundary) = all.iter().map(|t| t.1).filter(|to| *to < end).min() {
+                let later_missing = all
+                    .iter()
+                    .any(|(from, _, file)| *from >= boundary && !path.join(file).is_file());
+                if later_missing {
+                    end = boundary;
+                    needed = touched(end).into_iter().map(|t| t.2).collect();
+                }
+            }
+        }
         let id = dir.id().as_str().to_owned();
         let fetch = missing(path, &needed);
         if !fetch.is_empty() && !self.can_fetch(&id, &fetch) {
@@ -739,7 +802,13 @@ impl MediaService {
         Ok(())
     }
 
-    fn insert_ready(&self, key: JobKey, ready: Ready) -> Result<Value, ControlError> {
+    fn insert_ready(
+        &self,
+        key: JobKey,
+        ready: Ready,
+        link: bool,
+        reads: Vec<String>,
+    ) -> Result<Value, ControlError> {
         let id = new_id()?;
         let answer = ready_answer(&id, &ready);
         let mut inner = self.lock();
@@ -754,13 +823,22 @@ impl MediaService {
                 used: Instant::now(),
                 reserved: 0,
                 answered_ready: true,
+                link,
+                reads,
             },
         );
         Ok(answer)
     }
 
     /// Queues a job and answers `ready: false`.
-    fn start_job(&self, key: JobKey, work: Work, reserved: u64) -> Result<Value, ControlError> {
+    fn start_job(
+        &self,
+        key: JobKey,
+        work: Work,
+        reserved: u64,
+        link: bool,
+        reads: Vec<String>,
+    ) -> Result<Value, ControlError> {
         let id = new_id()?;
         let spawn = {
             let mut inner = self.lock();
@@ -768,13 +846,13 @@ impl MediaService {
                 return Err(ControlError::not_found(NO_MEETING));
             }
             // Another open of the same arguments got here first.
-            if let Some(other) = inner
+            if let Some((other, job)) = inner
                 .jobs
-                .iter()
+                .iter_mut()
                 .find(|(_, j)| j.key == key && matches!(j.state, State::Preparing))
-                .map(|(other, _)| other.clone())
             {
-                return Ok(json!({ "media": other, "ready": false }));
+                job.link |= link;
+                return Ok(json!({ "media": other.clone(), "ready": false }));
             }
             inner.jobs.insert(
                 id.clone(),
@@ -784,6 +862,8 @@ impl MediaService {
                     answered_ready: false,
                     used: Instant::now(),
                     reserved,
+                    link,
+                    reads,
                 },
             );
             inner.queue.push_back((id.clone(), work));
@@ -1220,6 +1300,7 @@ mod tests {
             kind,
             start: 1000,
             end,
+            piece: false,
         };
         assert_eq!(
             JobKey::of(&args(MediaKind::Frame, Some(5))),

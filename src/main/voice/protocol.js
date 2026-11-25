@@ -176,6 +176,7 @@ const COMMAND_ARGS = {
       int(a, 'end', 0);
       check(a.end >= a.start && a.end - a.start <= MEDIA_SPAN_MAX, 'end');
     }
+    if (given(a, 'piece')) bool(a, 'piece');
   },
   'media.read': (a) => {
     pattern(a, 'media', MEDIA_ID);

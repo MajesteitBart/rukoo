@@ -766,6 +766,34 @@ impl Queue {
         })
     }
 
+    /// When a restored file was used last, or `None` without its row.
+    pub(crate) fn restored_used_at(
+        &self,
+        meeting: &str,
+        path: &str,
+    ) -> Result<Option<u64>, SyncError> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT used_at FROM restored WHERE meeting = ?1 AND path = ?2",
+                params![meeting, path],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|at| at.map(to_u64))
+        })
+    }
+
+    /// Whether the user keeps the meeting on this computer.
+    pub(crate) fn is_kept(&self, meeting: &str) -> Result<bool, SyncError> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM kept WHERE meeting = ?1)",
+                [meeting],
+                |r| r.get(0),
+            )
+        })
+    }
+
     /// Forgets a restored file the cache limit removed.
     pub(crate) fn forget_restored(&self, meeting: &str, path: &str) -> Result<(), SyncError> {
         self.with(|c| {

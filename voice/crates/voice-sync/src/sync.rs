@@ -46,8 +46,6 @@ pub struct SyncTiming {
     pub pull_every: Duration,
     /// The bytes one GB of the cache limit stands for; tests make it small.
     pub cache_gb: u64,
-    /// The cache limit never removes media used this recently: a link may still read it.
-    pub cache_in_use: Duration,
 }
 
 impl Default for SyncTiming {
@@ -68,7 +66,6 @@ impl Default for SyncTiming {
             single_max: 16 << 20,
             pull_every: Duration::from_secs(5 * 60),
             cache_gb: 1_000_000_000,
-            cache_in_use: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -191,7 +188,14 @@ pub struct BucketSync {
     shared: Arc<Shared>,
     /// One cache trim at a time.
     trimming: Mutex<()>,
+    /// Held while the cache limit checks and removes one file, and while a meeting's keep choice
+    /// changes, so a keep never lands between the check and the removal.
+    evicting: Mutex<()>,
 }
+
+/// Whether a reader has a meeting's file (meeting, path) open now, such as a media link Voice
+/// prepares or serves: the cache limit leaves it alone.
+pub type InUse<'a> = &'a dyn Fn(&str, &str) -> bool;
 
 /// `Core::shutdown` waits this long for the worker (2.9).
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
@@ -216,6 +220,7 @@ impl BucketSync {
         Ok(BucketSync {
             shared,
             trimming: Mutex::new(()),
+            evicting: Mutex::new(()),
         })
     }
 
@@ -620,7 +625,13 @@ impl BucketSync {
         if voice_protocol::MeetingId::parse(meeting).is_none() {
             return Err(SyncError::new(SyncErrorKind::Local, "Invalid meeting id."));
         }
+        let _gate = self.evicting.lock().unwrap_or_else(PoisonError::into_inner);
         self.shared.queue.set_kept(meeting, keep, self.shared.now())
+    }
+
+    /// The sync clock in ms, as `used_at` counts it.
+    pub fn now(&self) -> u64 {
+        self.shared.now()
     }
 
     /// The meetings the user keeps on this computer.
@@ -652,31 +663,53 @@ impl BucketSync {
     }
 
     /// Removes fetched media, least recently used first, until what the cache counts fits in
-    /// `limit` bytes. Never a file that isn't in the bucket, one used in the last
-    /// [`SyncTiming::cache_in_use`], or one being fetched. Returns the bytes removed.
-    pub fn trim_cache(&self, limit: u64) -> u64 {
+    /// `limit` bytes. Never a file that isn't in the bucket, one a reader has open (`in_use`) or
+    /// one being fetched. Returns the bytes removed.
+    pub fn trim_cache(&self, limit: u64, in_use: InUse<'_>) -> u64 {
+        let (removed, _) = self.trim(limit, u64::MAX, in_use);
+        removed
+    }
+
+    /// Makes room for `bytes` more fetched media within `limit`, removing only files used before
+    /// `used_before` (the sync clock, [`now`](Self::now)) by the rules of
+    /// [`trim_cache`](Self::trim_cache). Whether they fit now: a fetch ahead of time stops when
+    /// they don't, so it never pushes the cache past its limit nor removes what it fetched itself.
+    pub fn cache_room(&self, limit: u64, bytes: u64, used_before: u64, in_use: InUse<'_>) -> bool {
+        let Some(target) = limit.checked_sub(bytes) else {
+            return false;
+        };
+        let (_, total) = self.trim(target, used_before, in_use);
+        total <= target
+    }
+
+    /// Removes fetched media until the cache counts at most `target` bytes; (bytes removed, bytes
+    /// left).
+    fn trim(&self, target: u64, used_before: u64, in_use: InUse<'_>) -> (u64, u64) {
         let _one = self.trimming.lock().unwrap_or_else(PoisonError::into_inner);
         let shared = &self.shared;
         let cached = self.cached();
         let mut total: u64 = cached.iter().map(|(_, _, bytes, _)| bytes).sum();
-        let recent = shared
-            .now()
-            .saturating_sub(worker::millis(shared.opts.timing.cache_in_use));
         let mut removed = 0;
         for (meeting, path, bytes, used_at) in cached {
-            if total <= limit {
+            if total <= target {
                 break;
             }
-            if used_at > recent || !self.in_bucket(&meeting, &path) {
+            if used_at >= used_before || !self.in_bucket(&meeting, &path) {
                 continue;
             }
             let file = shared.meeting_dir(&meeting).join(&path);
-            let fetching = shared
-                .fetching
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains(&file);
-            if fetching {
+            // A fetch of the file holds its claim; one that starts now waits for it, and then
+            // finds the file gone and fetches it again.
+            let Some(_claim) = crate::restore::Claim::try_take(shared, &file) else {
+                continue;
+            };
+            let _gate = self.evicting.lock().unwrap_or_else(PoisonError::into_inner);
+            // Looked at again under the claim: since the list was read, the user may keep the
+            // meeting, a reader may have opened the file, or it was used again and is no longer
+            // the one used longest ago.
+            let kept = shared.queue.is_kept(&meeting).unwrap_or(true);
+            let same = matches!(shared.queue.restored_used_at(&meeting, &path), Ok(Some(at)) if at == used_at);
+            if kept || !same || in_use(&meeting, &path) {
                 continue;
             }
             match std::fs::remove_file(&file) {
@@ -693,7 +726,7 @@ impl BucketSync {
         if removed > 0 {
             log::info!("sync: the cache limit removed {removed} bytes of fetched media");
         }
-        removed
+        (removed, total)
     }
 
     /// The bucket's meetings that aren't on this computer, newest first. Settings' restore count

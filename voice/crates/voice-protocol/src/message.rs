@@ -826,6 +826,9 @@ impl CommandBody {
                 if let Some(end) = open.end {
                     args.insert("end".into(), end.into());
                 }
+                if open.piece {
+                    args.insert("piece".into(), true.into());
+                }
             }
             CommandBody::MediaRead {
                 media,
@@ -891,6 +894,9 @@ pub struct MediaOpenArgs {
     pub start: u64,
     /// Meeting ms; Voice requires it for audio and video.
     pub end: Option<u64>,
+    /// Audio only: Voice may end the mix at a segment boundary while the rest still comes back
+    /// from the bucket, so a player can start early. The ready answer's `end` says where.
+    pub piece: bool,
 }
 
 /// The result of `media.read`: `{ "offset", "data" }`, the bytes in standard base64 with padding

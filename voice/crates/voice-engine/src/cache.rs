@@ -100,13 +100,22 @@ impl MediaCache {
     }
 
     /// Removes fetched media over the limit, least recently used first (voice-sync
-    /// `trim_cache`). Nothing before the engine set a limit.
+    /// `trim_cache`), except what a media job reads now. Nothing before the engine set a limit.
     pub fn trim(&self) -> u64 {
         let limit = self.limit.load(Ordering::SeqCst);
         match &self.sync {
-            Some(sync) if limit > 0 => sync.trim_cache(limit),
+            Some(sync) if limit > 0 => {
+                sync.trim_cache(limit, &|meeting, path| self.in_use(meeting, path))
+            }
             _ => 0,
         }
+    }
+
+    /// Whether a media job reads the meeting's file now.
+    fn in_use(&self, meeting: &str, path: &str) -> bool {
+        self.media
+            .upgrade()
+            .is_some_and(|media| media.in_use(meeting, path))
     }
 
     /// Bytes of fetched media the limit counts now.
@@ -219,13 +228,18 @@ impl MediaCache {
     }
 
     /// The meeting is being deleted: its queued fetches go, and a fetch for it now stops first.
-    /// `busy` when that fetch doesn't stop in time.
+    /// `busy` when that fetch doesn't stop in time; the meeting then stays as it was, so later
+    /// prefetches and keeps of it work.
     pub(crate) fn forget(&self, meeting: &str) -> Result<(), ControlError> {
+        self.forget_within(meeting, FORGET_WAIT)
+    }
+
+    fn forget_within(&self, meeting: &str, wait: Duration) -> Result<(), ControlError> {
         let mut inner = self.lock();
         inner.forgotten.insert(meeting.to_owned());
         inner.queue.retain(|t| t.meeting() != meeting);
         inner.stalled.remove(meeting);
-        let deadline = Instant::now() + FORGET_WAIT;
+        let deadline = Instant::now() + wait;
         while let Some((current, cancel)) = inner.current.as_ref() {
             if current != meeting {
                 break;
@@ -233,6 +247,8 @@ impl MediaCache {
             cancel.store(true, Ordering::SeqCst);
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                // The deletion doesn't go ahead: nothing may stay refused for the meeting.
+                inner.forgotten.remove(meeting);
                 return Err(ControlError::new(
                     voice_protocol::ErrorCode::Busy,
                     "Voice is still fetching this meeting's media. Try deleting it again in a moment.",
@@ -323,18 +339,20 @@ impl MediaCache {
                 .position(|dir| path.starts_with(dir))
                 .unwrap_or(3)
         };
-        let mut files: Vec<String> = sync
+        let mut files: Vec<(String, u64)> = sync
             .media_in_bucket(meeting)
             .into_iter()
-            .map(|(path, _)| path)
-            .filter(|path| match task {
+            .filter(|(path, _)| match task {
                 Task::Frames(_) => path.starts_with("screen/frames/"),
                 Task::All(_) => true,
             })
             .collect();
-        files.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+        files.sort_by(|(a, _), (b, _)| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
         let stop = || self.stopping.load(Ordering::SeqCst) || cancel.load(Ordering::SeqCst);
-        for path in files {
+        // Frames fetched ahead make room only among media used before this task began, so the task
+        // never removes what it fetched itself.
+        let began = sync.now();
+        for (path, bytes) in files {
             if stop() {
                 return false;
             }
@@ -350,6 +368,16 @@ impl MediaCache {
             if !sync.can_fetch() {
                 return true;
             }
+            // Nobody asked for these frames yet: they come only while they fit within the limit
+            // (a kept meeting's media doesn't count against it).
+            let limit = self.limit.load(Ordering::SeqCst);
+            if matches!(task, Task::Frames(_))
+                && limit > 0
+                && !sync.cache_room(limit, bytes, began, &|m, p| self.in_use(m, p))
+            {
+                log::info!("media: fetching {meeting}'s frames ahead stopped at the cache limit");
+                return false;
+            }
             // What Rukoo asks for now goes first.
             while self.media.upgrade().is_some_and(|media| media.busy()) {
                 if stop() {
@@ -363,9 +391,6 @@ impl MediaCache {
                 }
                 log::info!("media: fetching {meeting} in the background stopped: {e}");
                 return true;
-            }
-            if matches!(task, Task::Frames(_)) {
-                self.trim();
             }
         }
         false
@@ -405,5 +430,46 @@ fn run_loop(cache: Weak<MediaCache>) {
             }
         }
         this.idle.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meetings::controller::{ControllerOptions, ControllerTiming};
+
+    /// A deletion refused because a background fetch of the meeting doesn't stop in time leaves
+    /// the meeting as it was: a later prefetch or keep of it is queued again.
+    #[test]
+    fn a_refused_deletion_lets_later_fetches_of_the_meeting_through() {
+        let data = std::env::temp_dir().join(format!("voice-cache-forget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        let controller = Controller::new(
+            ControllerOptions {
+                data_dir: data.clone(),
+                recorder_exe: data.join("no-recorder"),
+                sources: Vec::new(),
+                timing: ControllerTiming::default(),
+            },
+            |_| {},
+        )
+        .unwrap();
+        let cache = MediaCache::new(None, controller, Weak::new());
+        let meeting = "m-20261030-171203-4f2a";
+        // A fetch for the meeting runs and never notices its cancel flag.
+        let cancel = Arc::new(AtomicBool::new(false));
+        cache.lock().current = Some((meeting.to_owned(), Arc::clone(&cancel)));
+        let refused = cache.forget_within(meeting, Duration::from_millis(50));
+        assert_eq!(refused.unwrap_err().code, voice_protocol::ErrorCode::Busy);
+        assert!(cancel.load(Ordering::SeqCst), "the fetch was asked to stop");
+        assert!(!cache.lock().forgotten.contains(meeting));
+        // Queued as before; the thread isn't started while `running` says one runs.
+        cache.lock().running = true;
+        cache.push(Task::All(meeting.to_owned()));
+        assert_eq!(
+            cache.lock().queue,
+            VecDeque::from([Task::All(meeting.to_owned())])
+        );
+        let _ = fs::remove_dir_all(&data);
     }
 }

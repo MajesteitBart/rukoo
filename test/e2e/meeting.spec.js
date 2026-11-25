@@ -9,7 +9,7 @@ const zlib = require('zlib');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
 const { END_OF_LINE, END_OF_TEXT } = require('./keys');
-const { FakeVoice, startVoiceServer, syntheticMedia } = require('../fixtures/voice-server');
+const { FakeVoice, startVoiceServer, syntheticMedia, DEFAULTS } = require('../fixtures/voice-server');
 
 const ROOT = path.join(__dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'tmp', 'e2e-shots', 'meeting');
@@ -2083,6 +2083,80 @@ test('a frame from the bucket shows that it loads, then its image; the bucket an
   await hear('call-1').click();
   await expect(player().locator('.mt-pnote')).toHaveText('The audio is in your bucket. Clips play once Rukoo Voice can reach the bucket.');
   await expect(rows()).toHaveCount(3);
+});
+
+test('a frame Voice could not fetch from the bucket is asked for again while the meeting stays open, and opening the meeting asks Voice to fetch its frames ahead each time', async () => {
+  test.setTimeout(120000);
+  let down = true;
+  voice.handlers['frame.get'] = ((own) =>
+    function (args) {
+      const res = own.call(this, args);
+      // The first slide is here; Voice can't reach the bucket for the second.
+      if (args.at >= 9000 && down) return { frame: res.frame, image: null, inBucket: true };
+      return res;
+    })(voice.handlers['frame.get']);
+  const id = fromTheBucket();
+  const prefetches = () => voice.commands.filter((c) => c.command === 'media.prefetch').map((c) => c.args);
+  await openMeetings();
+  await expect(rows()).toHaveCount(3);
+  // Opening the meeting asks Voice to fetch its frames ahead, though the frames in view are here.
+  await expect.poll(prefetches).toEqual([{ meeting: id, kind: 'frames' }]);
+  await expect(frame(4000)).toHaveClass(/has-image/);
+  await expect(frame(9000).locator('.mt-frame-note')).toHaveText('The image shows once Rukoo Voice can reach your bucket.');
+  // While the meeting stays open, Rukoo asks again: 5 s later, then waiting longer.
+  const asked = () => frameGets().filter((at) => at === 9000).length;
+  const first = asked();
+  await expect.poll(asked, { timeout: 10000 }).toBeGreaterThan(first);
+  // Away from the meetings it stops asking.
+  await win.keyboard.press('Control+1');
+  await expect(win.locator('[data-mode="mail"]')).toHaveAttribute('aria-selected', 'true');
+  const away = asked();
+  await win.waitForTimeout(12000);
+  expect(asked()).toBe(away);
+  // Back with the bucket in reach, the image comes without Voice reconnecting, and Voice is asked to fetch ahead again.
+  down = false;
+  await openMeetings();
+  await expect(frame(9000)).toHaveClass(/has-image/, { timeout: 20000 });
+  await expect(frame(9000).locator('.mt-frame-note')).toHaveCount(0);
+  await expect.poll(prefetches).toEqual([
+    { meeting: id, kind: 'frames' },
+    { meeting: id, kind: 'frames' }
+  ]);
+});
+
+test('a passage from the bucket starts playing once its first piece is here, and plays on into the piece that came later', async () => {
+  test.setTimeout(90000);
+  fromTheBucket();
+  // Voice ends a piece where a segment ends, each 7 s here, and the segment after 7 s is slow to come from the bucket.
+  voice.pieceMs = 7000;
+  let release = false;
+  voice.handlers['media.open'] = ((own) =>
+    function (args) {
+      if (args.kind === 'audio' && args.piece === true && args.start === 7000 && !release) return { media: `md-${'A'.repeat(22)}`, ready: false };
+      return own.call(this, args);
+    })(DEFAULTS['media.open']);
+  const pieces = () => voice.commands.filter((c) => c.command === 'media.open' && c.args.kind === 'audio' && c.args.piece === true).map((c) => [c.args.start, c.args.end]);
+  // How long each WAV the window started playing lasts, in seconds.
+  const played = () => win.evaluate(() => window.__played || []);
+  await openMeetings();
+  await expect(rows()).toHaveCount(3);
+  await win.evaluate(() => {
+    window.__played = [];
+    document.addEventListener('playing', (e) => window.__played.push(Math.round(e.target.duration * 10) / 10), true);
+  });
+  // The voice's first passage, 6 to 9 s, plays its first second while the rest is still on its way.
+  await hear('call-1').click();
+  await expect.poll(played).toEqual([1]);
+  expect(pieces()[0]).toEqual([6000, 9000]);
+  await expect.poll(pieces).toContainEqual([7000, 9000]);
+  // The first piece ended: the player waits for the rest, still in the same clip.
+  await expect(playButton()).toHaveAttribute('aria-label', 'Pause');
+  await expect(player().locator('.mt-pnote')).toHaveCount(0);
+  // The rest comes and plays on.
+  release = true;
+  await expect.poll(played, { timeout: 20000 }).toEqual([1, 2]);
+  await expect(playButton()).toHaveAttribute('aria-label', 'Play', { timeout: 15000 });
+  expect(await played()).toEqual([1, 2]);
 });
 
 test('Keep on this computer downloads a meeting from the bucket, shows how far it got, survives a restart and can be turned off', async () => {

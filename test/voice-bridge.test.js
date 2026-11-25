@@ -386,7 +386,7 @@ test('opening the meetings asks Voice to look for meetings from the other comput
   assert.equal(s.connected, true);
 });
 
-test('a frame from the bucket passes pending and inBucket on, and the first pending asks Voice to fetch the frames ahead once', async (t) => {
+test('a frame from the bucket passes pending and inBucket on; media.prefetch goes to Voice each time it is asked', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
   voice.append('meeting.started', M1, { ...started('From the other computer'), screen: 'frames' });
@@ -400,9 +400,15 @@ test('a frame from the bucket passes pending and inBucket on, and the first pend
   assert.equal((await s.frame(M1, 1500)).pending, true);
   assert.equal((await s.frame(M1, 1500)).pending, true);
   assert.equal((await s.frame(M1, 1500)).inBucket, true);
-  await until(() => voice.commands.some((c) => c.command === 'media.prefetch'), 'media.prefetch');
+  assert.equal(voice.commands.filter((c) => c.command === 'media.prefetch').length, 0, 'a frame asks for nothing else');
+  // Each open asks again: Voice finds what is missing, so work cut short goes on.
+  assert.equal(await s.prefetchFrames(M1), true);
+  assert.equal(await s.prefetchFrames(M1), true);
   const prefetches = voice.commands.filter((c) => c.command === 'media.prefetch');
-  assert.deepEqual(prefetches.map((c) => c.args), [{ meeting: M1, kind: 'frames' }], 'once per meeting');
+  assert.deepEqual(prefetches.map((c) => c.args), [{ meeting: M1, kind: 'frames' }, { meeting: M1, kind: 'frames' }]);
+  // An older Voice doesn't know the command.
+  voice.handlers['media.prefetch'] = () => ({ error: { code: 'unknown_command', message: 'media.prefetch' } });
+  assert.equal(await s.prefetchFrames(M1), false);
 });
 
 test('keeping a meeting on this computer: Voice says how its media stands, Rukoo keeps that in the summary, and an older Voice offers nothing', async (t) => {
@@ -1231,6 +1237,17 @@ test('a split Rukoo never heard finish is asked for again when the meeting opens
   assert.equal(Buffer.from(bytes.data, 'base64').length, 44 + 2000 * 32);
   assert.deepEqual([bytes.start, bytes.end], [1000, 3000]);
   await assert.rejects(s.audioClip(id, 0, 31000), (err) => err.code === 'bad_request');
+  // The player asks for a piece: Voice may end it at a segment boundary while the rest comes from the bucket, and the
+  // player asks for the rest from there. A link's media.open never sends piece.
+  voice.pieceMs = 2000;
+  const first = await s.audioClip(id, 1000, 3000, true);
+  assert.deepEqual([first.start, first.end], [1000, 2000]);
+  assert.equal(Buffer.from(first.data, 'base64').length, 44 + 1000 * 32);
+  const rest = await s.audioClip(id, 2000, 3000, true);
+  assert.deepEqual([rest.start, rest.end], [2000, 3000]);
+  const opens = voice.commands.filter((c) => c.command === 'media.open').map((c) => c.args);
+  assert.ok(opens.some((a) => a.start === 1000 && a.end === 3000 && a.piece === true));
+  assert.ok(opens.some((a) => a.start === 1000 && a.end === 3000 && !('piece' in a)), 'the whole clip without piece');
 });
 
 test('a split Voice refused as busy can be asked for again once the meeting finished processing', async (t) => {
