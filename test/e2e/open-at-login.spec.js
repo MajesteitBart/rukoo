@@ -379,7 +379,8 @@ test.describe('mail the last run left, while a start from sign-in quits', () => 
     await again.waitForSelector('.composer .editor');
     await expect(again.locator('[data-field="subject"]')).toHaveValue('Failed while quitting');
     expect(subjectsIn(unsentFile())).toEqual(['Unsent at sign-in']);
-    expect(subjectsIn(heldFile())).toEqual(['Held at sign-in']);
+    // held.json keeps this run's email too, until its editor has settled it.
+    expect(subjectsIn(heldFile())).toEqual(['Failed while quitting', 'Held at sign-in']);
 
     // The person opens Rukoo: the last run's mail opens, once.
     await app.evaluate(({ app }) => app.emit('second-instance', {}, ['rukoo'], process.cwd()));
