@@ -24,11 +24,17 @@ const { siteTitleHref } = Astro.locals.starlightRoute;
     min-width: 0;
     white-space: nowrap;
   }
+  /* 44px tall, so both links are easy to tap on a phone. */
+  .site-title a {
+    min-height: 2.75rem;
+    align-items: center;
+  }
   .brand img {
     height: 1.625rem;
     width: auto;
   }
   .section {
+    display: inline-flex;
     padding-inline-start: 0.75rem;
     border-inline-start: 1px solid var(--sl-color-gray-5);
     color: var(--sl-color-white);

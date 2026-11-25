@@ -37,5 +37,12 @@ body {
   font-optical-sizing: auto;
   font-feature-settings: 'cv11', 'ss01', 'ss03';
 }
+/* 44px touch targets on a phone, as on the rest of rukoo.io. */
+:root { --sl-menu-button-size: 2.75rem; }
+.sl-menu-button { align-items: center; justify-content: center; }
+@media (max-width: 49.99rem) {
+  button[data-open-modal] { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
+}
+
 .sl-markdown-content h2 { scroll-margin-top: 6rem; }
 .sl-markdown-content a { text-underline-offset: .18em; }
