@@ -21,10 +21,11 @@ use support::{
     wait_for, Harness,
 };
 use voice_bridge::{ControlError, EventLog, MediaKind, MediaOpenArgs, MeetingControl};
-use voice_engine::media::ScreenMedia;
+use voice_engine::media::{ScreenMedia, MIN_PIECE_MS};
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::{Engine, StopReason};
+use voice_meetings::reader::segment_samples;
 use voice_meetings::{TrackReader, Transcript};
 use voice_protocol::{ErrorCode, MeetingId, Speaker, Track};
 use voice_recorder::timeline::{self, History, Line};
@@ -1753,6 +1754,11 @@ fn a_passage_from_the_bucket_starts_after_its_first_segment() {
         ..audio(&id, start, Some(end))
     };
 
+    // Where the recorder's segments end depends on the machine's timing: the pieces end where
+    // the meeting's own timeline says.
+    let here = meeting_dir(&b.data(), &id);
+    let ends = segment_ends(&here);
+
     // The bucket holds every answer for 6 s: the first piece doesn't need it.
     fake.faults().stall = Some(Duration::from_secs(6));
     let asked = Instant::now();
@@ -1763,7 +1769,8 @@ fn a_passage_from_the_bucket_starts_after_its_first_segment() {
         asked.elapsed()
     );
     let boundary = first["end"].as_u64().unwrap();
-    assert!(boundary > 700 && boundary < 1700, "{first}");
+    assert_eq!(boundary, piece_end(&ends, 700, 1700), "{first}");
+    assert!(boundary < 1700, "{first} with segments ending at {ends:?}");
     assert_eq!(first["start"], 700);
     assert_eq!(first["more"], true, "audio follows the piece: {first}");
     assert_eq!(
@@ -1771,20 +1778,38 @@ fn a_passage_from_the_bucket_starts_after_its_first_segment() {
         expected_mix(&recorded, 700, boundary)
     );
 
+    // A piece that starts just before a boundary doesn't end there: one of a few ms is no use to
+    // the player, so it runs on to the next boundary at least MIN_PIECE_MS on, or the range's end.
+    let short = piece(boundary - 1, 1700);
+    assert_eq!(control.media_open(&short).unwrap()["ready"], false);
     // The rest waits for the next segment, which comes once the bucket answers.
     let rest = piece(boundary, 1700);
     assert_eq!(control.media_open(&rest).unwrap()["ready"], false);
     fake.faults().stall = None;
-    let second = open_ready(&*control, &rest);
-    assert_eq!(
-        (&second["start"], &second["end"]),
-        (&json!(boundary), &json!(1700))
-    );
-    assert_eq!(
-        read_all(&*control, &second, 1 << 20),
-        expected_mix(&recorded, boundary, 1700)
-    );
-    assert!(second.get("more").is_none(), "{second}");
+    for (from, open) in [(boundary - 1, short), (boundary, rest)] {
+        let mut at = from;
+        let mut answer = open_ready(&*control, &open);
+        loop {
+            let end = piece_end(&ends, at, 1700);
+            assert!(end - at >= MIN_PIECE_MS || end == 1700, "{answer}");
+            assert_eq!(
+                (&answer["start"], &answer["end"]),
+                (&json!(at), &json!(end)),
+                "segments end at {ends:?}"
+            );
+            assert_eq!(
+                read_all(&*control, &answer, 1 << 20),
+                expected_mix(&recorded, at, end)
+            );
+            if end == 1700 {
+                assert!(answer.get("more").is_none(), "{answer}");
+                break;
+            }
+            assert_eq!(answer["more"], true, "{answer}");
+            at = end;
+            answer = open_ready(&*control, &piece(at, 1700));
+        }
+    }
 
     // A link gets the whole range in one file, as before.
     let whole = open_ready(&*control, &audio(&id, 700, Some(1700)));
@@ -1799,11 +1824,15 @@ fn a_passage_from_the_bucket_starts_after_its_first_segment() {
     // here the first segment of each track still in the bucket starts 200 ms early. The mix keeps
     // the overlap in the earlier segment, so a piece across that boundary needs only the
     // segments on this computer.
-    let here = meeting_dir(&b.data(), &id);
     let (before, overlap) = overlap_next_missing(&here, 200);
     let (from, to) = (
-        before.iter().min().unwrap() - 100,
+        before.iter().min().unwrap() - MIN_PIECE_MS - 100,
         before.iter().max().unwrap() + 100,
+    );
+    assert_eq!(
+        piece_end(&segment_ends(&here), from, to),
+        *before.iter().min().unwrap(),
+        "the overlapping segments start where the earlier ones end"
     );
     fake.faults().stall = Some(Duration::from_secs(6));
     let asked = Instant::now();
@@ -1842,6 +1871,36 @@ fn a_passage_from_the_bucket_starts_after_its_first_segment() {
     );
     engine_b.shutdown();
     fake.stop();
+}
+
+/// Where each segment of the meeting ends in ms, as the mix plays it: after the overlap rule, so
+/// a segment the recorder started early starts where the one before it ends. Lengths come from the
+/// timeline, so segments still in the bucket count too.
+fn segment_ends(dir: &Path) -> Vec<u64> {
+    let history = History::from_lines(&timeline::read(&dir.join("timeline.jsonl")).unwrap());
+    let mut ends: Vec<u64> = ["mic", "call"]
+        .iter()
+        .flat_map(|track| {
+            TrackReader::with_lengths(dir, track, &history.segments, |s| {
+                s.ended
+                    .unwrap_or_else(|| segment_samples(&dir.join(&s.file), None))
+            })
+            .spans()
+            .map(|(_, to, _)| to.div_ceil(16))
+            .collect::<Vec<_>>()
+        })
+        .collect();
+    ends.sort_unstable();
+    ends
+}
+
+/// Where a `piece` from `start` to `end` ends while what follows its start is still in the
+/// bucket: the first segment end at least [`MIN_PIECE_MS`] after `start`, else `end`.
+fn piece_end(ends: &[u64], start: u64, end: u64) -> u64 {
+    ends.iter()
+        .copied()
+        .find(|e| *e >= start + MIN_PIECE_MS && *e < end)
+        .unwrap_or(end)
 }
 
 /// Moves the first segment of each track that isn't on this computer `ms` earlier, into the

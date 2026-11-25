@@ -51,6 +51,9 @@ const PREPARE_THREADS: usize = 2;
 pub const CLIP_WAIT: Duration = Duration::from_secs(60);
 /// Audio mixes are written ten seconds at a time.
 const MIX_BLOCK: u64 = 10 * 1000 * PER_MS;
+/// The shortest `piece` Voice cuts, in ms: the tracks' segments end a few ms apart, and a piece
+/// that ends at the next track's boundary right after `start` gives the player nothing to play.
+pub const MIN_PIECE_MS: u64 = 250;
 
 /// The screen recording, for media links.
 pub trait ScreenMedia: Send + Sync {
@@ -692,9 +695,9 @@ impl MediaService {
     }
 
     /// Checks an audio range and finds what it needs, without reading any audio. A `piece` ends
-    /// at the first segment boundary after `start` when audio after it still has to come back
-    /// from the bucket: it waits for the segments `start` falls in only, and a player starts on
-    /// it while the rest comes.
+    /// at the first segment boundary at least [`MIN_PIECE_MS`] after `start` when audio after it
+    /// still has to come back from the bucket: it waits for the segments before that boundary
+    /// only, and a player starts on it while the rest comes.
     fn audio_plan(
         &self,
         dir: &MeetingDir,
@@ -762,8 +765,14 @@ impl MediaService {
                     .iter()
                     .filter(|(from, to, _)| *from < end && *to > start)
             };
-            // The earliest segment end after start: before it, every track reads one segment.
-            if let Some(boundary) = within().map(|t| t.1).filter(|to| *to < end).min() {
+            // The earliest segment end far enough after start: a boundary just past start, such
+            // as another track's a few ms after this one's, would cut a piece too short to play.
+            let shortest = start + MIN_PIECE_MS;
+            if let Some(boundary) = within()
+                .map(|t| t.1)
+                .filter(|to| *to >= shortest && *to < end)
+                .min()
+            {
                 let later_missing =
                     within().any(|(from, _, file)| *from >= boundary && !path.join(file).is_file());
                 if later_missing {
