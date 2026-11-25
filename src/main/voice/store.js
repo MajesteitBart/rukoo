@@ -302,7 +302,7 @@ class VoiceStore {
       m.stamps[key] = { at: key === 'notes' ? Math.max(1, m.notes.updatedAt) : 1, by: this.index.device };
       return true;
     };
-    let failed = false;
+    const stamped = [];
     for (const [id, e] of Object.entries(this.index.meetings)) {
       if (e.removed) continue;
       const m = this.data(id);
@@ -321,7 +321,20 @@ class VoiceStore {
       if (!seeded) continue;
       m.dataRev += 1;
       this.index.unsent[id] = true;
+      stamped.push([id, m]);
+    }
+    // voice.json first, with this profile's device id, the old cursor and the meetings to send, so a stop halfway
+    // still sends what got stamps; the catch-up counts as done once every stamped meeting is on disk.
+    let failed = false;
+    try {
+      writeAtomic(this.file, this.index);
+    } catch (err) {
+      this.log('store', `saving voice.json failed: ${err.message}`);
+      failed = true;
+    }
+    for (const [id, m] of stamped) {
       try {
+        if (failed) throw new Error('voice.json is not saved');
         writeAtomic(this.meetingFile(id), m);
       } catch (err) {
         this.log('store', `saving ${id} failed: ${err.message}`);
@@ -331,7 +344,6 @@ class VoiceStore {
     }
     if (!failed) this.index.data = 1;
     this.indexDirty = true;
-    this.unsentDirty = true;
   }
 
   meetingFile(id) {
@@ -411,9 +423,12 @@ class VoiceStore {
     if (this.indexDirty) {
       this.indexDirty = false;
       const cursor = failed ? this.savedCursor : { instance: this.index.instance, lastSeq: this.index.lastSeq };
+      // The catch-up's cutoff goes once the cursor on disk is past it, never before: a restart replays from there.
+      const caughtUp = this.index.catchUp && cursor.instance === this.index.instance && cursor.lastSeq >= this.index.catchUp;
       try {
-        writeAtomic(this.file, { ...this.index, ...cursor });
+        writeAtomic(this.file, { ...this.index, ...cursor, ...(caughtUp ? { catchUp: 0 } : {}) });
         this.savedCursor = cursor;
+        if (caughtUp) this.index.catchUp = 0;
       } catch (err) {
         this.log('store', `saving voice.json failed: ${err.message}`);
         this.indexDirty = true;
@@ -525,10 +540,6 @@ class VoiceStore {
     const applied = this.index.catchUp > 0 && Number.isInteger(ev.seq) && ev.seq <= this.index.catchUp;
     if (Number.isInteger(ev.seq) && ev.seq > this.index.lastSeq) {
       this.index.lastSeq = ev.seq;
-      this.touchIndex();
-    }
-    if (this.index.catchUp && this.index.lastSeq >= this.index.catchUp) {
-      this.index.catchUp = 0;
       this.touchIndex();
     }
     if (applied && ev.event !== 'meeting.data') return null;
@@ -944,7 +955,7 @@ class VoiceStore {
       m.corrections[passageId] = text(value, CORRECTION_MAX);
       // Editing it again keeps what the correction first covered.
       const was = m.correctedEnds[passageId];
-      m.correctedEnds[passageId] = was ? { end: Math.max(was.end, m.passages[passageId].end), at: was.at } : { end: m.passages[passageId].end, at: tick };
+      m.correctedEnds[passageId] = was ? { ...was, end: Math.max(was.end, m.passages[passageId].end) } : { end: m.passages[passageId].end, at: tick };
     }
     m.passages[passageId].changed = tick;
     this.meetingChanged(id, tick);
@@ -988,7 +999,7 @@ class VoiceStore {
       ? c.keep
       : first
         ? Object.values(m.passages)
-            .filter((p) => p.id !== pid && p.track === first.track && p.start >= first.end && p.start < c.end && int(p.added) <= c.at)
+            .filter((p) => p.id !== pid && p.track === first.track && p.start > first.start && p.start < c.end && int(p.added) <= c.at)
             .map((p) => p.id)
             .sort()
         : [];
@@ -1109,7 +1120,11 @@ class VoiceStore {
     if (draft) {
       const dismissed = m.notesDismissed && m.notesDismissed.at === d.at && m.notesDismissed.text === draft;
       const shown = m.notesOther && m.notesOther.at === d.at && m.notesOther.text === draft;
-      if (!dismissed && !shown && draft !== this.ownValue(id, m, 'notes') && (!m.notesOther || fromSender)) {
+      if (shown && !m.notesOther.draftOf && !m.notesOther.stamp) {
+        // Seen first as their notes losing here: it is their draft now, and goes when they pick.
+        m.notesOther.draftOf = sender;
+        changed = true;
+      } else if (!dismissed && !shown && draft !== this.ownValue(id, m, 'notes') && (!m.notesOther || fromSender)) {
         m.notesOther = { text: draft, at: d.at, device: theirs, draftOf: sender };
         changed = true;
       }

@@ -1096,9 +1096,74 @@ test("the catch-up's replay applies only meeting.data up to the old cursor", () 
   assert.equal(again.meeting(M).meeting.title, 'From the desktop');
   // Past the old cursor, everything applies again.
   again.apply({ ...passage('call', 3000, 'New words'), seq: first.seq + 1 });
-  assert.equal(again.index.catchUp, 0);
   assert.equal(again.meeting(M).passages.length, 2);
+  // The cutoff goes only once the cursor on disk is past it.
+  assert.equal(again.index.catchUp, first.seq);
+  again.flush();
+  assert.equal(again.index.catchUp, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'voice.json'), 'utf8')).catchUp, 0);
   again.close();
+});
+
+test('a catch-up stopped after a meeting got its stamps still sends that meeting, under the same device', () => {
+  const dir = tempDir('rukoo-data-upgrade-stop-');
+  const s = store(dir);
+  s.apply(started());
+  s.setTitle(M, 'Old title');
+  s.close();
+  legacy(dir, 30);
+  // The first start wrote voice.json, then stopped before it noted the catch-up done.
+  const first = store(dir);
+  const device = first.index.device;
+  const index = JSON.parse(fs.readFileSync(path.join(dir, 'voice.json'), 'utf8'));
+  assert.equal(index.device, device);
+  assert.deepEqual(Object.keys(index.unsent), [M]);
+  first.closed = true;
+  fs.writeFileSync(path.join(dir, 'voice.json'), JSON.stringify({ ...index, data: 0 }));
+  const again = store(dir);
+  assert.equal(again.dataDoc(M).fields.title.by, device);
+  assert.deepEqual(again.unsentData().map((u) => u.id), [M]);
+  again.close();
+});
+
+test('a synced correction made before the split keeps a passage that overlapped it, also after an edit there', () => {
+  const { a, b } = twoComputers();
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+    s.apply(passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+    s.apply(passage('mic', 7000, 'Right.', 1, { end: 7600 }));
+  }
+  a.correct(M, 'mic-000005000', 'I can do that. Thanks, Pieter!');
+  // Sent before either computer split the microphone.
+  assert.deepEqual(a.dataDoc(M).fields['correction:mic-000005000'].v.keep, ['mic-000007000']);
+  b.applyData(M, a.dataDoc(M));
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+    s.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+    s.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  }
+  const mic = (s) => s.meeting(M).passages.filter((p) => p.track === 'mic').map((p) => p.id);
+  assert.deepEqual(mic(b), ['mic-000000000', 'mic-000005000', 'mic-000007000']);
+  assert.deepEqual(mic(b), mic(a));
+  // Editing the correction on the computer that got it keeps what it covered.
+  b.correct(M, 'mic-000005000', 'I can do that. Thanks a lot, Pieter!');
+  assert.deepEqual(mic(b), ['mic-000000000', 'mic-000005000', 'mic-000007000']);
+});
+
+test('a draft first seen as losing notes goes when the computer that wrote it picks', () => {
+  const { a, b, clock } = twoComputers();
+  a.saveNotes(M, 'Laptop', 0);
+  clock.b += 5000;
+  b.saveNotes(M, 'Desktop', 0);
+  // The desktop hears of the laptop's notes first: older, so they wait in its bar.
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther.text, 'Laptop');
+  // The laptop takes the desktop's and offers its own as a draft; then it dismisses its own.
+  a.applyData(M, b.dataDoc(M));
+  b.applyData(M, a.dataDoc(M));
+  a.resolveNotes(M, 'dismiss');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther, null);
 });
 
 test('a link removed before the upgrade goes to the other computers as removed', () => {
