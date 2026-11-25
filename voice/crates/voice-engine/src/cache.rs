@@ -143,12 +143,13 @@ impl MediaCache {
     /// stands.
     pub fn keep(&self, meeting: &str, keep: Option<bool>) -> Result<Value, ControlError> {
         self.meeting_exists(meeting)?;
+        // Also a question about it: without bucket sync Rukoo offers nothing to keep.
+        let Some(sync) = &self.sync else {
+            return Err(ControlError::not_available(
+                "Keeping media on this computer needs bucket sync.",
+            ));
+        };
         if let Some(keep) = keep {
-            let Some(sync) = &self.sync else {
-                return Err(ControlError::not_available(
-                    "Keeping media on this computer needs bucket sync.",
-                ));
-            };
             sync.set_kept(meeting, keep)
                 .map_err(|e| ControlError::failed(e.message))?;
             if keep {
@@ -504,6 +505,36 @@ mod tests {
             cache.lock().queue,
             VecDeque::from([Task::All(meeting.to_owned())])
         );
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    /// Without bucket sync, asking whether a meeting is kept says it can't be, as setting it does,
+    /// so Rukoo doesn't offer the choice.
+    #[test]
+    fn without_bucket_sync_keeping_is_not_available_also_when_asked() {
+        let data = std::env::temp_dir().join(format!("voice-cache-keep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        let controller = Controller::new(
+            ControllerOptions {
+                data_dir: data.clone(),
+                recorder_exe: data.join("no-recorder"),
+                sources: Vec::new(),
+                timing: ControllerTiming::default(),
+            },
+            |_| {},
+        )
+        .unwrap();
+        let meeting = "m-20261030-171203-4f2a";
+        let dir = controller.library().root().join(meeting);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(voice_meetings::MEETING_FILE), b"{}").unwrap();
+        let cache = MediaCache::new(None, controller, Weak::new());
+        for keep in [None, Some(true)] {
+            assert_eq!(
+                cache.keep(meeting, keep).unwrap_err().code,
+                voice_protocol::ErrorCode::NotAvailable
+            );
+        }
         let _ = fs::remove_dir_all(&data);
     }
 }
