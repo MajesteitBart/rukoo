@@ -28,8 +28,8 @@ pub use discovery::Discovery;
 pub use log::{EventLog, LogError, Stored, DB_FILE};
 pub use server::{BridgeServer, Client, Clients, Handle, Options, Refused};
 pub use voice_protocol::{
-    split_reasons, ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, SplitResult, StartArgs,
-    Status, Track,
+    split_reasons, sync_reasons, ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, SplitResult,
+    StartArgs, Status, SyncSettings, Track,
 };
 
 /// What the bridge asks of the app when Rukoo sends a command.
@@ -167,6 +167,25 @@ pub trait MeetingControl: Send + Sync {
     /// `sync.pull`: look in the bucket for meetings from the user's other computers now. Nothing
     /// happens without bucket sync.
     fn pull_meetings(&self) {}
+
+    /// `sync.settings.get`: the bucket's settings with its secret and the recovery code, or `None`
+    /// while bucket sync is off or its connection didn't pass Test connection. Never makes a key.
+    /// `busy` with reason `screen` while a meeting records the screen. A Voice that doesn't share
+    /// its settings answers `not_available`.
+    fn sync_settings(&self) -> Result<Option<SyncSettings>, ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't share its sync settings.",
+        ))
+    }
+
+    /// `sync.settings.set`: uses these settings as the user would in Settings > Storage, and
+    /// leaves everything as it was when that fails. `failed` with a [`sync_reasons`] reason, or
+    /// `busy` with `key_in_use`.
+    fn use_sync_settings(&self, _settings: &SyncSettings) -> Result<(), ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't take sync settings from Rukoo.",
+        ))
+    }
 
     fn status(&self) -> Status;
 }

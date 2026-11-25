@@ -1125,6 +1125,117 @@ fn bucket_sync_turns_on_only_for_a_bucket_that_passed_its_test() {
     fake.stop();
 }
 
+/// The recovery code Settings show.
+fn shown_code(engine: &voice_engine::Engine) -> String {
+    engine.settings_sync_key("show", None).unwrap()["code"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn another_computer_takes_the_bucket_settings_through_rukoo() {
+    let fake = support::fake_s3();
+    let first = Harness::new("sync-share-first");
+    first.config(json!({}));
+    let a = first.start();
+    let control_a = a.meeting_control().unwrap();
+    assert_eq!(control_a.sync_settings().unwrap(), None, "sync is off");
+    support::connect_bucket(&a, &fake.endpoint());
+    let shared = control_a
+        .sync_settings()
+        .unwrap()
+        .expect("the settings of a tested bucket");
+    assert_eq!(
+        (
+            shared.service.as_str(),
+            shared.bucket.as_str(),
+            shared.access_key_id.as_str(),
+            shared.secret.as_str(),
+            shared.url_style.as_str(),
+            shared.retention.as_str(),
+        ),
+        (
+            "other",
+            BUCKET,
+            support::ACCESS_KEY,
+            BUCKET_SECRET,
+            "path",
+            "keep"
+        )
+    );
+    assert_eq!(shared.endpoint, fake.endpoint());
+    assert_eq!(shared.key, shown_code(&a), "the recovery code");
+
+    let second = Harness::new("sync-share-second");
+    second.config(json!({}));
+    let b = second.start();
+    let control_b = b.meeting_control().unwrap();
+    assert_eq!(control_b.sync_settings().unwrap(), None);
+
+    // Credentials the bucket refuses fail the test before anything here changes. The fake checks
+    // the access key, not the signature the secret makes.
+    let wrong = voice_protocol::SyncSettings {
+        access_key_id: "not-the-key".into(),
+        secret: "not-the-secret".into(),
+        ..shared.clone()
+    };
+    let before = saved_sync(&second);
+    let refused = control_b.use_sync_settings(&wrong).unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.reason.as_deref()),
+        ("failed", Some("test")),
+        "{}",
+        refused.message
+    );
+    assert_eq!(saved_sync(&second), before);
+    assert_eq!(sync_config(&b)["secretSaved"], false);
+    assert_eq!(sync_state(&b)["state"], "off");
+    // Nor does a code that isn't a key.
+    let bad_key = voice_protocol::SyncSettings {
+        key: "RKV1-00000".into(),
+        ..shared.clone()
+    };
+    let refused = control_b.use_sync_settings(&bad_key).unwrap_err();
+    assert_eq!(refused.reason.as_deref(), Some("settings"));
+
+    control_b.use_sync_settings(&shared).unwrap();
+    let config = sync_config(&b);
+    assert_eq!(
+        (
+            &config["enabled"],
+            &config["tested"],
+            &config["secretSaved"]
+        ),
+        (&json!(true), &json!(true), &json!(true))
+    );
+    assert_eq!(config["bucket"], BUCKET);
+    assert_eq!(shown_code(&b), shared.key, "the same key");
+    assert_eq!(control_b.sync_settings().unwrap().as_ref(), Some(&shared));
+    assert!(
+        !std::fs::read_to_string(second.data().join("config.json"))
+            .unwrap()
+            .contains(BUCKET_SECRET),
+        "the secret never reaches config.json"
+    );
+
+    // The same settings again change nothing.
+    let saved = saved_sync(&second);
+    control_b.use_sync_settings(&shared).unwrap();
+    assert_eq!(saved_sync(&second), saved);
+
+    // New credentials that fail their test leave the working bucket as it was.
+    let refused = control_b.use_sync_settings(&wrong).unwrap_err();
+    assert_eq!(refused.reason.as_deref(), Some("test"));
+    assert_eq!(saved_sync(&second), saved);
+    assert_ne!(sync_state(&b)["state"], "paused");
+    assert_eq!(control_b.sync_settings().unwrap().as_ref(), Some(&shared));
+
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
 #[test]
 fn a_test_counts_only_for_the_secret_it_read() {
     let h = Harness::new("sync-test-secret");

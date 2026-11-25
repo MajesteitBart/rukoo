@@ -808,6 +808,206 @@ pub fn sync_restore(core: &Arc<Core>, action: &str) -> Result<Value, ApiError> {
     }
 }
 
+// The user's other computers (voice/PROTOCOL.md, `sync.settings.*`) ---------------------------
+
+/// The `storage.sync.*` keys `sync.settings.set` sets, with the settings' value for each.
+fn shared_fields(settings: &voice_protocol::SyncSettings) -> [(&'static str, &str); 7] {
+    [
+        ("storage.sync.service", &settings.service),
+        ("storage.sync.endpoint", &settings.endpoint),
+        ("storage.sync.region", &settings.region),
+        ("storage.sync.bucket", &settings.bucket),
+        ("storage.sync.prefix", &settings.prefix),
+        ("storage.sync.accessKeyId", &settings.access_key_id),
+        ("storage.sync.retention", &settings.retention),
+    ]
+}
+
+/// The bucket's settings with the saved secret and the recovery code, for Rukoo to keep in the
+/// user's account; `None` while the switch is off or the connection didn't pass Test connection.
+/// Refused while a meeting records the screen, as the key dialogs are. Never makes a key.
+pub fn sync_settings_get(
+    core: &Arc<Core>,
+) -> Result<Option<voice_protocol::SyncSettings>, ApiError> {
+    let sync = bucket_sync(core)?;
+    let Some(bucket) = crate::sync::sync_config(&core.config()) else {
+        return Ok(None);
+    };
+    refuse_while_screen_records(core)?;
+    let secret = sync
+        .saved_secret()
+        .map_err(|e| sync_error(&e))?
+        .ok_or_else(|| ApiError::new("failed", "Voice has no bucket secret saved."))?;
+    let key = {
+        let _key = lock(&core.sync_rt.key);
+        sync.current_key()
+    };
+    let (code, _) = key
+        .map_err(|e| sync_error(&e))?
+        .ok_or_else(|| ApiError::new("failed", "Voice has no encryption key yet."))?;
+    Ok(Some(voice_protocol::SyncSettings {
+        service: bucket.service.as_str().into(),
+        endpoint: bucket.endpoint,
+        region: bucket.region,
+        bucket: bucket.bucket,
+        prefix: bucket.prefix,
+        access_key_id: bucket.access_key_id,
+        url_style: bucket.url_style.as_str().into(),
+        retention: bucket.retention.as_str().into(),
+        secret: secret.to_string(),
+        key: code.to_string(),
+    }))
+}
+
+/// Uses the bucket of the user's other computer, as the user would in Settings > Storage: the
+/// key, the fields, the secret, Test connection and the switch. The connection is tested with the
+/// given secret first, and a step that fails later puts back the key, the secret and the fields
+/// it found, so a failure never leaves a half-changed bucket that pauses sync here. Errors carry
+/// the reason as their code: `settings`, `test`, `key_in_use` or `secret`.
+pub fn sync_settings_set(
+    core: &Arc<Core>,
+    settings: &voice_protocol::SyncSettings,
+) -> Result<(), ApiError> {
+    let sync = bucket_sync(core)?;
+    let refused = |e: ApiError| ApiError::new("settings", e.message);
+    // The same checks as Settings, on a copy.
+    let mut checked = (*core.config()).clone();
+    for (key, value) in shared_fields(settings) {
+        keys::set(&mut checked, key, json!(value)).map_err(refused)?;
+    }
+    let mut fields = crate::sync::sync_value(&checked);
+    fields["urlStyle"] = json!(settings.url_style.trim());
+    let wanted = voice_sync::SyncConfig::from_json(&fields)
+        .map_err(|e| ApiError::new("settings", e.message))?;
+    let code = settings.key.trim();
+    let key = voice_sync::recovery::decode(code)
+        .map_err(|_| ApiError::new("settings", "That isn't a Rukoo Voice key."))?;
+    let secret = settings.secret.trim();
+    if secret.is_empty() || secret.chars().count() > SECRET_MAX_CHARS {
+        return Err(ApiError::new(
+            "settings",
+            format!("The secret is 1 to {SECRET_MAX_CHARS} characters."),
+        ));
+    }
+
+    let old_secret = sync.saved_secret().map_err(|e| sync_error(&e))?;
+    let old_key = {
+        let _key = lock(&core.sync_rt.key);
+        sync.current_key()
+    }
+    .map_err(|e| sync_error(&e))?;
+    let same_key = old_key
+        .as_ref()
+        .and_then(|(code, _)| voice_sync::recovery::decode(code).ok())
+        .is_some_and(|old| old.kid() == key.kid());
+    let current = crate::sync::sync_config(&core.config());
+    let same_bucket = current.as_ref().is_some_and(|current| {
+        voice_sync::SyncConfig {
+            url_style: current.url_style,
+            ..wanted.clone()
+        } == *current
+    });
+    if same_key && same_bucket && old_secret.as_deref().map(String::as_str) == Some(secret) {
+        return Ok(());
+    }
+
+    // Before anything here changes.
+    let url_style = sync
+        .test_secret(&wanted, secret)
+        .map_err(|e| ApiError::new("test", e.message))?;
+
+    let before = core.config().extra.get(crate::sync::SYNC_KEY).cloned();
+    // Nothing uploads while the key and the bucket change: an untested connection pauses sync.
+    core.commit(|cfg| {
+        keys::untest_sync(cfg);
+        Ok(())
+    })?;
+    let applied = (|| {
+        if !same_key {
+            let imported = {
+                let _key = lock(&core.sync_rt.key);
+                sync.import_key(code)
+            };
+            imported.map_err(|e| match e.kind {
+                voice_sync::SyncErrorKind::KeyInUse => ApiError::new("key_in_use", e.message),
+                _ => ApiError::new("settings", e.message),
+            })?;
+        }
+        core.commit(|cfg| {
+            for (key, value) in shared_fields(settings) {
+                keys::set(cfg, key, json!(value))?;
+            }
+            let mut fields = crate::sync::sync_value(cfg);
+            fields["urlStyle"] = json!(url_style.as_str());
+            cfg.extra.insert(crate::sync::SYNC_KEY.into(), fields);
+            Ok(())
+        })
+        .map_err(refused)?;
+        sync_save_secret(core, secret.to_string())
+            .map_err(|e| ApiError::new("secret", e.message))?;
+        sync_test(core).map_err(|e| ApiError::new("test", e.message))?;
+        set(core, "storage.sync.enabled", json!(true)).map_err(|e| ApiError::new("test", e.message))
+    })();
+    match applied {
+        Ok(()) => {
+            log::info!("sync: uses the bucket of another computer now");
+            core.settings_changed();
+            Ok(())
+        }
+        Err(error) => {
+            log::warn!(
+                "sync: the bucket of another computer wasn't used: {}",
+                error.message
+            );
+            put_back(core, sync, before, old_secret, old_key, same_key);
+            Err(error)
+        }
+    }
+}
+
+/// Puts back what [`sync_settings_set`] found: the key, the secret and `storage_sync`.
+fn put_back(
+    core: &Arc<Core>,
+    sync: &voice_sync::BucketSync,
+    before: Option<Value>,
+    old_secret: Option<voice_sync::Zeroizing<String>>,
+    old_key: Option<(voice_sync::Zeroizing<String>, String)>,
+    same_key: bool,
+) {
+    if let (false, Some((code, _))) = (same_key, &old_key) {
+        let imported = {
+            let _key = lock(&core.sync_rt.key);
+            sync.import_key(code)
+        };
+        if let Err(e) = imported {
+            log::warn!("sync: the earlier key wasn't put back: {}", e.message);
+        }
+    }
+    let secret = {
+        let _secret = lock(&core.sync_rt.secret);
+        match &old_secret {
+            Some(secret) => sync.save_secret(secret),
+            None => sync.remove_secret(),
+        }
+    };
+    if let Err(e) = secret {
+        log::warn!("sync: the earlier secret wasn't put back: {}", e.message);
+    }
+    let fields = core.commit(|cfg| {
+        match &before {
+            Some(value) => cfg
+                .extra
+                .insert(crate::sync::SYNC_KEY.into(), value.clone()),
+            None => cfg.extra.remove(crate::sync::SYNC_KEY),
+        };
+        Ok(())
+    });
+    if let Err(e) = fields {
+        log::warn!("sync: the earlier settings weren't put back: {}", e.message);
+    }
+    core.settings_changed();
+}
+
 pub fn list_models(core: &Arc<Core>, request: Value) -> Result<Vec<String>, ApiError> {
     let text = |name: &str| {
         request[name]

@@ -12,12 +12,13 @@ use crate::message::{
     commands, events, Command, CommandBody, Discovery, ErrorMessage, Event, EventBody, Frame,
     Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingStarting,
     MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply,
-    ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status, Track, Welcome,
+    ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status, SyncSettings,
+    Track, Welcome,
 };
 use crate::{
     is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
     MAX_CONTEXT_BYTES, MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_MEDIA_READ, MAX_MEDIA_SPAN_MS,
-    MAX_TITLE_CHARS,
+    MAX_SYNC_FIELD_CHARS, MAX_TITLE_CHARS,
 };
 
 /// A message that breaks a rule. `reason` names the field, as the fixtures do.
@@ -379,6 +380,10 @@ fn command(f: &Fields) -> Checked<Command> {
         },
         commands::STATUS_GET => CommandBody::StatusGet,
         commands::SYNC_PULL => CommandBody::SyncPull,
+        commands::SYNC_SETTINGS_GET => CommandBody::SyncSettingsGet,
+        commands::SYNC_SETTINGS_SET => CommandBody::SyncSettingsSet {
+            settings: sync_settings(&Fields(a.object("settings")?))?,
+        },
         commands::CLIP_GET => {
             let meeting = a.meeting("meeting")?;
             let start = a.uint("start")?;
@@ -454,6 +459,39 @@ fn command(f: &Fields) -> Checked<Command> {
         },
     };
     Ok(Command { id, body })
+}
+
+/// `sync.settings.set`'s `settings`: every field is text of at most [`MAX_SYNC_FIELD_CHARS`]
+/// characters; `bucket`, `accessKeyId`, `secret` and `key` aren't empty.
+fn sync_settings(f: &Fields) -> Checked<SyncSettings> {
+    let text = |key: &str, required: bool| -> Checked<String> {
+        let text = f.string(key)?;
+        if (required && text.trim().is_empty()) || text.chars().count() > MAX_SYNC_FIELD_CHARS {
+            return invalid(key);
+        }
+        Ok(text.to_owned())
+    };
+    Ok(SyncSettings {
+        service: text("service", false)?,
+        endpoint: text("endpoint", false)?,
+        region: text("region", false)?,
+        bucket: text("bucket", true)?,
+        prefix: text("prefix", false)?,
+        access_key_id: text("accessKeyId", true)?,
+        url_style: text("urlStyle", false)?,
+        retention: text("retention", false)?,
+        secret: text("secret", true)?,
+        key: text("key", true)?,
+    })
+}
+
+/// The result of `sync.settings.get`: `{ "settings": null }`, or the settings with the checks of
+/// `sync.settings.set`.
+pub fn validate_sync_settings_result(result: &Object) -> Result<Option<SyncSettings>, Invalid> {
+    match Fields(result).nullable_object("settings")? {
+        None => Ok(None),
+        Some(settings) => sync_settings(&Fields(settings)).map(Some),
+    }
 }
 
 fn start_args(f: &Fields) -> Checked<StartArgs> {

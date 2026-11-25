@@ -1056,6 +1056,13 @@ fn dispatch(
             control.pull_meetings();
             json!({})
         }
+        CommandBody::SyncSettingsGet => {
+            json!({ "settings": control.sync_settings()?.map(|s| s.to_value()) })
+        }
+        CommandBody::SyncSettingsSet { settings } => {
+            control.use_sync_settings(&settings)?;
+            json!({})
+        }
         CommandBody::ClipGet {
             meeting,
             start,

@@ -6,6 +6,7 @@ use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 use crate::keys::{KeyStore, SECRET_FILE};
 use crate::protect::Protector;
@@ -275,45 +276,13 @@ impl BucketSync {
     /// Probes `cfg.url_style`, then the other style when the first fails with bucket, not found or
     /// endpoint. Uses the saved secret (NoSecret without one).
     pub fn test(&self, cfg: &SyncConfig) -> Result<TestReport, SyncError> {
-        let shared = &self.shared;
         // Read before the secret: a save in between then counts as a change, never the reverse.
         let secret_generation = self.secret_generation();
-        let secret = shared.keys.secret()?.ok_or_else(|| {
+        let secret = self.shared.keys.secret()?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::NoSecret, "Save the secret access key first.")
         })?;
-        let own_kid = shared.keys.load().ok().flatten().map(|k| k.kid());
-        let timing = &shared.opts.timing;
-        let probe = |style: UrlStyle| -> Result<u32, SyncError> {
-            let mut cfg = cfg.clone();
-            cfg.url_style = style;
-            Bucket::new(
-                &cfg,
-                &secret,
-                timing.connect_timeout,
-                timing.request_timeout,
-            )?
-            .probe(own_kid.as_deref())
-        };
-        let first = cfg.url_style;
-        let (url_style, other_keys) = match probe(first) {
-            Ok(n) => (first, n),
-            Err(e)
-                if matches!(
-                    e.kind,
-                    SyncErrorKind::Bucket | SyncErrorKind::NotFound | SyncErrorKind::Endpoint
-                ) =>
-            {
-                let other = match first {
-                    UrlStyle::Path => UrlStyle::VirtualHost,
-                    UrlStyle::VirtualHost => UrlStyle::Path,
-                };
-                match probe(other) {
-                    Ok(n) => (other, n),
-                    Err(_) => return Err(e),
-                }
-            }
-            Err(e) => return Err(e),
-        };
+        let (url_style, other_keys) = self.probe(cfg, &secret)?;
+        let shared = &self.shared;
         let _ = shared
             .queue
             .set_meta("other_keys", Some(&other_keys.to_string()));
@@ -345,6 +314,46 @@ impl BucketSync {
         })
     }
 
+    /// Test connection with a secret that isn't saved, as for settings from another computer
+    /// before anything here changes: the URL style that worked, and nothing else changes.
+    pub fn test_secret(&self, cfg: &SyncConfig, secret: &str) -> Result<UrlStyle, SyncError> {
+        self.probe(cfg, secret).map(|(url_style, _)| url_style)
+    }
+
+    /// The URL style that worked and the number of other keys in the bucket.
+    fn probe(&self, cfg: &SyncConfig, secret: &str) -> Result<(UrlStyle, u32), SyncError> {
+        let shared = &self.shared;
+        let own_kid = shared.keys.load().ok().flatten().map(|k| k.kid());
+        let timing = &shared.opts.timing;
+        let probe = |style: UrlStyle| -> Result<u32, SyncError> {
+            let mut cfg = cfg.clone();
+            cfg.url_style = style;
+            Bucket::new(&cfg, secret, timing.connect_timeout, timing.request_timeout)?
+                .probe(own_kid.as_deref())
+        };
+        let first = cfg.url_style;
+        let (url_style, other_keys) = match probe(first) {
+            Ok(n) => (first, n),
+            Err(e)
+                if matches!(
+                    e.kind,
+                    SyncErrorKind::Bucket | SyncErrorKind::NotFound | SyncErrorKind::Endpoint
+                ) =>
+            {
+                let other = match first {
+                    UrlStyle::Path => UrlStyle::VirtualHost,
+                    UrlStyle::VirtualHost => UrlStyle::Path,
+                };
+                match probe(other) {
+                    Ok(n) => (other, n),
+                    Err(_) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        Ok((url_style, other_keys))
+    }
+
     pub fn save_secret(&self, secret: &str) -> Result<(), SyncError> {
         self.shared.keys.save_secret(secret)?;
         self.shared.secret_generation.fetch_add(1, Ordering::SeqCst);
@@ -364,6 +373,19 @@ impl BucketSync {
     /// Grows with every save or removal of the bucket secret in this run (see [`TestReport`]).
     pub fn secret_generation(&self) -> u64 {
         self.shared.secret_generation.load(Ordering::SeqCst)
+    }
+
+    /// The saved bucket secret, to share with the user's other computers.
+    pub fn saved_secret(&self) -> Result<Option<Zeroizing<String>>, SyncError> {
+        self.shared.keys.secret()
+    }
+
+    /// (code, id) of the key there is, or `None`; never makes one.
+    pub fn current_key(&self) -> Result<Option<(Zeroizing<String>, String)>, SyncError> {
+        let _key = self.shared.key_lock();
+        let read = self.shared.keys.load();
+        self.shared.note_key_read(read.as_ref().err());
+        Ok(read?.map(|key| (Zeroizing::new(recovery::encode(&key)), shown(&key.kid()))))
     }
 
     pub fn secret_saved(&self) -> bool {

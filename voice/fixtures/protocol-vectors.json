@@ -466,9 +466,53 @@
       "name": "look for meetings from the other computers",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-61", "command": "sync.pull", "args": {} }
+    },
+    {
+      "name": "ask for the bucket settings to share with the other computers",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-62", "command": "sync.settings.get", "args": {} }
+    },
+    {
+      "name": "the bucket settings with the secret and the recovery code",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-62", "ok": true, "result": { "settings": { "service": "other", "endpoint": "https://s3.example.com", "region": "us-east-1", "bucket": "meetings", "prefix": "voice", "accessKeyId": "EXAMPLEKEYID", "urlStyle": "path", "retention": "keep", "secret": "example-secret-0123", "key": "RKV1-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000" } } }
+    },
+    {
+      "name": "no bucket settings while sync is off",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-62", "ok": true, "result": { "settings": null } }
+    },
+    {
+      "name": "no bucket settings while the screen records",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-62", "ok": false, "error": { "code": "busy", "message": "Stop the meeting's screen recording first.", "reason": "screen" } }
+    },
+    {
+      "name": "use the bucket of another computer",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-63", "command": "sync.settings.set", "args": { "settings": { "service": "other", "endpoint": "https://s3.example.com", "region": "us-east-1", "bucket": "meetings", "prefix": "voice", "accessKeyId": "EXAMPLEKEYID", "urlStyle": "path", "retention": "keep", "secret": "example-secret-0123", "key": "RKV1-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000" } } }
+    },
+    {
+      "name": "the bucket is in use here now",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-63", "ok": true, "result": {} }
+    },
+    {
+      "name": "the other computer's bucket failed its test here",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-63", "ok": false, "error": { "code": "failed", "message": "The bucket refused the access key.", "reason": "test" } }
+    },
+    {
+      "name": "this Voice keeps its own key",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-63", "ok": false, "error": { "code": "busy", "message": "This computer already uploaded meetings with its own key, so it keeps that key.", "reason": "key_in_use" } }
     }
   ],
   "invalid": [
+    { "name": "sync settings without settings", "from": "rukoo", "reason": "settings", "message": { "type": "command", "id": "c-63", "command": "sync.settings.set", "args": {} } },
+    { "name": "sync settings without the secret", "from": "rukoo", "reason": "secret", "message": { "type": "command", "id": "c-63", "command": "sync.settings.set", "args": { "settings": { "service": "other", "endpoint": "https://s3.example.com", "region": "", "bucket": "meetings", "prefix": "", "accessKeyId": "EXAMPLEKEYID", "urlStyle": "path", "retention": "keep", "key": "RKV1-00000" } } } },
+    { "name": "sync settings with an empty bucket", "from": "rukoo", "reason": "bucket", "message": { "type": "command", "id": "c-63", "command": "sync.settings.set", "args": { "settings": { "service": "other", "endpoint": "https://s3.example.com", "region": "", "bucket": " ", "prefix": "", "accessKeyId": "EXAMPLEKEYID", "urlStyle": "path", "retention": "keep", "secret": "s", "key": "RKV1-00000" } } } },
+    { "name": "sync settings with a region that isn't text", "from": "rukoo", "reason": "region", "message": { "type": "command", "id": "c-63", "command": "sync.settings.set", "args": { "settings": { "service": "other", "endpoint": "https://s3.example.com", "region": 1, "bucket": "meetings", "prefix": "", "accessKeyId": "EXAMPLEKEYID", "urlStyle": "path", "retention": "keep", "secret": "s", "key": "RKV1-00000" } } } },
     { "name": "split without a track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a" } } },
     { "name": "split of the call track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a", "track": "call" } } },
     { "name": "split without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "track": "mic" } } },

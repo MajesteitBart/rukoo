@@ -16,7 +16,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message as Frame, WebSocket};
 use voice_bridge::{
     BridgeServer, ControlError, EventLog, Handle, MediaKind, MediaOpenArgs, MeetingControl,
-    MeetingSummary, Options, SplitResult, StartArgs, Status, Track,
+    MeetingSummary, Options, SplitResult, StartArgs, Status, SyncSettings, Track,
 };
 use voice_protocol::{
     media_read_result, validate_discovery, validate_incoming, MeetingId, MeetingState, Message,
@@ -101,6 +101,10 @@ pub struct FakeControl {
     /// runs: an upper bound of the events stored before the command finished.
     pub list_log: Mutex<Option<EventLog>>,
     pub list_heads: Mutex<Vec<u64>>,
+    /// What `sync.settings.get` answers, and what `sync.settings.set` stored.
+    pub sync_settings: Mutex<Option<SyncSettings>>,
+    /// What the next `sync.settings.get` or `sync.settings.set` answers instead.
+    pub sync_refusal: Mutex<Option<ControlError>>,
 }
 
 /// Passages a split that is done appends to the log once the test opens `go`, as Voice sends a
@@ -158,6 +162,23 @@ impl FakeControl {
 }
 
 impl MeetingControl for FakeControl {
+    fn sync_settings(&self) -> Result<Option<SyncSettings>, ControlError> {
+        self.call("sync.settings.get".into());
+        if let Some(refusal) = self.sync_refusal.lock().unwrap().take() {
+            return Err(refusal);
+        }
+        Ok(self.sync_settings.lock().unwrap().clone())
+    }
+
+    fn use_sync_settings(&self, settings: &SyncSettings) -> Result<(), ControlError> {
+        self.call(format!("sync.settings.set {}", settings.bucket));
+        if let Some(refusal) = self.sync_refusal.lock().unwrap().take() {
+            return Err(refusal);
+        }
+        *self.sync_settings.lock().unwrap() = Some(settings.clone());
+        Ok(())
+    }
+
     fn start(&self, args: StartArgs) -> Result<String, ControlError> {
         self.call("start".into());
         let mut recording = self.recording.lock().unwrap();

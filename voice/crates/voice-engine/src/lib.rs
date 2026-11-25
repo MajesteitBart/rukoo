@@ -280,6 +280,9 @@ pub fn start_with(
     if let Some(sync) = &core.sync {
         sync.set_pull_hooks(Arc::new(sync::EnginePull(Arc::downgrade(&core))));
     }
+    if let Some(control) = core.meetings.control() {
+        control.set_engine(Arc::downgrade(&core));
+    }
     if let Some(e) = &sync_error {
         core.sync_rt.store_failed(e);
     }

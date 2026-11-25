@@ -21,7 +21,10 @@ pub use ids::{
 };
 pub use message::*;
 pub use paths::Platform;
-pub use validate::{validate_discovery, validate_incoming, validate_split_result, Invalid};
+pub use validate::{
+    validate_discovery, validate_incoming, validate_split_result, validate_sync_settings_result,
+    Invalid,
+};
 
 /// The newest protocol version this crate speaks.
 pub const PROTOCOL: u32 = 2;
@@ -69,6 +72,9 @@ pub const SNAPSHOT_FRAME_TEXT: usize = 4 << 20;
 pub const MAX_MEDIA_SPAN_MS: u64 = 3_600_000;
 /// The most bytes one `media.read` returns.
 pub const MAX_MEDIA_READ: u64 = 1 << 20;
+/// The longest field of `sync.settings.*`'s settings, in characters: the bucket secret Voice
+/// keeps is at most this long too.
+pub const MAX_SYNC_FIELD_CHARS: usize = 1024;
 
 /// WebSocket close codes from "Connecting".
 pub mod close {

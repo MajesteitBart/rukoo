@@ -288,6 +288,8 @@ Rukoo sends commands; Voice answers each with one reply.
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `speakers.split` | `meeting`, `track` | `{ "state", … }` | `not_found`, `not_available`, `busy`, `failed` |
 | `sync.pull` | | `{}` | |
+| `sync.settings.get` | | `{ "settings" }` | `busy`, `failed` |
+| `sync.settings.set` | `settings` | `{}` | `busy`, `failed`, `not_available` |
 | `status.get` | | the `status` object | |
 
 - `meeting.start` uses the Settings default for every argument left out. `title` is at most 200 characters, `tracks` a non-empty list of `mic` and `call`, `screen` one of the values of `meeting.started`, and `context` an object of at most 16 KiB.
@@ -316,6 +318,11 @@ Rukoo sends commands; Voice answers each with one reply.
 
 - `sync.pull` asks Voice to look in the user's bucket for meetings from their other computers now; Rukoo sends it when its meetings open, at most once a minute. Voice answers at once and looks on its own thread. What it finds reaches Rukoo as ordinary events: a meeting that finished on another computer arrives like a meeting Voice transcribes, newer text of a meeting as new passage revisions and `passage.removed`, and a meeting deleted on another computer as `meeting.removed` with reason `user`. Without bucket sync nothing happens. An older Voice answers `unknown_command`, which Rukoo ignores.
 
+- `sync.settings.get` and `sync.settings.set` move Voice's bucket to the user's other computers through Rukoo, which keeps it in the user's Rukoo account, sealed on the device ([server/PROTOCOL.md](../server/PROTOCOL.md#collections), `voicesync`). `settings` is `{ "service", "endpoint", "region", "bucket", "prefix", "accessKeyId", "urlStyle", "retention", "secret", "key" }`: the fields of Settings › Storage as Voice uses them, the bucket secret Voice saved and the encryption key as its recovery code (`RKV1-…`). Every field is text of at most 1,024 characters, and `bucket`, `accessKeyId`, `secret` and `key` aren't blank.
+  - `sync.settings.get` answers `{ "settings": null }` while sync is off or its connection hasn't passed Test connection, and otherwise the settings. It never makes a key: without one it answers `failed`. While a meeting records the screen it answers `busy` with reason `screen`, as Voice's key dialogs refuse then, because Rukoo may show what it gets.
+  - `sync.settings.set` uses the settings as the user would in Settings › Storage: it switches to the key when it differs from this Voice's, sets the fields, saves the secret, runs Test connection and turns sync on, and answers `{}`. Settings equal to the ones in use change nothing. Voice tests the connection with the given secret before it changes anything, and a step that fails after that puts back the key, the secret and the fields it found, so a failure never leaves a half-changed bucket that pauses sync here. A failure answers `failed` with a `reason`: `settings` for a field Voice refuses or a code that isn't a key, `test` when Test connection failed, `secret` when Voice couldn't keep the secret. A Voice that already uploaded meetings with another key keeps it and answers `busy` with reason `key_in_use`. The answer can take as long as Test connection.
+  - Both commands carry the bucket secret and the encryption key, the two things that open the user's meetings in the bucket. That is acceptable on this bridge: it listens only on `127.0.0.1`, refuses browsers, and takes only the token from the discovery file, which only the user's account can read. A process that can read that file runs as the user, and can already read the files where Voice keeps the key and the secret, which DPAPI or the login keychain open for that user. Voice never logs either value. An older Voice answers `unknown_command`, which Rukoo takes as "not available".
+
 Errors carry a `code` and an English `message` for logs. Rukoo shows its own text for a code.
 
 | `code` | Meaning |
@@ -324,7 +331,7 @@ Errors carry a `code` and an English `message` for logs. Rukoo shows its own tex
 | `unknown_command` | Voice doesn't know the command; a newer Rukoo may send commands an older Voice lacks |
 | `not_found` | No meeting, frame, monitor or prepared media with that id or time |
 | `not_recording` | The meeting isn't recording, or isn't paused for `meeting.resume` |
-| `busy` | A meeting is already recording; `meeting` says which |
+| `busy` | A meeting is already recording; `meeting` says which. `reason` says why when it isn't a recording meeting |
 | `not_available` | Voice can't do this for this meeting or in this version |
 | `failed` | Voice tried and failed; `message` says why |
 
@@ -338,6 +345,7 @@ Both sides check what they receive with the same rules and drop a message that b
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
 - `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.
+- `sync.settings.set` needs `settings` with the fields and limits above, and `sync.settings.get`'s result holds `settings`, `null` or the same object.
 - `speakers.split` needs `meeting` and `track`, which is `mic`. Its result's `state` is `running`, with `at` and `end`, or `done`, with `voices` of 1 or more; an error's `reason`, when present, is a string.
 - `media.open` needs `meeting`, `kind` (`audio`, `frame` or `video`) and `start`; `end`, when given, is ≥ `start` and at most 3,600,000 more. `media.read` needs `media`, which matches `^md-[A-Za-z0-9_-]{22}$`, `offset`, and `length` from 1 to 1,048,576.
 - A `reply` with `ok` true has an object in `result`; with `ok` false, an `error` with `code` and `message`.

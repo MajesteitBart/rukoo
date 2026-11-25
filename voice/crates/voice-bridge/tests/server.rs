@@ -14,7 +14,7 @@ use common::{
     NEW_MEETING,
 };
 use serde_json::{json, Value};
-use voice_bridge::{EventLog, Options};
+use voice_bridge::{ControlError, EventLog, Options};
 use voice_protocol::{validate_discovery, CLIP_WAIT, MAX_RUKOO_MESSAGE};
 
 const A: &str = "m-20261030-171203-4f2a";
@@ -1429,4 +1429,64 @@ fn the_handle_reports_its_clients_and_the_last_refused_hello() {
         assert!(Instant::now() < deadline, "the client stayed in the list");
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn sync_settings_reach_the_meeting_control_and_reply_as_the_vectors_do() {
+    let bridge = Bridge::start("server-sync-settings");
+    let (mut client, _) = bridge.client(None, 0);
+    let get = vector("ask for the bucket settings to share with the other computers");
+    client.send(get.clone());
+    assert_eq!(
+        client.read_reply("c-62"),
+        vector("no bucket settings while sync is off")
+    );
+
+    client.send(vector("use the bucket of another computer"));
+    assert_eq!(
+        client.read_reply("c-63"),
+        vector("the bucket is in use here now")
+    );
+    client.send(get.clone());
+    assert_eq!(
+        client.read_reply("c-62"),
+        vector("the bucket settings with the secret and the recovery code")
+    );
+
+    // A refusal's reason reaches Rukoo with the error.
+    *bridge.control.sync_refusal.lock().unwrap() = Some(
+        ControlError::new(
+            voice_protocol::ErrorCode::Busy,
+            "This computer already uploaded meetings with its own key, so it keeps that key.",
+        )
+        .with_reason("key_in_use"),
+    );
+    client.send(vector("use the bucket of another computer"));
+    assert_eq!(
+        client.read_reply("c-63"),
+        vector("this Voice keeps its own key")
+    );
+
+    // Settings without a secret never reach the control.
+    client.command(
+        "c-64",
+        "sync.settings.set",
+        json!({ "settings": { "bucket": "b" } }),
+    );
+    assert_eq!(client.read_reply("c-64")["error"]["code"], "bad_request");
+    assert_eq!(
+        bridge.control.calls.lock().unwrap().clone(),
+        [
+            "sync.settings.get",
+            "sync.settings.set meetings",
+            "sync.settings.get",
+            "sync.settings.set meetings",
+        ]
+    );
+
+    // A Voice without the commands answers not_available.
+    let plain = Bridge::start_plain("server-sync-settings-default");
+    let (mut client, _) = plain.client(None, 0);
+    client.send(get);
+    assert_eq!(client.read_reply("c-62")["error"]["code"], "not_available");
 }
