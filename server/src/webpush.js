@@ -8,7 +8,8 @@
 // with its public key and auth secret, as RFC 8291 says, and signed by this server with VAPID (RFC 8292). Its plaintext
 // is {"t":"wake","w":[…]}: that there is something new, and the IDs of the workspaces it is in, so the phone fetches
 // those first. It names no conversation and no person and holds no text; the phone fetches what changed over its own
-// signed-in connection. The push service can't read it and sees only when a wake is sent and how large it is.
+// signed-in connection. Every wake is padded to the same length, so the push service can't read it and sees only
+// that a wake was sent and when.
 //
 // The VAPID key pair comes from the PEPPER secret, so it never changes and needs no setting of its own. FCM ties each
 // registration to the key it was made with, so a new key would end every phone's registration.
@@ -36,6 +37,9 @@ const RECORD_SIZE = 4096;
 const VAPID_TIME = 12 * 60 * 60;
 // Workspace IDs one wake names, at most. A wake for more names none, and the phone checks its workspaces as it would.
 export const WAKE_WORKSPACES = 10;
+// The length every wake's record is padded to before encryption (RFC 8188, section 2): its JSON, the delimiter 2 and
+// zeros. Ten workspace IDs take 288 bytes of JSON, so this holds them all, and every wake is 422 bytes on the wire.
+export const WAKE_PADDED = 320;
 
 // The push services every server posts to: Google's FCM, which Rukoo for Android's built-in distributor uses, ntfy.sh,
 // the ntfy app's default server, and Mozilla's push service, which the Sunup app uses.
@@ -168,9 +172,12 @@ export async function vapidAuthorization(env, endpoint, now = Date.now()) {
 // ---- Encryption (RFC 8291) ----
 
 // The body of a push message: plaintext encrypted for the phone's public key (65 bytes) and auth secret (16 bytes)
-// with the aes128gcm content encoding. sender and salt are for tests, which check the RFC's own example: sender is
-// { privateKey, publicKey }, an ECDH key and its 65 bytes. Every real message gets a fresh key pair and salt.
-export async function encrypt(uaPublic, authSecret, plaintext, { sender = null, salt = randomBytes(16) } = {}) {
+// with the aes128gcm content encoding. padTo: the length of the record before encryption, the plaintext, the delimiter
+// and zeros, which a decrypter strips (RFC 8188, section 2); 0 for no padding. sender and salt are for tests, which
+// check the RFC's own example: sender is { privateKey, publicKey }, an ECDH key and its 65 bytes. Every real message
+// gets a fresh key pair and salt.
+export async function encrypt(uaPublic, authSecret, plaintext, { sender = null, salt = randomBytes(16), padTo = 0 } = {}) {
+  if (padTo && plaintext.length + 1 > padTo) throw new Error('The plaintext is longer than the padded record.');
   const ua = await crypto.subtle.importKey('raw', uaPublic, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
   let pair = sender;
   if (!pair) {
@@ -185,8 +192,9 @@ export async function encrypt(uaPublic, authSecret, plaintext, { sender = null, 
   const cek = (await hmacBytes(prk, concat(utf8('Content-Encoding: aes128gcm\0'), [1]))).slice(0, 16);
   const nonce = (await hmacBytes(prk, concat(utf8('Content-Encoding: nonce\0'), [1]))).slice(0, 12);
   const key = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
-  // One record, the last: the plaintext, then the delimiter 2 and no padding.
-  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, concat(plaintext, [2])));
+  // One record, the last: the plaintext, then the delimiter 2, then zeros up to padTo.
+  const record = concat(plaintext, [2], new Uint8Array(padTo ? padTo - plaintext.length - 1 : 0));
+  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, record));
   const header = new Uint8Array(21);
   header.set(salt, 0);
   new DataView(header.buffer).setUint32(16, RECORD_SIZE);
@@ -234,12 +242,13 @@ export async function endpointInput(body, env) {
 // What a wake says: that there is something new, and in which workspaces, when there are at most WAKE_WORKSPACES.
 export function wakeText(workspaces = []) {
   const list = [...new Set(workspaces)];
-  return JSON.stringify(list.length && list.length <= WAKE_WORKSPACES ? { t: 'wake', w: list } : { t: 'wake' });
+  const named = list.length && list.length <= WAKE_WORKSPACES ? JSON.stringify({ t: 'wake', w: list }) : null;
+  return named && utf8(named).length < WAKE_PADDED ? named : JSON.stringify({ t: 'wake' });
 }
 
 // Posts one wake for workspaces. Returns the push service's status; throws when the request fails or runs out of time.
 export async function sendWake(env, target, workspaces = [], now = Date.now()) {
-  const body = await encrypt(new Uint8Array(target.p256dh), new Uint8Array(target.auth), utf8(wakeText(workspaces)));
+  const body = await encrypt(new Uint8Array(target.p256dh), new Uint8Array(target.auth), utf8(wakeText(workspaces)), { padTo: WAKE_PADDED });
   const response = await fetch(target.endpoint, {
     method: 'POST',
     headers: {

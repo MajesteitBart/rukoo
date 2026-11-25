@@ -213,6 +213,39 @@ describe('PUT /v1/push-endpoint', () => {
     expect((await unregister(person.token)).status).toBe(204);
   });
 
+  it('forgets the allowance of a session that ended, and one that filled up again', async () => {
+    const person = await signup();
+    const phone = (await login(person, 'Phone')).body.token;
+    const tablet = (await login(person, 'Tablet')).body.token;
+    for (const token of [person.token, phone, tablet]) expect((await register(token, await push.device())).status).toBe(204);
+    const kept = async () =>
+      runInDurableObject(await accountStub(person.email), (instance, state) => {
+        const names = new Map(state.storage.sql.exec('SELECT id FROM sessions').toArray().map((r, i) => [r.id, i]));
+        return [...instance.wakePuts.keys()].map((id) => (names.has(id) ? 'live' : 'ended'));
+      });
+    expect(await kept()).toEqual(['live', 'live', 'live']);
+    // Signing out drops that session's.
+    expect((await call('POST', '/v1/logout', { token: tablet })).status).toBe(204);
+    expect(await kept()).toEqual(['live', 'live']);
+    // One that is full again goes at the next check, whoever's check it is.
+    await runInDurableObject(await accountStub(person.email), (instance) => {
+      for (const [id, entry] of instance.wakePuts) instance.wakePuts.set(id, { ...entry, at: entry.at - 10 * 60 * 1000 });
+    });
+    expect((await register(phone, await push.device())).status).toBe(204);
+    expect((await kept()).length).toBe(1);
+    // A new password ends every other session, and their allowances with them.
+    expect((await register(person.token, await push.device())).status).toBe(204);
+    expect(
+      (
+        await call('POST', '/v1/password', {
+          token: person.token,
+          body: { authKey: person.authKey, kdf: person.kdf, salt: person.salt, newAuthKey: person.authKey, wrappedKey: person.wrappedKey }
+        })
+      ).status
+    ).toBe(204);
+    expect(await kept()).toEqual(['live']);
+  });
+
   it('answers 503 when the account object fails, so the device tries again', async () => {
     const person = await signup();
     const device = await push.device();
@@ -328,6 +361,8 @@ describe('what sends a wake', () => {
     expect(sent.headers.topic).toBe('rukoo-wake');
     // It says only that there is something and in which workspace, encrypted for the phone: no room, name or text.
     expect(await push.open(sent)).toEqual({ text: JSON.stringify({ t: 'wake', w: [ws.id] }), rs: 4096 });
+    // Padded, so its length says nothing about how many workspaces it names.
+    expect(sent.body.length).toBe(422);
     const vapid = await readVapid(sent.headers.authorization);
     expect(vapid.valid).toBe(true);
     expect(vapid.key).toBe(await vapidPublicKey(env));
@@ -413,6 +448,7 @@ describe('bursts', () => {
     const last = JSON.parse((await push.open(push.to(phone.endpoint)[1])).text);
     expect(last.t).toBe('wake');
     expect(last.w.sort()).toEqual([ws.id, other.id].sort());
+    expect(push.to(phone.endpoint).map((sent) => sent.body.length)).toEqual([422, 422]);
   });
 
   it('a lone message in a quiet window sends no second wake', async () => {

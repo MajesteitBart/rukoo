@@ -4,7 +4,7 @@
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { fromBase64url, toBase64url, utf8 } from '../src/bytes.js';
-import { PUSH_ORIGINS, WAKE_WORKSPACES, encrypt, postable, pushOrigins, vapidAuthorization, vapidContact, vapidKeys, vapidPublicKey, wakeText } from '../src/webpush.js';
+import { PUSH_ORIGINS, WAKE_PADDED, WAKE_WORKSPACES, encrypt, postable, pushOrigins, vapidAuthorization, vapidContact, vapidKeys, vapidPublicKey, wakeText } from '../src/webpush.js';
 import { decryptPush } from './fixtures/fake-push.js';
 
 const b64 = (text) => fromBase64url(text);
@@ -137,6 +137,23 @@ describe('what a wake says', () => {
     expect(wakeText(['w_a', 'w_b', 'w_a'])).toBe('{"t":"wake","w":["w_a","w_b"]}');
     const many = Array.from({ length: WAKE_WORKSPACES + 1 }, (_, i) => `w_${i}`);
     expect(wakeText(many)).toBe('{"t":"wake"}');
+  });
+
+  it('is padded so every wake is the same length on the wire, and still decrypts to its JSON', async () => {
+    const ua = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const uaPublic = new Uint8Array(await crypto.subtle.exportKey('raw', ua.publicKey));
+    const auth = crypto.getRandomValues(new Uint8Array(16));
+    const id = (n) => `w_${String(n).padStart(22, 'A')}`;
+    const texts = [wakeText(), wakeText([id(1)]), wakeText(Array.from({ length: 10 }, (_, i) => id(i)))];
+    const bodies = [];
+    for (const text of texts) {
+      const body = await encrypt(uaPublic, auth, utf8(text), { padTo: WAKE_PADDED });
+      bodies.push(body.length);
+      // The phone strips the zeros after the delimiter, as RFC 8188 says and the connector's decrypter does.
+      expect((await decryptPush(body, ua.privateKey, uaPublic, auth)).text).toBe(text);
+    }
+    expect(bodies).toEqual([422, 422, 422]);
+    await expect(encrypt(uaPublic, auth, new Uint8Array(WAKE_PADDED), { padTo: WAKE_PADDED })).rejects.toThrow();
   });
 
   it('stays small: ten workspace IDs fit easily in one 4,096-byte record', async () => {

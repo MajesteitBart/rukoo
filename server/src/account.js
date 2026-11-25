@@ -389,6 +389,10 @@ export class Account extends DurableObject {
   // then one a minute, else 429 with Retry-After, or 401. setWakeEndpoint checks the session again where it writes.
   async checkWakeSession(token) {
     return this.#signedIn(token, (session, now) => {
+      // An allowance that has filled up again says nothing a fresh one wouldn't, so it goes.
+      for (const [id, entry] of this.wakePuts) {
+        if (id !== session.id && entry.tokens + (now - entry.at) / WAKE_PUT_EVERY >= this.wakePutBurst) this.wakePuts.delete(id);
+      }
       const held = this.wakePuts.get(session.id) ?? { tokens: this.wakePutBurst, at: now };
       const tokens = Math.min(this.wakePutBurst, held.tokens + (now - held.at) / WAKE_PUT_EVERY);
       if (tokens < 1) {
@@ -530,6 +534,15 @@ export class Account extends DurableObject {
       row.wakeKey,
       row.wakeAuth
     );
+  }
+
+  // Forgets what memory holds about sessions that ended: their allowance for registering, when they last got a wake and
+  // the workspaces their next wake is for. A wake still waiting for its window finds no session and sends nothing.
+  #forgetEndedSessions() {
+    const live = new Set(this.present && this.#has('sessions') ? this.sql.exec('SELECT id FROM sessions').toArray().map((r) => r.id) : []);
+    for (const map of [this.wakePuts, this.wakeSent, this.wakeWorkspaces]) {
+      for (const id of [...map.keys()]) if (!live.has(id)) map.delete(id);
+    }
   }
 
   // Tells the workspaces a deleted account was in, and tries again later for the ones that didn't answer. Checks
@@ -712,6 +725,7 @@ export class Account extends DurableObject {
   async logout(token) {
     return this.#signedIn(token, (session) => {
       this.sql.exec('DELETE FROM sessions WHERE id = ?', session.id);
+      this.#forgetEndedSessions();
       return reply(204);
     });
   }
@@ -723,6 +737,7 @@ export class Account extends DurableObject {
   async revoke(token, deviceId) {
     return this.#signedIn(token, () => {
       const { rowsWritten } = this.sql.exec('DELETE FROM sessions WHERE id = ?', deviceId);
+      this.#forgetEndedSessions();
       return rowsWritten > 0 ? reply(204) : failure(404, 'not_found', 'There is no device with this id.');
     });
   }
@@ -742,6 +757,7 @@ export class Account extends DurableObject {
           );
           this.sql.exec('DELETE FROM sessions WHERE id != ?', session.id);
         });
+        this.#forgetEndedSessions();
         return reply(204);
       })
     );
@@ -803,6 +819,7 @@ export class Account extends DurableObject {
       this.sql.exec('DELETE FROM sessions');
       return this.#addSession(tokenHash, input.device, now);
     });
+    this.#forgetEndedSessions();
     return reply(200, { token, account: this.#info(sessionId, limits) });
   }
 
@@ -847,6 +864,7 @@ export class Account extends DurableObject {
         this.present = false;
         this.identity = null;
         this.expiring = false;
+        this.#forgetEndedSessions();
         return { ...reply(204), handle, cleanup };
       })
     );
@@ -1096,6 +1114,7 @@ export class Account extends DurableObject {
         'DELETE FROM sessions WHERE id IN (SELECT id FROM sessions ORDER BY lastSeenAt, createdAt LIMIT ?)',
         count - MAX_SESSIONS + 1
       );
+      this.#forgetEndedSessions();
     }
     this.sql.exec(
       'INSERT INTO sessions (id, tokenHash, name, platform, createdAt, lastSeenAt) VALUES (?, ?, ?, ?, ?, ?)',
