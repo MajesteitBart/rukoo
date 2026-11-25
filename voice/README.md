@@ -51,7 +51,7 @@ While recording or paused, the pill's screen button and Rukoo's meeting header o
 | macOS | ScreenCaptureKit, after the Screen & System Audio Recording permission | A Core Audio process tap of the default output, after the System Audio Recording Only permission | VideoToolbox |
 | Linux | xdg-desktop-portal ScreenCast over PipeWire | The PipeWire monitor of the output device | VA-API or NVENC |
 
-Rukoo can hide its window from screen capture while a meeting records, so your agent chat stays out of the recording. On Windows 10 2004 and later, that also keeps it out of Teams and Zoom screen shares. On macOS 15 and later, other apps' screen shares still show Rukoo, although Voice can leave it out of its own recording. Linux has no way to hide a window, so keep Rukoo on a monitor you don't record.
+Rukoo can hide its window from screen capture while a meeting records, so your agent chat stays out of the recording. On Windows 10 2004 and later, that also keeps it out of Teams and Zoom screen shares. On macOS 15 and later, other apps' screen shares still show Rukoo, so on a Mac Voice leaves Rukoo out of its own recording by process instead. Rukoo's "Hide Rukoo from screen recordings" switch decides that on both systems: turned off, as for a demo, Rukoo shows in Voice's frames and video, also when it is turned off during the meeting. On a Mac Voice leaves Rukoo out until a connected Rukoo says otherwise, so a Rukoo that starts during a meeting stays out of its first frames. Linux has no way to hide a window, so keep Rukoo on a monitor you don't record.
 
 ## Speaker labels
 
