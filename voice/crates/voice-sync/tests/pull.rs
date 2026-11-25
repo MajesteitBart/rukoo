@@ -6,14 +6,14 @@ mod harness;
 
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use harness::*;
 use voice_meetings::Transcript;
 use voice_protocol::Passage;
 use voice_s3_fake::{FakeS3, Op};
-use voice_sync::{PullHooks, PullOrigin, SyncError};
+use voice_sync::{BucketSync, PullHooks, PullOrigin, SyncError};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -27,6 +27,8 @@ struct Hooks {
     deleted: Mutex<Vec<String>>,
     /// `deleted` says the meeting can't go now.
     refuse_delete: Mutex<bool>,
+    /// The computer's bucket sync, which a deletion tells first, as the engine's does.
+    sync: Mutex<Weak<BucketSync>>,
 }
 
 impl Hooks {
@@ -35,6 +37,15 @@ impl Hooks {
             meetings: meetings.to_owned(),
             ..Hooks::default()
         })
+    }
+
+    /// Hooks for `voice` that delete as the engine does: the deletion goes into the sync queue
+    /// before the folder goes, so sync no longer reads the meeting's files (Windows can't remove a
+    /// folder while it does).
+    fn of(voice: &Voice) -> Arc<Hooks> {
+        let hooks = Hooks::new(&voice.meetings());
+        *hooks.sync.lock().unwrap() = Arc::downgrade(&voice.sync);
+        hooks
     }
 
     fn follow(&self, meeting: &str) {
@@ -81,9 +92,14 @@ impl PullHooks for Hooks {
         if *self.refuse_delete.lock().unwrap() {
             return false;
         }
+        if let Some(sync) = self.sync.lock().unwrap().upgrade() {
+            if sync.mark_deleted(meeting, Some(from)).is_err() {
+                return false;
+            }
+        }
         // As the engine's deletion does, also for one that stopped after renaming the folder. A
-        // folder Windows won't remove yet, while sync still reads a file in it, stays for the
-        // next pull, as the engine's deletion does then.
+        // folder Windows won't remove yet stays for the next pull, as the engine's deletion does
+        // then.
         for dir in [
             self.meetings.join(meeting),
             self.meetings.join(format!(".deleted-{meeting}")),
@@ -120,7 +136,7 @@ fn second_computer(fake: &FakeS3, root: &Path, a: &Voice, setup: Setup) -> (Voic
     let (code, _) = a.sync.show_key().unwrap();
     let b = Voice::with(&root.join("b"), setup);
     b.sync.import_key(&code).unwrap();
-    let hooks = Hooks::new(&b.meetings());
+    let hooks = Hooks::of(&b);
     b.sync.set_pull_hooks(hooks.clone());
     b.connect(&fake.endpoint());
     (b, hooks)
@@ -685,7 +701,7 @@ fn a_meeting_that_can_t_come_in_is_the_look_s_error_and_the_others_still_come() 
         b"in the way",
     )
     .unwrap();
-    let hooks = Hooks::new(&b.meetings());
+    let hooks = Hooks::of(&b);
     b.sync.set_pull_hooks(hooks.clone());
     b.connect(&fake.endpoint());
     assert!(
