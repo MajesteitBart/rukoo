@@ -105,6 +105,9 @@ pub struct FakeControl {
     pub sync_settings: Mutex<Option<SyncSettings>>,
     /// What the next `sync.settings.get` or `sync.settings.set` answers instead.
     pub sync_refusal: Mutex<Option<ControlError>>,
+    /// `sync.settings.set` waits until the test sends on this gate's other end, as a slow Test
+    /// connection would.
+    pub hold_sync_set: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 /// Passages a split that is done appends to the log once the test opens `go`, as Voice sends a
@@ -172,6 +175,10 @@ impl MeetingControl for FakeControl {
 
     fn use_sync_settings(&self, settings: &SyncSettings) -> Result<(), ControlError> {
         self.call(format!("sync.settings.set {}", settings.bucket));
+        let gate = self.hold_sync_set.lock().unwrap().take();
+        if let Some(gate) = gate {
+            let _ = gate.recv();
+        }
         if let Some(refusal) = self.sync_refusal.lock().unwrap().take() {
             return Err(refusal);
         }

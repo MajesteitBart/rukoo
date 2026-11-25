@@ -1236,6 +1236,149 @@ fn another_computer_takes_the_bucket_settings_through_rukoo() {
     fake.stop();
 }
 
+/// The keystore as the test sets it: it keeps everything, refuses the bucket secret (1), or
+/// Voice stops while it writes the secret (2), after Test connection passed.
+struct FlakySecret(std::sync::atomic::AtomicU8);
+
+impl voice_sync::protect::Protector for FlakySecret {
+    fn protect(&self, plain: &[u8], label: &str) -> Result<Vec<u8>, voice_sync::SyncError> {
+        if label == voice_sync::protect::SECRET_LABEL {
+            match self.0.load(Ordering::SeqCst) {
+                1 => {
+                    return Err(voice_sync::SyncError::new(
+                        voice_sync::SyncErrorKind::Local,
+                        "The keystore refused the secret.",
+                    ))
+                }
+                2 => panic!("Voice stops while it saves the secret"),
+                _ => {}
+            }
+        }
+        voice_sync::protect::TestProtector.protect(plain, label)
+    }
+
+    fn unprotect(
+        &self,
+        blob: &[u8],
+        label: &str,
+    ) -> Result<voice_sync::Zeroizing<Vec<u8>>, voice_sync::SyncError> {
+        voice_sync::protect::TestProtector.unprotect(blob, label)
+    }
+}
+
+fn flaky_harness(name: &str) -> (Harness, std::sync::Arc<FlakySecret>) {
+    let mut h = Harness::new(name);
+    let flaky = std::sync::Arc::new(FlakySecret(std::sync::atomic::AtomicU8::new(0)));
+    h.protector = flaky.clone();
+    h.config(json!({}));
+    (h, flaky)
+}
+
+/// The settings a first computer shares, from a bucket on `fake`.
+fn shared_settings(
+    fake: &voice_s3_fake::FakeS3,
+) -> (voice_engine::Engine, Harness, voice_protocol::SyncSettings) {
+    let first = Harness::new("sync-share-source");
+    first.config(json!({}));
+    let a = first.start();
+    support::connect_bucket(&a, &fake.endpoint());
+    let shared = a
+        .meeting_control()
+        .unwrap()
+        .sync_settings()
+        .unwrap()
+        .expect("the settings of a tested bucket");
+    (a, first, shared)
+}
+
+#[test]
+fn a_failure_after_the_test_puts_back_the_key_and_the_secret_it_found() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    let (second, flaky) = flaky_harness("sync-share-flaky");
+    let b = second.start();
+    let control = b.meeting_control().unwrap();
+    let key_file = second.data().join("sync").join("master-key.bin");
+    let journal = second.data().join("sync").join("apply");
+
+    // A fresh profile: no key, no secret, sync off. Test connection passes, the key comes in,
+    // then the keystore refuses the secret: the key goes again, as nothing used it.
+    let before = saved_sync(&second);
+    flaky.0.store(1, Ordering::SeqCst);
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(
+        refused.reason.as_deref(),
+        Some("secret"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(saved_sync(&second), before);
+    assert!(!key_file.exists(), "the imported key went again");
+    assert!(!journal.exists());
+    assert_eq!(sync_config(&b)["secretSaved"], false);
+    assert_eq!(control.sync_settings().unwrap(), None);
+
+    // A key of its own that uploaded nothing yet comes back as it was.
+    flaky.0.store(0, Ordering::SeqCst);
+    let own = shown_code(&b);
+    assert_ne!(own, shared.key);
+    flaky.0.store(1, Ordering::SeqCst);
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(refused.reason.as_deref(), Some("secret"));
+    flaky.0.store(0, Ordering::SeqCst);
+    assert_eq!(shown_code(&b), own);
+    assert_eq!(saved_sync(&second), before);
+    assert!(!journal.exists());
+
+    // With the keystore back, the same settings apply.
+    control.use_sync_settings(&shared).unwrap();
+    assert_eq!(sync_config(&b)["enabled"], true);
+    assert_eq!(shown_code(&b), shared.key);
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+#[test]
+fn voice_stopping_halfway_through_settings_rolls_back_at_the_next_start() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    let (second, flaky) = flaky_harness("sync-share-halfway");
+    let b = second.start();
+    let key_file = second.data().join("sync").join("master-key.bin");
+    let journal = second.data().join("sync").join("apply");
+    let before = saved_sync(&second);
+
+    // Voice stops after it took the key and before it kept the secret: no rollback runs.
+    flaky.0.store(2, Ordering::SeqCst);
+    let control = b.meeting_control().unwrap();
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        control.use_sync_settings(&shared)
+    }));
+    assert!(stopped.is_err());
+    assert!(key_file.exists(), "the key came in before Voice stopped");
+    assert!(journal.join("journal.json").exists());
+    b.shutdown();
+
+    // The next start puts back what was there: no key, no secret, the same fields.
+    flaky.0.store(0, Ordering::SeqCst);
+    let b = second.start();
+    assert!(!key_file.exists(), "the half-applied key went at the start");
+    assert!(!journal.exists());
+    assert_eq!(saved_sync(&second), before);
+    let control = b.meeting_control().unwrap();
+    assert_eq!(control.sync_settings().unwrap(), None);
+    assert_eq!(sync_config(&b)["secretSaved"], false);
+
+    // Rukoo tries again and it works.
+    control.use_sync_settings(&shared).unwrap();
+    assert_eq!(sync_config(&b)["enabled"], true);
+    assert_eq!(control.sync_settings().unwrap().as_ref(), Some(&shared));
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
 #[test]
 fn a_test_counts_only_for_the_secret_it_read() {
     let h = Harness::new("sync-test-secret");

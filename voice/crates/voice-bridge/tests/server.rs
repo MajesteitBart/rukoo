@@ -1490,3 +1490,20 @@ fn sync_settings_reach_the_meeting_control_and_reply_as_the_vectors_do() {
     client.send(get);
     assert_eq!(client.read_reply("c-62")["error"]["code"], "not_available");
 }
+
+#[test]
+fn a_slow_sync_settings_set_doesnt_hold_back_the_commands_after_it() {
+    let bridge = Bridge::start("server-sync-settings-slow");
+    let (mut client, _) = bridge.client(None, 0);
+    let (go, gate) = std::sync::mpsc::channel();
+    *bridge.control.hold_sync_set.lock().unwrap() = Some(gate);
+    client.send(vector("use the bucket of another computer"));
+    // Test connection runs: Rukoo's heartbeat still gets its answer.
+    client.command("c-70", "status.get", json!({}));
+    assert_eq!(client.read_reply("c-70")["ok"], true);
+    go.send(()).unwrap();
+    assert_eq!(
+        client.read_reply("c-63"),
+        vector("the bucket is in use here now")
+    );
+}

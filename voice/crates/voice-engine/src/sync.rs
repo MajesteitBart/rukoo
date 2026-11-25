@@ -127,6 +127,9 @@ pub(crate) struct SyncRuntime {
     /// Held while Settings save or remove the bucket secret, from clearing the passed Test
     /// connection to changing the secret, and while a passed test commits.
     pub secret: Mutex<()>,
+    /// Held while settings from another computer are applied (`sync.settings.set`): one at a
+    /// time, as each keeps a journal of what it replaces.
+    pub apply: Mutex<()>,
 }
 
 impl SyncRuntime {

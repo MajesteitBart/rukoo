@@ -1,5 +1,7 @@
 //! The facade the engine uses: one [`BucketSync`] per data folder.
 
+use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
@@ -8,8 +10,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use crate::keys::{KeyStore, SECRET_FILE};
-use crate::protect::Protector;
+use crate::keys::{KeyStore, KEY_FILE, MASTER_KEY_FILE, SECRET_FILE};
+use crate::protect::{self, Protector};
 use crate::pull::{PullInfo, PullOrigin};
 use crate::queue::Queue;
 use crate::s3::Bucket;
@@ -187,6 +189,10 @@ pub struct BucketSync {
 
 /// `Core::shutdown` waits this long for the worker (2.9).
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+/// `<sync>/apply`: what settings from another computer replace while they are applied, and the
+/// journal that says so.
+const APPLY_DIR: &str = "apply";
+const APPLY_JOURNAL: &str = "journal.json";
 /// The key id Settings shows: its first 8 hex characters (voice/ui/API.md).
 const SHOWN_KID: usize = 8;
 
@@ -447,6 +453,161 @@ impl BucketSync {
         shared.bump();
         shared.changed();
         Ok(shown(&kid))
+    }
+
+    /// Whether this computer's key has uploaded anything, so [`import_key`](Self::import_key)
+    /// would refuse another key with KeyInUse.
+    pub fn key_in_use(&self) -> Result<bool, SyncError> {
+        let shared = &self.shared;
+        let _key = shared.key_lock();
+        match shared.keys.load() {
+            Ok(Some(current)) => shared.queue.uploaded_with(&current.kid()),
+            Ok(None) => Ok(false),
+            Err(e) if e.kind == SyncErrorKind::Key => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Before settings from another computer replace the key, the secret and the bucket here:
+    /// keeps copies of the key and the secret files as they are, and `note`, the caller's own
+    /// state to put back, in `<sync>/apply`. The journal is written last, so a folder without
+    /// one is from a start that never changed anything. Until [`finish_apply`](Self::finish_apply)
+    /// or [`roll_back_apply`](Self::roll_back_apply), also after Voice stopped halfway, the
+    /// journal says what to put back.
+    pub fn begin_apply(&self, note: &serde_json::Value) -> Result<(), SyncError> {
+        let dir = self.apply_dir();
+        let _ = fs::remove_dir_all(&dir);
+        let copy = |name: &str| -> Result<bool, SyncError> {
+            match fs::read(self.shared.sync_dir.join(name)) {
+                Ok(bytes) => {
+                    protect::write_atomic(&dir.join(name), &bytes)
+                        .map_err(|e| worker::local("Voice can't keep a copy of its key", &e))?;
+                    Ok(true)
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(worker::local("Voice can't read its key", &e)),
+            }
+        };
+        let journal = {
+            let _key = self.shared.key_lock();
+            let key = copy(MASTER_KEY_FILE)?;
+            if key {
+                copy(KEY_FILE)?;
+            }
+            let secret = copy(SECRET_FILE)?;
+            serde_json::json!({ "key": key, "secret": secret, "note": note })
+        };
+        let bytes = serde_json::to_vec(&journal).expect("the journal serializes");
+        protect::write_atomic(&dir.join(APPLY_JOURNAL), &bytes)
+            .map_err(|e| worker::local("Voice can't keep its journal", &e))
+    }
+
+    /// The note of an apply that neither finished nor was rolled back.
+    pub fn unfinished_apply(&self) -> Option<serde_json::Value> {
+        let bytes = fs::read(self.apply_dir().join(APPLY_JOURNAL)).ok()?;
+        let journal: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        Some(journal["note"].clone())
+    }
+
+    /// The apply worked: its copies go, the journal first.
+    pub fn finish_apply(&self) {
+        let dir = self.apply_dir();
+        let _ = fs::remove_file(dir.join(APPLY_JOURNAL));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Puts back the key and the secret [`begin_apply`](Self::begin_apply) found, also the
+    /// absence of either, then forgets the apply. A key something was uploaded with stays,
+    /// whichever it is: the meetings it encrypted need it. The journal goes last, so a stop in
+    /// between rolls back again at the next start.
+    pub fn roll_back_apply(&self) -> Result<(), SyncError> {
+        let dir = self.apply_dir();
+        let journal: serde_json::Value = match fs::read(dir.join(APPLY_JOURNAL)) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let _ = fs::remove_dir_all(&dir);
+                return Ok(());
+            }
+            Err(e) => return Err(worker::local("Voice can't read its journal", &e)),
+        };
+        let shared = &self.shared;
+        let here = |name: &str| shared.sync_dir.join(name);
+        let restore = |name: &str| -> Result<(), SyncError> {
+            let bytes = fs::read(dir.join(name))
+                .map_err(|e| worker::local("Voice can't read its copy of the key", &e))?;
+            protect::write_atomic(&here(name), &bytes)
+                .map_err(|e| worker::local("Voice can't put its key back", &e))
+        };
+        let remove = |name: &str| -> Result<(), SyncError> {
+            match fs::remove_file(here(name)) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(worker::local("Voice can't remove the key it took", &e)),
+            }
+        };
+        let had_key = journal["key"] == true;
+        {
+            let _busy = shared.busy();
+            let _key = shared.key_lock();
+            let same = match (fs::read(here(MASTER_KEY_FILE)), had_key) {
+                (Ok(now), true) => fs::read(dir.join(MASTER_KEY_FILE)).is_ok_and(|was| was == now),
+                (Err(e), false) => e.kind() == io::ErrorKind::NotFound,
+                _ => false,
+            };
+            if !same {
+                // The key there is now: when it uploaded anything, or can't be read to tell,
+                // it stays.
+                let kept = match shared.keys.load() {
+                    Ok(Some(current)) => shared.queue.uploaded_with(&current.kid())?,
+                    Ok(None) => false,
+                    Err(_) => true,
+                };
+                if kept {
+                    log::warn!("sync: the key taken from another computer stays: it was used");
+                } else {
+                    let old = if had_key {
+                        KeyStore::new(&dir, shared.opts.protector.clone()).load()?
+                    } else {
+                        None
+                    };
+                    match &old {
+                        Some(_) => {
+                            restore(MASTER_KEY_FILE)?;
+                            if dir.join(KEY_FILE).is_file() {
+                                restore(KEY_FILE)?;
+                            } else {
+                                remove(KEY_FILE)?;
+                            }
+                        }
+                        None => {
+                            remove(MASTER_KEY_FILE)?;
+                            remove(KEY_FILE)?;
+                        }
+                    }
+                    if let Some(old) = &old {
+                        shared.queue.adopt_kid(&old.kid())?;
+                    }
+                    shared.note_key_read(None);
+                    let mut st = shared.lock();
+                    st.restore = RestoreState::default();
+                    st.place += 1;
+                }
+            }
+        }
+        if journal["secret"] == true {
+            restore(SECRET_FILE)?;
+        } else {
+            remove(SECRET_FILE)?;
+        }
+        shared.secret_generation.fetch_add(1, Ordering::SeqCst);
+        self.finish_apply();
+        shared.bump();
+        shared.changed();
+        Ok(())
+    }
+
+    fn apply_dir(&self) -> PathBuf {
+        self.shared.sync_dir.join(APPLY_DIR)
     }
 
     /// Reads the key and the secret again now, and tries the bucket again: Settings' Try again

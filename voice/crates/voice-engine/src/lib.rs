@@ -230,6 +230,10 @@ pub fn start_with(
             (None, Some(e))
         }
     };
+    // Settings from another computer that Voice stopped applying halfway go back first.
+    if let Some(sync) = &sync {
+        settings::recover_sync_apply(&mut cfg, sync, &data_dir);
+    }
     if sync::migrate_secret(
         &mut cfg,
         sync.as_deref(),
