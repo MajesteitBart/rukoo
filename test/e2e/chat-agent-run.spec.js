@@ -6,7 +6,7 @@
 // reply. Bart makes Helper and runs it here; it answers, again after a restart and after New key. Stopped, a mention
 // gets the toast that it won't answer; removed, its runner ends and its key leaves the profile. Another address for
 // Echo in Settings stops Helper until Bart runs it again and says yes to the new address. The window never has the
-// key: Copy config goes through main, and a reload ends what main held for the window.
+// key: Save config goes through main, and a reload ends what main held for the window.
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const http = require('http');
@@ -327,7 +327,7 @@ test('another address for what Helper answers with stops it until Bart runs it a
   expect(echo.asked.length).toBe(before);
 });
 
-test('Copy config goes through main, which asks first; a reload ends the key main held for the window', async () => {
+test('Save config goes through main, which asks first and saves the config to a file, never to the clipboard; a reload ends the key main held for the window', async () => {
   test.setTimeout(120000);
   const { bart, ws } = await twoPeople(server);
   await ready(bart);
@@ -336,22 +336,15 @@ test('Copy config goes through main, which asks first; a reload ends the key mai
   await step.locator('[data-elsewhere] summary').click();
   const shown = JSON.parse(await step.locator('[name="config"]').inputValue());
   expect(shown.key).toBe(MASK);
-  await expect(step.locator('[data-key-gone]')).toHaveText('Rukoo keeps the key out of this window, so nothing shown here can read it. Copy config asks you first, then copies it with the key.');
-  // A no copies nothing.
+  await expect(step.locator('[data-copy-config]')).toHaveText('Save config');
+  await expect(step.locator('[data-key-gone]')).toHaveText('Rukoo keeps the key out of this window, so nothing shown here can read it. Save config asks you first, then saves the config with the key to a file.');
+  // A no saves nothing. The question offers a file only.
   await app.evaluate(({ clipboard }) => clipboard.writeText('before'));
   await answer('cancel');
   await step.locator('[data-copy-config]').click();
   await expect.poll(async () => (await asked()).length).toBe(1);
-  expect((await asked())[0]).toMatchObject({ kind: 'export', message: "Copy the config with Helper's key?", buttons: ['Cancel', 'Save to a file…', 'Copy config'] });
-  expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('before');
-  // Copy: the config the step shows, with the key.
-  await answer('copy');
-  await step.locator('[data-copy-config]').click();
-  await expect(toast()).toHaveText('Config copied');
-  const copied = JSON.parse(await app.evaluate(({ clipboard }) => clipboard.readText()));
-  expect(copied.key).toMatch(KEY);
-  expect({ ...copied, key: MASK }).toEqual(shown);
-  // Save to a file writes the same config.
+  expect((await asked())[0]).toEqual(expect.objectContaining({ kind: 'export', message: "Save the config with Helper's key?", buttons: ['Cancel', 'Save to a file…'] }));
+  // Save to a file: the config the step shows, with the key, and the clipboard as it was.
   const file = path.join(dataDir, 'helper.json');
   await app.evaluate((_e, f) => {
     global.__semAgentRunSaveTo = f;
@@ -359,13 +352,16 @@ test('Copy config goes through main, which asks first; a reload ends the key mai
   }, file);
   await step.locator('[data-copy-config]').click();
   await expect(toast()).toHaveText('Config saved');
-  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(copied);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  expect(saved.key).toMatch(KEY);
+  expect({ ...saved, key: MASK }).toEqual(shown);
+  expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('before');
   // No call answers the key, and after a reload main holds nothing for this window: no export, no start.
   const helper = (await win.evaluate((w) => window.mail.call('chatAgents', w), ws.id)).agents.find((a) => a.name === 'Helper');
   await expect(win.evaluate(([w, a]) => window.mail.call('agentRunHeldKey', w, a), [ws.id, helper.id])).rejects.toThrow(/Onbekende actie/);
   await win.reload();
   await win.waitForFunction(() => window.mail && document.readyState === 'complete');
-  await answer('copy');
+  await answer('save');
   await expect(win.evaluate(([w, a]) => window.mail.call('agentRunExport', w, a, { use: 'own' }), [ws.id, helper.id])).rejects.toThrow(/no_key/);
   await expect(win.evaluate(([w, a]) => window.mail.call('agentRunStart', w, a, { use: 'own' }), [ws.id, helper.id])).rejects.toThrow(/no_key/);
   expect((await runs()).runs).toEqual([]);
@@ -388,34 +384,4 @@ test('signing out stops the agents this computer runs and deletes their keys', a
   await expect.poll(() => app.evaluate(() => global.__semAgentRuns.procs.size)).toBe(0);
   expect(fs.existsSync(path.join(dataDir, 'data', 'agent-runs.json'))).toBe(false);
   await expect.poll(() => fs.existsSync(path.join(dataDir, 'data', 'agent-runs'))).toBe(false);
-});
-
-test("Rukoo's window can't read the clipboard, and paste by the person still works in chat and in the composer", async () => {
-  test.setTimeout(120000);
-  const { bart } = await twoPeople(server);
-  await ready(bart);
-  // What main put on the clipboard, such as an exported config, a page can't read back.
-  await app.evaluate(({ clipboard }) => clipboard.writeText('pasted by the person'));
-  await composer(win).click();
-  const read = await win.evaluate(() => navigator.clipboard.readText().then((text) => `read ${text}`, (err) => `refused ${err.name}: ${err.message}`));
-  // Refused for want of permission, in a window that has the focus.
-  expect(read).toMatch(/^refused NotAllowedError/);
-  expect(read).not.toMatch(/focus/i);
-  expect(await win.evaluate(() => navigator.permissions.query({ name: 'clipboard-read' }).then((p) => p.state, () => 'unknown'))).not.toBe('granted');
-  // Ctrl+V in the chat's message field pastes.
-  const input = composer(win);
-  await input.click();
-  await win.keyboard.press('Control+V');
-  await expect(input).toContainText('pasted by the person');
-  await win.keyboard.press('Control+A');
-  await win.keyboard.press('Backspace');
-  // And in the composer of a new email.
-  const mail = win.locator('.titlebar-modes [data-mode="mail"]');
-  await mail.click();
-  await expect(mail).toHaveAttribute('aria-selected', 'true');
-  await win.click('[data-action="compose"]');
-  const editor = win.locator('.composer .editor');
-  await editor.click();
-  await win.keyboard.press('Control+V');
-  await expect(editor).toContainText('pasted by the person');
 });

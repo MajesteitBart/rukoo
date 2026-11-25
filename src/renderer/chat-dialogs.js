@@ -2118,7 +2118,6 @@ function runErrorText(err, name, use = '') {
   if (code === 'changed') return t('chat.agents.runChanged', { name });
   if (code === 'unresolved') return t('chat.agents.run.unresolved', { use: use || name });
   if (code === 'plain_http') return t('chat.agents.run.plainHttp', { use: use || name });
-  if (code === 'copy_failed') return t('chat.agents.copyFailed');
   if (code === 'save_failed') return t('chat.agents.saveFailed');
   if (code === 'signed_out') return K.errorText(err);
   return t('chat.agents.runFailed', { name });
@@ -2557,12 +2556,12 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
 // (Hermes, OpenClaw, a custom server) gets the line that it can use them for anyone it answers.
 //
 // On the computer main holds the key for this window document and the window never gets it (src/main/agent-runs.js):
-// the config shows it masked, and Copy config asks main to export it, which main does after the person said so in a
-// native question. Where main can keep the key encrypted, 2 is Run on this computer: the filled button, which starts
+// the config shows it masked, and Save config in place of Copy config asks main to save it to a file, which main does
+// after the person said so in a native question. Where main can keep the key encrypted, 2 is Run on this computer: the filled button, which starts
 // the agent here with the agent picked, after main asked the person, and then the line of what it does here. That
 // uses up the key main held: from then on it is only on this computer, encrypted. The runner's config, to run it
 // somewhere else instead, is under "Run it on another computer instead", closed. Elsewhere (the browser, or Linux
-// without a keyring), 2 is the config with Copy config as the filled button and 3 how to start the runner with
+// without a keyring), 2 is the config with Copy config (Save config on Linux) as the filled button and 3 how to start the runner with
 // Node.js 22 or newer.
 //
 // A new agent of the person's can join the channel on screen (room): Done with the box checked adds it there, and a
@@ -2624,7 +2623,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
     note.textContent = why;
     // Only a key that went for good is a warning; one kept here is where it should be.
     note.classList.toggle('ch-warn', desktop && !mainHolds && !keptHere);
-    // "It holds the key" is true only while Copy config can still give it.
+    // "It holds the key" is true only while Save config can still give it.
     body.querySelector('.ch-agent-once').hidden = desktop && !mainHolds;
     const env = runnerEnv(cfg);
     const help = body.querySelector(canRun ? '[data-key-help]' : '[data-use-help]');
@@ -2749,7 +2748,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
       if (running) scrim.querySelector('.buttons button:last-child')?.focus();
     }
   };
-  // Copy config on the computer: main asks the person, then copies the config with the key, or saves it to a file.
+  // Save config on the computer: main asks the person, then saves the config with the key to a file.
   const exportConfig = async (body) => {
     const scrim = body.closest('.scrim');
     const copy = body.querySelector('[data-copy-config]');
@@ -2759,7 +2758,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
     try {
       const res = await api('agentRunExport', ws, agent.id, { use: pick, name: agent.name });
       if (res && res.done) {
-        toast(t(res.done === 'saved' ? 'chat.agents.configSaved' : 'chat.agents.configCopied'));
+        toast(t('chat.agents.configSaved'));
         keep(scrim);
       }
     } catch (err) {
@@ -2777,8 +2776,8 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
             <p class="field-help" data-use-help hidden></p>
             <p class="field-help ch-agent-tools" data-tools hidden></p>
           </li>`;
-  const configHead = (cls) => `<div class="ch-agent-step-head"><span class="ch-label" id="ch-agent-config-label">${esc(t('chat.agents.config'))}</span><button type="button" class="btn ${cls} sm" data-copy-config>${icons.copy}<span>${esc(
-    t('chat.agents.copyConfig')
+  const configHead = (cls) => `<div class="ch-agent-step-head"><span class="ch-label" id="ch-agent-config-label">${esc(t('chat.agents.config'))}</span><button type="button" class="btn ${cls} sm" data-copy-config>${desktop ? icons.download : icons.copy}<span>${esc(
+    t(desktop ? 'chat.agents.saveConfig' : 'chat.agents.copyConfig')
   )}</span></button></div>
             <textarea name="config" class="sel ch-agent-config" aria-labelledby="ch-agent-config-label" readonly spellcheck="false" rows="9"></textarea>
             <p class="ch-agent-once">${esc(t('chat.agents.keyOnce', { name: agent.name }))}</p>
@@ -2845,7 +2844,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
         drawRun(body);
         showKept(scrim);
         // New key for an agent set up here, which Rukoo couldn't keep on this computer: main holds it for this window,
-        // so Run on this computer tries again, and Copy config gives it.
+        // so Run on this computer tries again, and Save config gives it.
         if (unsaved && mainHolds) showError(body, '', t('chat.agents.newKeyUnsaved', { name: agent.name }));
         const field = body.querySelector('[name="config"]');
         body.querySelector('[data-run]')?.addEventListener('click', () => start(body));
@@ -2860,7 +2859,7 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
             () => {}
           );
         });
-        // Ctrl+C in the config copies too; on the computer the field has no key, and only Copy config gives it.
+        // Ctrl+C in the config copies too; on the computer the field has no key, and only Save config gives it.
         field.addEventListener('copy', () => !desktop && keep(scrim));
         const select = body.querySelector('[name="use"]');
         select.addEventListener('change', (e) => {

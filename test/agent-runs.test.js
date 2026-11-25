@@ -152,7 +152,6 @@ function makeRuns(o = {}) {
   const logFile = path.join(dir, `calls-${counter}.jsonl`);
   const lines = [];
   const asked = [];
-  const copied = [];
   const runs = new AgentRuns({
     dataDir,
     secrets: o.secrets || fakeSecrets(),
@@ -178,9 +177,8 @@ function makeRuns(o = {}) {
     agentExists: o.agentExists,
     ask: async (q) => {
       asked.push(q);
-      return o.ask ? o.ask(q) : q.kind === 'run' ? 'run' : 'copy';
+      return o.ask ? o.ask(q) : q.kind === 'run' ? 'run' : 'save';
     },
-    copy: o.copy || ((text) => copied.push(text)),
     saveTo: o.saveTo || (async () => null),
     delays: o.delays || [100, 200, 400],
     steady: o.steady || 60000,
@@ -189,7 +187,7 @@ function makeRuns(o = {}) {
     ...(o.fork ? { fork: o.fork } : {}),
     log: (level, message) => lines.push(`${level} ${message}`)
   }).init();
-  return { runs, dataDir, lines, asked, copied, logFile, calls: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []) };
+  return { runs, dataDir, lines, asked, logFile, calls: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []) };
 }
 
 const phaseOf = (runs, ws, agent) => runs.snapshot().runs.find((r) => r.ws === ws && r.agent === agent)?.phase;
@@ -492,22 +490,27 @@ test('a held key belongs to the document that made the agent: another document c
   assert.equal(a.runs.held.size, 0);
 });
 
-test('running here uses up the hold; export asks first, then copies the config with the key, and the window never gets it', async (t) => {
+test('running here uses up the hold; export asks first, then saves the config with the key to a file, never to the clipboard, and the window never gets it', async (t) => {
   const forks = fakeForks();
-  let answer = 'copy';
+  let answer = 'save';
   const saved = path.join(dir, 'exported-agent.json');
   const a = makeRuns({ fork: forks, account: fakeAccount('https://rukoo.example'), backendFor: fakeBackends(), ask: (q) => (q.kind === 'run' ? 'run' : answer), saveTo: async () => saved });
   t.after(() => a.runs.close());
   a.runs.takeKey(W, { agent: { id: A }, key: KEY }, { owner: 3 });
-  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'claude', owner: 3 }), { done: 'copied' });
+  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'claude', owner: 3 }), { done: 'saved' });
   assert.equal(a.asked.at(-1).kind, 'export');
   assert.match(a.asked.at(-1).detail, /key/);
-  const config = JSON.parse(a.copied[0]);
+  // The question offers only a file: a window can read the clipboard back through a paste.
+  assert.deepEqual(a.asked.at(-1).buttons.map((b) => b.id), ['cancel', 'save']);
+  const config = JSON.parse(fs.readFileSync(saved, 'utf8'));
   assert.deepEqual(config, { server: 'https://rukoo.example', workspace: W, key: KEY, backend: { type: 'claude' }, context: { threadMessages: 50, channelMessages: 20, maxChars: 30000 }, instructions: '' });
-  // Cancel copies nothing; Save writes the file, readable only by the person.
-  answer = 'cancel';
-  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'own', owner: 3 }), { done: null });
-  assert.equal(a.copied.length, 1);
+  // Cancel, or an answer that isn't offered, such as the copy there once was, writes nothing; Save writes the file,
+  // readable only by the person.
+  fs.rmSync(saved);
+  for (answer of ['cancel', 'copy']) {
+    assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'own', owner: 3 }), { done: null });
+    assert.ok(!fs.existsSync(saved));
+  }
   answer = 'save';
   assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'own', owner: 3 }), { done: 'saved' });
   assert.equal(JSON.parse(fs.readFileSync(saved, 'utf8')).backend.command, 'my-agent');
@@ -535,7 +538,7 @@ test('runsApi has no call that answers a key, and the window calls carry their d
     takeKey: (ws, answer, opts) => (seen.push(['take', opts]), { agent: answer.agent, held: true, runsHere: false }),
     forget: async (ws, agent) => (seen.push(['forget', ws, agent]), true),
     start: async (ws, agent, opts) => (seen.push(['start', opts]), {}),
-    exportConfig: async (ws, agent, opts) => (seen.push(['export', opts]), { done: 'copied' }),
+    exportConfig: async (ws, agent, opts) => (seen.push(['export', opts]), { done: 'saved' }),
     release: (ws, agent, owner) => (seen.push(['release', owner]), true),
     snapshot: () => ({ available: true, runs: [] })
   };
@@ -889,34 +892,13 @@ test('a key hold belongs to one document and one session: an answer or a questio
   duringSave = () => (alive = false);
   await rejects(a.runs.exportConfig(W, A, { use: 'claude', owner: '7:0' }), 'no_key');
   assert.ok(!fs.existsSync(saved));
-  // The session changes while the question is open: nothing is copied.
+  // The session changes while the question is open: nothing is written.
   alive = true;
   duringSave = () => {};
-  exportAnswer = 'copy';
   a.runs.takeKey(W, made, { owner: '7:0', session: 'session-one' });
   duringAsk = () => (a.runs.account.sessionTag = 'session-two');
   await rejects(a.runs.exportConfig(W, A, { use: 'claude', owner: '7:0' }), 'no_key');
-  assert.deepEqual(a.copied, []);
-});
-
-test('Copy config reports copied only once the clipboard has it, and a clipboard that fails as a failure', async (t) => {
-  let fail = true;
-  const done = [];
-  const a = makeRuns({
-    fork: fakeForks(),
-    backendFor: fakeBackends(),
-    copy: async (text) => {
-      await sleep(30);
-      if (fail) throw new Error('the clipboard is busy');
-      done.push(text);
-    }
-  });
-  t.after(() => a.runs.close());
-  a.runs.hold(W, A, KEY, 1);
-  await rejects(a.runs.exportConfig(W, A, { use: 'claude', owner: 1 }), 'copy_failed');
-  fail = false;
-  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'claude', owner: 1 }), { done: 'copied' });
-  assert.equal(done.length, 1, 'the write ended before copied came back');
+  assert.ok(!fs.existsSync(saved));
 });
 
 test('a private file is written through a new temporary file that takes its place: never through a link, and none is left behind', () => {
@@ -962,7 +944,8 @@ test('a new key the setup here cannot keep is said so, and stays held for the do
     if (failing) throw new Error('the keyring is locked');
     return seal(s);
   };
-  const a = makeRuns({ fork: forks, backendFor: fakeBackends(), secrets });
+  const saved = path.join(dir, 'unsaved-new-key.json');
+  const a = makeRuns({ fork: forks, backendFor: fakeBackends(), secrets, saveTo: async () => saved });
   t.after(() => a.runs.close());
   a.runs.hold(W, A, KEY, 1);
   await a.runs.start(W, A, { use: 'claude', owner: 1 });
@@ -973,9 +956,9 @@ test('a new key the setup here cannot keep is said so, and stays held for the do
   forks.all[0].exit(0);
   await sleep(20);
   assert.equal(phaseOf(a.runs, W, A), 'refused');
-  // Copy config gives the new key.
-  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'claude', owner: 1 }), { done: 'copied' });
-  assert.equal(JSON.parse(a.copied.at(-1)).key, KEY_NEW);
+  // Save config gives the new key.
+  assert.deepEqual(await a.runs.exportConfig(W, A, { use: 'claude', owner: 1 }), { done: 'saved' });
+  assert.equal(JSON.parse(fs.readFileSync(saved, 'utf8')).key, KEY_NEW);
   // Run on this computer tries again once the keyring works, without a question: it runs what was approved.
   failing = false;
   const asked = a.asked.length;

@@ -1736,13 +1736,6 @@ delete api.chatCreateAgent;
 delete api.chatNewAgentKey;
 Object.assign(api, agentRunsIpc.api);
 
-// A session's permission handlers with clipboard-read refused, both when a page asks (navigator.clipboard.read and
-// readText) and when it checks; every other permission as Electron grants it without handlers.
-function denyClipboardRead(ses) {
-  ses.setPermissionRequestHandler((_contents, permission, callback) => callback(permission !== 'clipboard-read'));
-  ses.setPermissionCheckHandler((_contents, permission) => permission !== 'clipboard-read');
-}
-
 // The documents that hold an agent's key (agent-runs.js hold), each by a token: the webContents id and how many pages
 // its main frame showed before this one. A navigation, a reload, a crash or closing the window ends the document and
 // what it held, and an answer that comes for it later finds it gone (documentAlive). Watched once per webContents,
@@ -2392,10 +2385,6 @@ app.on('second-instance', (e, argv, workingDirectory) => {
 });
 
 app.whenReady().then(() => {
-  // Rukoo's windows never read the clipboard themselves: paste by the person (the keyboard, the edit menu through
-  // main's nativeEdit) is no permission request and keeps working. What main put on the clipboard, such as an agent's
-  // exported config, stays out of reach of a page.
-  denyClipboardRead(session.defaultSession);
   windowState = new WindowState(path.join(app.getPath('userData'), 'window-state.json'));
   // Tests run offline: no logo downloads unless asked for.
   logos = new Logos(path.join(app.getPath('userData'), 'logos'), { enabled: !process.env.SEM_HIDDEN || Boolean(process.env.SEM_LOGOS) });
@@ -2568,10 +2557,6 @@ app.whenReady().then(() => {
     // After a key stopped working: whether the agent is still in the workspace, or was removed.
     agentExists: (ws, agent) => workspaces.manage.agents(ws).then((res) => res.agents.some((a) => a.id === agent), () => null),
     ask: askAgentRun,
-    // Awaited, so a write that fails is a failure and "copied" means copied.
-    copy: async (text) => {
-      await clipboard.writeText(text);
-    },
     saveTo: saveAgentRunConfig,
     // The agent's name as main's copy of the workspace's directory has it, for the native questions.
     memberName: (ws, member) => {

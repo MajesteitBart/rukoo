@@ -4273,16 +4273,12 @@
     "description": "Native question before running a team chat agent on this computer: the button that runs it. src/main/agent-runs.js (approvalQuestion)"
   },
   "native.agentRuns.exportTitle": {
-    "message": "Copy the config with {name}'s key?",
-    "description": "Native question before Rukoo puts a team chat agent's runner config, with its key, on the clipboard or in a file, to run it on another computer: the question. {name}: the agent. src/main/agent-runs.js (exportConfig)"
+    "message": "Save the config with {name}'s key?",
+    "description": "Native question before Rukoo saves a team chat agent's runner config, with its key, to a file, to run it on another computer: the question. {name}: the agent. src/main/agent-runs.js (exportConfig)"
   },
   "native.agentRuns.exportBody": {
     "message": "The config holds {name}'s key, which reads and posts in every channel {name} is in. Put it only on a computer you trust, and keep the file to yourself.",
     "description": "Native question before exporting a team chat agent's runner config: the detail. {name}: the agent. src/main/agent-runs.js (exportConfig)"
-  },
-  "native.agentRuns.copy": {
-    "message": "Copy config",
-    "description": "Native question before exporting a team chat agent's runner config: the button that puts it on the clipboard. src/main/agent-runs.js (exportConfig)"
   },
   "native.agentRuns.save": {
     "message": "Save to a file…",
@@ -12247,6 +12243,10 @@
     "message": "Copy config",
     "description": "Key step: the filled button that copies the runner config, until something was copied. src/renderer/chat-dialogs.js (showAgentKey)"
   },
+  "chat.agents.saveConfig": {
+    "message": "Save config",
+    "description": "Key step on the computer, where only Rukoo's main process has the agent's key: the button that, after a native question, saves the runner config with the key to a file. It takes the place of Copy config there. src/renderer/chat-dialogs.js (showAgentKey)"
+  },
   "chat.agents.configCopied": {
     "message": "Config copied",
     "description": "Toast after Copy config. src/renderer/chat-dialogs.js (showAgentKey)"
@@ -12391,16 +12391,12 @@
     "message": "Couldn't start {name} on this computer.",
     "description": "Error when Run on this computer or Start fails for a reason without its own line. {name}: the agent. src/renderer/chat-dialogs.js (runErrorText)"
   },
-  "chat.agents.copyFailed": {
-    "message": "Couldn't copy the config. Try again, or save it to a file.",
-    "description": "Key step of a team chat agent on the computer: Copy config was approved, but the config couldn't be put on the clipboard. src/renderer/chat-dialogs.js (runErrorText)"
-  },
   "chat.agents.saveFailed": {
     "message": "Rukoo couldn't save that on this computer.",
     "description": "Key step or Agents dialog on the computer: the setups file or the exported config couldn't be written. src/renderer/chat-dialogs.js (runErrorText)"
   },
   "chat.agents.newKeyUnsaved": {
-    "message": "Rukoo couldn't keep the new key for {name} on this computer, so {name} doesn't run here now. Run on this computer tries again, and Copy config gives you the key.",
+    "message": "Rukoo couldn't keep the new key for {name} on this computer, so {name} doesn't run here now. Run on this computer tries again, and Save config saves the key to a file.",
     "description": "Key step after New key for an agent set up on this computer: the new key could not be encrypted or written, so the setup here has none that works; main holds the new key for this window. {name}: the agent. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.stoppedHereSent": {
@@ -12520,7 +12516,7 @@
     "description": "Agents dialog: menu item of an agent set up on this computer whose agent in Settings > Agents changed; it asks for approval again. src/renderer/chat-dialogs.js (runItems)"
   },
   "chat.agents.keyHidden": {
-    "message": "Rukoo keeps the key out of this window, so nothing shown here can read it. Copy config asks you first, then copies it with the key.",
+    "message": "Rukoo keeps the key out of this window, so nothing shown here can read it. Save config asks you first, then saves the config with the key to a file.",
     "description": "Key step on the computer: line under the config, whose key is hidden. src/renderer/chat-dialogs.js (showAgentKey)"
   },
   "chat.agents.keyKeptHere": {

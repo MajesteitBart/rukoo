@@ -54,7 +54,7 @@ A full member of the workspace makes the agent in Rukoo: the workspace menu → 
 
 1. **Answers with** picks the runtime that answers for the agent. On the desktop it lists the agents of Settings → Agents that can answer, the ones whose status check passed first, so the first ready one is picked; in the browser and on the phone it offers Claude Code and Codex. **A program of my own** comes last and leaves `"command": "my-agent"` in the config for you to replace. An agent with a secret, such as a Hermes API key, gets the name of an environment variable in place of that secret.
 2. On the desktop, **Run on this computer** runs the agent there ([In Rukoo's desktop app](#in-rukoos-desktop-app)). The config below is under **Run it on another computer instead**.
-3. **Copy config** copies the config for this runner, with the server's address, the workspace id and the agent's key in it. Rukoo shows the key only this once. Then how to start the runner, as above, with **Get the runner on GitHub**, which opens this section.
+3. **Copy config** copies the config for this runner, with the server's address, the workspace id and the agent's key in it; on the desktop **Save config** saves it to a file instead. Rukoo shows the key only this once. Then how to start the runner, as above, with **Get the runner on GitHub**, which opens this section.
 
 After **Add an agent** the step also offers to add the new agent to the channel on screen, when its sponsor may add it there.
 

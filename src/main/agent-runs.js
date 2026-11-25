@@ -26,8 +26,8 @@
 // step after an await checks the same document, session and hold again before the key is held, stored or exported. Run on this computer stores it in agent-runs.json, encrypted with safeStorage
 // (secrets.js), which uses up the hold; without a way to encrypt it (Linux without a keyring) the option isn't offered
 // and nothing is stored. "Run it on another computer instead" is an export main carries out (exportConfig): it asks
-// the person in a native question, then puts the config with the key on the clipboard or in a file itself. No call
-// answers a key. New key for an agent set up here goes straight to its setup and restarts its runner.
+// the person in a native question, then saves the config with the key in a file they pick. Never on the clipboard:
+// a window can read that back through a paste. No call answers a key. New key for an agent set up here goes straight to its setup and restarts its runner.
 //
 // The process. agent-runner-child.js in an Electron utility process, which ends with Rukoo and never takes
 // ELECTRON_RUN_AS_NODE. Its config, the key and the backend's secret go to it together in its first message and stay
@@ -373,7 +373,7 @@ class AgentRuns extends EventEmitter {
   // for the hub's settings; exportFor(use): exportBackend for them. agentExists(ws, agent): a promise of whether the
   // workspace still has the agent (true, false or null when unknown), asked after a key stopped working.
   // ask(question): a promise of the id of the button the person chose in a native question from main ({ kind, message,
-  // detail, buttons: [{ id, label }], cancel }); copy(text): the clipboard; saveTo(name): a promise of the file the
+  // detail, buttons: [{ id, label }], cancel }); saveTo(name): a promise of the file the
   // person picked in a native save dialog, or null. memberName(ws, member): the member's name in main's own copy of the
   // workspace's directory, or ''. ownerAlive(owner): whether the window document owner (main.js documentOf) is still
   // the one on screen. t: the catalogs. resolve, env, home, fork, child, delays, steady, stopWait, heldFor and now can
@@ -387,7 +387,6 @@ class AgentRuns extends EventEmitter {
     exportFor = () => null,
     agentExists = () => Promise.resolve(null),
     ask = async (q) => q.cancel,
-    copy = () => {},
     saveTo = async () => null,
     memberName = () => '',
     ownerAlive = () => true,
@@ -408,7 +407,7 @@ class AgentRuns extends EventEmitter {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, FILE);
     this.dir = path.join(dataDir, DIR);
-    Object.assign(this, { secrets, canKeep, account, backendFor, exportFor, agentExists, ask, copy, saveTo, memberName, ownerAlive, t, resolve, env, home, fork, child, delays, steady, stopWait, now, log });
+    Object.assign(this, { secrets, canKeep, account, backendFor, exportFor, agentExists, ask, saveTo, memberName, ownerAlive, t, resolve, env, home, fork, child, delays, steady, stopWait, now, log });
     this.heldFor = heldFor || HELD_FOR;
     // { version, server, session, runs: [stored run] }. A stored run: { ws, agent, name, use, key, keyAt, on, refused,
     // stoppedAt, approved }. What only this run of Rukoo knows of each (what its runner reported) is in live, by id.
@@ -846,11 +845,11 @@ class AgentRuns extends EventEmitter {
     return 'saved';
   }
 
-  // "Run it on another computer instead": the config the key step shows for use, with the key this document holds, on
-  // the clipboard or in a file the person picks, after they said so in a native question. { done: 'copied' | 'saved'
-  // | null }. The key never goes to the window.
+  // "Run it on another computer instead": the config the key step shows for use, with the key this document holds, in
+  // a file the person picks, after they said so in a native question. { done: 'saved' | null }. The key never goes to
+  // the window, nor to the clipboard, which a window can read back through a paste (nativeEdit).
   // After each await, the same document, session and hold must still be there (holdOf, and the very hold h0), or
-  // nothing is copied or written.
+  // nothing is written.
   async exportConfig(ws, agent, { use = '', owner = null } = {}) {
     if (!WS_ID.test(ws) || !MEMBER_ID.test(agent)) throw new RunError('invalid');
     if (!this.signedIn()) throw new RunError('signed_out');
@@ -867,26 +866,17 @@ class AgentRuns extends EventEmitter {
       detail: t('native.agentRuns.exportBody', { name: label }),
       buttons: [
         { id: 'cancel', label: t('common.actions.cancel') },
-        { id: 'save', label: t('native.agentRuns.save') },
-        { id: 'copy', label: t('native.agentRuns.copy') }
+        { id: 'save', label: t('native.agentRuns.save') }
       ],
       cancel: 'cancel'
     });
-    if (answer === 'cancel') return { done: null };
+    if (answer !== 'save') return { done: null };
     // The document navigated, its session ended, or the hold ran out or was replaced while a question was open.
     const still = () => {
       if (this.holdOf(id, owner) !== h0) throw new RunError('no_key');
     };
     const out = () => `${JSON.stringify({ server: String(this.signature().server || '').replace(/\/+$/, ''), workspace: ws, key: h0.key, backend, context: { ...RUNNER_CONTEXT }, instructions: '' }, null, 2)}\n`;
     still();
-    if (answer === 'copy') {
-      try {
-        await this.copy(out());
-      } catch (_) {
-        throw new RunError('copy_failed');
-      }
-      return { done: 'copied' };
-    }
     const file = await this.saveTo('agent.json');
     if (!file) return { done: null };
     still();
