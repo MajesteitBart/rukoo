@@ -460,6 +460,8 @@ class Outbox(
             "forbidden" -> settle(row, FAILED, "no_access")
             "invalid" -> when (e.field) {
                 "mentions" -> settle(row, FAILED, "mentions")
+                // A reply's root the server refused: the app replies only to top-level messages, so it was removed.
+                "root" -> settle(row, FAILED, "root_removed")
                 // Ahead of the server's clock. A 400 means the ID never committed, since the server checks duplicates
                 // first, so a new one from a measured clock is safe, once.
                 "operationId" -> if (clockRetried) settle(row, FAILED, "invalid") else {

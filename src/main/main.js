@@ -50,6 +50,7 @@ const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
+const { LoginItem, loginTarget, electronLogin, memoryLogin, whenRenderedAndShown } = require('./loginitem');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
 const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
@@ -124,6 +125,13 @@ let updates = null;
 let installer = null;
 // The user chose Restart to update: the quit installs the new version and starts it.
 let restartForUpdate = false;
+// Settings > General > Open when you sign in (loginitem.js). startHidden: this start came from it, so the main window
+// stays hidden until someone opens it, and the tray icon is there to open it with.
+let loginItem = null;
+let startHidden = false;
+// After such a start: what opens the mail the last run left (recover in app.whenReady), once a main window has both
+// rendered and shown. A main window that closes unseen, as in a quit that is called off, leaves it to the next one.
+let recoverLater = null;
 let syncTimer = null;
 // The emails that came in since the main window last had focus, by id; badgeCount() counts the ones still new.
 let newSinceFocus = new Set();
@@ -284,9 +292,11 @@ function refreshBadge(count = badgeCount()) {
   refreshTray(count);
 }
 
-// The tray icon is there while closing or minimizing hides the main window, so the window can always come back.
+// The tray icon is there while closing or minimizing hides the main window, so the window can always come back. A start
+// from the login item hides the window too, so its icon stays for that run, also with both settings off; closing the
+// window then quits as those settings say. A Mac has the Dock for that.
 function updateTray() {
-  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray;
+  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray || (startHidden && process.platform !== 'darwin');
   if (wanted && !tray) {
     tray = new TrayIcon({
       icon: ICON,
@@ -524,26 +534,34 @@ async function serveChatFile(request) {
 // desktop notification whose click opens the conversation at the message.
 const chatNotices = new Map();
 
-// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
-function openChatNotice(open) {
+// Where a chat notification opens, checked: { kind: 'open', ws, conversation, seq }, ws or conversation null when not
+// valid.
+function chatNoticeTarget(open) {
   const o = plainObject(open);
   const id = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
-  const payload = {
+  return {
     kind: 'open',
     ws: id(o.ws, /^w_[A-Za-z0-9_-]{22}$/),
     conversation: id(o.conversation, /^c_[A-Za-z0-9_-]{22}$/),
     seq: Number.isSafeInteger(o.seq) && o.seq >= 0 ? o.seq : null
   };
+}
+
+// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
+function openChatNotice(open) {
+  const payload = chatNoticeTarget(open);
   showWindow();
   if (payload.ws && payload.conversation) send('chat', payload);
 }
 
 // A toast carries the alert's id, so taking the alert back (a read, a removal, an eviction, signing out) takes the toast
-// down too when it still shows.
+// down too when it still shows, and where the alert opens: the toast's Open goes there as a notification's click does
+// (app.js), such as a reply's thread.
 function showChatNotification({ id, title, body, open } = {}) {
   const key = String(id || '').slice(0, 200);
   if (win && !win.isDestroyed() && win.isFocused()) {
-    send('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
+    const target = chatNoticeTarget(open);
+    send('chat-toast', { id: key, body: String(body || '').slice(0, 200), open: target.ws && target.conversation ? target : null });
     return;
   }
   if (screenRecording()) {
@@ -633,6 +651,24 @@ function mailClient() {
 async function refreshMailClient() {
   const client = mailClient();
   if (client) await client.refresh({ portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE) });
+}
+
+// The login item (loginitem.js). Only an installed app on Windows or macOS gets the system's own; a run from a
+// checkout, a development or test profile, a portable or unpacked copy and Linux get none (loginTarget). Test mode
+// never touches the system: the login item lives in memory and a spec reads it through global.__semLoginItem. It plays
+// this platform, or the one SEM_LOGIN_ITEM names (win32, darwin), so a Linux test machine checks both; Linux itself has
+// no switch. SEM_LOGIN_OPENED=1 says the start came from the login item on a Mac.
+const TEST_LOGIN_EXE = { win32: 'C:\\Program Files\\Rukoo Mail\\Rukoo Mail.exe', darwin: '/Applications/Rukoo Mail.app/Contents/MacOS/Rukoo Mail' };
+function makeLoginItem() {
+  if (process.env.SEM_HIDDEN) {
+    const platform = TEST_LOGIN_EXE[process.env.SEM_LOGIN_ITEM] ? process.env.SEM_LOGIN_ITEM : process.platform;
+    const exe = TEST_LOGIN_EXE[platform];
+    const system = memoryLogin({ platform, execPath: exe, opened: process.env.SEM_LOGIN_OPENED === '1' });
+    return new LoginItem({ platform, target: exe ? { exe } : null, system });
+  }
+  const platform = process.platform;
+  const target = loginTarget({ platform, packaged: app.isPackaged, inApplications: () => app.isInApplicationsFolder() });
+  return new LoginItem({ platform, target, system: target ? electronLogin(app) : null });
 }
 
 // Links never navigate an app window; they open in the browser or, for mailto:, in a compose window.
@@ -818,6 +854,10 @@ function endSession() {
       })
       .catch(() => {});
   }
+  // Moves, deletes and Undos send no further email; once the one on its way settles, the cache is saved again with
+  // the rows of the rest.
+  const batches = engine.stopBatches();
+  if (batches) batches.then(() => engine.flush()).catch(() => {});
   engine.flush();
   if (calendars) calendars.flush();
   closeServices();
@@ -969,6 +1009,8 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The emails of a batch from the renderer (moveMany, removeMany, undoMany), as setFlagsMany takes them.
+const mailIds = (ids) => (Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000));
 // The list a call about older mail is for: scope, view, folder and search, as the renderer lists them. resume: the
 // server search goes on with the next folders (engine.searchServer()).
 const olderOpts = (o) => {
@@ -1020,6 +1062,30 @@ const unsent = [];
 const unsentFile = () => path.join(app.getPath('userData'), 'data', 'unsent.json');
 // Whether this run wrote the file, so a later write with nothing left removes only its own.
 let unsentWritten = false;
+// What unsent.json had at the start, until reopenUnsent() opens it: after a start from the login item, only when the
+// window first shows. Every write keeps it, so a quit before that loses none of it.
+let unsentBefore = [];
+
+// unsent.json with own, this run's emails, and unsentBefore, merged by id. Written to a file beside it and moved over
+// it, as held.json is; no file when both are empty.
+function writeUnsent(own) {
+  const ids = new Set(own.map((u) => u.id));
+  const all = [...unsentBefore.filter((u) => !ids.has(u.id)), ...own];
+  const file = unsentFile();
+  if (!all.length) return fs.rmSync(file, { force: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(all));
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+function readUnsent() {
+  try {
+    const list = JSON.parse(fs.readFileSync(unsentFile(), 'utf8'));
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
 
 // Refused emails that wait for the main window's reading pane: { id, restore, error }. 'send-failed' only says that
 // one is here; the window asks for them (sendFailures) once it listens and has drawn its first state, so a main
@@ -1056,24 +1122,21 @@ function keepUnsent() {
   const waiting = refused.list().map(({ id, restore, error }) => ({ id, restore, error }));
   const list = [...unsent, ...waiting].filter((u) => u.restore);
   try {
-    if (list.length) {
-      fs.writeFileSync(unsentFile(), JSON.stringify(list));
-      unsentWritten = true;
-    } else if (unsentWritten) {
-      fs.rmSync(unsentFile(), { force: true });
-      unsentWritten = false;
+    if (list.length || unsentWritten) {
+      writeUnsent(list);
+      unsentWritten = list.length > 0;
     }
   } catch (_) {
     // A profile that can't be written to keeps nothing.
   }
 }
 
-// A quit that wrote unsent.json was called off, and what it listed is open again: the file goes, so the next start
-// doesn't open those emails a second time.
+// A quit that wrote unsent.json was called off, and what it listed is open again: those go from the file, so the next
+// start doesn't open them a second time.
 function forgetUnsent() {
   if (!unsentWritten) return;
   try {
-    fs.rmSync(unsentFile(), { force: true });
+    writeUnsent([]);
     unsentWritten = false;
   } catch (_) {
     // Left for the next start, which opens what it lists.
@@ -1092,14 +1155,18 @@ function openUnsent(list) {
 }
 
 function reopenUnsent() {
-  let list;
+  const list = unsentBefore;
+  if (!list.length) return new Set();
+  unsentBefore = [];
   try {
-    list = JSON.parse(fs.readFileSync(unsentFile(), 'utf8'));
-    fs.rmSync(unsentFile(), { force: true });
+    // A quit that is on keeps what it wrote there for the next start.
+    if (unsentWritten) keepUnsent();
+    else fs.rmSync(unsentFile(), { force: true });
   } catch (_) {
+    unsentBefore = list;
     return new Set();
   }
-  return openUnsent(Array.isArray(list) ? list : []);
+  return openUnsent(list);
 }
 
 // The emails in the outbox, written to held.json in the profile at every change (the outbox's changed()), so a crash
@@ -1223,6 +1290,11 @@ const api = {
   setFlagsMany: (ids, flags) => engine.setFlagsMany((Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000)), plainObject(flags)),
   move: (id, dest) => engine.move(id, dest),
   remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
+  // Many emails at once: one batch to the server per folder. Each answers per id, in the order given (engine.js
+  // moveMany, removeMany, undoMany).
+  moveMany: (ids, dest) => engine.moveMany(mailIds(ids), accountText(dest, 1000)),
+  removeMany: (ids, opts) => engine.removeMany(mailIds(ids), { force: Boolean(opts && opts.force === true) }),
+  undoMany: (ids) => engine.undoMany(mailIds(ids)),
   emptyFolder: (accountId, folder) => engine.emptyFolder(accountId, folder),
   toggleVip: (address) => engine.toggleVip(address),
   markSpam: (id) => engine.markSpam(id),
@@ -1503,6 +1575,16 @@ const api = {
     await shell.openExternal(SETTINGS_URL);
     return true;
   },
+  // Settings > General > Open when you sign in: what the system has now (loginitem.js status()), and the switch.
+  openAtLoginState: () => loginItem.status(),
+  setOpenAtLogin: (on) => {
+    if (!loginItem.status().available) throw new Error(t('settings.general.openAtLoginUnavailable'));
+    try {
+      return loginItem.set(on === true);
+    } catch (_) {
+      throw new Error(t('settings.general.openAtLoginFailed'));
+    }
+  },
   print: (html) => printHtml(html),
   setBadge: (dataUrl, count) => {
     if (!win || process.platform !== 'win32') return;
@@ -1722,6 +1804,9 @@ const api = {
 // ---- agents ----
 // The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
 const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The longest message text a chat takes; anything longer is cut. The chat panel refuses longer text before Send clears
+// the input (TEXT_MAX in src/renderer/agent/pick.js, the same number).
+const AGENT_TEXT_MAX = 20000;
 const agentId = (v) => {
   if (typeof v !== 'string' || !v || v.length > 200) throw new Error('invalid');
   return v;
@@ -1823,9 +1908,9 @@ Object.assign(api, {
   agentSend: (id, input) => {
     const i = agentPlain(input);
     return agentHub().send(agentId(id), {
-      text: agentText(i.text, 20000),
+      text: agentText(i.text, AGENT_TEXT_MAX),
       action: agentText(i.action, 40) || null,
-      display: agentText(i.display, 20000) || null,
+      display: agentText(i.display, AGENT_TEXT_MAX) || null,
       skill: agentText(i.skill, 64) || null,
       // Tokens of staged files (agentPickFiles, agentAddFile) and Rukoo ids of emails.
       files: agentList(i.files).map(agentId),
@@ -2071,9 +2156,12 @@ const windowApi = {
 
 // Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
 // setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
-// page. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
-// reads a code as one of the agent's own.
-const WINDOW_CODES = new Set(['auth']);
+// page. 'uncertain': nobody knows what the server did with a move or delete until the folders sync (engine.js
+// notMoved), which the message list counts apart from an email that stayed. 'rebuilt': an Undo whose folder was
+// rebuilt on the server, which it counts as not confirmed with this reason (engine.js undoAll). Other codes stay here:
+// Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which reads a code as one of the
+// agent's own.
+const WINDOW_CODES = new Set(['auth', 'uncertain', 'rebuilt']);
 
 // What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
 // Booking errors (booking/rules.js bookingError) pass their code, and for a refused field its name (contracts f).
@@ -2215,6 +2303,14 @@ function createWindow({ hidden = false } = {}) {
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
   reveal(win, b.maximized, hidden);
+  // Before anything can show it: a second start, the tray, an .ics file.
+  if (recoverLater) {
+    whenRenderedAndShown(win, () => {
+      const run = recoverLater;
+      recoverLater = null;
+      if (run) run();
+    });
+  }
   win.loadFile(path.join(RENDERER, 'index.html'));
 }
 
@@ -2261,13 +2357,14 @@ app.on('activate', () => {
 });
 
 // Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
-// the main window stays where it was, in the tray too.
+// the main window stays where it was, in the tray too. The login item starting a Rukoo that already runs changes
+// nothing.
 app.on('second-instance', (e, argv, workingDirectory) => {
   const link = mailto.fromArgs(argv);
   const file = link ? null : icsFromArgs(argv, workingDirectory);
   if (link) mailtoQueue.accept(link);
   else if (file) icsQueue.accept(file);
-  else if (engine && windowState) showWindow();
+  else if (engine && windowState && !(loginItem && loginItem.fromLogin(argv))) showWindow();
 });
 
 app.whenReady().then(() => {
@@ -2286,6 +2383,7 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   // What the last run still held, read before anything can be queued and write held.json anew.
   heldBefore = readHeld();
+  unsentBefore = readUnsent();
   outbox = new Outbox({
     send: (payload) => engine.send(payload),
     sent: (entry) => mailSent(entry.payload, entry.id),
@@ -2380,6 +2478,11 @@ app.whenReady().then(() => {
   // After every check, so a download that failed tries again with the next one.
   updates.on('checked', (state) => installer.download(state.available).catch(() => {}));
   installer.on('changed', () => broadcast('updates', updatesState()));
+  loginItem = makeLoginItem();
+  if (process.env.SEM_HIDDEN) global.__semLoginItem = loginItem;
+  // A start from the login item stays hidden, unless the profile has neither a mail account nor a signed-in Rukoo
+  // account: nothing would notify then, and the person needs the setup page.
+  startHidden = loginItem.fromLogin(process.argv, { first: true }) && (engine.accounts.length > 0 || account.signedIn);
   // ---- voice ----
   // Before the hub, whose meeting tools use it, and before the first window, which it may have to hide. A development
   // or test profile (SEM_DATA_DIR) only finds a Voice paired through RUKOO_VOICE_BRIDGE, never the installed one.
@@ -2436,13 +2539,17 @@ app.whenReady().then(() => {
     broadcast('theme');
   });
   applyTheme();
-  createWindow();
+  // From the login item the window starts in the tray, without taking the focus; opening Rukoo shows it.
+  // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json). After a start
+  // from the login item they stay on disk until the person first shows the window, so no editor takes the focus.
+  const recover = () => reopenHeld(reopenUnsent());
+  if (startHidden) recoverLater = recover;
+  createWindow({ hidden: startHidden });
   // After the main window shows, so the compose window comes up in front of it.
   win.once('ready-to-show', () => {
     mailtoQueue.start();
     icsQueue.start();
-    // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json).
-    reopenHeld(reopenUnsent());
+    if (!startHidden) recover();
   });
   refreshMailClient().catch(() => {});
   updateTray();
@@ -2549,7 +2656,9 @@ let quitWaited = false;
 let quitSending = false;
 app.on('will-quit', (event) => {
   if (quitSending) return event.preventDefault();
-  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length)) return;
+  // Moves, deletes and Undos send no further email; the one on its way settles within the wait below.
+  const batches = engine ? engine.stopBatches() : null;
+  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length && !batches)) return;
   quitWaited = true;
   event.preventDefault();
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2563,12 +2672,14 @@ app.on('will-quit', (event) => {
     quitSending = false;
   });
   const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
+  // The rows of the emails a stopped batch didn't send are back in the cache once it settles, and saved with it.
+  const moves = batches ? Promise.race([batches, wait(QUIT_WAIT)]).then(() => engine.flush()) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
   // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
   // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
   // installs, since Check now can still download one.
-  Promise.all([mail, agents]).finally(() => {
+  Promise.all([mail, agents, moves]).finally(() => {
     const offered = updates && updates.available;
     if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
       installer.install({ restart: restartForUpdate });

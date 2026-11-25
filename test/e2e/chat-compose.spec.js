@@ -353,7 +353,7 @@ test('a message held because Bart left and came back before it went offers Send 
   await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, 'Held for a while')).length, { timeout: 15000 }).toBe(1);
 });
 
-test('replying in a thread: docked at 1400px, over the log at 900px, the reply in the main log, and Escape back to the message', async () => {
+test('replying in a thread: docked at 1400px, over the log at 900px, the reply only in the thread, and Escape back to the message', async () => {
   const { olga, bart, ws } = await twoPeople(server);
   const root = await server.post(olga, ws.id, ws.general, 'Lunch on Friday?');
   ({ app, win } = await launch(server, { dataDir }));
@@ -380,11 +380,11 @@ test('replying in a thread: docked at 1400px, over the log at 900px, the reply i
   const reply = message(threadLog(), "I'm in");
   await expect(reply).toHaveAttribute('data-seq', /^\d+$/, { timeout: 15000 });
   await expect(threadLog().locator('.ch-thread-div')).toHaveText('1 reply');
-  // The reply shows in the main log too, as a reply row with its context, and the first message counts it.
-  const inMain = message(log(), "I'm in");
-  await expect(inMain).toHaveClass(/is-reply/);
-  await expect(inMain.locator('.ch-context')).toHaveText('replied to Olga Owner: Lunch on Friday?');
+  // The reply shows only in the thread (issue #376): the first message in the log counts it, without a dot, as it is
+  // Bart's own.
   await expect(top.locator('.ch-replies-n')).toHaveText('1 reply');
+  await expect(top.locator('.ch-replies')).not.toHaveClass(/has-new/);
+  await expect(message(log(), "I'm in")).toHaveCount(0);
   await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, "I'm in"))[0]?.root, { timeout: 15000 }).toBe(root.messageId);
   // Escape in the thread's composer closes it, and the focus goes back to the first message in the log.
   await win.keyboard.press('Escape');
@@ -691,14 +691,20 @@ test('an open thread loads again after Start over, without a reply removed befor
   await Promise.all(others.map(async (person, n) => {
     for (let i = 0; i < 27; i++) await server.post(person, ws.id, ws.general, `Filler ${n}.${i}`);
   }));
-  await server.post(olga, ws.id, ws.general, 'Reply that stays', { root: root.messageId });
+  const stays = await server.post(olga, ws.id, ws.general, 'Reply that stays', { root: root.messageId });
   ({ app, win } = await launch(server, { dataDir }));
   await ready(bart);
-  // The thread opens from the recent reply, and pages back for its first message and the older reply.
-  const recent = message(log(), 'Reply that stays');
-  await expect(recent).toBeVisible({ timeout: 15000 });
+  await expect(message(log(), 'Filler 0.26')).toBeVisible({ timeout: 15000 });
   await expect(message(log(), 'Plans for the offsite')).toHaveCount(0);
-  await (await tool(recent, 'reply')).click();
+  // A reply shows only in its thread (issue #376), and its first message isn't loaded: the pill for new replies opens
+  // the thread at it, which pages back for its first message and the older reply.
+  await expect(message(log(), 'Reply that stays')).toHaveCount(0);
+  const pill = pane().locator('.ch-jump.is-thread');
+  // Only the loaded reply counts: the older one is more than a page up.
+  await expect(pill).toHaveText('1 new reply in a thread', { timeout: 15000 });
+  await pill.click();
+  await expect(threadLog().locator(`li.ch-msg[data-seq="${stays.seq}"]`)).toBeVisible({ timeout: 15000 });
+  await expect(pill).toBeHidden();
   await expect(message(threadLog(), 'Plans for the offsite')).toBeVisible({ timeout: 15000 });
   await expect(message(threadLog(), 'Reply removed while away')).toBeVisible();
   await expect(message(threadLog(), 'Reply that stays')).toBeVisible();
@@ -748,4 +754,57 @@ test('a draft with a mention survives switching rooms and a restart', async () =
   await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
   await expect(message(log(), 'Draft for later')).toBeVisible({ timeout: 15000 });
   await expect(composer(win)).toHaveJSProperty('value', '');
+});
+
+// Review of #376, finding 1: a refused reply holds the sends after it until it goes, and replies show only in their
+// thread, so the conversation keeps a way into that thread, also when its first message was removed meanwhile.
+test('a refused reply under a removed first message keeps its way into the thread, where Discard lets the next message go', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  const root = await server.post(olga, ws.id, ws.general, 'Who takes the minutes?');
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  const top = message(log(), 'Who takes the minutes?');
+  await expect(top).toBeVisible({ timeout: 15000 });
+  await (await tool(top, 'reply')).click();
+  await expect(threadPane()).toBeVisible();
+  // Olga removes her message before Bart's reply goes; Bart's app doesn't hear of it yet.
+  const runs = await holdRuns(app);
+  await server.redact(olga, ws.id, ws.general, root.messageId);
+  await write('I will', { thread: true });
+  const refused = message(threadLog(), 'I will');
+  await expect(refused).toHaveAttribute('data-state', 'failed', { timeout: 15000 });
+  // The line says why: the message it answers was removed.
+  await expect(refused.locator('.ch-state-text')).toHaveText('Not sent: The message you replied to is no longer available.');
+  await win.keyboard.press('Escape');
+  await expect(threadPane()).toBeHidden();
+  // A message after it waits its turn.
+  await write('And the agenda?');
+  const after = message(log(), 'And the agenda?');
+  await expect(after).toHaveClass(/is-pending/);
+  await runs.release();
+
+  // The removal came in, and Bart opens the conversation again: the removed message keeps a reply line that says a
+  // reply wasn't sent, and opens the thread.
+  const removed = log().locator(`li.ch-msg[data-id="${root.messageId}"]`);
+  await expect(removed).toHaveClass(/is-removed/, { timeout: 15000 });
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  await roomRow(win, 'general').click();
+  await expect(pane().locator('.ch-title')).toHaveText('general');
+  const line = removed.locator('.ch-replies');
+  await expect(line).toHaveText('1 reply not sent', { timeout: 15000 });
+  await expect(line).toHaveClass(/has-failed/);
+  await expect(message(log(), 'I will')).toHaveCount(0);
+  await expect(message(log(), 'And the agenda?')).toHaveClass(/is-pending/);
+  await line.click();
+  await expect(threadPane()).toBeVisible();
+  const again = message(threadLog(), 'I will');
+  await expect(again).toHaveAttribute('data-state', 'failed');
+  await again.locator('[data-ch-act="discard"]').click();
+  await expect(again).toHaveCount(0);
+  // The message after it goes out, and the reply line goes with the last unsent reply.
+  await expect(message(log(), 'And the agenda?')).toHaveAttribute('data-seq', /^\d+$/, { timeout: 15000 });
+  await expect(removed.locator('.ch-replies')).toHaveCount(0);
+  await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, 'And the agenda?')).length, { timeout: 15000 }).toBe(1);
 });
