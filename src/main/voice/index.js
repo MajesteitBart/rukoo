@@ -17,7 +17,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { VoiceStore } = require('./store');
 const { VoiceBridge, VoiceError } = require('./bridge');
-const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS, MEDIA_READ_MAX } = require('./protocol');
+const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS, MEDIA_READ_MAX, validateMediaOpen } = require('./protocol');
 const { candidateEvents, suggest, compareSpeakers, WINDOW_MS } = require('./speakers');
 const { bridgePathHere } = require('./paths');
 
@@ -946,10 +946,10 @@ class VoiceService extends EventEmitter {
     return this.micState(id);
   }
 
-  // A few seconds of the meeting's audio, for the People card's player: {type, data (base64), start, end}. Voice
+  // A few seconds of the meeting's audio, for the People card's player: {type, data (base64), start, end, more}. Voice
   // mixes the tracks (media.open); a clip is a stretch where one voice speaks. With piece, Voice may end the mix at a
-  // segment boundary while the rest still comes from the bucket, and end says where: the player starts on it and asks
-  // for the rest from there.
+  // segment boundary while the rest still comes from the bucket: end says where, more says audio follows, and the
+  // player starts on it and asks for the rest from there.
   async audioClip(id, start, end, piece = false) {
     const e = this.store.entry(id);
     if (!e || e.removed) throw new VoiceError('not_found', 'No such meeting.');
@@ -958,9 +958,10 @@ class VoiceService extends EventEmitter {
     const until = this.now() + AUDIO_PREPARE_MS;
     let r;
     for (let wait = 250; ; wait = Math.min(1000, wait * 2)) {
-      r = await this.mediaOpen({ meeting: id, kind: 'audio', start, end, piece });
-      if (r && r.ready === true) break;
-      if (!r || r.ready !== false) throw badReply('a media file');
+      const opened = validateMediaOpen(await this.mediaOpen({ meeting: id, kind: 'audio', start, end, piece }));
+      if (!opened.ok) throw badReply('a media file');
+      r = opened.result;
+      if (r.ready) break;
       if (this.now() > until) throw new VoiceError('timeout', 'Rukoo Voice took too long to prepare the clip.');
       await delay(wait);
     }
@@ -975,8 +976,11 @@ class VoiceService extends EventEmitter {
       parts.push(data);
       offset += data.length;
     }
-    const stop = count(r.end) && r.end > start && r.end <= end ? r.end : end;
-    return { type: 'audio/wav', data: Buffer.concat(parts).toString('base64'), start: count(r.start) ? r.start : start, end: stop };
+    const stop = r.end > start && r.end <= end ? r.end : end;
+    // more: Voice ended a piece at a segment boundary and audio follows from stop. Without it this is all the audio
+    // there is, also when the recording ends before end.
+    const more = piece && r.more && stop < end;
+    return { type: 'audio/wav', data: Buffer.concat(parts).toString('base64'), start: r.start, end: stop, more };
   }
 
   // The calendar events this meeting can be, nearest first, for the meeting view's Link and Change menu: the person

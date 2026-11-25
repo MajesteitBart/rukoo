@@ -423,6 +423,11 @@
       "message": { "type": "reply", "id": "c-50", "ok": true, "result": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "ready": true, "type": "audio/wav", "size": 19200044, "start": 600000, "end": 1200000 } }
     },
     {
+      "name": "the first piece of a range of audio, with more to come",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-55", "ok": true, "result": { "media": "md-b2C3d4E5f6G7h8I9j0K1lM", "ready": true, "type": "audio/wav", "size": 128044, "start": 61000, "end": 65000, "more": true } }
+    },
+    {
       "name": "a piece of media",
       "from": "voice",
       "message": { "type": "reply", "id": "c-54", "ok": true, "result": { "offset": 1048576, "data": "UklGRiQAAABXQVZF" } }

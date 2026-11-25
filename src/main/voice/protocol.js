@@ -330,6 +330,27 @@ function validate(from, message) {
   }
 }
 
+// A media.open reply's result, which a reply doesn't name, so the side that sent the command checks it: {ok: true,
+// result} with more false when left out, or {ok: false, reason}. more is true when Voice ended a piece at a segment
+// boundary and audio follows; an older Voice never sends it.
+function validateMediaOpen(result) {
+  try {
+    check(isObj(result), 'result');
+    pattern(result, 'media', MEDIA_ID);
+    if (!bool(result, 'ready')) return { ok: true, result: { media: result.media, ready: false } };
+    str(result, 'type');
+    int(result, 'size', 0);
+    int(result, 'start', 0);
+    int(result, 'end', 0);
+    check(result.end >= result.start, 'end');
+    if (given(result, 'more')) bool(result, 'more');
+    return { ok: true, result: { ...result, more: result.more === true } };
+  } catch (err) {
+    if (err instanceof Invalid) return { ok: false, reason: err.reason };
+    throw err;
+  }
+}
+
 // The discovery file, parsed.
 function validateDiscovery(file) {
   try {
@@ -388,6 +409,7 @@ module.exports = {
   MEDIA_READ_MAX,
   SPLIT_TRACKS,
   validate,
+  validateMediaOpen,
   validateDiscovery,
   negotiate,
   replayPlan,

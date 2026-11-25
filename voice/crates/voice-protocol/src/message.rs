@@ -1006,6 +1006,52 @@ impl SplitResult {
     }
 }
 
+/// The result of `media.open`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaOpenResult {
+    /// Voice prepares the file: Rukoo sends the same `media.open` again.
+    Preparing { media: String },
+    /// The file is ready to read. `kind` is its media type, sent as `type`. `more` is `true` when
+    /// Voice ended a `piece` at a segment boundary and audio follows; it is left out otherwise.
+    Ready {
+        media: String,
+        kind: String,
+        size: u64,
+        start: u64,
+        end: u64,
+        more: bool,
+    },
+}
+
+impl MediaOpenResult {
+    pub fn to_value(&self) -> Value {
+        match self {
+            MediaOpenResult::Preparing { media } => json!({ "media": media, "ready": false }),
+            MediaOpenResult::Ready {
+                media,
+                kind,
+                size,
+                start,
+                end,
+                more,
+            } => {
+                let mut value = json!({
+                    "media": media,
+                    "ready": true,
+                    "type": kind,
+                    "size": size,
+                    "start": start,
+                    "end": end,
+                });
+                if *more {
+                    value["more"] = true.into();
+                }
+                value
+            }
+        }
+    }
+}
+
 /// One meeting in the result of `meeting.list`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

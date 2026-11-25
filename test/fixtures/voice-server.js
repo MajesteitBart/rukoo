@@ -146,6 +146,9 @@ class FakeVoice {
     // media.open with piece: audio ends at the next multiple of this many ms, as a segment from the bucket would; 0
     // gives the whole range, as for audio on this computer.
     this.pieceMs = 0;
+    // Where the recorded audio ends, in meeting ms: media.open cuts an audio range to it, as Voice does, and answers
+    // not_found from there on. null: the audio runs on past every range.
+    this.audioEndMs = null;
   }
 
   async listen(port = 0) {
@@ -409,8 +412,12 @@ const DEFAULTS = {
   // through Rukoo's polling. The same arguments keep their id; a frame ignores `end`.
   'media.open'(args) {
     if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
-    const boundary = args.kind === 'audio' && args.piece === true && this.pieceMs > 0 ? (Math.floor(args.start / this.pieceMs) + 1) * this.pieceMs : null;
-    const file = syntheticMedia(boundary !== null && boundary < args.end ? { ...args, end: boundary } : args);
+    const audio = args.kind === 'audio' && Number.isInteger(args.end);
+    if (audio && this.audioEndMs !== null && args.start >= this.audioEndMs) return { error: { code: 'not_found', message: 'Nothing was recorded at that time.' } };
+    const end = audio && this.audioEndMs !== null ? Math.min(args.end, this.audioEndMs) : args.end;
+    const boundary = audio && args.piece === true && this.pieceMs > 0 ? (Math.floor(args.start / this.pieceMs) + 1) * this.pieceMs : null;
+    const cut = boundary !== null && boundary < end;
+    const file = syntheticMedia(audio ? { ...args, end: cut ? boundary : end } : args);
     if (file.error) return file;
     const key = JSON.stringify([args.meeting, args.kind, args.start, args.kind === 'frame' || args.end === undefined ? null : args.end, args.piece === true]);
     const id = this.mediaIds.get(key);
@@ -422,7 +429,11 @@ const DEFAULTS = {
     }
     const prepared = this.media.get(id);
     prepared.ready = true;
-    return { media: id, ready: true, type: file.type, size: file.size, start: file.start, end: file.end };
+    const answer = { media: id, ready: true, type: file.type, size: file.size, start: file.start, end: file.end };
+    // more: the piece ended at a segment boundary and audio follows. When the asked range runs past the recording,
+    // the file ends with the recording and more is left out, as a real Voice does.
+    if (cut) answer.more = true;
+    return answer;
   },
   'media.read'(args) {
     const prepared = this.media.get(args.media);

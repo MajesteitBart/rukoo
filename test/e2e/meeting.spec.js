@@ -2159,6 +2159,37 @@ test('a passage from the bucket starts playing once its first piece is here, and
   expect(await played()).toEqual([1, 2]);
 });
 
+// The recording ends at 8 s, inside the passage of 6 to 9 s: Voice cuts the last piece's end to it and leaves more out.
+// A newer Voice ends the first piece at the segment boundary at 7 s with more; an older one ignores piece and answers
+// with all of it at once.
+for (const [who, pieceMs, heard] of [
+  ['this Voice', 7000, [1, 1]],
+  ['an older Voice', 0, [2]]
+]) {
+  test(`a passage that runs past the recording plays the audio there is and stops, from ${who}`, async () => {
+    test.setTimeout(60000);
+    fromTheBucket();
+    voice.pieceMs = pieceMs;
+    voice.audioEndMs = 8000;
+    const opens = () => voice.commands.filter((c) => c.command === 'media.open' && c.args.kind === 'audio' && c.args.piece === true).map((c) => c.args.start);
+    const played = () => win.evaluate(() => window.__played || []);
+    await openMeetings();
+    await expect(rows()).toHaveCount(3);
+    await win.evaluate(() => {
+      window.__played = [];
+      document.addEventListener('playing', (e) => window.__played.push(Math.round(e.target.duration * 10) / 10), true);
+    });
+    await hear('call-1').click();
+    await expect.poll(played, { timeout: 20000 }).toEqual(heard);
+    await expect(playButton()).toHaveAttribute('aria-label', 'Play', { timeout: 15000 });
+    // Done where the audio ends: no piece asked from 8 s, where nothing was recorded, and no error.
+    await expect(player().locator('.mt-pnote')).toHaveCount(0);
+    expect(opens()).not.toContain(8000);
+    expect([...new Set(opens())]).toEqual(pieceMs ? [6000, 7000] : [6000]);
+    expect(await played()).toEqual(heard);
+  });
+}
+
 test('Keep on this computer downloads a meeting from the bucket, shows how far it got, survives a restart and can be turned off', async () => {
   test.setTimeout(120000);
   const id = fromTheBucket();

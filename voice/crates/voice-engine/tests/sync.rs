@@ -1688,6 +1688,7 @@ fn a_passage_from_the_bucket_starts_after_its_first_segment() {
     let boundary = first["end"].as_u64().unwrap();
     assert!(boundary > 700 && boundary < 1700, "{first}");
     assert_eq!(first["start"], 700);
+    assert_eq!(first["more"], true, "audio follows the piece: {first}");
     assert_eq!(
         read_all(&*control, &first, 1 << 20),
         expected_mix(&recorded, 700, boundary)
@@ -1706,16 +1707,114 @@ fn a_passage_from_the_bucket_starts_after_its_first_segment() {
         read_all(&*control, &second, 1 << 20),
         expected_mix(&recorded, boundary, 1700)
     );
+    assert!(second.get("more").is_none(), "{second}");
 
     // A link gets the whole range in one file, as before.
     let whole = open_ready(&*control, &audio(&id, 700, Some(1700)));
     assert_eq!(whole["end"], 1700);
+    assert!(whole.get("more").is_none(), "{whole}");
     assert_eq!(
         read_all(&*control, &whole, 1 << 20),
         expected_mix(&recorded, 700, 1700)
     );
+
+    // The recorder starts a segment before the previous one ends when it corrects clock drift:
+    // here the first segment of each track still in the bucket starts 200 ms early. The mix keeps
+    // the overlap in the earlier segment, so a piece across that boundary needs only the
+    // segments on this computer.
+    let here = meeting_dir(&b.data(), &id);
+    let (before, overlap) = overlap_next_missing(&here, 200);
+    let (from, to) = (
+        before.iter().min().unwrap() - 100,
+        before.iter().max().unwrap() + 100,
+    );
+    fake.faults().stall = Some(Duration::from_secs(6));
+    let asked = Instant::now();
+    let early = open_ready(&*control, &piece(from, to));
+    assert!(
+        asked.elapsed() < Duration::from_secs(3),
+        "the piece over overlapping segments took {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(early["end"], *before.iter().min().unwrap(), "{early}");
+    assert_eq!(early["more"], true, "{early}");
+    assert!(overlap.iter().all(|file| !here.join(file).is_file()));
+    assert_eq!(
+        read_all(&*control, &early, 1 << 20),
+        expected_mix(&here, from, early["end"].as_u64().unwrap())
+    );
+    fake.faults().stall = None;
+
+    // The last passage runs past the recording: the player follows `more` from piece to piece,
+    // and the last one ends where the audio ends, without `more`.
+    let past = to + 10_000;
+    let mut at = early["end"].as_u64().unwrap();
+    let mut last = early;
+    while last.get("more").is_some() {
+        assert_eq!(last["more"], true, "{last}");
+        last = open_ready(&*control, &piece(at, past));
+        assert_eq!(last["start"], at, "{last}");
+        at = last["end"].as_u64().unwrap();
+    }
+    assert_eq!(at, recorded_end(&here));
+    assert!(at < past);
+    assert_eq!(
+        code_of(control.media_open(&piece(at, past))),
+        ErrorCode::NotFound,
+        "nothing is recorded after the last piece"
+    );
     engine_b.shutdown();
     fake.stop();
+}
+
+/// Moves the first segment of each track that isn't on this computer `ms` earlier, into the
+/// segment before it, in the meeting's timeline. The ends of the segments before, in ms, and the
+/// files of the moved ones.
+fn overlap_next_missing(dir: &Path, ms: u64) -> (Vec<u64>, Vec<String>) {
+    let path = dir.join("timeline.jsonl");
+    let mut lines: Vec<Value> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let ended = |lines: &[Value], track: &str, seq: u64| {
+        lines
+            .iter()
+            .find(|l| l["kind"] == "segment_end" && l["track"] == track && l["seq"] == seq)
+            .and_then(|l| l["samples"].as_u64())
+            .unwrap()
+    };
+    let (mut before, mut moved) = (Vec::new(), Vec::new());
+    for track in ["mic", "call"] {
+        let mut segments: Vec<(usize, u64, u64, String)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l["kind"] == "segment" && l["track"] == track)
+            .map(|(i, l)| {
+                let seq = l["seq"].as_u64().unwrap();
+                (
+                    i,
+                    seq,
+                    l["t"].as_u64().unwrap(),
+                    l["file"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        segments.sort_by_key(|s| s.1);
+        let n = segments
+            .iter()
+            .position(|s| !dir.join(&s.3).is_file())
+            .unwrap_or_else(|| panic!("every {track} segment is here"));
+        assert!(n > 0, "the first {track} segment isn't here");
+        let p = &segments[n - 1];
+        let end = p.2 + ended(&lines, track, p.1).div_ceil(16);
+        before.push(end);
+        lines[segments[n].0]["t"] = json!(end - ms);
+        moved.push(segments[n].3.clone());
+    }
+    let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(&path, text).unwrap();
+    (before, moved)
 }
 
 // The real screen recording --------------------------------------------------------------------

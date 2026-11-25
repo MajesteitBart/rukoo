@@ -25,7 +25,9 @@ use serde_json::{json, Value};
 use voice_bridge::ControlError;
 use voice_meetings::reader::{segment_samples, PER_MS};
 use voice_meetings::{MeetingDir, TrackReader};
-use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MAX_CLIP_MS, MAX_MEDIA_READ};
+use voice_protocol::{
+    ErrorCode, MediaKind, MediaOpenArgs, MediaOpenResult, MAX_CLIP_MS, MAX_MEDIA_READ,
+};
 use voice_recorder::timeline::{History, SegmentRecord};
 use voice_screen_files::frames::FrameIndex;
 use voice_screen_files::media::{self as screen_files, MediaError, ScreenFileKind};
@@ -243,6 +245,8 @@ struct Ready {
     /// A clip of the screen recording's: answering `ready` touches it so the sweep keeps it for
     /// another hour.
     clip: bool,
+    /// Audio of a `piece` that ends at a segment boundary while more follows: the answer's `more`.
+    more: bool,
 }
 
 enum State {
@@ -294,6 +298,8 @@ struct AudioPlan {
     segments: Vec<SegmentRecord>,
     /// The files of the segments in the range, on disk or not.
     needed: Vec<String>,
+    /// A piece ended at a segment boundary before the asked end: audio follows.
+    more: bool,
 }
 
 impl AudioPlan {
@@ -542,6 +548,7 @@ impl MediaService {
                         end: at,
                         owned: false,
                         clip: false,
+                        more: false,
                     };
                     return self.insert_ready(key, ready, link, vec![path]);
                 }
@@ -693,39 +700,58 @@ impl MediaService {
             .filter(|s| tracks.contains(&s.track) && is_segment_file(&s.track, s.seq, &s.file))
             .collect();
         let path = dir.path();
-        let samples = |s: &SegmentRecord| segment_length(path, s);
-        let recorded_end = segments
+        // What each segment plays in ms, (from, to, file), as the mix reads it: where the recorder
+        // started a segment before the previous one ended to correct clock drift, the later one
+        // starts where the earlier one ends, and a segment covered whole plays nothing.
+        let files: HashMap<PathBuf, &str> = segments
             .iter()
-            .map(|s| s.t * PER_MS + samples(s))
-            .max()
-            .unwrap_or(0)
-            .div_ceil(PER_MS);
+            .map(|s| (path.join(&s.file), s.file.as_str()))
+            .collect();
+        let spans: Vec<(u64, u64, String)> = tracks
+            .iter()
+            .flat_map(|track| {
+                let reader =
+                    TrackReader::with_lengths(path, track, &segments, |s| segment_length(path, s));
+                reader
+                    .spans()
+                    .filter_map(|(from, to, file)| {
+                        let file = files.get(file)?;
+                        Some((from / PER_MS, to.div_ceil(PER_MS), (*file).to_owned()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let recorded_end = spans.iter().map(|t| t.1).max().unwrap_or(0);
         if start >= recorded_end {
             return Err(ControlError::not_found(
                 "Nothing was recorded at that time.",
             ));
         }
         let mut end = end.min(recorded_end);
-        // Each segment the range touches: (from, to, file).
-        let touched = |end: u64| -> Vec<(u64, u64, String)> {
-            segments
+        // The files the mix of start..end reads.
+        let touched = |end: u64| -> Vec<String> {
+            spans
                 .iter()
-                .map(|s| (s.t, (s.t * PER_MS + samples(s)).div_ceil(PER_MS), &s.file))
                 .filter(|(from, to, _)| *from < end && *to > start)
-                .map(|(from, to, file)| (from, to, file.clone()))
+                .map(|t| t.2.clone())
                 .collect()
         };
-        let mut needed: Vec<String> = touched(end).into_iter().map(|t| t.2).collect();
+        let mut needed = touched(end);
+        let mut more = false;
         if piece {
-            let all = touched(end);
-            // The earliest segment end after start: before it, every track reads one segment.
-            if let Some(boundary) = all.iter().map(|t| t.1).filter(|to| *to < end).min() {
-                let later_missing = all
+            let within = || {
+                spans
                     .iter()
-                    .any(|(from, _, file)| *from >= boundary && !path.join(file).is_file());
+                    .filter(|(from, to, _)| *from < end && *to > start)
+            };
+            // The earliest segment end after start: before it, every track reads one segment.
+            if let Some(boundary) = within().map(|t| t.1).filter(|to| *to < end).min() {
+                let later_missing =
+                    within().any(|(from, _, file)| *from >= boundary && !path.join(file).is_file());
                 if later_missing {
                     end = boundary;
-                    needed = touched(end).into_iter().map(|t| t.2).collect();
+                    needed = touched(end);
+                    more = true;
                 }
             }
         }
@@ -744,6 +770,7 @@ impl MediaService {
             tracks,
             segments,
             needed,
+            more,
         })
     }
 
@@ -915,6 +942,7 @@ impl MediaService {
                     end: at,
                     owned: false,
                     clip: false,
+                    more: false,
                 })
             }
             Work::Video {
@@ -959,6 +987,7 @@ impl MediaService {
                     end,
                     owned: false,
                     clip: true,
+                    more: false,
                 })
             }
         }
@@ -1003,6 +1032,7 @@ impl MediaService {
             end: plan.end,
             owned: true,
             clip: false,
+            more: plan.more,
         })
     }
 
@@ -1181,14 +1211,15 @@ fn prepare_loop(service: std::sync::Weak<MediaService>) {
 }
 
 fn ready_answer(id: &str, ready: &Ready) -> Value {
-    json!({
-        "media": id,
-        "ready": true,
-        "type": ready.kind,
-        "size": ready.size,
-        "start": ready.start,
-        "end": ready.end,
-    })
+    MediaOpenResult::Ready {
+        media: id.to_owned(),
+        kind: ready.kind.to_owned(),
+        size: ready.size,
+        start: ready.start,
+        end: ready.end,
+        more: ready.more,
+    }
+    .to_value()
 }
 
 fn new_id() -> Result<String, ControlError> {

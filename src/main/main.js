@@ -2258,12 +2258,12 @@ Object.assign(api, {
   },
   meetingEvents: (id) => voiceService().events(meetingId(id)),
   // A few seconds of one voice for the People card's player, as a data URL the renderer's CSP takes (media-src data:).
-  // start and end are meeting ms, at most 30 s apart. With piece, the answer's end can come before end: the rest of the
-  // stretch still comes from the bucket, and the player asks for it from there.
+  // start and end are meeting ms, at most 30 s apart. With piece, the answer's end can come before end, and more says
+  // the rest of the stretch still comes from the bucket: the player asks for it from there.
   meetingClip: async (id, start, end, piece) => {
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) throw new Error('invalid');
     const clip = await voiceService().audioClip(meetingId(id), start, end, piece === true);
-    return { url: `data:audio/wav;base64,${clip.data}`, start: clip.start, end: clip.end };
+    return { url: `data:audio/wav;base64,${clip.data}`, start: clip.start, end: clip.end, more: clip.more };
   },
   // Asks Voice to tell apart the people who shared the microphone; returns the microphone's state at once.
   meetingSplitMic: (id) => voiceService().splitMic(meetingId(id)),

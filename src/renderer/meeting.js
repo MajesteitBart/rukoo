@@ -1592,9 +1592,9 @@ const CLIP_MIN_MS = 1500;
 const CLIP_MAX_MS = 12000;
 const CLIP_CACHE = 24;
 // open: the voice whose player is open; clip: which of its clips; key: the clip in the audio element and piece: the
-// stretch of it the element holds, {start, end} in meeting ms; urls: stretches fetched before, by meeting, start and
-// end, as {url, end}, where end comes before the stretch's own end for a piece; token: makes an answer that comes
-// after the user moved on harmless.
+// stretch of it the element holds, {start, end, more} in meeting ms; urls: stretches fetched before, by meeting, start
+// and end, as {url, end, more}, where more says a piece ended early and the rest of the stretch follows from end;
+// token: makes an answer that comes after the user moved on harmless.
 const P = { open: null, clip: 0, playing: false, loading: false, error: null, key: null, piece: null, token: 0, urls: new Map(), audio: null, raf: 0, shown: null, sig: '' };
 
 const nameable = (s) => Boolean(s) && !s.you;
@@ -1838,7 +1838,7 @@ function clipProgress() {
   const here = a && P.key === clipKey(c) && P.piece;
   // A clip that plays in pieces counts from its own start.
   const before = here ? (P.piece.start - c.start) / 1000 : 0;
-  const last = here && P.piece.end >= c.end;
+  const last = here && !P.piece.more;
   const pos = here ? (a.ended && last ? span : Math.min(span, before + (a.ended ? (P.piece.end - P.piece.start) / 1000 : a.currentTime || 0))) : 0;
   const fill = el.querySelector('.mt-fill');
   const time = el.querySelector('.mt-ptime');
@@ -1867,7 +1867,7 @@ function audioElement() {
     // The clip plays on with its next piece, fetched while this one played or loading now.
     const s = P.open && speakerOf(P.open);
     const c = s ? clipsOf(s)[P.clip] : null;
-    if (M.data && c && P.piece && P.key === clipKey(c) && P.piece.end < c.end && P.playing) {
+    if (M.data && c && P.piece && P.key === clipKey(c) && P.piece.more && P.playing) {
       playPiece(M.data, s, c, P.piece.end, P.token);
       return;
     }
@@ -1940,7 +1940,7 @@ async function playClip() {
   const here = P.key === clipKey(c) && P.piece;
   if (here && !a.ended) return playPiece(d, s, c, null, token);
   // Paused between two pieces it goes on with the next one; once it played to the end, from the start.
-  return playPiece(d, s, c, here && P.piece.end < c.end ? P.piece.end : c.start, token);
+  return playPiece(d, s, c, here && P.piece.more ? P.piece.end : c.start, token);
 }
 
 // Plays clip c of voice s from `from` (meeting ms) to its end, or, with from null, goes on with the piece the audio
@@ -1979,7 +1979,7 @@ async function playPiece(d, s, c, from, token) {
     }
     a.src = got.url;
     P.key = clipKey(c);
-    P.piece = { start: from, end: got.end };
+    P.piece = { start: from, end: got.end, more: got.more };
   }
   // Loading until play() settles, also from memory: a recording that starts meanwhile stops it (setVoice).
   P.loading = true;
@@ -2006,7 +2006,7 @@ async function playPiece(d, s, c, from, token) {
   renderPeople();
   followClip();
   // The rest of the clip comes first, then the clips that may come next.
-  const rest = P.piece.end < c.end ? clipPiece(d, P.piece.end, c.end, true).catch(() => null) : Promise.resolve();
+  const rest = P.piece.more ? clipPiece(d, P.piece.end, c.end, true).catch(() => null) : Promise.resolve();
   rest.then(() => fetchAhead(s));
 }
 
@@ -2014,9 +2014,9 @@ async function playPiece(d, s, c, from, token) {
 // is due are one request.
 const coming = new Map();
 
-// A stretch of the meeting's audio from start to end as {url, end}, from memory or from Voice: with piece, Voice may
-// end it at a segment boundary while the rest still comes from the bucket, and end says where. null when Voice sent
-// something that isn't a WAV.
+// A stretch of the meeting's audio from start to end as {url, end, more}, from memory or from Voice: with piece, Voice
+// may end it at a segment boundary while the rest still comes from the bucket, end says where and more that the rest
+// follows. null when Voice sent something that isn't a WAV.
 function clipPiece(d, start, end, piece) {
   const key = `${d.meeting.id}|${start}|${end}`;
   if (P.urls.has(key)) return Promise.resolve(P.urls.get(key));
@@ -2026,7 +2026,10 @@ function clipPiece(d, start, end, piece) {
     .then((r) => {
       const url = r && typeof r.url === 'string' && r.url.startsWith('data:audio/wav;base64,') ? r.url : null;
       if (!url) return null;
-      const got = { url, end: Number.isInteger(r.end) && r.end > start && r.end <= end ? r.end : end };
+      // more: Voice ended the piece where a segment ends and audio follows. Without it the stretch ends here, also
+      // when the recording ends before end.
+      const ended = Number.isInteger(r.end) && r.end > start && r.end <= end ? r.end : end;
+      const got = { url, end: ended, more: r.more === true && ended < end };
       if (M.data && M.data.meeting.id === d.meeting.id) {
         P.urls.set(key, got);
         while (P.urls.size > CLIP_CACHE) P.urls.delete(P.urls.keys().next().value);
