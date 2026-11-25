@@ -559,7 +559,15 @@ test('with Mail off an open compose window still saves and sends, and Undo send,
   await expect(refused.locator('[data-field="subject"]')).toHaveValue('Refused while Mail is off');
   await expect(refused.locator('body')).toContainText('Mailbox full');
   await expect(shell()).toHaveClass(/calendar-mode/);
-  await refused.close();
+  // Deleted in its editor, as a person lets it go: held.json keeps a refused email until its editor has settled it
+  // (#407), so a window that is merely closed would bring it back at the restart below.
+  await refused.locator('.dialog .buttons button').click();
+  const refusedGone = refused.waitForEvent('close');
+  refusedGone.catch(() => {});
+  await refused.click('[data-c="discard"]');
+  const remove = refused.locator('.scrim .buttons button:text-is("Delete")');
+  await Promise.race([refusedGone, remove.click().catch(() => {})]);
+  await refusedGone;
 
   // Rukoo dies while an email waits: the next start opens it in a compose window, Mail still off.
   await app.evaluate(() => {
