@@ -85,7 +85,7 @@ function otherComputer() {
 const signUpHere = () => app.evaluate((_, a) => global.__semAccount.signUp(a).then(() => true), { email: EMAIL, password: PASSWORD });
 const signInHere = () => app.evaluate((_, a) => global.__semAccount.signIn(a).then(() => true), { email: EMAIL, password: PASSWORD });
 const syncHere = () => app.evaluate(() => global.__semAccount.sync().then(() => true));
-const recordHere = () => app.evaluate(() => global.__semAccount.get('voicesync', 'bucket') || null);
+const recordHere = () => app.evaluate(() => global.__semAccount.getSealed('voicesync', 'bucket') || null);
 const sets = () => voice.commands.filter((c) => c.command === 'sync.settings.set').length;
 
 // An open Settings page keeps the language it was drawn in, so the page is opened again from the overview.
@@ -137,7 +137,7 @@ test('without an account the section points to Rukoo Voice; signed in, the switc
   await syncHere();
   await desk.signIn({ email: EMAIL, password: PASSWORD });
   await desk.sync();
-  expect(desk.get('voicesync', 'bucket').settings).toEqual(BUCKET);
+  expect(desk.getSealed('voicesync', 'bucket').settings).toEqual(BUCKET);
   const state = JSON.stringify(await win.evaluate(() => window.mail.call('voiceState')));
   expect(state).not.toContain(BUCKET.secret);
   expect(state).not.toContain(BUCKET.key);
@@ -154,7 +154,7 @@ test("another computer's bucket: a refusal says why, Use it here too connects, a
   voice.syncSettings = null;
   const desk = otherComputer();
   await desk.signUp({ email: EMAIL, password: PASSWORD });
-  desk.put('voicesync', 'bucket', { settings: BUCKET, at: Date.now(), device: 'Desk' });
+  desk.putSealed('voicesync', 'bucket', { settings: BUCKET, at: Date.now(), device: 'Desk' });
   await desk.sync();
   await signInHere();
   await openMeetingSettings();
@@ -197,7 +197,7 @@ test("another computer's bucket: a refusal says why, Use it here too connects, a
   // A new secret on the other computer reaches this Voice without a click.
   delete voice.handlers['sync.settings.set'];
   const before = sets();
-  desk.put('voicesync', 'bucket', { settings: { ...BUCKET, secret: 'a-newer-secret' }, at: Date.now(), device: 'Desk' });
+  desk.putSealed('voicesync', 'bucket', { settings: { ...BUCKET, secret: 'a-newer-secret' }, at: Date.now(), device: 'Desk' });
   await desk.sync();
   await syncHere();
   await expect.poll(() => voice.syncSettings && voice.syncSettings.secret, { timeout: 10000 }).toBe('a-newer-secret');
@@ -214,7 +214,7 @@ test('the offer says when Voice here would leave the bucket it syncs to now', as
   voice.syncSettings = { ...BUCKET, bucket: 'laptop-meetings', key: 'RKV1-ZZZZZ' };
   const desk = otherComputer();
   await desk.signUp({ email: EMAIL, password: PASSWORD });
-  desk.put('voicesync', 'bucket', { settings: BUCKET, at: Date.now(), device: 'Desk' });
+  desk.putSealed('voicesync', 'bucket', { settings: BUCKET, at: Date.now(), device: 'Desk' });
   await desk.sync();
   await signInHere();
   await openMeetingSettings();
@@ -222,4 +222,24 @@ test('the offer says when Voice here would leave the bucket it syncs to now', as
   // This computer's own bucket can still be shared.
   await expect(shareSwitch()).toHaveAttribute('aria-checked', 'false');
   await shots('offer-replaces');
+});
+
+test('while Rukoo Voice is stopped, sharing can still be turned off', async () => {
+  voice.syncSettings = { ...BUCKET };
+  await signUpHere();
+  await openMeetingSettings();
+  await expect(shareSwitch()).toBeVisible({ timeout: 10000 });
+  await shareSwitch().click();
+  await expect(shareSwitch()).toHaveAttribute('aria-checked', 'true');
+  expect((await recordHere()).settings).toEqual(BUCKET);
+
+  // Voice quits: the section says to start it, and the switch stays to turn sharing off.
+  voice.removeDiscovery();
+  voice.drop();
+  await expect(page()).toContainText('Start Rukoo Voice to use its bucket on your other computers.', { timeout: 10000 });
+  await expect(shareSwitch()).toHaveAttribute('aria-checked', 'true');
+  await shots('on-voice-stopped');
+  await shareSwitch().click();
+  await expect(shareSwitch()).toHaveCount(0);
+  expect(await recordHere()).toBe(null);
 });

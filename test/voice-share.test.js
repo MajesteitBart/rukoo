@@ -13,10 +13,12 @@ const { startAccountServer } = require('./fixtures/account-server');
 const { AccountService } = require('../src/main/account');
 const { VoiceService } = require('../src/main/voice');
 const { VoiceShare } = require('../src/main/voice/share');
+const keys = require('../src/main/account/crypto');
 
 const secrets = { encrypt: (s) => `plain:${Buffer.from(s).toString('base64')}`, decrypt: (s) => Buffer.from(String(s).slice(6), 'base64').toString() };
 const PASSWORD = 'a long enough password';
 const EMAIL = 'share@example.com';
+const OTHER = 'someone-else@example.com';
 const FAST = { backoffMs: [30], pollMs: 50, heartbeatMs: 0 };
 
 // What Voice on the first computer syncs to. Demo values: no real bucket.
@@ -43,8 +45,9 @@ async function until(check, what, ms = 5000) {
   }
 }
 
-// One computer: a Rukoo profile with its account, its Voice service and the share, and a fake Voice.
-async function computer(t, srv, name, syncSettings) {
+// One computer: a Rukoo profile with its account, its Voice service and the share, and a fake Voice. options: the
+// share's own (setTimeoutMs, retryMs).
+async function computer(t, srv, name, syncSettings, options = {}) {
   const dir = tempDir('rukoo-voice-share-');
   const file = path.join(dir, 'voice-bridge.json');
   const fake = await startVoiceServer({ file });
@@ -55,7 +58,7 @@ async function computer(t, srv, name, syncSettings) {
   t.after(() => account.close());
   const voice = new VoiceService({ dataDir: path.join(dir, 'data'), discovery: file, appVersion: '9.9.9', bridge: FAST, emitMs: 10 }).init();
   t.after(() => voice.close());
-  const share = new VoiceShare({ account, voice, dataDir: path.join(dir, 'data') }).init();
+  const share = new VoiceShare({ account, voice, dataDir: path.join(dir, 'data'), ...options }).init();
   t.after(() => share.close());
   await until(() => voice.connected, `${name} connects to Voice`);
   return { dir, fake, account, voice, share };
@@ -68,6 +71,10 @@ async function server(t) {
 }
 
 const sets = (c) => c.fake.commands.filter((m) => m.command === 'sync.settings.set');
+
+// The records the server holds for email, opened with the keys of account, signed in to it: what any device of the
+// account reads before it knows the collection.
+const opened = (srv, email, account) => [...srv.accounts.get(email).records.entries()].filter(([, r]) => r.data).map(([id, r]) => keys.openRecord(account.session.keys, id, r.data));
 
 test('another computer uses the bucket one computer shares, and follows it after that', async (t) => {
   const srv = await server(t);
@@ -88,7 +95,7 @@ test('another computer uses the bucket one computer shares, and follows it after
   const on = await desk.share.setShare(true);
   assert.equal(on.share, true);
   assert.equal(on.error, null);
-  const record = desk.account.get('voicesync', 'bucket');
+  const record = desk.account.getSealed('voicesync', 'bucket');
   assert.deepEqual(record.settings, BUCKET);
   assert.equal(record.device, 'Desk');
   await desk.account.sync();
@@ -114,7 +121,7 @@ test('another computer uses the bucket one computer shares, and follows it after
   // A new secret on the desk reaches the laptop's Voice by itself.
   desk.fake.syncSettings = { ...BUCKET, secret: 'a-new-secret' };
   await desk.share.check();
-  assert.equal(desk.account.get('voicesync', 'bucket').settings.secret, 'a-new-secret');
+  assert.equal(desk.account.getSealed('voicesync', 'bucket').settings.secret, 'a-new-secret');
   await desk.account.sync();
   await laptop.account.sync();
   await until(() => laptop.fake.syncSettings.secret === 'a-new-secret', 'the new secret on the laptop');
@@ -133,10 +140,10 @@ test('another computer uses the bucket one computer shares, and follows it after
   await until(() => laptop.account.get('voicesync', 'bucket') === undefined, 'the record gone on the laptop');
 });
 
-test("a refusal leaves the offer with its reason, and a failed automatic use isn't repeated", async (t) => {
+test('a refusal leaves the offer with its reason; an automatic use tries again after a failure that may pass, not after a refusal', async (t) => {
   const srv = await server(t);
   const desk = await computer(t, srv, 'Desk', { ...BUCKET });
-  const laptop = await computer(t, srv, 'Laptop', { ...BUCKET, bucket: 'own', key: 'RKV1-OWN' });
+  const laptop = await computer(t, srv, 'Laptop', { ...BUCKET, bucket: 'own', key: 'RKV1-OWN' }, { retryMs: [150, 600] });
   await desk.account.signUp({ email: EMAIL, password: PASSWORD });
   await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
   await desk.share.setShare(true);
@@ -152,10 +159,12 @@ test("a refusal leaves the offer with its reason, and a failed automatic use isn
   assert.equal(refused.follow, false);
   assert.equal(laptop.fake.syncSettings.bucket, 'own', 'nothing changed');
 
-  // Once it works, later changes apply by themselves; one that fails isn't tried again until the record changes.
+  // Once it works, later changes apply by themselves.
   laptop.fake.syncRefusal = null;
   assert.equal((await laptop.share.use()).follow, true);
-  laptop.fake.syncRefusal = { code: 'failed', message: 'The bucket refused the access key.', reason: 'test' };
+
+  // The bucket is down for a while: Test connection fails, and Rukoo tries again later by itself, waiting longer.
+  laptop.fake.syncRefusal = { code: 'failed', message: "Rukoo Voice couldn't reach the bucket.", reason: 'test' };
   desk.fake.syncSettings = { ...BUCKET, secret: 'another' };
   await desk.share.check();
   await desk.account.sync();
@@ -163,9 +172,48 @@ test("a refusal leaves the offer with its reason, and a failed automatic use isn
   await until(() => laptop.share.state().error, 'the failed automatic use');
   assert.equal(laptop.share.state().error.reason, 'test');
   assert.ok(laptop.share.state().offer, 'offered again after a failed automatic use');
+  const first = sets(laptop).length;
+  await laptop.share.check();
+  assert.equal(sets(laptop).length, first, 'not at once');
+  await until(() => sets(laptop).length > first, 'the second try', 3000);
+  laptop.fake.syncRefusal = null;
+  await until(() => laptop.fake.syncSettings.secret === 'another', 'the use once the bucket is back', 5000);
+  await until(() => laptop.share.state().error === null, 'the error gone');
+  assert.equal(laptop.share.state().offer, null);
+
+  // A refusal for good (Voice keeps its own key now) waits for the record to change, however long.
+  laptop.fake.syncRefusal = { code: 'busy', message: 'This computer already uploaded meetings with its own key, so it keeps that key.', reason: 'key_in_use' };
+  desk.fake.syncSettings = { ...BUCKET, secret: 'a-third' };
+  await desk.share.check();
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.share.state().error, 'the refused automatic use');
   const tries = sets(laptop).length;
+  await new Promise((r) => setTimeout(r, 800));
   await laptop.share.check();
   assert.equal(sets(laptop).length, tries);
+});
+
+test('a use whose answer was lost counts once Voice says it uses the bucket', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  const laptop = await computer(t, srv, 'Laptop', null, { setTimeoutMs: 100 });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.share.state().offer, 'the offer');
+  // Test connection takes longer than Rukoo waits; Voice finishes anyway.
+  laptop.fake.syncSetMs = 400;
+  const late = await laptop.share.use();
+  assert.equal(late.error && late.error.code, 'timeout');
+  assert.equal(late.follow, false);
+  await until(() => laptop.fake.syncSettings, 'Voice to finish');
+  await laptop.share.check();
+  const state = laptop.share.state();
+  assert.deepEqual({ follow: state.follow, error: state.error, offer: state.offer }, { follow: true, error: null, offer: null });
+  assert.equal(sets(laptop).length, 1, 'used once');
 });
 
 test('a computer that changes its own bucket stops following, and an older Voice shows as such', async (t) => {
@@ -195,6 +243,116 @@ test('a computer that changes its own bucket stops following, and an older Voice
   laptop.fake.handlers['sync.settings.get'] = () => ({ error: { code: 'unknown_command', message: 'sync.settings.get' } });
   await laptop.share.check();
   assert.equal(laptop.share.state().supported, false);
+  await laptop.share.check();
+  // Voice was updated and connects again: Rukoo asks again, without a restart of its own.
+  delete laptop.fake.handlers['sync.settings.get'];
+  laptop.fake.drop();
+  await until(() => laptop.share.state().supported === true, 'the new Voice asked again');
+});
+
+test('turned off on one computer, the record stays removed until the bucket changes where it is still on', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  const laptop = await computer(t, srv, 'Laptop', { ...BUCKET });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+  await laptop.account.sync();
+  assert.equal((await laptop.share.setShare(true)).share, true);
+  await laptop.account.sync();
+
+  await desk.share.setShare(false);
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.account.get('voicesync', 'bucket') === undefined, 'the removal on the laptop');
+  await laptop.share.check();
+  assert.equal(laptop.account.get('voicesync', 'bucket'), undefined, 'not shared again by itself');
+  await laptop.account.sync();
+  await desk.account.sync();
+  assert.equal(desk.account.get('voicesync', 'bucket'), undefined);
+
+  // A new secret on the laptop, where sharing is still on: shared again.
+  laptop.fake.syncSettings = { ...BUCKET, secret: 'laptop-secret' };
+  await laptop.share.check();
+  assert.equal(laptop.account.getSealed('voicesync', 'bucket').settings.secret, 'laptop-secret');
+});
+
+test('an older Rukoo or the phone that keeps every record holds only sealed bytes of the bucket', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+
+  // A device of the same account that reads records the generic way: keys.openRecord on what the server sends, as
+  // every Rukoo and the Android app do before they look at the collection.
+  const records = opened(srv, EMAIL, desk.account).filter((r) => r && r.c === 'voicesync');
+  assert.equal(records.length, 1);
+  assert.deepEqual(Object.keys(records[0].v), ['sealed']);
+  const text = JSON.stringify(records[0]);
+  for (const secret of [BUCKET.secret, BUCKET.key, BUCKET.accessKeyId === 'test' ? BUCKET.endpoint : BUCKET.accessKeyId]) assert.ok(!text.includes(secret), `no ${secret.slice(0, 8)}… in the record`);
+
+  // Such a device keeps the record and its export lists every record it keeps: still only sealed bytes. An
+  // AccountService without the share reads it so, signed in to the account.
+  const dir = tempDir('rukoo-voice-share-older-');
+  const older = new AccountService({ dataDir: dir, secrets, defaultServer: srv.url, deviceName: 'Older', platform: 'linux' }).init();
+  t.after(() => older.close());
+  await older.signIn({ email: EMAIL, password: PASSWORD });
+  await older.sync();
+  const kept = older.get('voicesync', 'bucket');
+  assert.equal(typeof kept.sealed, 'string');
+  const everything = JSON.stringify([...older.entries.values()].map((e) => ({ collection: e.c, key: e.k, value: e.v })));
+  assert.ok(everything.includes('voicesync'));
+  assert.ok(!everything.includes(BUCKET.secret) && !everything.includes(BUCKET.key), 'an export of every record holds no secret');
+  // The inner seal is bound to its collection and key: it doesn't open as another record.
+  assert.equal(keys.openInner(older.session.dataKey, 'voicesync', 'other', kept.sealed), undefined);
+  assert.deepEqual(keys.openInner(older.session.dataKey, 'voicesync', 'bucket', kept.sealed).settings, BUCKET);
+});
+
+test('a share or a use that outlives its account writes nothing into the next one', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+
+  // Voice answers late; meanwhile the user signs out and into another account.
+  const waiting = [];
+  const fake = desk.fake;
+  // Answers wait until release(); the ones after it don't.
+  const release = () => {
+    delete fake.handlers['sync.settings.get'];
+    waiting.splice(0).forEach((resolve) => resolve({ settings: fake.syncSettings }));
+  };
+  fake.handlers['sync.settings.get'] = () => new Promise((resolve) => waiting.push(resolve));
+  const pending = desk.share.setShare(true);
+  await until(() => waiting.length, 'Voice asked');
+  await desk.account.signOut();
+  await desk.account.signUp({ email: OTHER, password: PASSWORD });
+  release();
+  const after = await pending;
+  assert.equal(after.share, false);
+  assert.equal(desk.account.get('voicesync', 'bucket'), undefined);
+  await desk.account.sync();
+  assert.ok(!opened(srv, OTHER, desk.account).some((r) => r && r.c === 'voicesync'), 'nothing reached the other account');
+
+  // A use whose answer comes after the switch keeps no choice for the account signed in then.
+  const laptop = await computer(t, srv, 'Laptop', null);
+  await desk.account.signOut();
+  await desk.account.signIn({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  await laptop.account.sync();
+  await until(() => laptop.share.state().offer, 'the offer');
+  laptop.fake.syncSetMs = 300;
+  const using = laptop.share.use();
+  await until(() => sets(laptop).length === 1, 'Voice asked to use it');
+  await laptop.account.signOut();
+  await laptop.account.signIn({ email: OTHER, password: PASSWORD });
+  const used = await using;
+  assert.equal(used.follow, false);
+  assert.equal(used.error, null);
+  assert.equal(laptop.share.prefs.follow, undefined, 'no choice kept for the other account');
 });
 
 test('the choices and the record go when the account signs out, and stay out of the export', async (t) => {
@@ -216,7 +374,7 @@ test('the choices and the record go when the account signs out, and stay out of 
   // Signing in again brings the record back from the account; the switch starts off on this computer.
   await desk.account.signIn({ email: EMAIL, password: PASSWORD });
   await desk.account.sync();
-  assert.deepEqual(desk.account.get('voicesync', 'bucket').settings, BUCKET);
+  assert.deepEqual(desk.account.getSealed('voicesync', 'bucket').settings, BUCKET);
   assert.equal(desk.share.state().share, false);
 });
 
@@ -236,7 +394,7 @@ test('on disk the record is sealed with the keystore, and a restart opens it aga
   desk.account.close();
   const again = new AccountService({ dataDir: path.join(desk.dir, 'data'), secrets, defaultServer: srv.url, deviceName: 'Desk', platform: 'linux' }).init();
   t.after(() => again.close());
-  assert.deepEqual(again.get('voicesync', 'bucket').settings, BUCKET);
+  assert.deepEqual(again.getSealed('voicesync', 'bucket').settings, BUCKET);
 
   // A keystore that no longer opens it (another user or computer): the record stays out until the account brings it.
   const locked = {
@@ -250,6 +408,58 @@ test('on disk the record is sealed with the keystore, and a restart opens it aga
   const elsewhere = new AccountService({ dataDir: path.join(desk.dir, 'data'), secrets: locked, defaultServer: srv.url, deviceName: 'Desk', platform: 'linux' }).init();
   t.after(() => elsewhere.close());
   assert.equal(elsewhere.get('voicesync', 'bucket'), undefined);
+  // Its cursor went back to the beginning, so the next pull brings the record again.
+  assert.equal(elsewhere.state.cursor, 0);
+  await elsewhere.sync();
+  assert.deepEqual(elsewhere.getSealed('voicesync', 'bucket').settings, BUCKET);
+});
+
+test('a keystore that refuses a newer value keeps the last sealed copy and the cursor before it, and tries again', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  const laptop = await computer(t, srv, 'Laptop', null);
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+  await laptop.account.sync();
+  assert.equal(laptop.account.flush(), true);
+  const dir = path.join(laptop.dir, 'data');
+  const onDisk = () => JSON.parse(fs.readFileSync(path.join(dir, 'account-records.json'), 'utf8')).entries.find((e) => e.c === 'voicesync');
+  const cursor = () => JSON.parse(fs.readFileSync(path.join(dir, 'account.json'), 'utf8')).cursor;
+  const first = onDisk();
+  const before = cursor();
+  assert.ok(first && first.sv && before > 0);
+
+  // The keystore refuses from now on (the keyring went away); a newer value arrives.
+  let refuse = true;
+  laptop.account.secrets = {
+    encrypt: (text) => {
+      if (refuse) throw new Error('locked');
+      return secrets.encrypt(text);
+    },
+    decrypt: secrets.decrypt
+  };
+  desk.fake.syncSettings = { ...BUCKET, secret: 'newer' };
+  await desk.share.check();
+  await desk.account.sync();
+  await laptop.account.sync();
+  assert.equal(laptop.account.getSealed('voicesync', 'bucket').settings.secret, 'newer');
+  assert.equal(laptop.account.flush(), false, 'not written');
+  assert.deepEqual(onDisk(), first, 'the last sealed copy stays');
+  assert.equal(cursor(), before, "the cursor on disk doesn't pass the value that isn't there");
+
+  // The keystore works again: the retry writes the newer value, and the cursor moves on.
+  refuse = false;
+  assert.equal(laptop.account.flush(), true);
+  assert.notDeepEqual(onDisk(), first);
+  laptop.account.saveState();
+  assert.ok(cursor() > before);
+  const again = new AccountService({ dataDir: dir, secrets, defaultServer: srv.url, deviceName: 'Laptop', platform: 'linux' });
+  laptop.account.close();
+  again.init();
+  t.after(() => again.close());
+  assert.equal(again.getSealed('voicesync', 'bucket').settings.secret, 'newer');
 });
 
 test('while a meeting records the screen, the switch says so and nothing goes into the account', async (t) => {

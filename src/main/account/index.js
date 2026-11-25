@@ -144,6 +144,9 @@ class AccountService extends EventEmitter {
     this.syncing = null;
     this.timers = { push: null, save: null, every: null };
     this.durableCursor = 0;
+    // The last copy of each sealed record (sealEntry) that reached the disk, by entryKey: written again while the
+    // keystore refuses the record's newer value.
+    this.sealedCopies = new Map();
     // Runs before the account is deleted on the server and stops the deletion when it throws: the booking service
     // turns the booking page off first (main.js).
     this.beforeDelete = null;
@@ -161,11 +164,21 @@ class AccountService extends EventEmitter {
   init() {
     this.state = readJson(this.file('account.json'), {});
     const saved = readJson(this.file('account-records.json'), { entries: [] });
+    let unopened = false;
     for (const raw of Array.isArray(saved.entries) ? saved.entries : []) {
       if (!raw || typeof raw.c !== 'string' || typeof raw.k !== 'string') continue;
       const e = this.openEntry(raw);
-      if (e) this.entries.set(entryKey(e.c, e.k), e);
+      if (!e) {
+        unopened = true;
+        continue;
+      }
+      const key = entryKey(e.c, e.k);
+      this.entries.set(key, e);
+      if (raw !== e) this.sealedCopies.set(key, raw);
     }
+    // A record the keystore didn't open is left out, so the next pull starts from the beginning and brings it back:
+    // the cursor already went past it.
+    if (unopened) this.state.cursor = 0;
     // The cursor as of the records last written to disk: the state on disk never goes past it.
     this.durableCursor = Number(this.state.cursor) || 0;
     if (this.state.email && this.state.token && this.state.dataKey) {
@@ -846,6 +859,21 @@ class AccountService extends EventEmitter {
     return { seq: Number.isSafeInteger(e.seq) ? e.seq : null, dirty: Boolean(e.dirty) };
   }
 
+  // A record whose value only Rukoo versions that know its collection can open: { sealed } with the value sealed with
+  // the collection's own key (keys.sealInner). Rukoo Voice's bucket travels so: an older Rukoo, or the Android app,
+  // keeps any record it gets and puts it in Export my data, and holds only those sealed bytes then.
+  putSealed(c, k, value) {
+    if (!this.signedIn) throw fail('signed_out');
+    return this.put(c, k, { sealed: keys.sealInner(this.session.dataKey, c, k, value) });
+  }
+
+  // What putSealed() wrote, or undefined when there is none or it doesn't open.
+  getSealed(c, k) {
+    const v = this.get(c, k);
+    if (!this.signedIn || !v || typeof v.sealed !== 'string') return undefined;
+    return keys.openInner(this.session.dataKey, c, k, v.sealed);
+  }
+
   // The signed-in account's <acct>, or null.
   get acct() {
     return this.signedIn && this.state.email ? bookingAcct(this.state.email) : null;
@@ -1101,7 +1129,7 @@ class AccountService extends EventEmitter {
 
   // A record as account-records.json keeps it: a key's value sealed with the system keystore (secrets.js), so it
   // never lies readable in the profile. Null when the keystore refuses it, which signing in rules out until the
-  // keyring goes away: that record then stays off the disk, and the account brings it back at the next sign-in.
+  // keyring goes away: writeEntries() then keeps the record's last sealed copy and tries again.
   sealEntry(e) {
     if (!SECRET_COLLECTIONS.has(e.c) || e.v === undefined) return e;
     const { v, ...rest } = e;
@@ -1112,8 +1140,8 @@ class AccountService extends EventEmitter {
     }
   }
 
-  // What sealEntry() wrote, opened again; null when the keystore no longer opens it (another user or computer): the
-  // account brings the record back at the next sign-in.
+  // What sealEntry() wrote, opened again; null when the keystore no longer opens it (another user or computer): init()
+  // then pulls from the beginning, which brings the record back.
   openEntry(e) {
     if (typeof e.sv !== 'string') return e;
     const { sv, ...rest } = e;
@@ -1124,19 +1152,36 @@ class AccountService extends EventEmitter {
     }
   }
 
-  // False when the disk refused the records; they are tried again a little later then.
+  // False when the disk or the keystore refused the records; they are tried again a little later then. A record the
+  // keystore refuses keeps its last sealed copy on disk, and the cursor on disk stays where it was, so a restart pulls
+  // the newer value again.
   writeEntries() {
     this.timers.save = null;
     const cursor = Number(this.state.cursor) || 0;
-    try {
-      writeJson(this.file('account-records.json'), { entries: [...this.entries.values()].map((e) => this.sealEntry(e)).filter(Boolean) });
-      this.durableCursor = cursor;
-      return true;
-    } catch (_) {
-      this.timers.save = setTimeout(() => this.writeEntries(), SAVE_RETRY);
-      if (this.timers.save.unref) this.timers.save.unref();
-      return false;
+    let sealedAll = true;
+    const out = [];
+    for (const [key, e] of this.entries) {
+      const sealed = this.sealEntry(e);
+      if (sealed) {
+        if (sealed !== e) this.sealedCopies.set(key, sealed);
+        out.push(sealed);
+        continue;
+      }
+      sealedAll = false;
+      if (this.sealedCopies.has(key)) out.push(this.sealedCopies.get(key));
     }
+    // Records that left this device, such as a key at sign-out, leave the disk too.
+    for (const key of this.sealedCopies.keys()) if (!this.entries.has(key)) this.sealedCopies.delete(key);
+    try {
+      writeJson(this.file('account-records.json'), { entries: out });
+      if (sealedAll) this.durableCursor = cursor;
+    } catch (_) {
+      sealedAll = false;
+    }
+    if (sealedAll) return true;
+    this.timers.save = setTimeout(() => this.writeEntries(), SAVE_RETRY);
+    if (this.timers.save.unref) this.timers.save.unref();
+    return false;
   }
 
   // Writes the records that wait for their save now; false when they couldn't be written.

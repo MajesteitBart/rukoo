@@ -1,8 +1,10 @@
 'use strict';
 
 // Rukoo Voice's bucket on the user's other computers (docs/meetings.md, "Your other computers"). Voice's bucket
-// settings, its bucket secret and its recovery code travel as one record of the user's Rukoo account, which the
-// account seals on this device before it leaves (server/PROTOCOL.md, Collections: voicesync). Voice hands them over
+// settings, its bucket secret and its recovery code travel as one record of the user's Rukoo account, sealed twice on
+// this device: inside the record with a key only Rukoo versions that know voicesync derive (account.putSealed), so an
+// older Rukoo or the Android app that keeps the record holds only sealed bytes, and as every record is before it
+// leaves (server/PROTOCOL.md, Collections: voicesync). Voice hands them over
 // with sync.settings.get and takes them with sync.settings.set (voice/PROTOCOL.md).
 //
 // Sharing is the user's choice on each computer. share: this computer writes its bucket to the account, again when
@@ -10,6 +12,9 @@
 // a moved bucket) is used here too without asking. Both are kept in voice-share.json for the account they were made
 // in, and go when the account signs out. Voice's settings themselves stay in memory, and the renderer gets only the
 // other computer's name and the bucket's name.
+//
+// Everything a share or a use does after it waited (for Voice, mostly) belongs to the session it started in: when the
+// user signed out or into another account meanwhile, it writes nothing and keeps no choice.
 
 const fs = require('fs');
 const path = require('path');
@@ -22,34 +27,49 @@ const KEY = 'bucket';
 const FILE = 'voice-share.json';
 // How often Rukoo reads Voice's settings again, besides each time Voice connects.
 const EVERY_MS = 5 * 60 * 1000;
-// sync.settings.set tests the bucket before it answers.
-const SET_TIMEOUT_MS = 60000;
+// sync.settings.set tests the bucket before it answers, which can take minutes; Voice keeps answering the heartbeat
+// meanwhile. When the answer doesn't come, the next look at Voice's settings tells whether it worked.
+const SET_TIMEOUT_MS = 5 * 60 * 1000;
+// A use that failed by itself for a reason that may pass (Voice away, the bucket down) is tried again after these
+// waits, doubling up to the last; one Voice refused for good (key_in_use, settings it refuses) only when the record
+// changes.
+const RETRY_MS = [60 * 1000, 60 * 60 * 1000];
+const FOR_GOOD_REASONS = new Set(['key_in_use', 'settings']);
+const FOR_GOOD_CODES = new Set(['bad_request', 'not_available', 'unknown_command']);
 const DEVICE_MAX = 100;
 
 // Settings compared without keeping them: a digest of every field.
 const digest = (settings) => (settings ? crypto.createHash('sha256').update(JSON.stringify(SYNC_FIELDS.map((k) => settings[k]))).digest('base64url') : null);
 
 class VoiceShare extends EventEmitter {
-  constructor({ account, voice, dataDir, everyMs = EVERY_MS, setTimeoutMs = SET_TIMEOUT_MS, now = Date.now, log = () => {} }) {
+  constructor({ account, voice, dataDir, everyMs = EVERY_MS, setTimeoutMs = SET_TIMEOUT_MS, retryMs = RETRY_MS, now = Date.now, log = () => {} }) {
     super();
     this.account = account;
     this.voice = voice;
     this.file = path.join(dataDir, FILE);
     this.everyMs = everyMs;
     this.setTimeoutMs = setTimeoutMs;
+    this.retryMs = retryMs;
     this.now = now;
     this.log = log;
     this.prefs = {};
     // Voice's settings as it last said them: undefined until Rukoo asked, null while sync is off there.
     this.here = undefined;
-    // false once Voice answered unknown_command: an older Voice.
+    // false once this Voice answered unknown_command: an older Voice. Asked again when Voice connects again, which
+    // may be a newer one.
     this.supported = null;
     // 'sharing' or 'applying' while that runs; error: { action, code, reason } of the last one that failed.
     this.busy = null;
     this.error = null;
     this.appliedAt = null;
-    // The record whose use failed by itself (follow): tried again only when it changes.
+    // The record whose use failed by itself (follow) for good: tried again only when it changes. retry: one that
+    // failed for a reason that may pass, { digest, tries, until }, tried again from until on.
     this.failedFor = null;
+    this.retry = null;
+    this.retryTimer = null;
+    // A use whose answer never came (Voice went away or took too long): { digest, session }. The next look at Voice
+    // tells whether it worked.
+    this.unsure = null;
     // Looks, shares and uses run one at a time, so a look that read Voice before a use can't mistake the use for a
     // change the user made. pending: a look that waits in the queue, which a later request joins.
     this.queue = Promise.resolve();
@@ -68,7 +88,10 @@ class VoiceShare extends EventEmitter {
       if (Array.isArray(collections) && collections.includes(COLLECTION)) this.check();
     });
     this.account.on('status', () => this.onAccount());
-    this.voice.bridge.on('welcome', () => this.check());
+    this.voice.bridge.on('welcome', () => {
+      this.supported = null;
+      this.check();
+    });
     this.voice.bridge.on('closed', () => {
       this.here = undefined;
       this.changed();
@@ -81,6 +104,7 @@ class VoiceShare extends EventEmitter {
 
   close() {
     clearInterval(this.timer);
+    clearTimeout(this.retryTimer);
   }
 
   // ---------- what the renderer sees ----------
@@ -113,10 +137,10 @@ class VoiceShare extends EventEmitter {
     this.emit('changed', this.state());
   }
 
-  // The account's record, checked, or null.
+  // The account's record, opened and checked, or null.
   record() {
     if (!this.account.signedIn) return null;
-    const v = this.account.get(COLLECTION, KEY);
+    const v = this.account.getSealed(COLLECTION, KEY);
     if (!v || typeof v !== 'object') return null;
     let settings;
     try {
@@ -137,6 +161,8 @@ class VoiceShare extends EventEmitter {
       this.prefs = acct ? { acct } : {};
       this.error = null;
       this.failedFor = null;
+      this.retry = null;
+      this.unsure = null;
       this.save();
     }
     if (acct) this.check();
@@ -159,8 +185,18 @@ class VoiceShare extends EventEmitter {
     this.save();
   }
 
+  // The session now, to hand to live() after a wait.
+  session() {
+    return this.account.session;
+  }
+
+  // Whether the session a share or a use started in is still the one signed in.
+  live(session) {
+    return Boolean(session) && this.account.session === session;
+  }
+
   write(settings) {
-    this.account.put(COLLECTION, KEY, { settings, at: this.now(), device: this.account.deviceName });
+    this.account.putSealed(COLLECTION, KEY, { settings, at: this.now(), device: this.account.deviceName });
     this.setPrefs({ wrote: digest(settings) });
   }
 
@@ -200,6 +236,7 @@ class VoiceShare extends EventEmitter {
       this.changed();
       return;
     }
+    const session = this.session();
     let here;
     try {
       here = await this.read();
@@ -208,7 +245,15 @@ class VoiceShare extends EventEmitter {
       this.changed();
       return;
     }
+    if (!this.live(session)) {
+      this.changed();
+      return;
+    }
     const mine = digest(here);
+    // A use whose answer was lost: Voice uses the record's settings now when it worked.
+    const unsure = this.unsure;
+    this.unsure = null;
+    if (unsure && this.live(unsure.session) && unsure.digest === mine) this.used(here, 'its answer was lost on the way');
     // The user changed Voice's sync here since Rukoo last looked.
     const movedHere = Boolean(this.prefs.seen) && this.prefs.seen !== mine;
     this.setPrefs({ seen: mine });
@@ -218,37 +263,75 @@ class VoiceShare extends EventEmitter {
       // Voice here moved away from the account's bucket on purpose: Rukoo stops following it, and offers it again.
       this.setPrefs({ follow: false });
     }
-    if (this.prefs.share && here && (movedHere || !record)) {
+    // Shared again only after the settings changed here: a record another computer removed (sharing turned off there)
+    // stays removed until then, or until the user turns sharing on here again.
+    if (this.prefs.share && here && movedHere) {
       this.write(here);
-    } else if (this.prefs.follow && record && theirs !== mine && !movedHere && this.failedFor !== theirs) {
-      await this.apply(record, { auto: true });
+    } else if (this.prefs.follow && record && theirs !== mine && !movedHere && this.failedFor !== theirs && !this.waiting(theirs)) {
+      await this.apply(record, { auto: true, session });
       return;
     }
     this.changed();
   }
 
-  // Uses the account's bucket here: sync.settings.set, which leaves Voice as it was when it fails.
-  async apply(record, { auto = false } = {}) {
+  // Whether an automatic use of these settings waits to be tried again.
+  waiting(theirs) {
+    return Boolean(this.retry) && this.retry.digest === theirs && this.now() < this.retry.until;
+  }
+
+  // Voice uses settings from the account now: Rukoo follows the record from here on.
+  used(settings, how) {
+    this.here = settings;
+    this.failedFor = null;
+    this.retry = null;
+    this.error = null;
+    this.appliedAt = this.now();
+    this.setPrefs({ follow: true, seen: digest(settings) });
+    this.log('share', `uses the bucket of another computer now${how ? ` (${how})` : ''}`);
+  }
+
+  // Uses the account's bucket here: sync.settings.set, which leaves Voice as it was when it fails. session: the one
+  // the use started in; a use that outlives it keeps no choice for the account signed in now.
+  async apply(record, { auto = false, session } = {}) {
+    if (!this.live(session)) return false;
+    const theirs = digest(record.settings);
     this.busy = 'applying';
     this.error = null;
     this.changed();
     try {
       await this.voice.bridge.command('sync.settings.set', { settings: record.settings }, { timeoutMs: this.setTimeoutMs });
-      this.here = record.settings;
-      this.failedFor = null;
-      this.appliedAt = this.now();
-      this.setPrefs({ follow: true, seen: digest(record.settings) });
-      this.log('share', `uses the bucket of ${record.device || 'another computer'} now`);
+      if (!this.live(session)) {
+        this.here = record.settings;
+        return false;
+      }
+      this.used(record.settings, null);
       return true;
     } catch (err) {
-      this.error = { action: 'use', code: String((err && err.code) || 'failed').slice(0, 40), reason: err && typeof err.reason === 'string' ? err.reason.slice(0, 40) : null };
-      if (auto) this.failedFor = digest(record.settings);
-      this.log('share', `the bucket of another computer wasn't used: ${this.error.code}${this.error.reason ? ` (${this.error.reason})` : ''}`);
+      if (!this.live(session)) return false;
+      const code = String((err && err.code) || 'failed').slice(0, 40);
+      const reason = err && typeof err.reason === 'string' ? err.reason.slice(0, 40) : null;
+      this.error = { action: 'use', code, reason };
+      // Voice may still finish what Rukoo stopped waiting for.
+      if (code === 'offline' || code === 'timeout') this.unsure = { digest: theirs, session };
+      if (auto && (FOR_GOOD_REASONS.has(reason) || FOR_GOOD_CODES.has(code))) this.failedFor = theirs;
+      else if (auto) this.later(theirs);
+      this.log('share', `the bucket of another computer wasn't used: ${code}${reason ? ` (${reason})` : ''}`);
       return false;
     } finally {
       this.busy = null;
       this.changed();
     }
+  }
+
+  // An automatic use that failed for a reason that may pass goes again later, each time after a longer wait.
+  later(theirs) {
+    const tries = this.retry && this.retry.digest === theirs ? this.retry.tries + 1 : 1;
+    const [first, most] = this.retryMs;
+    const wait = Math.min(first * 2 ** (tries - 1), most);
+    this.retry = { digest: theirs, tries, until: this.now() + wait };
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => this.check(), wait);
+    if (this.retryTimer.unref) this.retryTimer.unref();
   }
 
   // ---------- the user's choices ----------
@@ -257,10 +340,12 @@ class VoiceShare extends EventEmitter {
   // here. Off: the account's record goes.
   setShare(on) {
     if (!this.account.signedIn) return Promise.reject(Object.assign(new Error('signed_out'), { code: 'signed_out' }));
-    return this.serial(() => this.share(on));
+    const session = this.session();
+    return this.serial(() => this.share(on, session));
   }
 
-  async share(on) {
+  async share(on, session) {
+    if (!this.live(session)) return this.state();
     if (!on) {
       this.setPrefs({ share: false });
       this.account.remove(COLLECTION, KEY);
@@ -273,10 +358,12 @@ class VoiceShare extends EventEmitter {
     this.changed();
     try {
       const here = await this.read();
+      if (!this.live(session)) return this.state();
       if (!here) throw Object.assign(new Error('sync is off'), { code: 'sync_off' });
       this.write(here);
       this.setPrefs({ share: true, seen: digest(here) });
     } catch (err) {
+      if (!this.live(session)) return this.state();
       this.error = { action: 'share', code: String((err && err.code) || 'failed').slice(0, 40), reason: err && typeof err.reason === 'string' ? err.reason.slice(0, 40) : null };
     } finally {
       this.busy = null;
@@ -287,9 +374,10 @@ class VoiceShare extends EventEmitter {
 
   // "Use it here too".
   use() {
+    const session = this.session();
     return this.serial(async () => {
-      const record = this.record();
-      if (record) await this.apply(record);
+      const record = this.live(session) ? this.record() : null;
+      if (record) await this.apply(record, { session });
       return this.state();
     });
   }

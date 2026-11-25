@@ -46,10 +46,13 @@ function othersHtml(voice, row) {
   const share = voice && voice.share;
   const text = (key, vars) => `<p class="settings-text">${esc(t(key, vars))}</p>`;
   const card = (inner) => `<div class="card">${inner}</div>`;
+  // While sharing is on, the switch stays to turn it off, whatever Voice's state: turning it off needs only the account.
+  const shareRow = () => row({ title: esc(t('settings.meetings.others.share')), desc: esc(t('settings.meetings.others.shareHelp')), action: 'mtset-share', toggle: share.share, disabled: share.busy === 'sharing' });
+  const onlyOff = () => (share.share ? card(shareRow()) : '');
   let body;
   if (!share || !share.signedIn) body = text('settings.meetings.others.noAccount');
-  else if (!share.connected) body = text('settings.meetings.others.noVoice');
-  else if (share.supported === false) body = text('settings.meetings.others.oldVoice');
+  else if (!share.connected) body = text('settings.meetings.others.noVoice') + onlyOff();
+  else if (share.supported === false) body = text('settings.meetings.others.oldVoice') + onlyOff();
   else {
     // The offer and the switch share one card; why one failed and what Rukoo does by itself go under it.
     const rows = [];
@@ -65,10 +68,11 @@ function othersHtml(voice, row) {
         </div>`);
       if (share.error && share.error.action === 'use') notes.push(error);
     }
-    if (share.syncHere) {
-      rows.push(row({ title: esc(t('settings.meetings.others.share')), desc: esc(t('settings.meetings.others.shareHelp')), action: 'mtset-share', toggle: share.share, disabled: share.busy === 'sharing' }));
+    if (share.syncHere || share.share) {
+      rows.push(shareRow());
       if (share.error && share.error.action === 'share') notes.push(error);
-    } else if (!share.offer && share.syncHere === false) notes.push(text('settings.meetings.others.syncOff'));
+    }
+    if (!share.syncHere && !share.offer && share.syncHere === false) notes.push(text('settings.meetings.others.syncOff'));
     if (share.follow && !share.offer && share.syncHere) notes.push(text('settings.meetings.others.following'));
     body = (rows.length ? card(rows.join('')) : '') + notes.join('');
   }
