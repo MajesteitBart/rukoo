@@ -1,8 +1,8 @@
 // Agents in team chat channels in the browser (server/WORKSPACES.md "Agents"), end to end: the real site and account
 // Workers (harness.mjs) and headless Chromium. Olga, the owner, uses the page; Piet is another member, acted for over
 // the server's API, with an agent of his own that answers only him. Olga makes an agent in the Agents dialog and gets
-// its key and a runner config, which in a browser has no "Use one of my agents" (a): there is no Settings, Agents to
-// take it from. She adds the agent to general through Add people, mentions it with the picker, which says Piet's agent
+// a runner config with its key, which in a browser answers with Claude Code or Codex, not the agents of Settings,
+// Agents, which a browser doesn't have (a). She adds the agent to general through Add people, mentions it with the picker, which says Piet's agent
 // answers only him, and the agent's reply, posted with its key as a runner does, shows in the thread of the question
 // with the Agent tag, and only there (b, issue #376). The same in Dutch on a phone (c). Each test fails on a console or
 // page error and on horizontal overflow.
@@ -50,7 +50,7 @@ async function workspaceMenu(p, item) {
   await p.locator('.menu [role^="menuitem"]', { hasText: item }).first().click();
 }
 
-test('a: the Agents dialog makes an agent and shows its key and a runner config, without the desktop agents', async () => {
+test('a: the Agents dialog makes an agent and shows a runner config with its key, starting on Claude Code, without the desktop agents', async () => {
   view = await openPage(env.browser);
   const p = view.page;
   await view.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: env.origin });
@@ -91,23 +91,39 @@ test('a: the Agents dialog makes an agent and shows its key and a runner config,
 
   const step = dialog(p);
   await expect(step.locator('h2')).toHaveText(tr('en', 'chat.agents.keyTitle', { name: 'Clark' }), { timeout: LIVE_MS });
-  const key = await step.locator('[name="key"]').inputValue();
-  assert.match(key, KEY);
-  // No Settings, Agents in a browser: the config keeps the placeholder backend.
-  await expect(step.locator('[name="use"]')).toHaveCount(0);
-  const config = JSON.parse(await step.locator('[name="config"]').inputValue());
-  assert.deepEqual(config, {
-    server: await step.locator('[name="server"]').inputValue(),
+  // The key is only in the config: no field repeats it, the server or the workspace.
+  await expect(step.locator('[name="key"], [name="server"], [name="workspace"]')).toHaveCount(0);
+  // No Settings, Agents in a browser: Answers with offers what the runner finds on its computer by itself, Claude Code
+  // first, and a program of one's own last.
+  const use = step.locator('[name="use"]');
+  await expect(use.locator('option')).toHaveText(['Claude Code', 'Codex', tr('en', 'chat.agents.useOwn')]);
+  await expect(use).toHaveValue('claude');
+  const config = async () => JSON.parse(await step.locator('[name="config"]').inputValue());
+  const first = await config();
+  assert.match(first.key, KEY);
+  assert.deepEqual(first, {
+    server: first.server,
     workspace: ws.id,
-    key,
-    backend: { type: 'command', command: 'my-agent' },
+    key: first.key,
+    backend: { type: 'claude' },
     context: { threadMessages: 50, channelMessages: 20, maxChars: 30000 },
     instructions: ''
   });
-  assert.match(config.server, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
+  assert.match(first.server, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
+  await use.selectOption('own');
+  assert.deepEqual((await config()).backend, { type: 'command', command: 'my-agent' });
+  await expect(step.locator('[data-use-help]')).toHaveText(tr('en', 'chat.agents.ownHelp', { command: 'my-agent' }));
+  await use.selectOption('claude');
+  await expect(step.locator('[data-use-help]')).toBeHidden();
+  // The general channel is on screen: the step offers to add Clark there. Test b adds it through Add people instead.
+  await expect(step.locator('[name="join"]')).toBeChecked();
+  await expect(step.locator('.ch-agent-join .ch-check-label')).toHaveText(tr('en', 'chat.agents.joinChannel', { name: 'Clark', channel: 'general' }));
+  await step.locator('[name="join"]').uncheck();
   await shot(p, 'agents-a2-key');
-  await step.locator('[data-copy-key]').click();
-  await expect.poll(() => p.evaluate(() => navigator.clipboard.readText())).toBe(key);
+  await step.locator('[data-copy-config]').click();
+  // Windows' clipboard gives the lines back with CRLF.
+  await expect.poll(() => p.evaluate(() => navigator.clipboard.readText()).then((text) => text.replace(/\r\n/g, '\n'))).toBe(await step.locator('[name="config"]').inputValue());
+  const key = first.key;
   await step.locator('.buttons button').last().click();
   await expect(list.locator('[data-agents] .ch-person-name')).toHaveText(['Clark', 'Revy'], { timeout: LIVE_MS });
   await list.locator('.buttons button').last().click();
@@ -132,21 +148,25 @@ test('b: Add people adds the agent to general, the mention list tags both agents
   await members.locator('[data-pick] input[name="pick"]').check();
   await members.locator('[data-add-go]').click();
   await expect(members.locator('[data-people] .ch-agent-tag')).toHaveCount(2, { timeout: LIVE_MS });
-  // Each agent says who made it and whom it answers, as on Android.
-  await expect(members.locator('[data-people] .ch-agent-meta')).toHaveText(['Made by Olga Owner · Answers everyone', 'Made by Piet de Vries · Answers only Piet de Vries']);
+  // Each agent says who made it and whom it answers, as on Android, and whether its runner connected: Clark's key
+  // reached the server in test a, Revy's never did.
+  await expect(members.locator('[data-people] .ch-agent-meta')).toHaveText([
+    /^Made by Olga Owner · Answers everyone · Last active \d+ minutes? ago$/,
+    'Made by Piet de Vries · Answers only Piet de Vries · Not connected yet'
+  ]);
   await shot(p, 'agents-b1-members');
   await members.locator('.buttons button').last().click();
   await expect(p.locator('.ch-head .ch-meta')).toHaveText('2 members · 2 agents', { timeout: LIVE_MS });
 
-  // The mention list: Revy answers only Piet, and says so; Clark answers Olga.
+  // The mention list: Revy answers only Piet and never connected, and says so; Clark answers Olga and was active.
   const input = p.locator('.ch-compose .ch-input');
   await input.click();
   await p.keyboard.type('@');
   const option = (name) => p.locator('.ch-suggest [role="option"]', { has: p.locator('.mention-name', { hasText: name }) });
-  await expect(option('Revy').locator('.mention-note')).toHaveText('Answers only Piet de Vries', { timeout: LIVE_MS });
+  await expect(option('Revy').locator('.mention-note')).toHaveText('Answers only Piet de Vries · Not connected yet', { timeout: LIVE_MS });
   await expect(option('Revy').locator('.mention-tag')).toHaveText('Agent');
   await expect(option('Clark').locator('.mention-tag')).toHaveText('Agent');
-  await expect(option('Clark').locator('.mention-note')).toHaveCount(0);
+  await expect(option('Clark').locator('.mention-note')).toHaveText(/^Last active \d+ minutes? ago$/);
   await shot(p, 'agents-b2-mention');
   await p.keyboard.type('Cla');
   await expect(p.locator('.ch-suggest [role="option"] .mention-name')).toHaveText(['Clark']);

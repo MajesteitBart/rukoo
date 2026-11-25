@@ -330,8 +330,20 @@ class ChatStringsTest {
         assertEquals("Only me", en.strings["chat_agents_answers_me_option"])
         assertEquals("Alleen mij", nl.strings["chat_agents_answers_me_option"])
         assertEquals("Agents in a channel pass what they read there on to the system that runs them.", en.strings["chat_host_agents"])
-        assertEquals("Copy the key now. You'll see it only once.", unescape(en.strings["chat_agents_key_once"]))
-        assertEquals("The config holds the agent's key. Keep it private, as you would a password.", unescape(en.strings["chat_agents_config_private"]))
+        assertEquals("It holds %1\$s's key, which you'll see only once. Keep it private, like a password.", unescape(en.strings["chat_agents_key_once"]))
+        // The key step leads with what to do: what answers, the config with the key in it, and how to start the runner,
+        // which needs Node.js 22 and the runner from GitHub. No field repeats the key, the server or the workspace.
+        assertEquals("Connect %1\$s", en.strings["chat_agents_key_title"])
+        assertEquals("A program of my own", en.strings["chat_agents_use_own"])
+        assertEquals(
+            "On the computer that should answer, with Node.js 22 or newer: get the runner, save the config next to runner.js as agent.json, and run:",
+            en.strings["chat_agents_config_run"],
+        )
+        assertEquals("Op de computer die moet antwoorden, met Node.js 22 of nieuwer: haal de runner op, sla de config naast runner.js op als agent.json en voer uit:", nl.strings["chat_agents_config_run"])
+        assertEquals("Get the runner on GitHub", en.strings["chat_agents_get_runner"])
+        for (gone in listOf("chat_agents_key", "chat_agents_copy_key", "chat_agents_key_copied", "chat_agents_server", "chat_agents_workspace_id", "chat_agents_config_backend", "chat_agents_config_private")) {
+            assertTrue(gone, gone !in en.names && gone !in nl.names)
+        }
         assertEquals(setOf("one", "other"), en.plurals["chat_agents_answers_agents_help"]?.keys)
         // Phone wording without a desktop key sits in the Android-only part.
         assertEquals("Add agents", en.strings["chat_channel_add_agents"])

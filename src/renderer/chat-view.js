@@ -6,6 +6,8 @@ import { timeline, newReplies, repliesInView, displayName, memberTag, canRemove,
 import { toParts, appendToDraft } from './chat-text.js';
 import { plainText } from './chat-markdown.js';
 import { mountChatInput } from './chat-input.js';
+import { agentSeenText } from './chat-agents.js';
+import { seenOf, needsAsk, refreshSeen, forgetSeen } from './chat-agent-seen.js';
 import { draftSlotKey, draftWritten } from './chat-drafts.js';
 import { textEl as richText, filesEl, cardsEl, reactionsEl, openViewer, closeViewer, openEmojiPicker, closeEmojiPicker, busyCard, dragHasFiles } from './chat-rich.js';
 
@@ -627,16 +629,28 @@ export function mountView(section, H) {
       );
       memberCache = entry;
     }
+    const ws = V.ws;
+    // Whether each agent's runner ever connected (chat-agent-seen.js), which only full members can read. The list
+    // doesn't wait for it: an open picker draws again when the answer comes.
+    if (H.myRole() === 'guest') forgetSeen(ws);
+    else if ([...members().values()].some(isAgent) && needsAsk(ws)) {
+      refreshSeen(ws).then((seen) => {
+        if (!seen || V.ws !== ws) return;
+        input?.refreshMembers();
+        T?.input?.refreshMembers();
+      });
+    }
     return memberCache.promise.then((ids) => {
       const dir = members();
       const me = H.me();
       const list = ids ? ids.map((id) => dir.get(id)).filter(Boolean) : [...dir.values()];
-      // An agent that won't answer you says so ("Answers only Olga"); the mention still goes in (server/WORKSPACES.md
-      // "Agents").
+      // An agent that won't answer you says so ("Answers only Olga"), and one whose runner never connected says that;
+      // the mention still goes in (server/WORKSPACES.md "Agents").
       const listFormat = new Intl.ListFormat(getLocale(), { type: 'conjunction' });
-      return list
-        .filter((m) => m.id !== me && (!m.state || m.state === 'active'))
-        .map((m) => (isAgent(m) ? { ...m, note: agentMentionNote(m, me, { members: dir, t, listFormat }) } : m));
+      const full = H.myRole() !== 'guest';
+      const seenText = (id) => (full ? agentSeenText(seenOf(ws, id), { t, locale: getLocale() }) : '');
+      const note = (m) => [agentMentionNote(m, me, { members: dir, t, listFormat }), seenText(m.id)].filter(Boolean).join(' · ') || null;
+      return list.filter((m) => m.id !== me && (!m.state || m.state === 'active')).map((m) => (isAgent(m) ? { ...m, note: note(m) } : m));
     });
   }
 
@@ -744,6 +758,7 @@ export function mountView(section, H) {
     return api('chatSend', ws, c, body).then(
       (res) => {
         const p = res && res.pending;
+        if (p) watchSilentAgents(ws, p.local, wire.mentions);
         if (!p || V.ws !== ws || V.c !== c || V.pending.some((x) => x.local === p.local)) return true;
         V.pending = [...V.pending, p];
         if (V.loaded) render({ position: root ? 'keep' : 'bottom' });
@@ -756,6 +771,30 @@ export function mountView(section, H) {
         throw err;
       }
     );
+  }
+
+  // A mention of an agent whose runner never connected gets no answer: once the server has the message (its sent
+  // event), and a request that started after that and succeeded says the agent never connected, a toast says so,
+  // rather than leave the person waiting for a reply. A message still queued, a request that failed, and a message
+  // sent without its mentions or discarded say nothing. local → { ws, agents }.
+  const silentWatch = new Map();
+  function watchSilentAgents(ws, local, mentions) {
+    if (H.myRole() === 'guest') return;
+    const dir = members();
+    const agents = [...new Set((mentions || []).map((m) => m && m.actor))].filter((id) => isAgent(dir.get(id)));
+    if (!agents.length) return;
+    // The sent event can come before chatSend's answer.
+    if ([...V.sentLocal.values()].includes(local)) noteSilentAgents(ws, agents);
+    else silentWatch.set(local, { ws, agents });
+  }
+
+  function noteSilentAgents(ws, agents) {
+    // A request of its own: one the mention list started before the send can say the agent hadn't connected yet.
+    refreshSeen(ws, { fresh: true }).then((seen) => {
+      if (!seen || V.ws !== ws || H.myRole() === 'guest') return;
+      const silent = agents.find((id) => seen.has(id) && seen.get(id) === null);
+      if (silent) toast(t('chat.agents.notConnectedSent', { name: displayName(members().get(silent), t) }), 6000);
+    });
   }
 
   function focusLog() {
@@ -954,6 +993,11 @@ export function mountView(section, H) {
       // log at once, from what was sent, until the history brings the server's copy.
       if (p.messageId && p.local) {
         V.sentLocal.set(p.messageId, p.local);
+        const watched = silentWatch.get(p.local);
+        if (watched) {
+          silentWatch.delete(p.local);
+          noteSilentAgents(watched.ws, watched.agents);
+        }
         const item = V.pending.find((x) => x.local === p.local);
         if (item && Number.isSafeInteger(p.seq) && !V.events.some((e) => e.seq === p.seq || e.id === p.messageId)) {
           const ev = { seq: p.seq, id: p.messageId, kind: 'message.posted', actor: H.me(), at: Date.now(), root: item.root || null, text: item.text, mentions: item.mentions || [], attachments: item.attachments || [], previews: [], reactions: [], redacted: false, data: {} };
@@ -1638,6 +1682,8 @@ export function mountView(section, H) {
     if (!p) return;
     const ws = V.ws;
     const c = V.c;
+    // Without its mentions, or not at all, the message asks no agent: nothing to say about one that won't answer.
+    if (id === 'discard' || id === 'without-mentions') silentWatch.delete(local);
     try {
       if (id === 'discard') {
         await api('chatDiscard', local);

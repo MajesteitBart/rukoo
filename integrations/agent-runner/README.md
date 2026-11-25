@@ -2,10 +2,10 @@
 
 The agent runner connects one agent account in a Rukoo workspace to one agent runtime: a Hermes Agent or Booper over the Runs API, an OpenClaw gateway or another server with OpenAI-compatible Chat Completions, Claude Code, Codex, or a program of your own. When someone mentions the agent in a channel, the runner gives the runtime the message and the conversation around it, then posts the runtime's answer as a reply in the message's thread.
 
-It's a single Node.js program without dependencies. It needs Node.js 22 or newer and nothing from the Rukoo app, so it runs on any computer that can reach both the Rukoo server and the runtime, such as the machine Hermes or Booper already runs on.
+It's a small Node.js program without dependencies. It needs Node.js 22 or newer and nothing from the Rukoo app, so it runs on any computer that can reach both the Rukoo server and the runtime, such as the machine Hermes or Booper already runs on.
 
 ```sh
-node integrations/agent-runner/runner.js --config clark.json
+node runner.js --config clark.json
 ```
 
 The protocol it speaks is in [server/WORKSPACES.md](../../server/WORKSPACES.md#agents-in-channels). Team chat itself is described in [docs/chat.md](../../docs/chat.md).
@@ -21,9 +21,42 @@ The protocol it speaks is in [server/WORKSPACES.md](../../server/WORKSPACES.md#a
 
 Every mention starts a fresh session in the runtime, without memory of earlier mentions. One mention is handled at a time.
 
+## Get the runner
+
+The runner is this folder of the Rukoo repository on GitHub; the installed Rukoo app doesn't contain it. It needs [Node.js](https://nodejs.org) 22 or newer on the computer it runs on (`node --version` says which one you have). `runner.js` loads `rukoo.js`, `backends.js` and `prompt.js` from its own folder and nothing else, so download those four files into one folder:
+
+```sh
+mkdir rukoo-agent && cd rukoo-agent
+for f in runner.js rukoo.js backends.js prompt.js; do
+  curl -fsSLO "https://raw.githubusercontent.com/MajesteitBart/rukoo/main/integrations/agent-runner/$f"
+done
+```
+
+In PowerShell on Windows:
+
+```powershell
+mkdir rukoo-agent; cd rukoo-agent
+foreach ($f in 'runner.js', 'rukoo.js', 'backends.js', 'prompt.js') {
+  Invoke-WebRequest "https://raw.githubusercontent.com/MajesteitBart/rukoo/main/integrations/agent-runner/$f" -OutFile $f
+}
+```
+
+A clone of the repository works too: `git clone https://github.com/MajesteitBart/rukoo`, then the folder `rukoo/integrations/agent-runner`. Save the config Rukoo shows next to `runner.js` as `agent.json`, check it, and start it:
+
+```sh
+node runner.js --config agent.json --check
+node runner.js --config agent.json
+```
+
 ## Get a key
 
-A full member of the workspace makes the agent in Rukoo: the workspace menu → **Agents** → **Add an agent**. They choose its name, whom it answers (a new agent starts on **Only me**) and whether it answers other agents, and become its sponsor. Rukoo then shows the key once with **Copy key**, and the server address, the workspace id and a ready config for this runner with **Copy config**. On the desktop, **Use one of my agents** fills the `backend` part of that config from an agent in Settings → Agents, with the name of an environment variable in place of its secret.
+A full member of the workspace makes the agent in Rukoo: the workspace menu → **Agents** → **Add an agent**. They choose its name, whom it answers (a new agent starts on **Only me**) and whether it answers other agents, and become its sponsor. Rukoo then shows **Connect** for the agent, in three steps:
+
+1. **Answers with** picks the runtime that answers for the agent. On the desktop it lists the agents of Settings → Agents that can answer, the ones whose status check passed first, so the first ready one is picked; in the browser and on the phone it offers Claude Code and Codex. **A program of my own** comes last and leaves `"command": "my-agent"` in the config for you to replace. An agent with a secret, such as a Hermes API key, gets the name of an environment variable in place of that secret.
+2. **Copy config** copies the config for this runner, with the server's address, the workspace id and the agent's key in it. Rukoo shows the key only this once.
+3. How to start the runner, as above, with **Get the runner on GitHub**, which opens this section.
+
+After **Add an agent** the step also offers to add the new agent to the channel on screen, when its sponsor may add it there.
 
 The key looks like `rka_` followed by 66 characters. The config Rukoo shows holds it in `key`, so whoever can read that file can read the agent's channels. Keep the file private, readable only by you (`chmod 600 clark.json` on Linux and macOS). Or take `key` out of the file and put the key in an environment variable instead: `RUKOO_AGENT_KEY`, unless `keyEnv` names another. The runner removes that variable, and any variable that holds the key, from the environment of every program it starts.
 
@@ -95,10 +128,39 @@ The runner starts the program without a shell, writes the whole input (instructi
 
 ```sh
 export RUKOO_AGENT_KEY=rka_…                 # only for a config without "key"
-node runner.js --config clark.json --check   # checks the server, the key and the backend's program, lists the agent's channels
+node runner.js --config clark.json --check   # checks the backend, the server, the key and the agent's channels
 node runner.js --config clark.json --once    # one pass over the workspace, then exit
 node runner.js --config clark.json           # runs until stopped
 ```
+
+`--check` answers one question about the backend: can it answer? It fails, with exit code 1 and a line that says what to do, when it can't: a `command` or `claude` or `codex` program that isn't found where the runner looks for it, on Windows a `.cmd` or `.bat` file named directly (wrap it as above), the placeholder `my-agent` still in `command`, or a `runs` or `openai` server that can't, as the table below says. It also warns, and passes, when the agent is in no channel yet, since no mention can reach it there.
+
+A `runs` or `openai` backend is asked the routes its contract has, in order, with the headers a run sends, the key included. Each route waits up to 5 seconds. A route is required when the backend can't answer without it; `/v1/models` of an OpenAI-compatible server other than OpenClaw isn't, because such a server can chat without it. The check can't tell only on a route that isn't required, and then it passes with a warning that names the route. An `openai` backend is OpenClaw's when its `model` is `openclaw/…` or its `headers` have `x-openclaw-model`, as the config Rukoo gives for OpenClaw has.
+
+| Backend | Route | Answer | Verdict |
+| --- | --- | --- | --- |
+| `runs` or `openai` | the first route | no connection | Can't answer: nothing answers at the address |
+| `runs` or `openai` | the first route | no answer within 5 seconds | Can't answer: nothing answers at the address |
+| `runs` (Hermes, Booper) | `GET /health`, required | 2xx with a JSON object | Goes on to `/v1/capabilities` |
+| `runs` | `GET /health` | 2xx with anything else, such as an HTML page | Can't answer: not a Runs API server |
+| `runs` | `GET /health` | any other status, a redirect or 404 included | Can't answer |
+| `runs` | `GET /v1/capabilities`, required | 2xx with a JSON object | Can answer |
+| `runs` | `GET /v1/capabilities` | 401 or 403 | Can't answer: the key was refused |
+| `runs` | `GET /v1/capabilities` | 404 | Can't answer: the route is missing |
+| `runs` | `GET /v1/capabilities` | any other status, or no answer within 5 seconds | Can't answer |
+| `runs` | `GET /v1/capabilities` | 2xx with anything but a JSON object, or with `features.run_submission` false | Can't answer |
+| `openai` for OpenClaw | `GET /v1/models`, required | 2xx with a JSON object whose `data` is a list | Can answer |
+| `openai` for OpenClaw | `GET /v1/models` | 401 or 403 | Can't answer: the token was refused |
+| `openai` for OpenClaw | `GET /v1/models` | 404 | Can't answer: the gateway's Chat Completions endpoint is off |
+| `openai` for OpenClaw | `GET /v1/models` | any other status | Can't answer |
+| `openai` for OpenClaw | `GET /v1/models` | 2xx with anything else | Can't answer |
+| `openai`, another server | `GET /v1/models`, not required | 2xx with a JSON object whose `data` is a list | Can answer |
+| `openai`, another server | `GET /v1/models` | 2xx with anything else, such as an HTML page | Can't answer |
+| `openai`, another server | `GET /v1/models` | 401, 403, 404 or any other status | Couldn't tell: a warning that names `/v1/models` |
+
+401 and 403 mean a refused key where Rukoo's own adapters for these servers read them so (`src/main/agents/hermes.js`, `openclaw.js`). When the variable that `keyEnv` names isn't set, the line for a refused key says to set it; when the server answered without a key, a warning says the runner sends none. The lines name a backend by its address's origin, never its path or query, and never quote what a server answered.
+
+A normal start logs the check's errors and warnings as warnings and runs anyway, because a server can come up later. Stopping the runner while the check or the first connection to the Rukoo server still waits stops it at once.
 
 It logs to stderr, one line per event: connected, answered, skipped and why, failed and why. It logs messages by their ids. When a runtime fails, the line quotes up to 200 characters of its error output, which can contain text the runtime got. Exit codes: 0 when it stopped normally, 1 for a config or startup problem (and, with `--once`, a pass that couldn't finish), 2 when the key stopped working. Restarting doesn't help with 2; a new key does. A server that doesn't answer when the runner starts is tried again, up to a minute apart.
 

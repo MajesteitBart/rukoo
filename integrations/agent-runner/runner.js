@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Rukoo, RukooError, KeyRefused, uuidv7, retryAfter } = require('./rukoo');
-const { makeBackend } = require('./backends');
+const { makeBackend, BackendError } = require('./backends');
 const { buildInput, cleanAnswer, convertMentions, splitReply } = require('./prompt');
 
 const DEFAULT_KEY_ENV = 'RUKOO_AGENT_KEY';
@@ -185,8 +185,9 @@ class Runner {
     }
   }
 
+  // Its requests end when the runner stops (this.abort), so stop() doesn't wait for a server that is slow to answer.
   async connect() {
-    const info = await this.api.info();
+    const info = await this.api.info({ signal: this.abort.signal });
     const w = info && info.workspace;
     if (!w) throw new Error('This server has no team chat');
     if (!Array.isArray(w.capabilities) || !w.capabilities.includes('agents')) throw new Error('This server has agents turned off');
@@ -207,7 +208,7 @@ class Runner {
   }
 
   async loadWorkspace() {
-    const res = await this.api.workspaceInfo();
+    const res = await this.api.workspaceInfo({ signal: this.abort.signal });
     this.workspace = { id: res.workspace.id, name: res.workspace.name };
     this.generation = res.workspace.generation;
     if (Number.isFinite(res.workspace.time)) this.clockOffset = res.workspace.time - Date.now();
@@ -215,14 +216,14 @@ class Runner {
 
   // The agent's settings: its name, its sponsor, whom it answers and whether it answers other agents.
   async loadMe() {
-    const me = await this.api.me();
+    const me = await this.api.me({ signal: this.abort.signal });
     this.me = { ...me, members: Array.isArray(me.members) ? me.members : [] };
   }
 
   // The agent's settings and the people it can see.
   async loadSettings() {
     await this.loadMe();
-    const list = await this.api.members();
+    const list = await this.api.members({ signal: this.abort.signal });
     this.people = new Map(list.map((m) => [m.id, { name: m.name, kind: m.kind || 'human', state: m.state }]));
   }
 
@@ -678,6 +679,53 @@ class Runner {
     });
   }
 
+  // ---- Checking ----
+
+  // What the backend needs before the first mention (backends.js, "Checks"): [{ level, message }]. stop() ends a check
+  // that still waits, and then nothing is said.
+  async backendProblems() {
+    if (typeof this.backend.check !== 'function') return [];
+    try {
+      const list = await this.backend.check({ env: process.env, signal: this.abort.signal });
+      return this.stopped ? [] : list;
+    } catch (err) {
+      return this.stopped ? [] : [{ level: 'error', message: `Could not check the backend: ${err instanceof BackendError ? err.message : 'the check failed'}` }];
+    }
+  }
+
+  // The channels the agent is in now, by id.
+  async channels() {
+    await this.feed();
+    return [...this.rooms.values()].filter((row) => row.kind === 'channel' && !row.archived).map((row) => row.conversation);
+  }
+
+  // --check: the backend, the server and the key, and the agent's channels, each said in a line with what to do.
+  // Answers the exit code: 0 when the agent can answer (a warning when it is in no channel yet), 1 when the backend
+  // can't answer as configured. A key that doesn't work throws KeyRefused, which main() makes 2.
+  async check() {
+    const stopped = () => new Error('Stopped before the check finished');
+    const problems = await this.backendProblems();
+    if (this.stopped) throw stopped();
+    for (const p of problems) this.log(p.level, p.message);
+    let rooms;
+    try {
+      await this.connect();
+      rooms = await this.channels();
+    } catch (err) {
+      throw this.stopped ? stopped() : err;
+    }
+    if (this.stopped) throw stopped();
+    if (rooms.length) this.log('info', `The agent is in ${rooms.length} ${rooms.length === 1 ? 'channel' : 'channels'}: ${rooms.join(', ')}`);
+    else this.log('warn', 'The agent is in no channel yet, so no mention can reach it. In Rukoo, open a channel\'s menu and choose Add agents, or Add people when you manage the channel.');
+    const errors = problems.filter((p) => p.level === 'error').length;
+    if (errors) {
+      this.log('error', `The backend can't answer yet: fix ${errors === 1 ? 'the problem' : `the ${errors} problems`} above and check again.`);
+      return 1;
+    }
+    this.log('info', 'The check passed. Start the runner without --check.');
+    return 0;
+  }
+
   // ---- Running ----
 
   // One pass, then done: for a scheduled job, and the tests.
@@ -699,16 +747,26 @@ class Runner {
         await this.connect();
         break;
       } catch (err) {
+        // Stopped while a request to the server waited: stop() aborted it, and that is no failure.
+        if (this.stopped) return;
         const passing = err instanceof RukooError && !(err instanceof KeyRefused) && (err.network || err.status >= 500 || err.status === 429);
-        if (!passing || this.stopped) throw err;
+        if (!passing) throw err;
         this.log('warn', `Could not reach the server: ${err.message}; trying again in ${wait / 1000} s`);
         await sleep(wait, this.abort.signal);
         if (this.stopped) return;
       }
     }
+    // What would keep every answer from going out, or what the check couldn't tell, said at the start rather than at
+    // the first mention.
+    for (const p of await this.backendProblems()) if (p.level === 'error' || p.level === 'warn') this.log('warn', p.message);
+    // Stopped while the check waited: nothing may start after stop().
+    if (this.stopped) return;
     this.timer = setInterval(() => this.pump(), this.config.pollSeconds * 1000);
     this.socketLoop().catch((err) => this.log('warn', `The wake socket stopped: ${err.message}`));
     await this.pump();
+    if (!this.stopped && ![...this.rooms.values()].some((row) => row.kind === 'channel' && !row.archived)) {
+      this.log('warn', "The agent is in no channel yet. In Rukoo, open a channel's menu and choose Add agents; the runner picks it up at once.");
+    }
     await this.finished;
     if (this.fatal) throw this.fatal;
   }
@@ -815,7 +873,7 @@ class Runner {
 // ---- Command line ----
 
 function usage() {
-  return 'Usage: node runner.js --config <agent.json> [--once] [--check]\n\n  --once   one pass over the workspace, then exit\n  --check  check the config and the key, then exit\n';
+  return 'Usage: node runner.js --config <agent.json> [--once] [--check]\n\n  --once   one pass over the workspace, then exit\n  --check  check the backend, the key and the agent\'s channels, then exit\n';
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -851,16 +909,7 @@ async function main(argv = process.argv.slice(2)) {
   process.on('SIGINT', quit);
   process.on('SIGTERM', quit);
   try {
-    if (check) {
-      await runner.connect();
-      // A CLI backend's program, found now rather than at the first mention.
-      if (typeof runner.backend.exe === 'function') defaultLog('info', `The backend runs ${runner.backend.exe()}`);
-      const rooms = [];
-      await runner.feed();
-      for (const row of runner.rooms.values()) if (row.kind === 'channel') rooms.push(row.conversation);
-      defaultLog('info', `The agent is in ${rooms.length} ${rooms.length === 1 ? 'channel' : 'channels'}${rooms.length ? `: ${rooms.join(', ')}` : ''}`);
-      return 0;
-    }
+    if (check) return await runner.check();
     if (once) await runner.once();
     else await runner.run();
     return 0;

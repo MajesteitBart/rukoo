@@ -12651,9 +12651,13 @@ button.ch-replies .ch-replies-n {
 .avatar.is-agent {
   border-radius: 28%;
 }
-.mention-note {
+/* Whom an agent answers and whether its runner connected wrap to a second line rather than lose "Not connected yet". */
+.mention-who > .mention-note {
   font-size: 12px;
+  line-height: 1.35;
   color: var(--text-3);
+  white-space: normal;
+  text-wrap: pretty;
 }
 /* On the row Enter picks, the selected-row grey leaves chat's caption grey at 4.2:1 in dark; the note steps up. */
 .ch-suggest [role='option'].active .mention-note {
@@ -12729,41 +12733,86 @@ button.ch-replies .ch-replies-n {
   padding: 0 8px 4px;
   text-wrap: pretty;
 }
-/* The key, shown once, with Copy beside it; the server and the workspace ID; the runner's config. */
-.dialog .ch-agent-once {
+/* The key step: three numbered steps (who answers, the config with Copy config, how to start the runner), each a
+ * label, its control and a line under it, with a number in a ring on the left. */
+.ch-agent-steps {
+  display: grid;
+  gap: 18px;
   margin: 0;
-  font-size: 13px;
-  color: var(--text);
-  text-wrap: pretty;
+  padding: 0;
+  list-style: none;
+  counter-reset: agent-step;
 }
-.ch-agent-copy-row {
+.ch-agent-step {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 32px;
+  counter-increment: agent-step;
+}
+.ch-agent-step::before {
+  content: counter(agent-step);
+  position: absolute;
+  top: -2px;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ch-agent-step-head {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   min-width: 0;
+  min-height: 28px;
 }
-.ch-agent-copy-row label {
-  flex: 1;
+.ch-agent-step-head .ch-label {
   min-width: 0;
 }
-.ch-agent-copy-row .btn,
-.ch-agent-copy-end .btn {
+.ch-agent-step-head .btn {
   flex: none;
-  height: 32px;
 }
-.ch-agent-copy-row .btn svg,
-.ch-agent-copy-end .btn svg {
+.ch-agent-step-head .btn svg,
+.ch-agent-get svg {
   width: 15px;
   height: 15px;
 }
-.ch-agent-facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 10px;
-  min-width: 0;
+.dialog .ch-agent-once {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  text-wrap: pretty;
+}
+.ch-agent-step .ch-agent-cmd {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  user-select: text;
+}
+.ch-agent-step .ch-agent-get {
+  justify-self: start;
+}
+.form .ch-check-row.ch-agent-join {
+  align-items: flex-start;
+  padding: 6px;
+}
+.ch-agent-join input {
+  margin-top: 2px;
 }
 .form textarea.ch-agent-config {
-  min-height: 220px;
+  min-height: 180px;
   font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
@@ -12771,9 +12820,6 @@ button.ch-replies .ch-replies-n {
   overflow-wrap: normal;
   overflow-x: auto;
   tab-size: 2;
-}
-.ch-agent-copy-end {
-  display: flex;
 }
 .dialog .ch-agent-key .field-help {
   margin: 0;

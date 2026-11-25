@@ -536,8 +536,9 @@ test('every method the chat, account, ui, i18n, diag and web shell modules call 
     const text = fs.readFileSync(path.join(root, 'src', 'renderer', file), 'utf8');
     for (const m of text.matchAll(/\b(?:api|invoke|call)\(\s*['"`]([A-Za-z]+)['"`]/g)) called.add(m[1]);
   }
-  // agentConfig: the Settings, Agents a runner's backend comes from, which chat-dialogs.js asks for only off the web.
-  const desktopOnly = new Set(['accountSetServer', 'accountSync', 'accountChangePassword', 'accountNewRecoveryKey', 'accountExport', 'nativeEdit', 'agentConfig']);
+  // agentConfig and agentStatus: the Settings, Agents a runner's backend comes from and which of them are ready, which
+  // chat-dialogs.js asks for only off the web.
+  const desktopOnly = new Set(['accountSetServer', 'accountSync', 'accountChangePassword', 'accountNewRecoveryKey', 'accountExport', 'nativeEdit', 'agentConfig', 'agentStatus']);
   const page = openPage();
   t.after(() => page.close());
   await page.ready();

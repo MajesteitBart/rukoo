@@ -181,7 +181,7 @@ test('a server without team chat gets no workspace requests, and Chat is unavail
 });
 
 const STATE_KEYS = [
-  'available', 'storage', 'signedIn', 'server', 'host', 'operator', 'jurisdiction', 'signups', 'inviteSignups', 'retention', 'limits',
+  'available', 'storage', 'signedIn', 'session', 'server', 'host', 'operator', 'jurisdiction', 'signups', 'inviteSignups', 'retention', 'limits',
   'notifications', 'pendingJoin', 'unsent', 'lostUnsent', 'selected', 'connection', 'attention', 'unread', 'workspaces',
   // Rich messages: what the server can do, and its files settings. Agents in channels: their limits.
   'capabilities', 'files', 'agents'
@@ -578,10 +578,14 @@ test('a listing of the previous session doesn\'t stand in for the next session\'
   });
   const old = svc.list();
   await answered.ready;
+  // ChatState's session moves on with each end and start, so the renderer can tell a session from the one after it.
+  const first = svc.state().session;
   await account.signOut();
+  const signedOut = svc.state().session;
   account.attach(b.email, b.token, require('crypto').randomBytes(32));
   // The new session lists on its own, while the old listing still waits.
   await settled(svc, bWs.id);
+  assert.ok(signedOut > first && svc.state().session > signedOut, `sessions ${first}, ${signedOut}, ${svc.state().session}`);
   assert.deepEqual(svc.store.listWs().map((r) => r.id), [bWs.id]);
   release.open();
   assert.equal(await old, null);
