@@ -8,6 +8,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { END_OF_LINE, END_OF_TEXT } = require('./keys');
 const { FakeVoice, startVoiceServer, syntheticMedia } = require('../fixtures/voice-server');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -63,6 +64,19 @@ async function resizeTo(width, height, zoom = 1) {
 
 const connected = () => app.evaluate(() => global.__semVoice.connected);
 const isProtected = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected()));
+// What Rukoo last asked of each window (protectWindows in main.js), after watchProtection(); null for a window it
+// asked nothing yet. For a Mac, where the window may not report what it was asked (#327, #329).
+const askedProtection = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => (typeof w.__askedProtection === 'boolean' ? w.__askedProtection : null)));
+const watchProtection = () =>
+  app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      const set = w.setContentProtection.bind(w);
+      w.setContentProtection = (on) => {
+        w.__askedProtection = on;
+        return set(on);
+      };
+    }
+  });
 
 // ---------- demo screen frames ----------
 
@@ -555,20 +569,20 @@ test('notes share composer formatting, save Markdown and survive a restart, with
   await openMeetings();
   const notes = () => view().locator('.mt-notes-input');
   await notes().fill('Launch decisions');
-  await notes().press('Control+a');
+  await notes().press('ControlOrMeta+a');
   await view().locator('[data-cmd="formatBlock"]').click();
   await expect(notes().locator('h2')).toHaveText('Launch decisions');
-  await notes().press('End');
+  await notes().press(END_OF_LINE);
   await notes().press('Enter');
-  await notes().press('Control+b');
+  await notes().press('ControlOrMeta+b');
   await win.keyboard.type('Thursday');
-  await notes().press('Control+b');
+  await notes().press('ControlOrMeta+b');
   await notes().press('Enter');
   await view().locator('[data-cmd="insertUnorderedList"]').click();
   await win.keyboard.type('Tell support on Monday');
   await notes().press('Enter');
   await win.keyboard.type('Publish the checklist');
-  await notes().press('Control+k');
+  await notes().press('ControlOrMeta+k');
   await win.locator('.link-pop [data-f="url"]').fill('https://example.com/checklist');
   await win.locator('.link-pop [data-f="url"]').press('Enter');
   await notes().blur();
@@ -812,7 +826,7 @@ test('blank list continuations and long escaped notes survive editing and restar
   }, { id, original });
   await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(50010);
   expect(await notes().evaluate((el) => el.textContent.endsWith('End marker'))).toBe(true);
-  await notes().press('Control+End');
+  await notes().press(END_OF_TEXT);
   await win.keyboard.type(' revised');
   await notes().blur();
   const expected = original + ' revised';
@@ -857,7 +871,7 @@ test('escaped notes over the storage limit keep their saved original and a recov
   const original = '_'.repeat(60000) + '\nEnd marker';
   await app.evaluate((_e, { id, original }) => global.__semVoice.saveNotes(id, original, 0), { id, original });
   await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(60010);
-  await notes().press('Control+End');
+  await notes().press(END_OF_TEXT);
   await win.keyboard.type(' revised');
   await notes().blur();
   await expect(view().locator('.mt-notes-status')).toHaveText('Not saved: shorten the notes');
@@ -892,9 +906,9 @@ test('soft breaks preserve note formatting and linked labels after restart', asy
   await openMeetings();
   const notes = () => view().locator('.mt-notes-input');
   await notes().fill('First bold line');
-  await notes().press('Control+a');
-  await notes().press('Control+b');
-  await notes().press('End');
+  await notes().press('ControlOrMeta+a');
+  await notes().press('ControlOrMeta+b');
+  await notes().press(END_OF_LINE);
   await notes().press('Shift+Enter');
   await win.keyboard.type('Second bold line');
   await notes().blur();
@@ -981,6 +995,7 @@ test('records the Stand-up from its card: Rukoo hides first, the transcript stre
       return command(name, args);
     };
   });
+  await watchProtection();
 
   await win.keyboard.press('Control+2');
   await win.locator('[data-cal-view="day"]').click();
@@ -1049,7 +1064,12 @@ test('records the Stand-up from its card: Rukoo hides first, the transcript stre
   await expect(view().locator('.mt-state')).toHaveText('Finishing the transcript');
   expect(voice.commands.find((c) => c.command === 'meeting.stop').args.meeting).toBe(id);
   await expect(indicator()).toBeHidden();
-  if (CAN_HIDE) await expect.poll(isProtected).toEqual([false]);
+  // Rukoo asks every window to show in recordings again. A Mac may keep the window hidden anyway: on macOS 27.2.1
+  // isContentProtected() still returned true after the stop (#327), and Rukoo Voice leaves Rukoo out of its
+  // recordings on a Mac whatever the setting (#329). So on a Mac the test checks what Rukoo asked; on Windows, what
+  // the window took.
+  if (process.platform === 'darwin') await expect.poll(askedProtection).toEqual([false]);
+  else if (CAN_HIDE) await expect.poll(isProtected).toEqual([false]);
   voice.append('meeting.state', id, { state: 'done', at: 16000, endedAt: Date.now() + offset });
   await expect(view().locator('.mt-state')).toHaveCount(0);
   await expect(view().locator('[data-mt="stop"]')).toHaveCount(0);
