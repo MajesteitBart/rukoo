@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use voice_core::config::Config;
-use voice_core::providers::provider_requires_key;
+use voice_core::providers::{missing_key_message, provider_requires_key, Purpose};
 use voice_core::{cleanup, prompts, RewriteRequest};
 use voice_input::{
     HotkeyConfig, HotkeyEvent, HotkeyPoller, InputError, InsertMode, Key, Mode, PushToTalk,
@@ -1207,6 +1207,10 @@ fn finish(core: &Core, job: &Job, outcome: Outcome) {
                     now,
                 )
             });
+            // The pill and the tray say to add a key in Settings > API keys; Settings opens there.
+            if notice == errors::NO_KEY {
+                core.settings.open_next_at("keys");
+            }
             core.notify(title, body);
         }
         Outcome::Quiet => {}
@@ -1292,7 +1296,7 @@ fn process(core: &Core, job: &Job) -> Outcome {
         return failed(
             errors::NO_KEY,
             errors::TITLE_DICTATION,
-            "No audio API key set. Open Settings > Transcription and add a key.",
+            missing_key_message(&audio.provider, Purpose::Dictation),
         );
     }
     match job.mode {
@@ -1469,7 +1473,7 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
         return failed(
             errors::NO_KEY,
             errors::TITLE_REWRITE,
-            "No rewrite API key set. Open Settings > Rewriting and add a key.",
+            missing_key_message(&rewrite.provider, Purpose::Rewrite),
         );
     }
     let result = core.svc.speech.rewriter(&rewrite).and_then(|rewriter| {

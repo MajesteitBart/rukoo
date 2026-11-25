@@ -176,6 +176,23 @@ pub const REWRITE_PROVIDER_IDS: [&str; 7] = [
     "custom",
 ];
 
+/// Providers whose API key is entered once, in Settings > API keys, and sent by every feature
+/// that uses the provider. A custom server isn't one provider, so each feature keeps its own key
+/// for it, and Orukeet needs none.
+pub const SHARED_KEY_PROVIDER_IDS: [&str; 6] = [
+    "openai",
+    "anthropic",
+    "google",
+    "mistral",
+    "ollama",
+    "openrouter",
+];
+
+/// Whether a provider's key is the one in Settings > API keys.
+pub fn shares_key(provider: &str) -> bool {
+    SHARED_KEY_PROVIDER_IDS.contains(&provider)
+}
+
 impl ProviderId {
     pub fn parse(id: &str) -> Option<ProviderId> {
         PRESETS
@@ -570,6 +587,24 @@ pub(crate) fn redacted(key: &str) -> &'static str {
     }
 }
 
+/// The one place a provider's key is entered (voice/ui/API.md, `keys`).
+pub const KEYS_SETTINGS_PAGE: &str = "Settings > API keys";
+
+/// What a feature without its provider's key says, in the tray and in Settings. It names the
+/// provider and the one place to add the key. The pill reads "Add an API key" for it: it starts
+/// "No " and holds "API key set" (voice-engine's `is_missing_key`).
+pub fn missing_key_message(provider: &str, purpose: Purpose) -> String {
+    let label = provider_label(provider);
+    let page = KEYS_SETTINGS_PAGE;
+    match purpose {
+        Purpose::Dictation => format!("No {label} API key set. Add it in {page}."),
+        Purpose::Rewrite => format!("No {label} API key set for rewriting. Add it in {page}."),
+        Purpose::Meetings => {
+            format!("No {label} API key set for meeting transcription. Add it in {page}.")
+        }
+    }
+}
+
 fn audio_settings_page(purpose: Purpose) -> &'static str {
     match purpose {
         Purpose::Meetings => "Settings > Meetings > Transcription",
@@ -608,13 +643,10 @@ pub fn speech_to_text(
         )));
     }
     if provider_requires_key(id.as_str(), &cfg.endpoint) && cfg.api_key.trim().is_empty() {
-        let message = match cfg.purpose {
-            Purpose::Meetings => {
-                format!("No API key set for meeting transcription. Open {page} and add a key.")
-            }
-            _ => "No audio API key set. Open Settings > Transcription and add a key.".to_string(),
-        };
-        return Err(ProviderError::new(ErrorKind::Auth, message));
+        return Err(ProviderError::new(
+            ErrorKind::Auth,
+            missing_key_message(id.as_str(), cfg.purpose),
+        ));
     }
     Ok(Box::new(cloud::CloudSpeech::new(id, cfg)))
 }
@@ -642,7 +674,7 @@ pub fn rewriter(cfg: &RewriteProviderConfig) -> Result<Box<dyn Rewriter>, Provid
     if provider_requires_key(id.as_str(), &cfg.endpoint) && cfg.api_key.trim().is_empty() {
         return Err(ProviderError::new(
             ErrorKind::Auth,
-            "No rewrite API key set. Open Settings > Rewriting and add a key.",
+            missing_key_message(id.as_str(), Purpose::Rewrite),
         ));
     }
     Ok(Box::new(rewrite::CloudRewriter::new(id, cfg)))

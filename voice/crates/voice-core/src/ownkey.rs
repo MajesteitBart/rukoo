@@ -272,6 +272,13 @@ impl ImportResult {
         cfg.meetings_auto_speakers = ownkey.meetings_auto_speakers;
         // Voice has no "same as dictation" (voice/ui/API.md): it becomes the provider it pointed at.
         cfg.resolve_same_meeting_provider();
+        // One key per provider: Ownkey's keys replace Voice's for the providers Ownkey has a key
+        // for, as the import replaces every other setting. A key the user entered in Voice for a
+        // provider Ownkey has none for stays, and a feature on that provider gets it.
+        for (provider, key) in &ownkey.api_keys {
+            cfg.api_keys.insert(provider.clone(), key.clone());
+        }
+        cfg.share_keys();
         let meeting_choice = provider_label(&cfg.meetings_audio_provider).to_string();
         report.add(
             "meetings",

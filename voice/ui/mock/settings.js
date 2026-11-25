@@ -4,7 +4,8 @@
 // settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&features=<list>&sync=<sync>&eventFirst=1&platform=macos&permissions=<state>
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
-//   (development copy).
+//   (development copy), nokey (dictation and rewriting on Mistral without a key, Orukeet not downloaded), ownkey
+//   (everything on Mistral, rewriting and meetings with another key each from before keys were shared).
 //   platform=macos shows the macOS Permissions group and the Mac key names; permissions=granted, denied, notAsked
 //   or mixed (the default) picks the states the five rows show. System audio stays unknown, as it has no
 //   public preflight.
@@ -34,11 +35,16 @@ const ZERO_CODE = `RKV1-${Array(11).fill('00000').join('-')}`;
 const REALTIME = 'voxtral-mini-transcribe-realtime';
 const REALTIME_MODEL = 'voxtral-mini-transcribe-realtime-3';
 
+// The providers whose key is on the API keys page (API.md, providers.keys).
+const KEY_PROVIDERS = ['openai', 'anthropic', 'google', 'mistral', 'ollama', 'openrouter'];
+const KEY_FORMS = ['transcription', 'rewriting', 'meetings'];
+
 const PROVIDERS = {
+  keys: KEY_PROVIDERS,
   audio: [
     { id: 'openai', endpoints: ['https://api.openai.com/v1/audio/transcriptions'], streamingPrefix: null },
     { id: 'google', endpoints: ['https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'], streamingPrefix: null },
-    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/audio/transcriptions'], streamingPrefix: REALTIME },
+    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/audio/transcriptions'], streamingPrefix: REALTIME, defaultModel: 'voxtral-mini-latest' },
     { id: 'custom', endpoints: ['http://localhost:1234/v1/audio/transcriptions'], streamingPrefix: null },
     { id: 'orukeet', endpoints: [], streamingPrefix: null }
   ],
@@ -46,7 +52,7 @@ const PROVIDERS = {
     { id: 'openai', endpoints: ['https://api.openai.com/v1/responses', 'https://api.openai.com/v1/chat/completions'] },
     { id: 'anthropic', endpoints: ['https://api.anthropic.com/v1/messages'] },
     { id: 'google', endpoints: ['https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'] },
-    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/chat/completions'] },
+    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/chat/completions'], defaultModel: 'mistral-small-latest' },
     { id: 'ollama', endpoints: ['http://localhost:11434/api/chat', 'https://ollama.com/api/chat'] },
     { id: 'openrouter', endpoints: ['https://openrouter.ai/api/v1/chat/completions'] },
     { id: 'custom', endpoints: ['http://localhost:1234/v1/chat/completions'] }
@@ -98,7 +104,7 @@ function baseState() {
     locale: 'en',
     config: {
       dictation: { hotkey: 'right alt', rewriteHotkey: 'right ctrl', pasteMode: true, readyChime: false, startAtLogin: true },
-      transcription: { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false },
+      transcription: { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false, ownKey: false },
       local: { modelFolder: '', idleMinutes: 20 },
       dictionary: {
         vocabulary: ['Rukoo', 'Orukeet', 'Hermes', 'bvdm.ai', 'Keendoc'],
@@ -113,6 +119,7 @@ function baseState() {
         endpoint: 'https://api.mistral.ai/v1/chat/completions',
         model: 'mistral-small-latest',
         keySaved: true,
+        ownKey: false,
         auto: false,
         tone: 'auto',
         formatting: true,
@@ -123,6 +130,7 @@ function baseState() {
         endpoint: '',
         model: 'orukeet-onnx-int8',
         keySaved: false,
+        ownKey: false,
         consent: null,
         retention: 'days7',
         stopKey: 'off',
@@ -131,6 +139,8 @@ function baseState() {
       },
       ui: { language: 'system', theme: 'system', pillEdge: 'bottom', hidePillFromCapture: true },
       updates: { check: false },
+      // Rewriting's Mistral key, which every feature on Mistral uses.
+      apiKeys: Object.fromEntries(KEY_PROVIDERS.map((id) => [id, { saved: id === 'mistral' }])),
       storage: {
         sync: { enabled: false, service: 'upcloud', endpoint: '', region: '', bucket: '', prefix: '', accessKeyId: '', retention: 'keep', secretSaved: false, tested: false, secret: '' }
       }
@@ -330,9 +340,10 @@ const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/;
 const SCENARIOS = {
   default: () => {},
   fresh: (s) => {
-    s.config.transcription = { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false };
+    s.config.transcription = { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false, ownKey: false };
     s.config.dictionary = { vocabulary: [], corrections: [] };
     s.config.rewriting.keySaved = false;
+    s.config.apiKeys.mistral.saved = false;
     s.dictation.status = 'modelMissing';
     s.rukoo = { ...s.rukoo, state: 'notRunning', clientVersion: null, protocol: null, behind: null };
     Object.assign(s.models.orukeet, { stage: 'missing', location: null, path: null, active: null });
@@ -347,8 +358,9 @@ const SCENARIOS = {
     s.updates = { state: 'available', version: '0.2.0' };
   },
   cloud: (s) => {
-    s.config.transcription = { provider: 'openai', endpoint: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-4o-mini-transcribe', language: 'nl', keySaved: true };
+    s.config.transcription = { provider: 'openai', endpoint: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-4o-mini-transcribe', language: 'nl', keySaved: true, ownKey: false };
     s.config.meetings = { ...s.config.meetings, provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: 'voxtral-mini-latest', keySaved: true, consent: null };
+    s.config.apiKeys.openai.saved = true;
     s.config.rewriting.auto = true;
     Object.assign(s.models.orukeet, { active: null });
     s.ownkey.report.meetings = { provider: 'mistral', keyImported: true, retention: 'keep', consent: false };
@@ -367,6 +379,28 @@ const SCENARIOS = {
       error: 'Checksum mismatch for encoder.int8.onnx: expected 7f3a…c01e, got 0b9d…44a2. The download may be damaged; try again.'
     });
     s.updates = { state: 'failed', version: null };
+  },
+  // The tester's start: Mistral chosen for dictation, no key anywhere yet, and no Orukeet on this computer.
+  nokey: (s) => {
+    SCENARIOS.fresh(s);
+    s.config.transcription = { provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: 'voxtral-mini-latest', language: 'auto', keySaved: false, ownKey: false };
+    s.dictation.status = 'noKey';
+    s.ownkey = { ...s.ownkey, configFound: false };
+  },
+  // A config from before keys were shared: three Mistral keys, two of them different from dictation's.
+  ownkey: (s) => {
+    s.config.transcription = { provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: 'voxtral-mini-latest', language: 'auto', keySaved: true, ownKey: false };
+    s.config.rewriting.ownKey = true;
+    s.config.meetings = {
+      ...s.config.meetings,
+      provider: 'mistral',
+      endpoint: 'https://api.mistral.ai/v1/audio/transcriptions',
+      model: 'voxtral-mini-latest',
+      keySaved: true,
+      ownKey: true,
+      consent: { provider: 'mistral', host: 'api.mistral.ai', mode: 'windows' }
+    };
+    Object.assign(s.models.orukeet, { active: null });
   },
   dev: (s) => {
     s.devMode = true;
@@ -416,6 +450,9 @@ const SPEAKER_SCENARIOS = {
   },
   key: (s) => {
     Object.assign(s.config.meetings, MISTRAL_MEETINGS, { keySaved: false, consent: { provider: 'mistral', host: 'api.mistral.ai', mode: 'stream' } });
+    // No Mistral key at all: one key serves every feature on Mistral.
+    s.config.apiKeys.mistral.saved = false;
+    s.config.rewriting.keySaved = false;
   },
   consent: (s) => {
     Object.assign(s.config.meetings, MISTRAL_MEETINGS, { consent: null });
@@ -649,6 +686,14 @@ export function createMock(params) {
       emit();
       return null;
     },
+    settings_save_key: ({ provider, key }) => {
+      if (!KEY_PROVIDERS.includes(provider)) fail('invalid_value', `${provider} has no key in API keys.`);
+      if (typeof key !== 'string' || !key.trim() || key.length > 1024) fail('invalid_value', 'The key is 1 to 1024 characters.');
+      if (key.trim() === 'fail') fail('failed', "Voice couldn't save Settings: Access is denied. (os error 5)");
+      sharedKey(provider, true);
+      emit();
+      return null;
+    },
     settings_save_provider: async ({ save }) => {
       window.__lastSave = structuredClone(save);
       await wait(save.provider === 'orukeet' ? 1200 : 500);
@@ -657,8 +702,17 @@ export function createMock(params) {
       if (save.target !== 'meetings' && String(save.model).startsWith(REALTIME)) fail('invalid_value', 'Realtime models work for meeting transcription only.');
       const target = state.config[save.target];
       const sameProvider = target.provider === save.provider;
+      const shared = KEY_PROVIDERS.includes(save.provider);
       Object.assign(target, { provider: save.provider, endpoint: save.endpoint, model: save.model });
-      target.keySaved = save.apiKey === null ? sameProvider && target.keySaved : Boolean(save.apiKey);
+      // As the engine: a provider on the API keys page brings its key; a custom server's key is the form's.
+      if (shared) {
+        target.keySaved = sameProvider ? target.keySaved : state.config.apiKeys[save.provider].saved;
+        target.ownKey = sameProvider && target.ownKey;
+        if (save.apiKey) sharedKey(save.provider, true);
+      } else {
+        target.keySaved = save.apiKey === null ? sameProvider && target.keySaved : Boolean(save.apiKey);
+        target.ownKey = false;
+      }
       if (save.language) target.language = save.language;
       if (save.target === 'meetings') {
         const mode = String(save.model).startsWith(REALTIME) ? 'stream' : 'windows';
@@ -676,7 +730,14 @@ export function createMock(params) {
       if (target === 'sync') {
         state.config.storage.sync.secretSaved = false;
         syncUntested();
-      } else state.config[target].keySaved = false;
+      } else if (KEY_PROVIDERS.includes(target)) sharedKey(target, false);
+      else if (KEY_FORMS.includes(target)) {
+        // A feature drops the key it sends: a custom server's goes, another one from before gives way to API keys'.
+        const form = state.config[target];
+        form.keySaved = KEY_PROVIDERS.includes(form.provider) && state.config.apiKeys[form.provider].saved;
+        form.ownKey = false;
+        if (target === 'transcription') state.dictation.status = dictationStatus();
+      } else fail('invalid_value', `Unknown key ${target}.`);
       emit();
       return null;
     },
@@ -824,6 +885,24 @@ export function createMock(params) {
     },
     settings_close: () => null
   };
+
+  // Dictation's status as the engine works it out from the provider, its key and the model.
+  function dictationStatus() {
+    const tr = state.config.transcription;
+    if (tr.provider === 'orukeet') return state.models.orukeet.stage === 'installed' ? 'ready' : 'modelMissing';
+    const needsKey = tr.provider !== 'custom' && !(tr.provider === 'ollama' && host(tr.endpoint) !== 'ollama.com');
+    return needsKey && !tr.keySaved ? 'noKey' : 'ready';
+  }
+
+  // Saves or removes a provider's key on the API keys page: every form on that provider sends it, or none.
+  function sharedKey(provider, saved) {
+    state.config.apiKeys[provider] = { saved };
+    for (const target of KEY_FORMS) {
+      const form = state.config[target];
+      if (form.provider === provider) Object.assign(form, { keySaved: saved, ownKey: false });
+    }
+    state.dictation.status = dictationStatus();
+  }
 
   // settings_set for storage.sync.*, with the engine's rules (API.md).
   function setSync(field, value) {

@@ -2,7 +2,8 @@
 // place or opens a sub-page. The app owns every value; this page renders settings_state() and the
 // settings://state events and sends changes back (voice/ui/API.md). Secrets never come back to this page: a saved API
 // key or bucket secret is only a "Key saved" flag. The one exception is the encryption key's recovery code, which
-// lives only in its own dialog while that is open.
+// lives only in its own dialog while that is open. A provider's API key is entered once, on the API keys page, and
+// every feature that uses the provider uses it; the provider forms only say whether there is one.
 
 import { loadCatalogs, setLanguage, language, t, tHtml, esc, localize, list, bytes, dateTime, languageName } from './lib/i18n.js';
 import { connect, invoke, listen, params, mocked } from './lib/bridge.js';
@@ -121,6 +122,23 @@ const ORUKEET_MODEL = 'orukeet-onnx-int8';
 // Ownkey never asks before sending to these hosts: they are this computer.
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
 const PROVIDER_FORMS = ['transcription', 'rewriting', 'meetings'];
+// Each provider form's feature: its name as a title, its name inside a sentence, and its page. Written out in full for
+// the i18n test.
+const FEATURES = {
+  transcription: { title: 'settings.groups.dictation', name: 'settings.keys.feature.transcription', page: 'transcription' },
+  rewriting: { title: 'settings.dictation.rewriting', name: 'settings.keys.feature.rewriting', page: 'rewriting' },
+  meetings: { title: 'settings.meetingTranscription.title', name: 'settings.keys.feature.meetings', page: 'meetingTranscription' }
+};
+// A feature's state on the API keys page, to its text.
+const FEATURE_STATES = {
+  ready: ['ok', 'settings.status.ready'],
+  loadingModel: ['busy', 'settings.status.loadingModel'],
+  modelMissing: ['bad', 'settings.status.modelMissing'],
+  noKey: ['bad', 'settings.status.noKey'],
+  noMic: ['bad', 'settings.status.noMic'],
+  consent: ['busy', 'settings.keys.state.consent'],
+  off: ['off', 'common.off']
+};
 // Why speaker labels are off, by the engine's reason code (API.md, SpeakersState).
 const SPEAKER_REASONS = {
   off: 'settings.speakers.reason.off',
@@ -137,7 +155,7 @@ const SPEAKER_REASONS = {
 // How a processor feature reads in Settings. The app names them lower case, as the settings state
 // documents; Windows has the x86-64 features, macOS the arm64 ones.
 const CPU_FEATURE_NAMES = { avx2: 'AVX2', fma: 'FMA', f16c: 'F16C', bmi2: 'BMI2', neon: 'NEON', dotprod: 'DotProd', fp16: 'FP16' };
-const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
+const PAGES = ['main', 'keys', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
 const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'permissions', 'about'];
 
 // macOS privacy permissions, in the order System Settings groups them. The names are the ones
@@ -173,6 +191,9 @@ let syncTest = null;
 let syncTestRun = 0;
 let secretVersion = 0;
 let syncReplacing = false;
+// API keys: the providers whose key field is open for a new key, and the last save or removal on that page per provider.
+const keyEditing = new Set();
+const keyStatus = {};
 const syncPending = new Set();
 const syncRefused = new Set();
 let keyDialog = null;
@@ -357,6 +378,60 @@ function meetingsWaitForConsent() {
   return consentNeeded(m.provider, m.endpoint) && !savedConsentFor(m.provider, m.endpoint, m.model);
 }
 
+// ---------- API keys ----------
+
+// Providers whose key is entered once, on the API keys page (API.md, providers.keys). A custom server keeps a key per
+// form, and Orukeet needs none.
+const sharesKey = (provider) => (state.providers.keys || []).includes(provider);
+const keySavedFor = (provider) => Boolean(state.config.apiKeys?.[provider]?.saved);
+
+// Whether Voice refuses this provider without a key: voice-core's provider_requires_key. Ollama needs one only at
+// ollama.com.
+function keyNeeded(provider, endpoint) {
+  if (provider === 'custom' || provider === 'orukeet') return false;
+  if (provider === 'ollama') return hostOf(endpoint) === 'ollama.com';
+  return true;
+}
+
+// Rewriting runs only with auto-rewrite or the rewrite key; dictation and meeting transcription always may.
+const rewritingUsed = () => state.config.rewriting.auto || state.config.dictation.rewriteHotkey !== 'off';
+const featureUsed = (target) => target !== 'rewriting' || rewritingUsed();
+
+// A feature whose provider needs a key it doesn't have.
+function waitsForKey(target) {
+  const c = state.config[target];
+  return keyNeeded(c.provider, c.endpoint) && !c.keySaved;
+}
+
+// The features that use a provider now, by their saved settings.
+const featuresOn = (provider) => PROVIDER_FORMS.filter((target) => state.config[target].provider === provider);
+const featureNames = (targets) => list(targets.map((target) => t(FEATURES[target].name)));
+
+// Whether a feature works now, as the API keys page and its one-click fix see it.
+function featureState(target) {
+  const c = state.config[target];
+  if (target === 'transcription') return state.dictation.status;
+  if (target === 'rewriting' && !rewritingUsed()) return 'off';
+  if (c.provider === 'orukeet') return state.models.orukeet.stage === 'installed' ? 'ready' : 'modelMissing';
+  if (waitsForKey(target)) return 'noKey';
+  if (target === 'meetings' && meetingsWaitForConsent()) return 'consent';
+  return 'ready';
+}
+
+// The model a form fills in when the user picks a provider, where Voice ships one (API.md, defaultModel).
+function defaultModel(target, provider) {
+  const kind = target === 'rewriting' ? 'rewrite' : 'audio';
+  return state.providers[kind].find((p) => p.id === provider)?.defaultModel || '';
+}
+
+// A provider with a saved key and a model Voice ships that would make a feature work which doesn't now. The API keys
+// page offers it as one click, so a key entered once is enough to dictate.
+function keyFix(target) {
+  if (!['modelMissing', 'noKey'].includes(featureState(target))) return null;
+  const current = state.config[target].provider;
+  return (state.providers.keys || []).find((id) => id !== current && keySavedFor(id) && defaultModel(target, id)) || null;
+}
+
 // The sentence that says why speaker labels are off, or null when they're ready.
 function speakersReason() {
   const s = state.speakers;
@@ -440,8 +515,25 @@ function mainPage() {
   const ready = state.dictation.status === 'ready' || state.dictation.status === 'loadingModel';
   const firstConflictRole = Object.keys(KEY_ROLES).find((role) => conflicts.includes(getPath(c, role)));
 
+  // The API keys row: the providers with a key, or which features wait for one. The Dictation row above already has
+  // the red "Add an API key", so this row says which features wait, with a warning icon instead of a second pill.
+  const waiting = PROVIDER_FORMS.filter((target) => featureUsed(target) && waitsForKey(target));
+  const savedKeys = (state.providers.keys || []).filter(keySavedFor).map((id) => providerLabel(id));
+  const keysRow = row({
+    lead: waiting.length ? `<span class="lead warn top">${icons.warning}</span>` : '',
+    title: t('settings.keys.title'),
+    desc: waiting.length ? t('settings.keys.addFor', { features: featureNames(waiting) }) : '',
+    value: waiting.length ? '' : savedKeys.length ? list(savedKeys) : t('settings.keys.none'),
+    action: 'go:keys'
+  });
   const statusCard = card(
-    row({ title: t('settings.status.dictation'), descHtml: keysHtml, side: dictationStatus(), action: ready ? null : 'go:transcription' }) +
+    row({
+      title: t('settings.status.dictation'),
+      descHtml: keysHtml,
+      side: dictationStatus(),
+      action: ready ? null : state.dictation.status === 'noKey' ? 'go:keys' : 'go:transcription'
+    }) +
+      keysRow +
       row({ title: t('settings.status.rukoo'), side: rukooStatus(), action: 'go:rukoo' }) +
       (conflicts.length
         ? row({
@@ -472,7 +564,12 @@ function mainPage() {
       row({ title: t('settings.dictation.transcription'), value: providerLabel(c.transcription.provider, 'transcription'), action: 'go:transcription' }) +
       row({ title: t('settings.dictation.dictionary'), desc: dictionaryCount(), action: 'go:dictionary' }) +
       row({ title: t('settings.dictation.fillers'), value: t(c.fillers.enabled ? 'common.on' : 'common.off'), action: 'go:fillers' }) +
-      row({ title: t('settings.dictation.rewriting'), value: rewritingValue(), action: 'go:rewriting' })
+      row({
+        title: t('settings.dictation.rewriting'),
+        desc: rewritingUsed() && waitsForKey('rewriting') ? t('settings.keys.waiting', { provider: providerLabel(c.rewriting.provider, 'rewriting') }) : '',
+        value: rewritingValue(),
+        action: 'go:rewriting'
+      })
   );
 
   // state.screen is null until the screen process answered its probe. A Windows that can't capture disables the
@@ -494,7 +591,11 @@ function mainPage() {
     screenRow +
       row({
         title: t('settings.meetings.transcription'),
-        desc: meetingsWaitForConsent() ? t('settings.meetings.consentWaiting') : '',
+        desc: waitsForKey('meetings')
+          ? t('settings.keys.waitingMeetings', { provider: providerLabel(c.meetings.provider, 'meetings') })
+          : meetingsWaitForConsent()
+            ? t('settings.meetings.consentWaiting')
+            : '',
         value: providerLabel(c.meetings.provider, 'meetings'),
         action: 'go:meetingTranscription'
       }) +
@@ -584,13 +685,15 @@ function providerForm(target) {
 
   if (!local) {
     const keyOptional = provider === 'custom' || provider === 'ollama';
-    const key = keySaved
-      ? `<div class="field"><span>${esc(t('settings.provider.apiKey'))}</span><div class="key-saved"><span>${icons.check}${esc(t('settings.provider.keySaved'))}</span>
+    const key = sharesKey(provider)
+      ? sharedKeyField(target, provider, formValue(target, 'endpoint'))
+      : keySaved
+        ? `<div class="field"><span>${esc(t('settings.provider.apiKey'))}</span><div class="key-saved"><span>${icons.check}${esc(t('settings.provider.keySaved'))}</span>
           <button class="btn sm secondary" data-a="replace-key:${target}">${esc(t('common.replace'))}</button>
           <button class="btn sm secondary danger" data-a="remove-key:${target}">${esc(t('common.remove'))}</button></div></div>`
-      : `<label>${esc(t('settings.provider.apiKey'))}<input type="password" data-field="${target}.apiKey" autocomplete="off" spellcheck="false" placeholder="${esc(
-          t('settings.provider.keyPlaceholder')
-        )}" />${keyOptional ? `<span class="field-help">${esc(t('settings.provider.keyOptional'))}</span>` : ''}</label>`;
+        : `<label>${esc(t('settings.provider.apiKey'))}<input type="password" data-field="${target}.apiKey" autocomplete="off" spellcheck="false" placeholder="${esc(
+            t('settings.provider.keyPlaceholder')
+          )}" />${keyOptional ? `<span class="field-help">${esc(t('settings.provider.keyOptional'))}</span>` : ''}</label>`;
     const modelHelp = !models
       ? ''
       : models.status === 'failed'
@@ -629,6 +732,31 @@ function providerForm(target) {
   return `<div class="form" data-form="${target}">${fields}</div>`;
 }
 
+// A provider form's key, for a provider whose key is on the API keys page: whether there is one, with the way there. A
+// feature that kept another key from before says so, and can switch to the one key.
+function sharedKeyField(target, provider, endpoint) {
+  const saved = state.config[target];
+  const name = providerLabel(provider, target);
+  const own = saved.ownKey && provider === saved.provider;
+  const has = keySavedFor(provider);
+  let line;
+  let button;
+  if (own) {
+    line = `<span>${icons.check}${esc(t('settings.keys.formOwn', { provider: name }))}</span>`;
+    button = has ? `<button class="btn sm secondary" data-a="remove-key:${target}">${esc(t('settings.keys.useShared', { provider: name }))}</button>` : '';
+  } else if (has) {
+    line = `<span>${icons.check}${esc(t('settings.keys.formSaved', { provider: name }))}</span>`;
+    button = `<button class="btn sm secondary" data-a="go:keys">${esc(t('settings.keys.title'))}</button>`;
+  } else if (!keyNeeded(provider, endpoint)) {
+    line = `<span class="plain">${esc(t('settings.keys.formLocal'))}</span>`;
+    button = `<button class="btn sm secondary" data-a="go:keys">${esc(t('settings.keys.title'))}</button>`;
+  } else {
+    line = `<span class="missing">${icons.warning}${esc(t('settings.keys.formMissing', { provider: name }))}</span>`;
+    button = `<button class="btn sm secondary" data-a="go:keys">${esc(t('settings.keys.add'))}</button>`;
+  }
+  return `<div class="field"><span>${esc(t('settings.provider.apiKey'))}</span><div class="key-saved">${line}${button}</div></div>`;
+}
+
 // Decision 10: a cloud provider for meetings shows what goes where, with a checkbox. Consent is saved as
 // {provider, host, mode}, so another provider, server or way of sending asks again. A realtime model streams the
 // meeting, which the disclosure says. Without consent a meeting still records and its transcription waits.
@@ -640,20 +768,28 @@ function consentBlock(provider, endpoint, model) {
   const checked = consentValue(provider, endpoint, model);
   return `<div class="consent">
     <h3>${esc(t('settings.consent.title', { provider: name }))}</h3>
-    <p>${esc(stream ? t('settings.consent.introStream', { provider: name }) : t('settings.consent.intro', { provider: name }))}</p>
-    <dl class="facts">
-      <dt>${esc(t('settings.consent.provider'))}</dt><dd>${esc(model ? `${name} · ${model}` : name)}</dd>
-      <dt>${esc(t('settings.consent.server'))}</dt><dd class="mono">${esc(host || '–')}</dd>
-      <dt>${esc(t('settings.consent.sent'))}</dt><dd>${esc(stream ? t('settings.consent.sentValueStream') : t('settings.consent.sentValue'))}</dd>
-      <dt>${esc(t('settings.consent.notSent'))}</dt><dd>${esc(t('settings.consent.notSentValue'))}</dd>
-      <dt>${esc(t('settings.consent.kept'))}</dt><dd>${esc(t('settings.consent.keptValue'))}</dd>
-    </dl>
+    ${consentFacts(provider, endpoint, model)}
     <label class="check-row"><input type="checkbox" data-field="meetings.consent" ${checked ? 'checked' : ''} ${host ? '' : 'disabled'} />
       <span>${esc(
         stream ? t('settings.consent.agreeStream', { provider: name, host: host || '–' }) : t('settings.consent.agree', { provider: name, host: host || '–' })
       )}</span></label>
     <span class="field-help">${esc(checked ? t('settings.consent.again') : t('settings.consent.waiting'))}</span>
   </div>`;
+}
+
+// What goes where, for the consent box in the form and the API keys page's dialog.
+function consentFacts(provider, endpoint, model) {
+  const host = hostOf(endpoint);
+  const name = providerLabel(provider, 'meetings');
+  const stream = consentMode(provider, model) === 'stream';
+  return `<p>${esc(stream ? t('settings.consent.introStream', { provider: name }) : t('settings.consent.intro', { provider: name }))}</p>
+    <dl class="facts">
+      <dt>${esc(t('settings.consent.provider'))}</dt><dd>${esc(model ? `${name} · ${model}` : name)}</dd>
+      <dt>${esc(t('settings.consent.server'))}</dt><dd class="mono">${esc(host || '–')}</dd>
+      <dt>${esc(t('settings.consent.sent'))}</dt><dd>${esc(stream ? t('settings.consent.sentValueStream') : t('settings.consent.sentValue'))}</dd>
+      <dt>${esc(t('settings.consent.notSent'))}</dt><dd>${esc(t('settings.consent.notSentValue'))}</dd>
+      <dt>${esc(t('settings.consent.kept'))}</dt><dd>${esc(t('settings.consent.keptValue'))}</dd>
+    </dl>`;
 }
 
 // What a ticked box is for: the provider, the host and the way of sending.
@@ -859,10 +995,111 @@ function rewritingPage() {
 }
 
 function meetingTranscriptionPage() {
-  return {
-    title: t('settings.meetingTranscription.title'),
-    sections: [section('intro', paragraph(t('settings.meetingTranscription.intro'))), section('form', groupTitle('') + card(providerForm('meetings')))]
-  };
+  const sections = [section('intro', paragraph(t('settings.meetingTranscription.intro'))), section('form', groupTitle('') + card(providerForm('meetings')))];
+  // Meetings on Orukeet need the model too: its download is here as well as under Transcription.
+  if (formValue('meetings', 'provider') === 'orukeet') sections.push(section('orukeet', groupTitle(t('settings.orukeet.title')) + orukeetCard()));
+  return { title: t('settings.meetingTranscription.title'), sections };
+}
+
+// Settings > API keys: one key per provider, for every feature that uses it. The providers the features use come
+// first; below them, each feature with its provider and whether it works, which opens its page. A feature that doesn't
+// work while a saved key would fix it offers that in one click.
+function keysPage() {
+  const ids = state.providers.keys || [];
+  const used = ids.filter((id) => featuresOn(id).length);
+  const other = ids.filter((id) => !used.includes(id));
+  // One filled Save on the page: the field the user opened last, else the first one that opened by itself.
+  const open = [...used, ...other].filter(keyFieldOpen);
+  const primary = [...keyEditing].filter((id) => open.includes(id)).pop() || open[0];
+  const rows = (list) => list.map((id) => keyRows(id, id === primary)).join('');
+  const sections = [section('intro', paragraph(t('settings.keys.intro')))];
+  if (used.length) sections.push(section('used', groupTitle(t('settings.keys.inUse')) + card(rows(used))));
+  sections.push(section('other', groupTitle(t(used.length ? 'settings.keys.other' : 'settings.keys.providers')) + card(rows(other))));
+  sections.push(
+    section(
+      'features',
+      groupTitle(t('settings.keys.features')) + paragraph(t('settings.keys.featuresHelp')) + card(PROVIDER_FORMS.map(featureRow).join(''))
+    )
+  );
+  return { title: t('settings.keys.title'), sections };
+}
+
+// A provider's key field is open while the user enters a key, and by itself for a provider a feature uses without a
+// key, because that's the one thing to do there.
+function keyFieldOpen(id) {
+  const waiting = featuresOn(id).some((target) => featureUsed(target) && waitsForKey(target));
+  return keyEditing.has(id) || (!keySavedFor(id) && waiting);
+}
+
+// One provider: its key, what uses it, and its field while it's open.
+function keyRows(id, primary) {
+  const name = providerLabel(id);
+  const saved = keySavedFor(id);
+  const users = featuresOn(id);
+  const waiting = users.filter((target) => featureUsed(target) && waitsForKey(target));
+  const editing = keyFieldOpen(id);
+  const ks = keyStatus[id];
+  const desc = [users.length ? t('settings.keys.usedFor', { features: featureNames(users) }) : t('settings.keys.notUsed')];
+  if (id === 'ollama') desc.push(t('settings.keys.ollama'));
+  const side = editing
+    ? ''
+    : saved
+      ? `<div class="side">${status('ok', t('settings.provider.keySaved'))}<button class="btn sm secondary" data-a="key-edit:${id}">${esc(
+          t('common.replace')
+        )}</button><button class="btn sm secondary danger" data-a="key-remove:${id}">${esc(t('common.remove'))}</button></div>`
+      : `<div class="side"><button class="btn sm secondary" data-a="key-edit:${id}">${icons.plus}${esc(t('settings.keys.add'))}</button></div>`;
+  // While the field is open it is the thing to do, so the note would only repeat it.
+  const note =
+    waiting.length && !saved && !editing
+      ? `<div class="desc note warn">${icons.warning}<span>${esc(t('settings.keys.addFor', { features: featureNames(waiting) }))}</span></div>`
+      : ks?.kind === 'saved'
+        ? `<div class="desc note ok">${icons.check}<span>${esc(t('settings.provider.saved'))}</span></div>`
+        : '';
+  let html = row({ title: name, desc: desc.join(' '), below: note, side, cls: 'key-row' });
+  if (editing) {
+    const failed = ks?.kind === 'failed' || ks?.kind === 'invalid';
+    const message = failed
+      ? `<span class="form-status bad">${esc(ks.message)}${
+          ks.detail ? ` <button class="link-btn" data-a="key-details:${id}">${esc(t('common.errorDetails'))}</button>` : ''
+        }</span>`
+      : '';
+    const cancel = saved || keyEditing.has(id) ? `<button class="btn secondary" data-a="key-cancel:${id}">${esc(t('common.cancel'))}</button>` : '';
+    html += `<div class="form key-form" data-form="key-${id}"><label>${esc(t('settings.keys.keyFor', { provider: name }))}<input type="password" data-field="key.${id}" autocomplete="off" spellcheck="false" placeholder="${esc(
+      t('settings.provider.keyPlaceholder')
+    )}" ${failed ? 'aria-invalid="true"' : ''} /></label><div class="form-actions">${message}${cancel}<button class="btn ${primary ? 'primary' : 'secondary'}" data-a="key-save:${id}" ${
+      ks?.kind === 'saving' ? 'disabled' : ''
+    }>${esc(t('common.save'))}</button></div></div>`;
+  }
+  // A feature that kept another key for this provider from before keys were shared.
+  for (const target of users.filter((target) => state.config[target].ownKey)) {
+    html += row({
+      lead: `<span class="lead warn top">${icons.info}</span>`,
+      title: t('settings.keys.ownKey', { feature: t(FEATURES[target].title), provider: name }),
+      desc: t('settings.keys.ownKeyHelp'),
+      side: saved ? `<div class="side"><button class="btn sm secondary" data-a="remove-key:${target}">${esc(t('settings.keys.useThis'))}</button></div>` : '',
+      cls: 'key-own'
+    });
+  }
+  return html;
+}
+
+// A feature on the API keys page: its provider and model, whether it works, and the way to its page.
+function featureRow(target) {
+  const c = state.config[target];
+  const [tone, text] = FEATURE_STATES[featureState(target)] || FEATURE_STATES.ready;
+  const provider = providerLabel(c.provider, target);
+  const model = c.provider === 'orukeet' ? '' : c.model;
+  const fix = keyFix(target);
+  const html = row({
+    title: t(FEATURES[target].title),
+    value: model ? `${provider} · ${model}` : provider,
+    side: status(tone, t(text)),
+    action: `go:${FEATURES[target].page}`
+  });
+  if (!fix) return html;
+  return `${html}<div class="card-actions"><button class="btn sm secondary" data-a="key-use:${target}:${fix}">${esc(
+    t('settings.keys.use', { provider: providerLabel(fix) })
+  )}</button><span class="card-actions-note">${esc(t('settings.keys.useHelp', { provider: providerLabel(fix), model: defaultModel(target, fix) }))}</span></div>`;
 }
 
 // The reasons whose error text Error details shows.
@@ -1236,6 +1473,7 @@ function importPage() {
 
 const PAGE_BUILDERS = {
   main: mainPage,
+  keys: keysPage,
   transcription: transcriptionPage,
   dictionary: dictionaryPage,
   fillers: fillersPage,
@@ -1464,7 +1702,7 @@ function providerChanged(target, provider) {
   d.apiKey = '';
   d.replacingKey = false;
   d.endpoint = provider === 'orukeet' ? '' : presetEndpoints(target, provider)[0] || '';
-  d.model = provider === 'orukeet' ? ORUKEET_MODEL : '';
+  d.model = provider === 'orukeet' ? ORUKEET_MODEL : defaultModel(target, provider);
   delete modelLists[target];
   delete formStatus[target];
   render();
@@ -1496,7 +1734,8 @@ async function saveProvider(target) {
   // null keeps the saved key, "" saves none, text replaces it. The app never keeps a key across providers.
   const typed = String(d.apiKey || '').trim();
   const showingSaved = saved.keySaved && provider === saved.provider && !d.replacingKey;
-  values.apiKey = local ? '' : typed ? typed : showingSaved || (saved.keySaved && provider === saved.provider) ? null : '';
+  // A provider on the API keys page brings its own key: null. A custom server's key is the form's.
+  values.apiKey = local ? '' : sharesKey(provider) ? null : typed ? typed : showingSaved || (saved.keySaved && provider === saved.provider) ? null : '';
   if (target === 'transcription') values.language = local ? 'auto' : formValue('transcription', 'language') || 'auto';
   if (target === 'meetings') values.consent = consentNeeded(provider, values.endpoint) ? consentValue(provider, values.endpoint, values.model) : false;
   formStatus[target] = { kind: local ? 'loading' : 'saving', message: t(local ? 'settings.provider.loadingOrukeet' : 'settings.provider.saving') };
@@ -1509,6 +1748,90 @@ async function saveProvider(target) {
     formStatus[target] = { kind: 'failed', message: t('settings.provider.failed'), detail: error?.message || String(error) };
   }
   render();
+}
+
+// Saves a provider's key from the API keys page. It goes to the app once and never comes back; the field empties.
+async function saveKey(id) {
+  const key = String(drafts.key?.[id] || '').trim();
+  if (!key) {
+    keyStatus[id] = { kind: 'invalid', message: t('settings.keys.empty') };
+    render();
+    return focusField(`key.${id}`);
+  }
+  keyStatus[id] = { kind: 'saving' };
+  render();
+  try {
+    await invoke('settings_save_key', { provider: id, key });
+    delete drafts.key[id];
+    keyEditing.delete(id);
+    keyStatus[id] = { kind: 'saved' };
+    // The app's state says so too; this shows it at once.
+    state.config.apiKeys[id] = { saved: true };
+    for (const target of featuresOn(id)) Object.assign(state.config[target], { keySaved: true, ownKey: false });
+  } catch (error) {
+    keyStatus[id] = { kind: 'failed', message: t('settings.provider.failed'), detail: error?.message || String(error) };
+  }
+  render();
+}
+
+// Removes a provider's key for every feature that uses it. While a feature uses it, Voice asks first.
+async function removeKey(id) {
+  const users = featuresOn(id);
+  if (users.length) {
+    const ok = await dialog({
+      title: t('settings.keys.removeTitle', { provider: providerLabel(id) }),
+      body: `<p>${esc(t('settings.keys.removeBody', { features: featureNames(users) }))}</p>`,
+      buttons: [
+        { label: t('common.cancel'), value: false },
+        { label: t('common.remove'), value: true, primary: true, danger: true }
+      ]
+    });
+    if (!ok) return;
+  }
+  try {
+    await invoke('settings_remove_key', { target: id });
+    delete keyStatus[id];
+    state.config.apiKeys[id] = { saved: false };
+    for (const target of users) Object.assign(state.config[target], { keySaved: false, ownKey: false });
+    render();
+  } catch (error) {
+    await showError(t('settings.errors.failed'), error?.message);
+  }
+}
+
+// The one-click fix on the API keys page: a feature that doesn't work switches to a provider with a saved key and the
+// model Voice ships for it. Meeting audio still goes nowhere without consent (decision 10): the disclosure comes
+// first, and its button is the agreement.
+async function useProvider(target, provider, button) {
+  const kind = target === 'rewriting' ? 'rewrite' : 'audio';
+  const endpoint = state.providers[kind].find((p) => p.id === provider)?.endpoints?.[0] || '';
+  const model = defaultModel(target, provider);
+  const save = { target, provider, endpoint, model, apiKey: null };
+  if (target === 'transcription') save.language = state.config.transcription.language || 'auto';
+  if (target === 'meetings') {
+    if (consentNeeded(provider, endpoint)) {
+      const name = providerLabel(provider, 'meetings');
+      const host = hostOf(endpoint);
+      const stream = consentMode(provider, model) === 'stream';
+      const agreed = await dialog({
+        title: t('settings.consent.title', { provider: name }),
+        body: `<div class="consent in-dialog">${consentFacts(provider, endpoint, model)}</div>`,
+        buttons: [
+          { label: t('common.cancel'), value: false },
+          { label: t(stream ? 'settings.consent.agreeStream' : 'settings.consent.agree', { provider: name, host }), value: true, primary: true }
+        ]
+      });
+      if (!agreed) return;
+    }
+    save.consent = consentNeeded(provider, endpoint);
+  }
+  if (button) button.disabled = true;
+  try {
+    await invoke('settings_save_provider', { save });
+  } catch (error) {
+    if (button) button.disabled = false;
+    await showError(t('settings.provider.failed'), error?.message);
+  }
 }
 
 // Ownkey's rule for Refresh: a list that arrives after the provider, endpoint or key changed is dropped.
@@ -1628,14 +1951,37 @@ async function act(action, button) {
       render();
       return focusField(`${arg}.apiKey`);
     case 'remove-key':
+      // A custom server's key goes; a feature with another key from before uses the one on the API keys page.
       try {
         await invoke('settings_remove_key', { target: arg });
-        state.config[arg].keySaved = false;
+        const c = state.config[arg];
+        if (sharesKey(c.provider)) Object.assign(c, { keySaved: keySavedFor(c.provider), ownKey: false });
+        else c.keySaved = false;
         render();
       } catch (error) {
         await showError(t('settings.errors.failed'), error?.message);
       }
       return;
+    case 'key-edit':
+      keyEditing.add(arg);
+      delete keyStatus[arg];
+      render();
+      return focusField(`key.${arg}`);
+    case 'key-cancel':
+      keyEditing.delete(arg);
+      delete keyStatus[arg];
+      delete drafts.key?.[arg];
+      return render();
+    case 'key-save':
+      return saveKey(arg);
+    case 'key-remove':
+      return removeKey(arg);
+    case 'key-details':
+      return showError(keyStatus[arg]?.message || '', keyStatus[arg]?.detail);
+    case 'key-use': {
+      const [target, provider] = arg.split(':');
+      return useProvider(target, provider, button);
+    }
     case 'details':
       return showError(formStatus[arg]?.message || '', formStatus[arg]?.detail);
     case 'speakers-details':
@@ -2140,6 +2486,12 @@ function back() {
       delete formStatus[form];
       delete modelLists[form];
     }
+    // A key typed on the API keys page and not saved goes with the page.
+    if (leaving === 'keys') {
+      delete drafts.key;
+      keyEditing.clear();
+      for (const id of Object.keys(keyStatus)) delete keyStatus[id];
+    }
     // Leaving Storage starts its forms afresh next time. A field focused as the page goes still saves, as on blur.
     if (leaving === 'storage') {
       delete drafts.storage;
@@ -2161,6 +2513,10 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.matches?.('[data-field^="dict."]')) {
     e.preventDefault();
     addEntry();
+  }
+  if (e.key === 'Enter' && e.target.matches?.('[data-field^="key."]')) {
+    e.preventDefault();
+    saveKey(e.target.dataset.field.slice('key.'.length));
   }
 });
 
@@ -2187,6 +2543,12 @@ page.addEventListener('input', (e) => {
   }
   if (form === 'fillers' && name === 'custom') schedulePreview();
   if (field === 'storage.sync.secret') syncTestButton();
+  if (form === 'key' && keyStatus[name] && keyStatus[name].kind !== 'saving') {
+    delete keyStatus[name];
+    e.target.removeAttribute('aria-invalid');
+    const status = e.target.closest('.form')?.querySelector('.form-status');
+    status?.remove();
+  }
 });
 
 page.addEventListener('change', (e) => {

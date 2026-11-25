@@ -4,7 +4,14 @@
 //! and the porting spec's tables apply as written. Loading never writes; every migration happens
 //! in memory and persists on the next save. Unknown keys survive a load and save, so a newer
 //! Voice's settings outlive a round trip through an older one.
+//!
+//! API keys: `api_keys` holds one key per provider, entered once in Settings > API keys. The
+//! per-feature `audio_api_key`, `rewrite_api_key` and `meetings_audio_api_key` keep holding the
+//! key each feature sends, which is the shared key of its provider, so a Voice from before
+//! `api_keys` reads a working config. A feature whose key differs from the shared one kept its
+//! own key from before keys were shared; see [`Config::share_keys`].
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -20,9 +27,9 @@ use crate::consent::{self, ConsentState, Disclosure};
 use crate::fsutil;
 use crate::paths;
 use crate::providers::{
-    default_endpoint, normalize_provider, provider_from_endpoint, Activity, Hints, ProviderConfig,
-    Purpose, AUDIO_PROVIDER_IDS, DICTATION_TIMEOUT, MEETING_TIMEOUT, ORUKEET_MODEL_ID,
-    REWRITE_PROVIDER_IDS,
+    default_endpoint, normalize_provider, provider_from_endpoint, shares_key, Activity, Hints,
+    ProviderConfig, Purpose, AUDIO_PROVIDER_IDS, DICTATION_TIMEOUT, MEETING_TIMEOUT,
+    ORUKEET_MODEL_ID, REWRITE_PROVIDER_IDS,
 };
 
 pub const CONFIG_VERSION: u64 = 1;
@@ -85,8 +92,13 @@ pub const DEFAULT_REWRITE_MODEL: &str = "mistral-small-latest";
 /// `meetings_audio_provider` value that follows the dictation provider.
 pub const SAME_AS_DICTATION: &str = "same";
 
-/// Keys that hold API keys. They never appear in Debug output or import reports.
+/// Keys that hold API keys. They never appear in Debug output or import reports, and neither do
+/// the values of `api_keys`.
 pub const SECRET_KEYS: [&str; 3] = ["audio_api_key", "rewrite_api_key", "meetings_audio_api_key"];
+
+/// The features that send a provider key, in the order the migration reads them: when two hold
+/// different keys for one provider, the first one's becomes the shared key.
+pub const KEY_FEATURES: [Purpose; 3] = [Purpose::Dictation, Purpose::Rewrite, Purpose::Meetings];
 
 /// Keys an old Ownkey config used for one shared provider; read for migration, then dropped.
 const LEGACY_KEYS: [&str; 4] = ["api_key", "endpoint", "model", "chat_endpoint"];
@@ -251,6 +263,10 @@ pub struct Config {
     /// Stop", which the import keeps filling but nothing reads.
     pub meetings_live_speakers: bool,
 
+    /// One key per provider id, entered once in Settings > API keys, for the providers in
+    /// `SHARED_KEY_PROVIDER_IDS`. Ids this Voice doesn't know are kept as they are.
+    pub api_keys: BTreeMap<String, String>,
+
     // General
     pub ui_language: UiLanguage,
     pub ui_theme: Theme,
@@ -343,6 +359,7 @@ impl Config {
             meetings_stop_key: "off".into(),
             meetings_auto_speakers: false,
             meetings_live_speakers: true,
+            api_keys: BTreeMap::new(),
             ui_language: UiLanguage::System,
             ui_theme: Theme::System,
             updates_check: false,
@@ -385,8 +402,10 @@ impl Config {
     /// A config from any JSON value, with every migration and check applied.
     pub fn from_value(value: &Value, dev_mode: bool) -> Config {
         let normalized = normalize(value, dev_mode);
-        serde_json::from_value(Value::Object(normalized))
-            .unwrap_or_else(|_| Config::defaults(dev_mode))
+        let mut cfg: Config = serde_json::from_value(Value::Object(normalized))
+            .unwrap_or_else(|_| Config::defaults(dev_mode));
+        cfg.share_keys();
+        cfg
     }
 
     /// Writes `config.json` atomically: a temporary file in the same folder, flushed to disk,
@@ -529,11 +548,11 @@ impl Config {
         }
     }
 
-    /// Selects another dictation provider. Credentials are provider-specific: the key is cleared
-    /// so it can't be sent to the new provider by accident.
+    /// Selects another dictation provider. Credentials are provider-specific: the old key never
+    /// goes to the new provider, which gets its own key from Settings > API keys, or none.
     pub fn switch_audio_provider(&mut self, provider: &str) {
         let id = normalize_provider(provider, "mistral");
-        self.audio_api_key.clear();
+        self.audio_api_key = self.key_for(&id);
         if id == "orukeet" {
             self.audio_endpoint.clear();
             self.audio_model = ORUKEET_MODEL_ID.into();
@@ -546,7 +565,7 @@ impl Config {
 
     pub fn switch_rewrite_provider(&mut self, provider: &str) {
         let id = normalize_provider(provider, "mistral");
-        self.rewrite_api_key.clear();
+        self.rewrite_api_key = self.key_for(&id);
         self.rewrite_endpoint = default_endpoint(&id, Activity::Rewrite).into();
         self.rewrite_model.clear();
         self.rewrite_provider = id;
@@ -559,7 +578,7 @@ impl Config {
         } else {
             normalize_provider(&choice, SAME_AS_DICTATION)
         };
-        self.meetings_audio_api_key.clear();
+        self.meetings_audio_api_key = self.key_for(&id);
         match id.as_str() {
             "orukeet" => {
                 self.meetings_audio_endpoint.clear();
@@ -576,6 +595,114 @@ impl Config {
         }
         self.meetings_audio_provider = id;
     }
+
+    /// The provider a feature uses. Meetings may still say "same" before the import resolved it.
+    pub fn provider_of(&self, feature: Purpose) -> &str {
+        match feature {
+            Purpose::Dictation => &self.audio_provider,
+            Purpose::Rewrite => &self.rewrite_provider,
+            Purpose::Meetings => &self.meetings_audio_provider,
+        }
+    }
+
+    /// The key a feature sends.
+    pub fn key_of(&self, feature: Purpose) -> &str {
+        match feature {
+            Purpose::Dictation => &self.audio_api_key,
+            Purpose::Rewrite => &self.rewrite_api_key,
+            Purpose::Meetings => &self.meetings_audio_api_key,
+        }
+    }
+
+    fn key_mut(&mut self, feature: Purpose) -> &mut String {
+        match feature {
+            Purpose::Dictation => &mut self.audio_api_key,
+            Purpose::Rewrite => &mut self.rewrite_api_key,
+            Purpose::Meetings => &mut self.meetings_audio_api_key,
+        }
+    }
+
+    /// The key saved for a provider in Settings > API keys, or "".
+    pub fn shared_key(&self, provider: &str) -> &str {
+        self.api_keys.get(provider).map_or("", String::as_str)
+    }
+
+    /// The key a feature gets when it switches to `provider`: the shared key of a provider that
+    /// shares one, otherwise none, so a key is never carried to another provider.
+    pub fn key_for(&self, provider: &str) -> String {
+        if shares_key(provider) {
+            self.shared_key(provider).to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Whether a feature sends a key of its own for a provider that shares one: a key it had
+    /// before keys were shared, or one an older Voice changed later, that differs from the key
+    /// in Settings > API keys.
+    pub fn has_own_key(&self, feature: Purpose) -> bool {
+        let provider = self.provider_of(feature);
+        let key = self.key_of(feature).trim();
+        shares_key(provider) && !key.is_empty() && key != self.shared_key(provider).trim()
+    }
+
+    /// The migration to one key per provider, run on every load. A provider without a shared
+    /// key takes the first feature's key for it, in [`KEY_FEATURES`] order; then every feature
+    /// without a key gets its provider's shared key. A feature that held a different key for the
+    /// same provider keeps it, so no key is lost and every feature keeps working: Settings shows
+    /// it as the feature's own key until the user saves or removes that provider's key, or
+    /// switches the feature to the shared one. Returns whether anything changed.
+    pub fn share_keys(&mut self) -> bool {
+        let mut changed = false;
+        for feature in KEY_FEATURES {
+            let provider = self.provider_of(feature).to_string();
+            let key = self.key_of(feature).trim().to_string();
+            if shares_key(&provider) && !key.is_empty() && self.shared_key(&provider).is_empty() {
+                self.api_keys.insert(provider, key);
+                changed = true;
+            }
+        }
+        for feature in KEY_FEATURES {
+            let provider = self.provider_of(feature).to_string();
+            if shares_key(&provider) && self.key_of(feature).trim().is_empty() {
+                let shared = self.shared_key(&provider).to_string();
+                if !shared.is_empty() {
+                    *self.key_mut(feature) = shared;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Saves the key for a provider in Settings > API keys, or removes it with an empty `key`.
+    /// Every feature that uses the provider sends it from now on, one that kept its own key from
+    /// before included: there is one key per provider. Returns false for a provider that has no
+    /// shared key.
+    pub fn set_shared_key(&mut self, provider: &str, key: &str) -> bool {
+        if !shares_key(provider) {
+            return false;
+        }
+        let key = key.trim();
+        if key.is_empty() {
+            self.api_keys.remove(provider);
+        } else {
+            self.api_keys.insert(provider.to_string(), key.to_string());
+        }
+        for feature in KEY_FEATURES {
+            if self.provider_of(feature) == provider {
+                *self.key_mut(feature) = key.to_string();
+            }
+        }
+        true
+    }
+
+    /// Drops a feature's own key: it sends its provider's shared key from now on, or none for a
+    /// provider without one, such as a custom server.
+    pub fn drop_own_key(&mut self, feature: Purpose) {
+        let key = self.key_for(self.provider_of(feature));
+        *self.key_mut(feature) = key;
+    }
 }
 
 impl fmt::Debug for Config {
@@ -589,6 +716,11 @@ impl fmt::Debug for Config {
                     .is_some_and(|k| !k.is_empty())
                 {
                     map.insert(key.into(), json!("<redacted>"));
+                }
+            }
+            if let Some(Value::Object(keys)) = map.get_mut("api_keys") {
+                for key in keys.values_mut() {
+                    *key = json!("<redacted>");
                 }
             }
             // A bucket secret from before Voice kept it with DPAPI, until the engine moves it there.
@@ -962,6 +1094,20 @@ pub(crate) fn normalize(value: &Value, dev_mode: bool) -> Map<String, Value> {
         "pill_edge".into(),
         sanitized_enum::<PillEdge>(cfg.get("pill_edge")),
     );
+    // A malformed `api_keys` must never fail the whole config, which would fall back to defaults
+    // and lose every key on the next save: only text values stay.
+    let api_keys: Map<String, Value> = match cfg.get("api_keys") {
+        Some(Value::Object(map)) => map
+            .iter()
+            .filter_map(|(provider, key)| {
+                let provider = provider.trim().to_lowercase();
+                let key = key.as_str()?.trim();
+                (!provider.is_empty() && !key.is_empty()).then(|| (provider, json!(key)))
+            })
+            .collect(),
+        _ => Map::new(),
+    };
+    cfg.insert("api_keys".into(), Value::Object(api_keys));
     let consent = consent_value(cfg.get("meetings_transcription_consent"));
     cfg.insert("meetings_transcription_consent".into(), consent);
     let imported = cfg

@@ -1138,6 +1138,10 @@ impl EngineApi for EngineImpl {
         crate::settings::save_provider(&self.0, save)
     }
 
+    fn settings_save_key(&self, provider: &str, key: String) -> Result<(), ApiError> {
+        crate::settings::save_key(&self.0, provider, key)
+    }
+
     fn settings_remove_key(&self, target: &str) -> Result<(), ApiError> {
         crate::settings::remove_key(&self.0, target)
     }

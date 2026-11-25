@@ -5,6 +5,7 @@ use voice_core::cleanup::{self, FILLER_LANGUAGES};
 use voice_core::config::{
     offered_hotkeys, Config, PillEdge, Retention, RewriteTone, ScreenMode, Theme, UiLanguage,
 };
+use voice_core::providers::{Purpose, SHARED_KEY_PROVIDER_IDS};
 
 use crate::api::ApiError;
 
@@ -14,7 +15,8 @@ fn invalid(key: &str) -> ApiError {
 
 /// `state.config`: every setting under the key `settings_set` takes for it. Keys never appear;
 /// only whether one is saved. The bucket secret lives with DPAPI; `secret_saved` says whether
-/// there is one.
+/// there is one. `apiKeys` says which providers have a key in Settings > API keys, and a
+/// feature's `ownKey` that it sends another key it kept from before keys were shared.
 pub fn view(cfg: &Config, start_at_login: bool, secret_saved: bool) -> Value {
     let saved = |key: &str| !key.trim().is_empty();
     let enum_text = |value: Value| value.as_str().unwrap_or_default().to_string();
@@ -41,6 +43,7 @@ pub fn view(cfg: &Config, start_at_login: bool, secret_saved: bool) -> Value {
             "model": cfg.audio_model,
             "language": cfg.language,
             "keySaved": saved(&cfg.audio_api_key),
+            "ownKey": cfg.has_own_key(Purpose::Dictation),
         },
         "local": {
             "modelFolder": cfg.local_model_directory,
@@ -60,6 +63,7 @@ pub fn view(cfg: &Config, start_at_login: bool, secret_saved: bool) -> Value {
             "endpoint": cfg.rewrite_endpoint,
             "model": cfg.rewrite_model,
             "keySaved": saved(&cfg.rewrite_api_key),
+            "ownKey": cfg.has_own_key(Purpose::Rewrite),
             "auto": cfg.auto_rewrite,
             "tone": enum_text(json!(cfg.rewrite_tone)),
             "formatting": cfg.rewrite_formatting,
@@ -70,6 +74,7 @@ pub fn view(cfg: &Config, start_at_login: bool, secret_saved: bool) -> Value {
             "endpoint": cfg.meetings_audio_endpoint,
             "model": cfg.meetings_audio_model,
             "keySaved": saved(&cfg.meetings_audio_api_key),
+            "ownKey": cfg.has_own_key(Purpose::Meetings),
             "consent": super::consent_view(cfg.meetings_transcription_consent.as_ref()),
             "retention": enum_text(json!(cfg.meetings_retention)),
             "stopKey": cfg.meetings_stop_key,
@@ -83,6 +88,10 @@ pub fn view(cfg: &Config, start_at_login: bool, secret_saved: bool) -> Value {
             "hidePillFromCapture": cfg.pill_hide_from_capture,
         },
         "updates": { "check": cfg.updates_check },
+        "apiKeys": SHARED_KEY_PROVIDER_IDS
+            .iter()
+            .map(|id| (id.to_string(), json!({ "saved": saved(cfg.shared_key(id)) })))
+            .collect::<serde_json::Map<String, Value>>(),
         "storage": {
             "sync": {
                 "enabled": sync.get("enabled").and_then(Value::as_bool).unwrap_or(false),

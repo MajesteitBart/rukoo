@@ -17,11 +17,11 @@
   },
   "common.remove": {
     "message": "Remove",
-    "description": "Settings: button beside \"Key saved\" that deletes the saved API key at once. voice/ui/settings.js (providerForm)."
+    "description": "Settings: button beside \"Key saved\" that deletes the saved key: a custom server's key in its form, or a provider's key on the API keys page, which asks first while a feature uses it. voice/ui/settings.js (providerForm, keyRows)."
   },
   "common.replace": {
     "message": "Replace",
-    "description": "Settings: button beside \"Key saved\" that shows an empty field for a new API key. voice/ui/settings.js (providerForm)."
+    "description": "Settings: button beside \"Key saved\" that shows an empty field for a new API key, in a custom server's form or on the API keys page. voice/ui/settings.js (providerForm, keyRows)."
   },
   "common.browse": {
     "message": "Browse",
@@ -445,7 +445,7 @@
   },
   "settings.status.noKey": {
     "message": "Add an API key",
-    "description": "Settings > Status: red status when the cloud provider has no API key; the row opens Transcription. voice/ui/settings.js (dictationStatus)."
+    "description": "Settings: red status when a cloud provider has no API key: on the top page's Dictation row, which then opens API keys, and for a feature on the API keys page. voice/ui/settings.js (dictationStatus, FEATURE_STATES)."
   },
   "settings.status.noMic": {
     "message": "No microphone",
@@ -653,6 +653,138 @@
   "settings.provider.failed": {
     "message": "Couldn't save",
     "description": "Settings: red status beside Save when saving failed; Error details follows. voice/ui/settings.js (providerForm)."
+  },
+  "settings.keys.title": {
+    "message": "API keys",
+    "description": "Settings: the page where each provider's API key is entered once, its title, the row that opens it on the top page and the button to it from a provider form. voice/ui/settings.js (keysPage, mainPage, sharedKeyField)."
+  },
+  "settings.keys.intro": {
+    "message": "Enter a provider's key once. Dictation, rewriting and meeting transcription use it whenever they use that provider. Voice keeps the keys on this computer and sends each one only to its own provider.",
+    "description": "Settings > API keys: the paragraph at the top of the page. voice/ui/settings.js (keysPage)."
+  },
+  "settings.keys.inUse": {
+    "message": "In use",
+    "description": "Settings > API keys: group title over the providers that dictation, rewriting or meeting transcription use now. voice/ui/settings.js (keysPage)."
+  },
+  "settings.keys.other": {
+    "message": "Other providers",
+    "description": "Settings > API keys: group title over the providers no feature uses, below the ones in use. voice/ui/settings.js (keysPage)."
+  },
+  "settings.keys.providers": {
+    "message": "Providers",
+    "description": "Settings > API keys: group title over every provider when no feature uses one, for instance with Orukeet everywhere. voice/ui/settings.js (keysPage)."
+  },
+  "settings.keys.usedFor": {
+    "message": "Used for {features}.",
+    "description": "Settings > API keys: under a provider's name, the features that use it. {features} is a list such as \"dictation and rewriting\", built from settings.keys.feature.*. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.notUsed": {
+    "message": "Not used yet.",
+    "description": "Settings > API keys: under a provider's name when no feature uses it. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.ollama": {
+    "message": "Only ollama.com needs a key. A server on this computer works without one.",
+    "description": "Settings > API keys: under Ollama's name, after what uses it. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.feature.transcription": {
+    "message": "dictation",
+    "description": "Settings > API keys: dictation's name inside a sentence, in lower case, for {features} in settings.keys.usedFor and similar lists. voice/ui/settings.js (FEATURES)."
+  },
+  "settings.keys.feature.rewriting": {
+    "message": "rewriting",
+    "description": "Settings > API keys: rewriting's name inside a sentence, in lower case, for {features} lists. voice/ui/settings.js (FEATURES)."
+  },
+  "settings.keys.feature.meetings": {
+    "message": "meeting transcription",
+    "description": "Settings > API keys: meeting transcription's name inside a sentence, in lower case, for {features} lists. voice/ui/settings.js (FEATURES)."
+  },
+  "settings.keys.add": {
+    "message": "Add key",
+    "description": "Settings > API keys: button beside a provider without a key that opens its key field; also the button in a provider form whose provider has no key, which opens API keys. voice/ui/settings.js (keyRows, sharedKeyField)."
+  },
+  "settings.keys.keyFor": {
+    "message": "{provider} API key",
+    "description": "Settings > API keys: label of the key field under a provider, such as \"Mistral API key\". voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.addFor": {
+    "message": "Add a key for {features}.",
+    "description": "Settings: the features that wait for a key, on the top page's API keys row and under a provider on the API keys page. {features} is a list such as \"dictation and rewriting\". voice/ui/settings.js (mainPage, keyRows)."
+  },
+  "settings.keys.none": {
+    "message": "No keys yet",
+    "description": "Settings > top page: the API keys row's value when no provider has a key. voice/ui/settings.js (mainPage)."
+  },
+  "settings.keys.empty": {
+    "message": "Paste a key first.",
+    "description": "Settings > API keys: shown when Save is pressed with an empty key field. voice/ui/settings.js (saveKey)."
+  },
+  "settings.keys.ownKey": {
+    "message": "{feature} still uses another {provider} key from before",
+    "description": "Settings > API keys: a row under a provider when a feature kept a different key for it from before keys were shared, such as \"Meeting transcription still uses another Mistral key from before\". {feature} is a feature's title. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.ownKeyHelp": {
+    "message": "Both keys work. Saving or removing a key here replaces that one too.",
+    "description": "Settings > API keys: under settings.keys.ownKey. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.useThis": {
+    "message": "Use the key above",
+    "description": "Settings > API keys: button on settings.keys.ownKey's row that makes that feature use the provider's key on this page. voice/ui/settings.js (keyRows)."
+  },
+  "settings.keys.useShared": {
+    "message": "Use the {provider} key from API keys",
+    "description": "Settings > a provider form: button beside settings.keys.formOwn that makes this feature use the provider's key on the API keys page. voice/ui/settings.js (sharedKeyField)."
+  },
+  "settings.keys.removeTitle": {
+    "message": "Remove the {provider} key?",
+    "description": "Settings > API keys: title of the dialog before a key that features use is removed. voice/ui/settings.js (removeKey)."
+  },
+  "settings.keys.removeBody": {
+    "message": "Voice stops sending it for {features}. They wait until you add a key again.",
+    "description": "Settings > API keys: body of the remove dialog. {features} is a list such as \"dictation and rewriting\". voice/ui/settings.js (removeKey)."
+  },
+  "settings.keys.features": {
+    "message": "Provider per feature",
+    "description": "Settings > API keys: group title over dictation, rewriting and meeting transcription, each with its provider and model. voice/ui/settings.js (keysPage)."
+  },
+  "settings.keys.featuresHelp": {
+    "message": "Each feature picks its own provider and model on its own page, and uses the keys above.",
+    "description": "Settings > API keys: the paragraph under settings.keys.features. voice/ui/settings.js (keysPage)."
+  },
+  "settings.keys.state.consent": {
+    "message": "Waiting for consent",
+    "description": "Settings > API keys: orange status of meeting transcription when its cloud provider waits for the user's agreement to send meeting audio. voice/ui/settings.js (FEATURE_STATES)."
+  },
+  "settings.keys.use": {
+    "message": "Use {provider}",
+    "description": "Settings > API keys: button under a feature that doesn't work, such as dictation without its model, that switches it to a provider with a saved key. For meeting transcription it asks for consent first. voice/ui/settings.js (featureRow)."
+  },
+  "settings.keys.useHelp": {
+    "message": "Switches to {provider} with {model}, using your saved key.",
+    "description": "Settings > API keys: next to settings.keys.use, what the button saves. {model} is a model id such as \"voxtral-mini-latest\". voice/ui/settings.js (featureRow)."
+  },
+  "settings.keys.formSaved": {
+    "message": "Uses your {provider} key",
+    "description": "Settings > a provider form: the key line when the provider's key is saved on the API keys page. voice/ui/settings.js (sharedKeyField)."
+  },
+  "settings.keys.formOwn": {
+    "message": "Uses another {provider} key from before",
+    "description": "Settings > a provider form: the key line when this feature kept a different key from before keys were shared. voice/ui/settings.js (sharedKeyField)."
+  },
+  "settings.keys.formMissing": {
+    "message": "No {provider} key yet. Add it once in API keys.",
+    "description": "Settings > a provider form: the key line when the provider has no key yet, with a button to API keys. voice/ui/settings.js (sharedKeyField)."
+  },
+  "settings.keys.formLocal": {
+    "message": "No key needed for a server on this computer.",
+    "description": "Settings > a provider form: the key line for Ollama on this computer without a key. voice/ui/settings.js (sharedKeyField)."
+  },
+  "settings.keys.waiting": {
+    "message": "Waiting for a {provider} key.",
+    "description": "Settings > top page: under Rewriting when its provider has no key. voice/ui/settings.js (mainPage)."
+  },
+  "settings.keys.waitingMeetings": {
+    "message": "Waiting for a {provider} key. Meetings still record.",
+    "description": "Settings > top page: under Meetings > Transcription when the meeting provider has no key. voice/ui/settings.js (mainPage)."
   },
   "settings.transcription.intro": {
     "message": "Where your voice becomes text: on this computer with Orukeet, or through a provider with your own key.",
@@ -957,7 +1089,7 @@
     "description": "Settings > Rewriting: group title above the rewrite provider form. voice/ui/settings.js (rewritingPage)."
   },
   "settings.rewriting.textModelHelp": {
-    "message": "Its own provider, key, endpoint, and model. For custom servers, enter the full endpoint URL and a model ID, or use Refresh to list models. Leave the key blank when the server doesn't need one.",
+    "message": "Its own provider, endpoint and model. The key comes from API keys. For a custom server, enter the full endpoint URL, a model ID and the server's key if it needs one, or use Refresh to list models.",
     "description": "Settings > Rewriting: paragraph under Text model. voice/ui/settings.js (rewritingPage)."
   },
   "settings.rewriting.polish": {
@@ -1237,7 +1369,7 @@
     "description": "Settings > Speaker labels and the Meetings row: the Nemotron model failed its check since Voice started; Error details shows why. voice/ui/settings.js (speakersReason, speakersPage)."
   },
   "settings.speakers.reason.key": {
-    "message": "Transcription and labels wait for an API key for {provider}. Add one in Meeting transcription.",
+    "message": "Transcription and labels wait for a {provider} API key. Add it in API keys.",
     "description": "Settings > Speaker labels and the Meetings row: meetings stream to a realtime model, which can't start without the meeting API key. Meeting transcription is the page with that key (settings.meetingTranscription.title). {provider}: provider name such as Mistral. voice/ui/settings.js (speakersReason)."
   },
   "settings.speakers.reason.consent": {

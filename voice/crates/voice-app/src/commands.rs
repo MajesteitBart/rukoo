@@ -238,6 +238,16 @@ pub async fn settings_save_provider(save: Value, state: State<'_, Shared>) -> Re
 }
 
 #[tauri::command]
+pub async fn settings_save_key(
+    provider: String,
+    key: String,
+    state: State<'_, Shared>,
+) -> Result<(), ApiError> {
+    let engine = state.engine.clone();
+    blocking(move || engine.settings_save_key(&provider, key)).await
+}
+
+#[tauri::command]
 pub async fn settings_remove_key(target: String, state: State<'_, Shared>) -> Result<(), ApiError> {
     let engine = state.engine.clone();
     blocking(move || engine.settings_remove_key(&target)).await
@@ -405,6 +415,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         settings_state,
         settings_set,
         settings_save_provider,
+        settings_save_key,
         settings_remove_key,
         settings_list_models,
         settings_model,
@@ -713,6 +724,34 @@ mod tests {
             (state["theme"].as_str(), state["locale"].as_str()),
             (Some("light"), Some("nl"))
         );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_provider_s_key_is_saved_once_for_every_form() {
+        let (engine, _) = engine("idle");
+        let state = engine.settings_state();
+        assert_eq!(state["config"]["apiKeys"]["mistral"]["saved"], false);
+        assert_eq!(state["providers"]["keys"][3], "mistral");
+        assert_eq!(
+            engine
+                .settings_save_key("custom", "sk-x".into())
+                .unwrap_err()
+                .code,
+            "invalid_value"
+        );
+        engine
+            .settings_save_key("mistral", "sk-test-4711".into())
+            .unwrap();
+        let state = engine.settings_state();
+        assert_eq!(state["config"]["apiKeys"]["mistral"]["saved"], true);
+        // Rewriting is on Mistral, so it has the key now.
+        assert_eq!(state["config"]["rewriting"]["keySaved"], true);
+        assert!(!state.to_string().contains("sk-test-4711"));
+        engine.settings_remove_key("mistral").unwrap();
+        let state = engine.settings_state();
+        assert_eq!(state["config"]["apiKeys"]["mistral"]["saved"], false);
+        assert_eq!(state["config"]["rewriting"]["keySaved"], false);
         engine.shutdown();
     }
 

@@ -319,8 +319,11 @@ fn a_missing_key_fails_before_anything_is_sent() {
     assert!(h.speech.heard().is_empty(), "no audio left the computer");
     assert_eq!(
         h.sink.wait_note("app.notify.dictationFailed").body,
-        "No audio API key set. Open Settings > Transcription and add a key."
+        "No Mistral API key set. Add it in Settings > API keys."
     );
+    // The pill and the notification send the user to API keys, and Settings opens there.
+    assert_eq!(engine.settings_start_page().as_deref(), Some("keys"));
+    assert_eq!(engine.settings_start_page(), None, "once");
     engine.shutdown();
 }
 

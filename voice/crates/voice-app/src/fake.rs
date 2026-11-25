@@ -26,6 +26,10 @@ pub const SCENARIOS: &[&str] = &["idle", "meeting", "dictation", "cycle", "first
 const FILLER_LANGUAGES: &[&str] = &["en", "nl", "de", "fr", "es"];
 /// Mistral's realtime models stream meetings; nothing else does.
 const REALTIME_PREFIX: &str = "voxtral-mini-transcribe-realtime";
+/// The providers whose key is in Settings > API keys (voice-core's `SHARED_KEY_PROVIDER_IDS`).
+const SHARED_KEY_PROVIDERS: [&str; 6] = voice_core::providers::SHARED_KEY_PROVIDER_IDS;
+/// The provider forms that send a key.
+const KEY_FORMS: [&str; 3] = ["transcription", "rewriting", "meetings"];
 const TICK: Duration = Duration::from_millis(20);
 /// The fake meeting's monitors, which the pill's screen button cycles.
 const MONITORS: &[&str] = &["DELL U2720Q", "Display 2"];
@@ -464,6 +468,18 @@ impl FakeEngine {
 impl State {
     /// A changed connection field or a new or removed secret: uploads pause until Test connection
     /// passes again, and the switch stays where the user put it.
+    /// Saves or removes a provider's key in API keys, for every form that uses the provider.
+    fn shared_key(&mut self, provider: &str, saved: bool) {
+        self.settings["config"]["apiKeys"][provider] = json!({ "saved": saved });
+        for target in KEY_FORMS {
+            let form = &mut self.settings["config"][target];
+            if form["provider"] == provider {
+                form["keySaved"] = json!(saved);
+                form["ownKey"] = json!(false);
+            }
+        }
+    }
+
     fn untest_sync(&mut self) {
         let sync = &mut self.settings["config"]["storage"]["sync"];
         sync["tested"] = json!(false);
@@ -775,21 +791,22 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "locale": "en",
         "config": {
             "dictation": { "hotkey": dictate, "rewriteHotkey": rewrite, "pasteMode": true, "readyChime": false, "startAtLogin": !dev_mode },
-            "transcription": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "language": "auto", "keySaved": false },
+            "transcription": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "language": "auto", "keySaved": false, "ownKey": false },
             "local": { "modelFolder": "", "idleMinutes": 20 },
             "dictionary": { "vocabulary": ["Rukoo", "Orukeet"], "corrections": [{ "from": "rocco", "to": "Rukoo" }] },
             "fillers": { "enabled": true, "languages": ["en", "nl"], "custom": "" },
-            "rewriting": { "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "model": "mistral-small-latest", "keySaved": false, "auto": false, "tone": "auto", "formatting": true, "instructions": "" },
-            "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": true },
+            "rewriting": { "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "model": "mistral-small-latest", "keySaved": false, "ownKey": false, "auto": false, "tone": "auto", "formatting": true, "instructions": "" },
+            "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "ownKey": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": true },
             "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
             "updates": { "check": false },
+            "apiKeys": SHARED_KEY_PROVIDERS.iter().map(|id| (id.to_string(), json!({ "saved": false }))).collect::<serde_json::Map<String, Value>>(),
             "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "retention": "keep", "secretSaved": false, "tested": false, "secret": "" } }
         },
         "providers": {
             "audio": [
                 { "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"], "streamingPrefix": null },
                 { "id": "google", "endpoints": ["https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"], "streamingPrefix": null },
-                { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/audio/transcriptions"], "streamingPrefix": REALTIME_PREFIX },
+                { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/audio/transcriptions"], "streamingPrefix": REALTIME_PREFIX, "defaultModel": "voxtral-mini-latest" },
                 { "id": "custom", "endpoints": ["http://localhost:1234/v1/audio/transcriptions"], "streamingPrefix": null },
                 { "id": "orukeet", "endpoints": [], "streamingPrefix": null }
             ],
@@ -797,11 +814,12 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
                 { "id": "openai", "endpoints": ["https://api.openai.com/v1/responses", "https://api.openai.com/v1/chat/completions"] },
                 { "id": "anthropic", "endpoints": ["https://api.anthropic.com/v1/messages"] },
                 { "id": "google", "endpoints": ["https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"] },
-                { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/chat/completions"] },
+                { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/chat/completions"], "defaultModel": "mistral-small-latest" },
                 { "id": "ollama", "endpoints": ["http://localhost:11434/api/chat", "https://ollama.com/api/chat"] },
                 { "id": "openrouter", "endpoints": ["https://openrouter.ai/api/v1/chat/completions"] },
                 { "id": "custom", "endpoints": ["http://localhost:1234/v1/chat/completions"] }
-            ]
+            ],
+            "keys": SHARED_KEY_PROVIDERS
         },
         "dictation": { "status": "ready" },
         "rukoo": { "state": "notRunning", "clientVersion": null, "protocol": null, "port": null, "discoveryPath": discovery, "behind": null },
@@ -1165,13 +1183,26 @@ impl EngineApi for FakeEngine {
                     "Realtime models work for meeting transcription only.",
                 ));
             }
+            let shared = SHARED_KEY_PROVIDERS.contains(&provider.as_str());
+            let shared_saved = st.settings["config"]["apiKeys"][&provider]["saved"] == true;
             let form = &mut st.settings["config"][target];
             let same = form["provider"] == provider.as_str();
-            let key_saved = match &save["apiKey"] {
-                Value::Null => same && form["keySaved"].as_bool().unwrap_or(false),
-                Value::String(key) => !key.is_empty(),
+            // As the engine: a provider in API keys brings its key, and a typed one replaces it.
+            let typed = match &save["apiKey"] {
+                Value::Null => None,
+                Value::String(key) => Some(!key.is_empty()),
                 _ => return Err(invalid("apiKey is text or null")),
             };
+            let key_saved = if shared {
+                if same {
+                    form["keySaved"] == true
+                } else {
+                    shared_saved
+                }
+            } else {
+                typed.unwrap_or(same && form["keySaved"] == true)
+            };
+            form["ownKey"] = json!(shared && same && form["ownKey"] == true);
             form["provider"] = json!(provider);
             form["endpoint"] = json!(endpoint);
             form["model"] = json!(model);
@@ -1197,6 +1228,23 @@ impl EngineApi for FakeEngine {
                     Value::Null
                 };
             }
+            if shared && typed == Some(true) {
+                st.shared_key(&provider, true);
+            }
+            st.settings_changed(out);
+            Ok(())
+        })
+    }
+
+    fn settings_save_key(&self, provider: &str, key: String) -> Result<(), ApiError> {
+        self.apply(|st, out| {
+            if !SHARED_KEY_PROVIDERS.contains(&provider) {
+                return Err(invalid(format!("{provider} has no key in API keys")));
+            }
+            if key.trim().is_empty() {
+                return Err(invalid("The key is 1 to 1024 characters."));
+            }
+            st.shared_key(provider, true);
             st.settings_changed(out);
             Ok(())
         })
@@ -1210,10 +1258,19 @@ impl EngineApi for FakeEngine {
                 st.settings_changed(out);
                 return Ok(());
             }
-            if !matches!(target, "transcription" | "rewriting" | "meetings") {
-                return Err(invalid(format!("Unknown provider form {target}")));
+            if SHARED_KEY_PROVIDERS.contains(&target) {
+                st.shared_key(target, false);
+            } else if KEY_FORMS.contains(&target) {
+                // A feature drops its own key: the key in API keys, or none for a custom server.
+                let form = &st.settings["config"][target];
+                let provider = form["provider"].as_str().unwrap_or_default().to_string();
+                let saved = st.settings["config"]["apiKeys"][&provider]["saved"] == true;
+                let form = &mut st.settings["config"][target];
+                form["keySaved"] = json!(saved);
+                form["ownKey"] = json!(false);
+            } else {
+                return Err(invalid(format!("Unknown key {target}")));
             }
-            st.settings["config"][target]["keySaved"] = json!(false);
             st.settings_changed(out);
             Ok(())
         })

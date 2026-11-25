@@ -712,7 +712,7 @@ fn transcription_setup_errors() {
     assert_eq!(missing_key.kind, ErrorKind::Auth);
     assert_eq!(
         missing_key.message,
-        "No audio API key set. Open Settings > Transcription and add a key."
+        "No OpenAI API key set. Add it in Settings > API keys."
     );
     let meeting = ProviderConfig {
         purpose: Purpose::Meetings,
@@ -725,7 +725,7 @@ fn transcription_setup_errors() {
     };
     assert_eq!(
         stt_error(&meeting).message,
-        "No API key set for meeting transcription. Open Settings > Meetings > Transcription and add a key."
+        "No Mistral API key set for meeting transcription. Add it in Settings > API keys."
     );
 }
 
@@ -1080,7 +1080,7 @@ fn rewrite_setup_errors() {
     assert_eq!(missing.kind, ErrorKind::Auth);
     assert_eq!(
         missing.message,
-        "No rewrite API key set. Open Settings > Rewriting and add a key."
+        "No OpenAI API key set for rewriting. Add it in Settings > API keys."
     );
     assert!(rewriter(&cfg(
         "ollama",

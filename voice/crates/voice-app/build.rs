@@ -7,6 +7,7 @@ const COMMANDS: &[&str] = &[
     "settings_state",
     "settings_set",
     "settings_save_provider",
+    "settings_save_key",
     "settings_remove_key",
     "settings_list_models",
     "settings_model",

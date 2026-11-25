@@ -296,7 +296,7 @@ fn new_needs_a_key_and_never_shows_it() {
     assert_eq!(error.kind, ErrorKind::Config);
     assert_eq!(
         error.message,
-        "No API key set for meeting transcription. Open Settings > Meetings > Transcription and add a key."
+        "No Mistral API key set for meeting transcription. Add it in Settings > API keys."
     );
     let error = MistralRealtime::new(&cfg("", MODEL, KEY)).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Config);

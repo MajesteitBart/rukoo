@@ -868,6 +868,44 @@ kbd {
   color: var(--text-2);
 }
 
+/* ---------- API keys ---------- */
+
+/* A provider form's key line: missing, or nothing needed for a server on this computer. */
+.key-saved > span.missing svg {
+  color: var(--orange);
+}
+.key-saved > span.plain {
+  color: var(--text-2);
+}
+/* A provider a feature waits for, or a key just saved, under the provider's row. */
+.row .desc.note.warn svg {
+  color: var(--orange);
+}
+.row .desc.note.ok {
+  color: var(--ok);
+}
+.row .desc.note.ok svg {
+  color: var(--ok);
+}
+/* The key field under its provider's row, in line with the row's title. */
+.form.key-form {
+  padding-top: 4px;
+}
+/* What the one-click fix under a feature saves. */
+.card-actions-note {
+  flex: 1 1 180px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-3);
+  text-wrap: pretty;
+}
+/* The meeting disclosure inside a dialog: the dialog's title says what it is, so no box around it. */
+.consent.in-dialog {
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
 /* ---------- the consent disclosure ---------- */
 
 .consent {

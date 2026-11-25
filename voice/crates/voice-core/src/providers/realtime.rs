@@ -160,9 +160,9 @@ impl MistralRealtime {
     pub fn new(cfg: &ProviderConfig) -> Result<MistralRealtime, ProviderError> {
         realtime_url(&cfg.endpoint, &cfg.model)?;
         if cfg.api_key.trim().is_empty() {
-            return Err(ProviderError::config(format!(
-                "No API key set for meeting transcription. Open {} and add a key.",
-                audio_settings_page(Purpose::Meetings)
+            return Err(ProviderError::config(super::missing_key_message(
+                &cfg.provider,
+                Purpose::Meetings,
             )));
         }
         Ok(MistralRealtime {

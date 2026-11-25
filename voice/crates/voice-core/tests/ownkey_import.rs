@@ -9,6 +9,7 @@ use support::TempDir;
 use voice_core::cleanup::Correction;
 use voice_core::config::{Config, Consent, ConsentMode, Retention, RewriteTone, Theme};
 use voice_core::ownkey::{import, ImportError};
+use voice_core::providers::Purpose;
 
 const AUDIO_KEY: &str = "sk-audio-0123456789";
 const REWRITE_KEY: &str = "sk-rewrite-9876543210";
@@ -310,11 +311,82 @@ fn old_ownkey_configs_are_migrated_on_import() {
     import(&path).unwrap().apply(&mut cfg, false);
     assert_eq!(cfg.audio_api_key, "legacy-key");
     assert_eq!(cfg.audio_model, "voxtral-old");
-    // Retired local rewriting never becomes a cloud rewrite.
+    // Retired local rewriting never becomes a cloud rewrite: auto-rewrite and the rewrite key are
+    // off. Rewriting would use Mistral's one key once the user turns it on.
     assert_eq!(cfg.rewrite_provider, "mistral");
-    assert_eq!(cfg.rewrite_api_key, "");
+    assert_eq!(cfg.api_keys["mistral"], "legacy-key");
+    assert_eq!(cfg.rewrite_api_key, "legacy-key");
     assert!(!cfg.auto_rewrite);
     assert_eq!(cfg.rewrite_hotkey, "off");
+}
+
+#[test]
+fn ownkey_s_keys_become_one_key_per_provider() {
+    // Three different Mistral keys, as Ownkey's three forms allowed.
+    let dir = TempDir::new("ownkey-three-keys");
+    let path = write_ownkey(
+        &dir,
+        &json!({
+            "audio_provider": "mistral",
+            "audio_api_key": AUDIO_KEY,
+            "audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+            "audio_model": "voxtral-mini-latest",
+            "rewrite_provider": "mistral",
+            "rewrite_api_key": REWRITE_KEY,
+            "rewrite_endpoint": "https://api.mistral.ai/v1/chat/completions",
+            "rewrite_model": "mistral-small-latest",
+            "meetings_audio_provider": "mistral",
+            "meetings_audio_api_key": MEETING_KEY,
+            "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+            "meetings_audio_model": "voxtral-mini-latest"
+        }),
+    );
+    let before = std::fs::read(&path).unwrap();
+    let mut cfg = Config::defaults(false);
+    import(&path).unwrap().apply(&mut cfg, false);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "Ownkey's file is never written"
+    );
+    assert_eq!(cfg.shared_key("mistral"), AUDIO_KEY);
+    // Every feature keeps the key it had in Ownkey, so each keeps working.
+    assert_eq!(cfg.dictation_audio().api_key, AUDIO_KEY);
+    assert_eq!(cfg.rewrite().api_key, REWRITE_KEY);
+    assert_eq!(cfg.meeting_audio().api_key, MEETING_KEY);
+    assert!(cfg.has_own_key(Purpose::Rewrite));
+    assert!(cfg.has_own_key(Purpose::Meetings));
+}
+
+#[test]
+fn the_import_keeps_a_voice_key_for_a_provider_ownkey_has_none_for() {
+    let dir = TempDir::new("ownkey-keeps-voice-keys");
+    let path = write_ownkey(
+        &dir,
+        &json!({
+            "audio_provider": "mistral",
+            "audio_api_key": AUDIO_KEY,
+            "audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+            "audio_model": "voxtral-mini-latest",
+            "rewrite_provider": "openai",
+            "rewrite_api_key": "",
+            "rewrite_endpoint": "https://api.openai.com/v1/responses",
+            "rewrite_model": "gpt-test"
+        }),
+    );
+    let mut cfg = Config::defaults(false);
+    cfg.set_shared_key("openai", "sk-entered-in-voice");
+    cfg.set_shared_key("mistral", "sk-old-voice-mistral");
+    import(&path).unwrap().apply(&mut cfg, false);
+    // Ownkey's Mistral key replaces Voice's, as the import replaces the other settings.
+    assert_eq!(cfg.shared_key("mistral"), AUDIO_KEY);
+    assert_eq!(cfg.shared_key("openai"), "sk-entered-in-voice");
+    assert_eq!(cfg.rewrite().api_key, "sk-entered-in-voice");
+    assert_eq!(cfg.dictation_audio().api_key, AUDIO_KEY);
+    // Ownkey's meetings followed dictation: Mistral, with Mistral's one key.
+    assert_eq!(cfg.meetings_audio_provider, "mistral");
+    assert_eq!(cfg.meeting_audio().api_key, AUDIO_KEY);
+    assert!(!cfg.has_own_key(Purpose::Meetings));
 }
 
 #[test]

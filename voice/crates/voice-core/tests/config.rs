@@ -182,7 +182,7 @@ fn save_and_load_round_trip() {
     cfg.hotkey = "f15".into();
     cfg.rewrite_hotkey = "off".into();
     cfg.audio_provider = "openai".into();
-    cfg.audio_api_key = "sk-test".into();
+    cfg.set_shared_key("openai", "sk-test");
     cfg.audio_endpoint = "https://api.openai.com/v1/audio/transcriptions".into();
     cfg.audio_model = "whisper-1".into();
     cfg.language = "nl".into();

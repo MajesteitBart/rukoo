@@ -21,6 +21,7 @@ const MIN: f64 = 480.0;
 
 /// The pages and groups `settings.html?page=` opens at (voice/ui/API.md).
 pub const PAGES: &[&str] = &[
+    "keys",
     "transcription",
     "dictionary",
     "fillers",
