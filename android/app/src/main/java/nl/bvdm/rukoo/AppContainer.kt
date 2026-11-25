@@ -2,6 +2,7 @@ package nl.bvdm.rukoo
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import androidx.sqlite.driver.AndroidSQLiteDriver
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -214,7 +215,8 @@ class AppContainer(context: Context) : AppServices {
             http = OkHttpWorkspaceHttp(http),
             file = ChatDb.fileIn(appContext.filesDir),
             driver = AndroidSQLiteDriver(),
-            sockets = OkHttpChatSockets(http),
+            // Socket waits on the clock that counts sleep and that a wall-clock correction doesn't move.
+            sockets = OkHttpChatSockets(http, now = SystemClock::elapsedRealtime),
             scope = CoroutineScope(appScope.coroutineContext + Dispatchers.Default),
             settings = settingsSnapshot,
             screen = screen,
@@ -234,8 +236,9 @@ class AppContainer(context: Context) : AppServices {
             appScope.launch(Dispatchers.IO) { categories }
             AccountBackground(appScope, { account }, { mail }).start()
         }
-        // Team chat follows the account and runs while the app is in the foreground; ChatSyncWorker in the background.
-        ChatBackground(appContext, appScope) { workspaces }.start()
+        // Team chat follows the account and runs while the app is in the foreground or Phone tools' foreground service
+        // runs; ChatSyncWorker in the background.
+        ChatBackground(appContext, appScope, { workspaces }, mcp.status.map { it.running }).start()
         // The language the user picks in Rukoo; LocaleManager keeps it, so only changes are applied.
         appScope.launch {
             settings.flow.map { it.language }.distinctUntilChanged().drop(1).collect { Locales.apply(appContext, it) }

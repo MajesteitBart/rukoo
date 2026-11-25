@@ -451,7 +451,7 @@ test('stale_generation looks the message up instead of sending it again', async 
   assert.equal(calls.filter((c) => isPost(c.method, c.route)).length, 1);
 });
 
-test('archived, quota and the mentions refusal, with Retry and Send without mentions', async (t) => {
+test('archived, quota, the mentions refusal and a reply whose first message was removed, with Retry and Send without mentions', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, bart, ws, bartMe, svc, api } = await setup(t);
   const old = await server.seedChannel(olga, ws.id, { name: 'old', members: [bartMe.id] });
@@ -484,6 +484,15 @@ test('archived, quota and the mentions refusal, with Retry and Send without ment
   assert.deepEqual(inSolo[0].mentions || [], []);
   const op = await server.call('GET', route(ws.id, `/conversations/${solo.id}/operations/${refused.operationId}`), { token: bart.token });
   assert.equal(op.status, 404, 'Send without mentions made a new ID');
+
+  // root_removed: the thread's first message was removed before the reply went (issue #376). Discard lets the room's
+  // later sends go.
+  const top = await server.post(olga, ws.id, ws.general, 'Removed before the reply');
+  await svc.sync(ws.id);
+  await server.redact(olga, ws.id, ws.general, top.messageId);
+  const late = await api.chatSend(ws.id, ws.general, { text: 'I will', mentions: [], root: top.messageId });
+  await rowIs(svc, late.local, 'failed', 'root_removed');
+  assert.equal(await api.chatDiscard(late.local), true);
 
   // quota: two of the largest messages don't fit in this server's workspaces.
   const big = (c) => c.repeat(wire.limits.TEXT_BYTES);

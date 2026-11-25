@@ -205,6 +205,13 @@ test('hub: a custom agent gets an adapter, chats and Rukoo tokens, and loses the
     assert.ok(hub.conversations.has(c.id), 'its chats stay');
     assert.throws(() => hub.send(c.id, { text: 'Still there?' }), /disabled/);
     await assert.rejects(hub.removeCustomAgent(id), /invalid/);
+    // A new chat with the removed agent, from a panel that hadn't heard yet, is refused: never one with the default.
+    const before = hub.conversations.size;
+    assert.throws(() => hub.create({ agent: id }), (err) => err.code === 'removed' && err.message === 'removed');
+    assert.throws(() => hub.create({ agent: 'cx_zzzzzzzzzz' }), /^Error: removed$/);
+    assert.equal(hub.conversations.size, before, 'no chat was made');
+    // Without an agent, a chat still goes to the default.
+    assert.equal(hub.create({}).agent, hub.cfg.data.defaultAgent);
   } finally {
     await hub.dispose();
   }
