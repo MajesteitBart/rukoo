@@ -268,7 +268,8 @@ test('a gap: Rukoo asks meeting.get for the meetings it has that may still chang
   await until(() => !s2.store.entry(M2), 'the deleted meeting to go');
   // Rukoo asks for one meeting at a time, the newest first, so the answer for M1 may still be on its way.
   await until(() => (s2.get(M1) || {}).meeting?.state === 'done', 'the snapshot of the kept meeting');
-  assert.deepEqual(new Set(voice.commands.map((c) => c.args.meeting)), new Set([M1, M2]));
+  // Only meeting.get: on a Mac, Rukoo also sends windows.hide after the welcome.
+  assert.deepEqual(new Set(voice.commands.filter((c) => c.command === 'meeting.get').map((c) => c.args.meeting)), new Set([M1, M2]));
   const m = s2.get(M1);
   assert.equal(m.meeting.state, 'done');
   assert.deepEqual(m.passages.map((p) => p.text), ['From the snapshot.']);
