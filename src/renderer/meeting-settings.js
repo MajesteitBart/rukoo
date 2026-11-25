@@ -26,6 +26,19 @@ function hideHelp(platform) {
   return t('settings.meetings.hideHelpLinux');
 }
 
+// What the screen recording does with Rukoo now, as the meeting header says it. A Mac Voice that reports it confirms
+// it, and until it has applied the switch the line says Hiding… or Showing…. Elsewhere, whether Rukoo hides its windows.
+function nowLine(v, wantHidden) {
+  const line = (key, cls = '') => `<span class="mtset-now${cls}">${esc(t(key))}</span>`;
+  if (!v) return '';
+  if (v.recording && v.recordsScreen && typeof v.inRecording === 'boolean') {
+    if (v.inRecording) return wantHidden ? line('settings.meetings.hiding', ' is-pending') : line('settings.meetings.visibleNow');
+    if (v.alwaysHidden || v.meetingHidden) return '';
+    return wantHidden ? line('settings.meetings.hiddenNow') : line('settings.meetings.showing', ' is-pending');
+  }
+  return v.hidden ? line('settings.meetings.hiddenNow') : '';
+}
+
 // pages: what settings.js needs. row: its row helper; go and rerender: its navigation; current(): the page on top.
 export function meetingSettingsPages({ row, go, rerender, current }) {
   let voice = null;
@@ -48,10 +61,14 @@ export function meetingSettingsPages({ row, go, rerender, current }) {
     const status = statusOf(voice);
     const platform = window.mail.platform;
     const canHide = platform === 'win32' || platform === 'darwin';
+    // A Mac Voice older than windows.hide leaves Rukoo out of its recordings whatever the switch says, and so does a
+    // screen recorder an older Voice started for the meeting recording now: the switch's own description says so, in
+    // the warning colour. Only a Mac Voice reports either.
+    const note = !voice ? null : voice.alwaysHidden ? 'settings.meetings.hideOldVoice' : voice.meetingHidden ? 'settings.meetings.hideOldScreen' : null;
+    const voiceHides = note ? `<span class="mtset-warn">${esc(t(note))}</span>` : '';
     const hide = canHide
-      ? row({ title: esc(t('settings.meetings.hide')), desc: esc(hideHelp(platform)), action: 'toggle:meetingHideWindow', toggle: s.meetingHideWindow !== false })
-      : `<div class="row static"><div class="text"><div class="title">${esc(t('settings.meetings.hide'))}</div><div class="desc">${esc(hideHelp(platform))}</div></div></div>`;
-    const hiddenNow = voice && voice.hidden ? `<p class="settings-text">${esc(t('settings.meetings.hiddenNow'))}</p>` : '';
+      ? row({ title: esc(t('settings.meetings.hide')), desc: `${esc(hideHelp(platform))}${voiceHides}${nowLine(voice, s.meetingHideWindow !== false)}`, action: 'toggle:meetingHideWindow', toggle: s.meetingHideWindow !== false })
+      : `<div class="row static"><div class="text"><div class="title">${esc(t('settings.meetings.hide'))}</div><div class="desc">${esc(hideHelp(platform))}${nowLine(voice, s.meetingHideWindow !== false)}</div></div></div>`;
     return {
       title: esc(t('settings.meetings.title')),
       body: `
@@ -68,8 +85,7 @@ export function meetingSettingsPages({ row, go, rerender, current }) {
           ${hide}
           ${row({ title: esc(t('settings.meetings.agents')), desc: esc(t('settings.meetings.agentsHelp')), action: 'toggle:meetingAgentsCanRead', toggle: s.meetingAgentsCanRead !== false })}
         </div>
-        <p class="settings-text">${esc(t('settings.meetings.notices'))}</p>
-        ${hiddenNow}`
+        <p class="settings-text">${esc(t('settings.meetings.notices'))}</p>`
     };
   }
 

@@ -31,6 +31,8 @@ use voice_engine::meetings::screen::{ScreenChange, ScreenOptions, ScreenSupervis
 use voice_engine::meetings::split::SplitService;
 use voice_engine::PillPhase;
 use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
+#[cfg(target_os = "macos")]
+use voice_screen_files::exclude::{Exclusions, SHOWN_LEASE};
 use voice_screen_files::journal::{self, Line};
 use voice_screen_files::{control, screenfile};
 
@@ -750,12 +752,13 @@ fn rukoo_started_meeting_skips_the_handshake() {
 }
 
 /// A Rukoo that connects after the screen process started: the watchdog sends the running
-/// process its pid, which then leaves its windows out, and a Rukoo that quits is let go again.
+/// process its pid, which then leaves its windows out. When its user turns hiding off, the
+/// process keeps it in instead, and a Rukoo that quits is let go again.
 #[cfg(target_os = "macos")]
 fn a_rukoo_that_connects_later_is_left_out() {
     let rig = Rig::new("exclude-later", SCREEN);
-    let pids = Arc::new(Mutex::new(Vec::<u32>::new()));
-    let read = Arc::clone(&pids);
+    let wanted = Arc::new(Mutex::new(Exclusions::default()));
+    let read = Arc::clone(&wanted);
     rig.screen()
         .set_exclude_pids(Box::new(move || lock(&read).clone()));
     let id = rig.start(StartedBy::Rukoo, Some(ScreenMode::Frames));
@@ -766,13 +769,23 @@ fn a_rukoo_that_connects_later_is_left_out() {
             .unwrap_or_default()
             .contains(what)
     };
-    *lock(&pids) = vec![4821, 77];
+    *lock(&wanted) = Exclusions::new([4821, 77], []);
     wait_for("the screen process to hear of Rukoo", || {
-        logged("leaving out the windows of pids [77, 4821]")
+        logged("leaving out the windows of pids [77, 4821], keeping Rukoo pids []")
     });
-    lock(&pids).clear();
+    *lock(&wanted) = Exclusions::new([77], [4821]);
+    wait_for("the screen process to keep Rukoo in", || {
+        logged("leaving out the windows of pids [77], keeping Rukoo pids [4821]")
+    });
+    // The watchdog renews the permission, so it doesn't lapse while Voice runs.
+    thread::sleep(SHOWN_LEASE + Duration::from_secs(1));
+    assert!(
+        !logged("didn't renew"),
+        "the permission to keep Rukoo in lapsed while Voice ran"
+    );
+    *lock(&wanted) = Exclusions::default();
     wait_for("the screen process to let Rukoo go", || {
-        logged("leaving out the windows of pids []")
+        logged("leaving out the windows of pids [], keeping Rukoo pids []")
     });
     rig.stop(&id);
 }

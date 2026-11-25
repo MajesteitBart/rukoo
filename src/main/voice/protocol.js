@@ -14,6 +14,8 @@ const VOICE_MESSAGE_MAX = 8 * 1024 * 1024;
 const RUKOO_MESSAGE_MAX = 1024 * 1024;
 const DISCOVERY_MAX = 4096;
 const CONTEXT_MAX = 16 * 1024;
+// The most pids rukooWindows.shown in a status lists.
+const WINDOWS_PIDS_MAX = 64;
 const TITLE_MAX = 200;
 // A mark's label, like a title. PROTOCOL.md leaves it open; the shared vectors settle it.
 const LABEL_MAX = 200;
@@ -105,6 +107,14 @@ function status(o) {
   bool(o, 'dictating');
   // The screen a meeting gets when meeting.start leaves it out. An older Voice leaves it out.
   if (given(o, 'screenDefault')) oneOf(o, 'screenDefault', SCREENS);
+  // From a Mac Voice: which Rukoo the screen recording keeps in, as its screen process confirmed, and whether it can.
+  if (given(o, 'rukooWindows')) {
+    const w = o.rukooWindows;
+    check(isObj(w), 'rukooWindows');
+    // Process ids, as Voice reads them: 1 to the largest 32-bit unsigned integer.
+    check(Array.isArray(w.shown) && w.shown.length <= WINDOWS_PIDS_MAX && w.shown.every((pid) => Number.isInteger(pid) && pid >= 1 && pid <= 0xffffffff), 'shown');
+    bool(w, 'canShow');
+  }
 }
 
 // ---------- messages from Rukoo ----------
@@ -116,8 +126,9 @@ function hello(m) {
   pattern(m, 'instance', INSTANCE, { nullable: true });
   int(m, 'after', 0);
   if (given(m, 'clientVersion')) str(m, 'clientVersion');
-  // Rukoo's process id, so Voice can leave its windows out of a screen recording.
+  // Rukoo's process id, so a Mac Voice can leave its windows out of a screen recording, and whether it should.
   if (given(m, 'pid')) int(m, 'pid', 1);
+  if (given(m, 'hideWindows')) bool(m, 'hideWindows');
 }
 
 const COMMAND_ARGS = {
@@ -184,7 +195,8 @@ const COMMAND_ARGS = {
   'speakers.split': (a) => {
     pattern(a, 'meeting', MEETING_ID);
     oneOf(a, 'track', SPLIT_TRACKS);
-  }
+  },
+  'windows.hide': (a) => bool(a, 'hide')
 };
 
 function command(m) {
@@ -318,6 +330,18 @@ function validate(from, message) {
 }
 
 // The discovery file, parsed.
+// The status object of a status event, welcome or status.get reply: { ok: true } or { ok: false, reason }.
+function validateStatus(o) {
+  try {
+    check(isObj(o), 'status');
+    status(o);
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof Invalid) return { ok: false, reason: e.reason };
+    throw e;
+  }
+}
+
 function validateDiscovery(file) {
   try {
     check(isObj(file), 'file');
@@ -374,6 +398,7 @@ module.exports = {
   MEDIA_READ_MAX,
   SPLIT_TRACKS,
   validate,
+  validateStatus,
   validateDiscovery,
   negotiate,
   replayPlan,

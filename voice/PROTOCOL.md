@@ -54,11 +54,13 @@ Rukoo opens `ws://127.0.0.1:<port>/bridge` and sends `hello` as its first messag
 At most 16 connections wait for their upgrade or `hello` at a time. A new connection closes the oldest of them, so connections that never say `hello` can't keep Rukoo out: Rukoo sends `hello` as soon as the upgrade is done.
 
 ```json
-{ "type": "hello", "protocol": 2, "token": "…", "client": "rukoo", "clientVersion": "2.2.0", "pid": 4821, "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041 }
+{ "type": "hello", "protocol": 2, "token": "…", "client": "rukoo", "clientVersion": "2.2.0", "pid": 4821, "hideWindows": true, "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041 }
 ```
 
 - `protocol` is the highest version Rukoo speaks that is also within the file's `minProtocol` to `protocol`.
-- `pid` is Rukoo's process id: the process that owns its windows. It is optional, and it is not the discovery file's `pid`, which is Voice's. Rukoo sends it on macOS, and Voice on macOS passes it to its screen process, which leaves that process's windows out of the recording because the system can filter by application there. Without a `pid`, as on Windows, Voice relies on Rukoo hiding its own windows.
+- `pid` is Rukoo's process id: the process that owns its windows. It is optional, and it is not the discovery file's `pid`, which is Voice's. Rukoo sends it on macOS, and Voice on macOS passes it to its screen process, which can leave that process's windows out of the recording because the system can filter by application there. Without a `pid`, as on Windows, Voice relies on Rukoo hiding its own windows.
+- `hideWindows` says what to do with the windows of that `pid`. It is optional, and Rukoo sends it with the `pid`: `true` while "Hide Rukoo from screen recordings during a meeting" is on in Rukoo's Settings › Meetings, `false` when the user turned it off. Left out, as an older Rukoo does, it counts as `true`. `windows.hide` changes it while the connection lasts.
+- A Mac Voice always leaves its own windows out. It also leaves Rukoo's app out by its bundle id, unless a connected Rukoo with that `pid` sent `hideWindows` `false`, so a Rukoo that isn't connected yet, or is starting again, stays out of the recording. A process that one connection hides and another shows stays out. A development Rukoo runs from Electron, whose bundle id says nothing, so only its `pid` keeps it out.
 - `instance` and `after` are the instance and the last sequence number Rukoo saw. On its first connection Rukoo sends `null` and `0`.
 
 Voice compares the token in constant time and answers with `welcome`:
@@ -120,6 +122,16 @@ What Voice is doing right now. `welcome` carries the same object. Every dictatio
 ```
 
 `recording` is the meeting being recorded or paused, or `null`. `dictating` is true while the user holds a dictation key. `screenDefault` is optional: the `screen` a meeting gets when `meeting.start` leaves it out, one of the values of `meeting.started`. Voice sends a new `status` when it changes.
+
+A Mac Voice that knows `windows.hide` adds `rukooWindows`, what its screen recording does with Rukoo's windows now:
+
+```json
+{ "recording": "m-20261030-171203-4f2a", "dictating": false, "screenDefault": "frames", "rukooWindows": { "shown": [4821], "canShow": true } }
+```
+
+- `shown` lists the `pid`s of the Rukoo processes whose windows the screen recording keeps in: what the filter of its active stream applies, as its screen process confirmed it. It is empty while nothing records the screen or every Rukoo is left out. After a filter update that failed or didn't answer it also lists the Rukoo that update would have kept in, until the stream has started over. Rukoo says its windows are in a meeting's recording only once its own `pid` is in the list, and that they are out only once it isn't.
+- `canShow` is `false` while the screen recording comes from a screen process an older Voice started, reattached after Voice started again: it leaves Rukoo out by its bundle id until it ends, whatever `windows.hide` says. Otherwise it is `true`.
+- Voice on Windows and an older Mac Voice leave `rukooWindows` out.
 
 ### `meeting.started`
 
@@ -265,7 +277,7 @@ Rukoo sends commands; Voice answers each with one reply.
 { "type": "reply", "id": "c-18", "ok": false, "error": { "code": "busy", "message": "A meeting is already recording.", "meeting": "m-20261030-171203-4f2a" } }
 ```
 
-`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in order, except that `meeting.protected` bypasses the queue so it can acknowledge a `screen.set` waiting on that same connection. Events may arrive before a command's reply, and every event Voice stored before it finished a command arrives before that command's reply. Events stored after it finished don't hold the reply back, and Voice keeps reading and running commands while it sends a long run of events, the replay included.
+`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in order, except that `meeting.protected` bypasses the queue so it can acknowledge a `screen.set` waiting on that same connection, and `windows.hide` does too, so Rukoo's windows leave the recording without waiting behind a long `clip.get`. Voice keeps reading a connection while its commands wait: up to 32 queue for the one that runs and 1,024 more wait behind them, and a command beyond those is answered `busy` at once. Events may arrive before a command's reply, and every event Voice stored before it finished a command arrives before that command's reply. Events stored after it finished don't hold the reply back, and Voice keeps reading and running commands while it sends a long run of events, the replay included.
 
 | Command | `args` | `result` | Errors |
 |---|---|---|---|
@@ -287,6 +299,7 @@ Rukoo sends commands; Voice answers each with one reply.
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `speakers.split` | `meeting`, `track` | `{ "state", … }` | `not_found`, `not_available`, `busy`, `failed` |
 | `status.get` | | the `status` object | |
+| `windows.hide` | `hide` | `{}` | |
 
 - `meeting.start` uses the Settings default for every argument left out. `title` is at most 200 characters, `tracks` a non-empty list of `mic` and `call`, `screen` one of the values of `meeting.started`, and `context` an object of at most 16 KiB.
 - `meeting.list` returns the newest meetings first: `{ "id", "title", "startedAt", "endedAt", "state", "duration" }`, with `endedAt` `null` while recording and `duration` in milliseconds.
@@ -298,6 +311,7 @@ Rukoo sends commands; Voice answers each with one reply.
 - `screen.set` chooses `off`, `frames` or `video` during recording or pause; an optional monitor is selected before capture starts. Off releases capture and closes the current video without ending the process or permanently dropping either part. Enabling from an audio-only meeting starts the screen process on the existing recorder clock. Before enabling capture, Voice sends `meeting.starting` with a request id and waits up to 2 seconds for every connected Rukoo to protect its windows. Failure leaves the previous mode unchanged. The command deadline is 15 seconds. Every actual mode change adds a `screen_mode` mark with `track: "screen"`, `detail: "user"` and the mode as `label`, at the journal's exact meeting time. `meeting.started.screen` stays historical; `meeting.get.meeting.initialScreen` holds that value and `meeting.get.meeting.screen` reports the current mode. Frame lookup never crosses an Off interval, and video clips contain only the recorded stretches.
 - `screen.get` returns `{ "screen", "state", "video", "frames", "monitor", "monitors" }`. `screen` is the current mode. `state` is `off`, `starting`, `recording`, `paused`, `locked` or `stopped`. `video` and `frames` say whether each part still records. `monitor` is the id of the monitor Voice records, or `null`. `monitors` lists `{ "id", "name", "width", "height", "primary" }` for every monitor, left to right. It answers `not_recording` for a meeting that doesn't record now and `not_available` when screen recording is unavailable on this computer. Audio-only live meetings return Off and the available monitors. Like `clip.get`, it answers within 4 seconds of receiving the command; when the screen recorder doesn't answer by then, the state is what Voice knew last.
 - `screen.select` moves the screen recording to the monitor with that id from `screen.get`, and returns the id. It answers `not_found` for a monitor that isn't there, and `not_available` when the screen recording stopped. It answers within 4 seconds of receiving the command, `failed` when the screen recorder is still starting or didn't switch by then; Rukoo can ask again.
+- `windows.hide` changes `hideWindows` of this connection's `hello`: `true` leaves the windows of its `pid` out of the screen recording, `false` keeps them in. Rukoo on macOS sends it after every `welcome`, with the setting as it is then, and whenever the user changes the setting. A Mac Voice passes the change to a screen process that records at its watchdog's next round, every half second, and the screen process gives its stream a new filter at its next tick, every quarter second, so the windows leave or join the frames and the video within about a second, in the meeting that records. A Rukoo process Voice kept in stays out by its `pid` once Voice no longer keeps it in, as when its connection closes, until the process ends or a connection keeps it in again: a development Rukoo has no bundle id that would leave it out. It applies to every meeting from then on, and the permission to keep Rukoo in ends with the connection: once the connection closes, the screen process leaves Rukoo out within about a second, and when Voice quits it does so before Voice exits. The screen process holds the permission as a lease that Voice renews every 1.5 s while a Rukoo is kept in, so when Voice crashes or hangs, Rukoo is out within 5 s. While a change that leaves a window out waits for its filter, the screen process records no frames or video, so nothing captured with the old filter is recorded after the change; `rukooWindows` in `status` says when the filter is in place. The next `hello` says it again. Voice on Windows keeps the value and does nothing with it, and Rukoo doesn't send it there. A Voice from before this command answers `unknown_command` and keeps leaving Rukoo out; see Versioning.
 - `media.open` prepares a file of a meeting's media that Rukoo can hand to an agent, and names it with an id. `kind` is `audio`, `frame` or `video`:
   - `audio`: a WAV file of all the meeting's tracks mixed into one, 16 kHz mono 16-bit PCM with the 44-byte header, from `start` to `end`. Gaps are silence.
   - `frame`: the JPEG of the frame at or before `start`. `end` is ignored.
@@ -320,7 +334,7 @@ Errors carry a `code` and an English `message` for logs. Rukoo shows its own tex
 | `unknown_command` | Voice doesn't know the command; a newer Rukoo may send commands an older Voice lacks |
 | `not_found` | No meeting, frame, monitor or prepared media with that id or time |
 | `not_recording` | The meeting isn't recording, or isn't paused for `meeting.resume` |
-| `busy` | A meeting is already recording; `meeting` says which |
+| `busy` | A meeting is already recording; `meeting` says which. Also for a command beyond the ones a connection may have waiting |
 | `not_available` | Voice can't do this for this meeting or in this version |
 | `failed` | Voice tried and failed; `message` says why |
 
@@ -330,10 +344,11 @@ Both sides check what they receive with the same rules and drop a message that b
 
 - Integers are JSON numbers without a fraction. Times, `seq`, `head` and `after` are 0 or more; `seq` and `revision` are 1 or more.
 - A meeting id matches `^m-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`, a token `^[A-Za-z0-9_-]{43}$` and an instance `^[A-Za-z0-9_-]{22}$`.
-- `hello` needs `protocol`, `token`, `client` (1 to 64 characters), `instance` (an instance or `null`) and `after`. `clientVersion` and `pid` are optional; a `pid` is an integer of 1 or more, and `null` counts as left out.
+- `hello` needs `protocol`, `token`, `client` (1 to 64 characters), `instance` (an instance or `null`) and `after`. `clientVersion`, `pid` and `hideWindows` are optional; a `pid` is an integer of 1 or more, `hideWindows` is `true` or `false`, and `null` counts as left out for both.
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
-- `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.
+- `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`. `rukooWindows` in a status, when present and not `null`, is an object with `shown`, a list of at most 64 integers of 1 or more, and `canShow`, `true` or `false`.
+- `windows.hide` needs `hide`, `true` or `false`.
 - `speakers.split` needs `meeting` and `track`, which is `mic`. Its result's `state` is `running`, with `at` and `end`, or `done`, with `voices` of 1 or more; an error's `reason`, when present, is a string.
 - `media.open` needs `meeting`, `kind` (`audio`, `frame` or `video`) and `start`; `end`, when given, is ≥ `start` and at most 3,600,000 more. `media.read` needs `media`, which matches `^md-[A-Za-z0-9_-]{22}$`, `offset`, and `length` from 1 to 1,048,576.
 - A `reply` with `ok` true has an object in `result`; with `ok` false, an `error` with `code` and `message`.
@@ -350,4 +365,11 @@ Everyone in a call is a third party. Passage text, speaker labels, titles, marks
 - New optional fields, new event types, new commands and new values for `kind`, `detail` and `reason` keep the version. Peers ignore what they don't know, as described above.
 - Anything an older peer would misread raises the version: a removed or renamed field, a changed meaning or unit, or a new field the other side must understand.
 - Voice serves every version from `minProtocol` to `protocol` in its discovery file. When the ranges don't overlap, Rukoo says which app needs an update.
+
+`hideWindows`, `windows.hide` and `rukooWindows` kept version 2, because an older peer reads none of them wrong:
+
+- A Rukoo that sends them to an older Mac Voice: Voice ignores `hideWindows`, answers `windows.hide` with `unknown_command` and keeps leaving Rukoo out of its recording by `pid` and by bundle id, whatever the setting says. Rukoo takes the `unknown_command` to mean that, and says so: its meeting header shows "Hidden from screen recordings" in a meeting that records the screen, and Settings › Meetings says the switch can't show Rukoo in this Voice's recordings until Voice is updated.
+- An older Rukoo with a Mac Voice that knows them: its `hello` carries a `pid` without `hideWindows` on macOS, which counts as `true`, so Voice leaves it out as an older Voice did, whatever its own switch says. Its header then says "Visible in screen recordings" with the switch off, as it did before, and it ignores `rukooWindows`.
+- A Mac Voice that knows them, restarted during a meeting whose screen process an older Voice started: that screen process reads only `pids` in `exclude`, so it keeps Rukoo out. Its status has no `shown`, so Voice sends `canShow` `false`, and Rukoo's header and Settings say Rukoo stays out of this meeting's recording until the meeting ends. A screen process Voice starts again for that meeting, after a crash, is the new one.
+- On Windows nothing changes: Rukoo sends neither, and Voice there doesn't filter by process.
 - A pull request that changes this document updates [fixtures/protocol-vectors.json](fixtures/protocol-vectors.json) and both sides' tests.

@@ -17,6 +17,7 @@ use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
 #[cfg(target_os = "macos")]
 use voice_screen_files::control;
 use voice_screen_files::control::Request;
+use voice_screen_files::exclude::{Applying, Policy, Update};
 use voice_screen_files::frames::{own_thumb, Decision, Saver, Thumb};
 use voice_screen_files::gate::{Gate, VideoGate};
 use voice_screen_files::journal::{JournalWriter, Line};
@@ -155,8 +156,12 @@ pub(crate) struct Screen<P: Platform> {
     pub(crate) monitor: MonitorInfo,
     /// `--monitor`: the only monitor this process may record (spec 2.7).
     pub(crate) pinned: Option<String>,
-    /// `--exclude-pid`: the processes whose windows stay out of the recording.
-    pub(crate) exclude_pids: Vec<u32>,
+    /// `--exclude-pid` and `--show-pid`, then each `exclude`: whose windows stay out of the
+    /// recording, with Voice's permission to keep a Rukoo in held as a lease.
+    pub(crate) policy: Policy,
+    /// Whether the capture has the newest change in place: which Rukoo it confirmed it keeps
+    /// in, and, after a change that hides, the frames it may record.
+    pub(crate) applying: Applying,
     pub(crate) video: Option<VideoThread<P::Video>>,
     /// Which frames of the open video file go to the encoder.
     pub(crate) gate: VideoGate,
@@ -329,7 +334,8 @@ impl<P: Platform> Screen<P> {
         if self.source.is_none() {
             let options = SourceOptions {
                 test: self.test.clone(),
-                exclude_pids: self.exclude_pids.clone(),
+                exclusions: self.policy.effective().clone(),
+                revision: self.policy.revision(),
             };
             self.source = Some(self.platform.source(device, &options, self.events.clone()));
         }
@@ -650,7 +656,7 @@ impl<P: Platform> Screen<P> {
         let next = match &self.test {
             Some(_) => list.first().map(|m| m.id.clone()),
             None => monitors::choose(
-                &self.platform.displays().z_order(&self.exclude_pids),
+                &self.platform.displays().z_order(self.policy.effective()),
                 self.platform.displays().cursor_monitor().as_deref(),
                 &list,
             ),
@@ -787,6 +793,14 @@ impl<P: Platform> Screen<P> {
         {
             return;
         }
+        // After a change that hides, only frames the new filter captured are recorded.
+        if self.applying.holding() {
+            self.check_applied();
+        }
+        if !self.applying.passes(frame.boot) {
+            return;
+        }
+        self.applying.recorded();
         let now = self.platform.clocks().at_boot(frame.boot);
         let Some(t) = self.clock.at(now) else {
             return;
@@ -908,7 +922,12 @@ impl<P: Platform> Screen<P> {
     /// Offers the last frame again while the screen is still, so a change that settled saves.
     /// It goes with its own thumbnail, read once when the frame came without one.
     fn reoffer(&mut self) {
-        if !self.capturing || self.paused || self.locked || self.drops.frames.is_some() {
+        if !self.capturing
+            || self.paused
+            || self.locked
+            || self.drops.frames.is_some()
+            || self.applying.holding()
+        {
             return;
         }
         let t = self.now_t();
@@ -932,6 +951,48 @@ impl<P: Platform> Screen<P> {
         }
         if self.saver.offer(t, Some(&thumb), None) == Decision::Save {
             self.save(&frame, t, thumb);
+        }
+    }
+
+    /// A change of whose windows stay out. One that takes out a window the recording kept in
+    /// records nothing until the capture's filter has it: the open video file ends, so its last
+    /// picture isn't written again for the moments after, and the last frame isn't offered again.
+    fn exclusions_changed(&mut self, update: Update) {
+        log(format_args!(
+            "revision {}: leaving out the windows of pids {:?}, keeping Rukoo pids {:?}",
+            update.revision, update.exclusions.hidden, update.exclusions.shown
+        ));
+        // A pid the active stream's filter leaves out already needs no wait; without a source
+        // nothing records, and the next one starts with these exclusions.
+        let hides = match self.source.as_ref() {
+            Some(source) => update.hides(|pid| source.already_out(pid)),
+            None => false,
+        };
+        if let Some(source) = self.source.as_mut() {
+            source.exclude(&update.exclusions, update.revision);
+        }
+        self.applying.changed(
+            &update,
+            hides,
+            self.platform.clocks().boot_100ns(),
+            Instant::now(),
+        );
+        if hides {
+            log("recording nothing of the screen until the filter is in place");
+            self.last = None;
+            self.end_video("hide");
+        }
+        self.check_applied();
+    }
+
+    /// Reads what the capture has in place; a hold whose filter is in place ends.
+    fn check_applied(&mut self) {
+        let applied = self.source.as_ref().and_then(|source| source.applied());
+        if self
+            .applying
+            .applied(applied, self.platform.clocks().boot_100ns())
+        {
+            log("the filter is in place; recording again");
         }
     }
 
@@ -1413,6 +1474,25 @@ impl<P: Platform> Screen<P> {
                 self.on_capture_stopped(&stop);
             }
         }
+        // Voice's permission to keep a Rukoo in lapsed without a renewal: Voice quit or hangs.
+        // A Rukoo shown before whose process ended is let go.
+        if let Some(update) = self.policy.tick(now, alive) {
+            if self.policy.lapsed() {
+                log("Voice didn't renew its permission to keep Rukoo in; leaving it out");
+            }
+            self.exclusions_changed(update);
+        }
+        self.check_applied();
+        // A change that hides waited too long for its filter or a frame after it: the capture
+        // starts over on a new stream with the newest exclusions, through the bounded retries.
+        if self.capturing && !self.paused && !self.locked && self.applying.overdue(now) {
+            self.applying.restarted(now);
+            self.on_capture_stopped(&CaptureStop {
+                why: "the filter that leaves Rukoo out wasn't confirmed in time".into(),
+                permission_lost: false,
+                by_user: false,
+            });
+        }
         if let Some(video) = &self.video {
             video.tick(self.platform.clocks().boot_100ns());
         }
@@ -1607,19 +1687,16 @@ impl<P: Platform> Screen<P> {
                 self.request_stop(t, "meeting", Some(request.reply));
                 return;
             }
-            // Voice's connected Rukoo clients changed: their windows stay out from now on. The
-            // port checked the list. macOS only, as the port is.
+            // Voice's connected Rukoo clients changed, or one of them turned hiding on or off, or
+            // Voice renews its permission to keep a Rukoo in: what stays out follows from now on.
+            // The port checked the lists. macOS only, as the port is.
             #[cfg(target_os = "macos")]
-            Some("exclude") => match control::excluded_pids(&request.body) {
-                Some(pids) => {
-                    if pids != self.exclude_pids {
-                        log(format_args!("leaving out the windows of pids {pids:?}"));
+            Some("exclude") => match control::exclusions(&request.body) {
+                Some(exclusions) => {
+                    if let Some(update) = self.policy.set(exclusions, Instant::now(), alive) {
+                        self.exclusions_changed(update);
                     }
-                    if let Some(source) = self.source.as_mut() {
-                        source.exclude(&pids);
-                    }
-                    self.exclude_pids = pids;
-                    json!({ "ok": true })
+                    json!({ "ok": true, "shown": self.policy.effective().shown })
                 }
                 None => error("bad_request"),
             },
@@ -1640,7 +1717,9 @@ impl<P: Platform> Screen<P> {
             "paused"
         } else if self.locked {
             "locked"
-        } else if !self.captured {
+        } else if !self.captured || self.applying.holding() {
+            // Also while a change that hides waits for its filter: nothing of the screen is
+            // recorded meanwhile.
             "starting"
         } else {
             "recording"
@@ -1665,12 +1744,39 @@ impl<P: Platform> Screen<P> {
             "saved": self.frames_saved,
         });
         // On macOS, the frames the frame worker still holds, for its JPEG or its text. A frame's
-        // `frame` line is written after both.
+        // `frame` line is written after both. And the Rukoo the recording keeps in, as the
+        // capture confirmed: Voice tells Rukoo, and a screen process from before `shown`
+        // existed leaves it out, which tells Voice it can't keep Rukoo in.
         #[cfg(target_os = "macos")]
         {
             status["pending"] = json!(self.worker.pending());
+            self.check_applied();
+            status["shown"] = json!(self.applying.shown());
         }
         status
+    }
+}
+
+/// Whether a process runs, for the Rukoo the screen process showed before. Off macOS nothing is
+/// ever shown, so every pid counts as running.
+fn alive(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: signal 0 sends nothing; it only asks whether the process exists. EPERM means
+        // it runs as another user.
+        let answer = unsafe { libc::kill(pid, 0) };
+        answer == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        true
     }
 }
 

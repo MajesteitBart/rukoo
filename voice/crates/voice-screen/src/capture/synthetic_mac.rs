@@ -107,6 +107,11 @@ impl Source for SyntheticSource {
             let _ = handle.join();
         }
     }
+
+    /// The synthetic screen draws its own slides: no window of any process is in it.
+    fn already_out(&self, _pid: u32) -> bool {
+        true
+    }
 }
 
 impl Drop for SyntheticSource {

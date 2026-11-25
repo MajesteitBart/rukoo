@@ -400,6 +400,7 @@ impl MeetingControl for FakeControl {
             recording: recording.as_deref().and_then(MeetingId::parse),
             dictating: false,
             screen_default: None,
+            rukoo_windows: None,
         }
     }
 }

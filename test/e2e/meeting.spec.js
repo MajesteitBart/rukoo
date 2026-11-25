@@ -21,9 +21,10 @@ let win;
 let dataDir;
 let voice;
 
-async function launch(size = [1500, 950]) {
+// extra: more environment, such as SEM_VOICE_PLATFORM=darwin for a Rukoo that talks to Voice as on a Mac.
+async function launch(size = [1500, 950], extra = {}) {
   // Media links live 4 s instead of 5 minutes, so a test sees one expire.
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5', SEM_MEDIA_LINK_TTL_MS: '4000' };
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5', SEM_MEDIA_LINK_TTL_MS: '4000', ...extra };
   delete env.ELECTRON_RUN_AS_NODE;
   // The pairing goes through the profile, never a path from the shell that started the tests.
   delete env.RUKOO_VOICE_BRIDGE;
@@ -2194,6 +2195,104 @@ test("a window that doesn't take the protection: Rukoo confirms nothing to Voice
   await expect(view().locator('.mt-visible')).toHaveCount(0);
   expect((await win.evaluate(() => window.mail.call('voiceState'))).hidden).toBe(true);
   expect(voice.commands.filter((c) => c.command === 'meeting.protected')).toEqual([]);
+});
+
+// A Mac Voice leaves Rukoo out of its recording by process (#329). Rukoo tells it in the hello and after each welcome
+// whether the user wants that, and again each time the switch changes, so it takes effect in a meeting that records.
+// Linux runs it as a Mac Rukoo talks to Voice (SEM_VOICE_PLATFORM); what Voice's screen process makes of it is
+// voice-screen's tests, and the frames themselves need a Mac.
+test('on a Mac, turning hiding off and on during a meeting tells Voice each time, also after a reconnect and with an older Voice', async () => {
+  test.setTimeout(90000);
+  await closeApp(app);
+  await launch(undefined, { SEM_VOICE_PLATFORM: 'darwin' });
+  await expect.poll(connected, { timeout: 10000 }).toBe(true);
+  const rukooPid = await app.evaluate(() => process.pid);
+  const hides = () => voice.commands.filter((c) => c.command === 'windows.hide').map((c) => c.args.hide);
+  const hello = () => voice.hellos[voice.hellos.length - 1];
+  const setHide = (on) => win.evaluate((on) => window.mail.call('updateSettings', { meetingHideWindow: on }), on);
+  const voiceState = () => win.evaluate(() => window.mail.call('voiceState'));
+
+  // Hiding is on by default: the hello asks Voice to leave Rukoo's process out, and windows.hide says it again.
+  expect(hello().pid).toBe(rukooPid);
+  expect(hello().hideWindows).toBe(true);
+  await expect.poll(hides).toEqual([true]);
+  expect(voice.rukooWindows()).toEqual({ hidden: [rukooPid], shown: [] });
+
+  // A meeting that records the screen. Turned off during it, Voice keeps Rukoo in the recording; on again, out. The
+  // header follows what Voice's status says its screen process confirmed, not the switch.
+  const id = voiceStarts({ title: 'Demo', screen: 'frames' });
+  const confirm = (shown, canShow = true) => voice.append('status', null, { recording: id, dictating: false, rukooWindows: { shown, canShow } });
+  confirm([]);
+  await indicator().click();
+  await expect(view().locator('.mt-title')).toHaveText('Demo');
+  await expect(view().locator('.mt-hidden')).toHaveText('Hidden from screen recordings');
+  await setHide(false);
+  await expect.poll(hides).toEqual([true, false]);
+  expect(voice.rukooWindows()).toEqual({ hidden: [], shown: [rukooPid] });
+  expect((await voiceState()).alwaysHidden).toBe(false);
+  // Not confirmed yet: Showing…, saying Voice is taking Rukoo in.
+  await expect(view().locator('.mt-pending')).toHaveText('Showing in screen recordings…');
+  await expect(view().locator('.mt-pending')).toHaveAttribute('title', /taking Rukoo's windows into this meeting's recording/);
+  confirm([rukooPid]);
+  await expect(view().locator('.mt-visible')).toHaveText('Visible in screen recordings');
+  await expect(view().locator('.mt-hidden')).toHaveCount(0);
+  await setHide(true);
+  await expect.poll(hides).toEqual([true, false, true]);
+  expect(voice.rukooWindows()).toEqual({ hidden: [rukooPid], shown: [] });
+  // Hidden only once Voice confirms it: Hiding… until then.
+  await expect(view().locator('.mt-pending')).toHaveText('Hiding from screen recordings…');
+  await expect(view().locator('.mt-visible')).toHaveCount(0);
+  confirm([]);
+  await expect(view().locator('.mt-hidden')).toHaveText('Hidden from screen recordings');
+  await expect(view().locator('.mt-visible')).toHaveCount(0);
+
+  // Off, then the connection drops: the reconnect's hello says off, and so does the windows.hide after its welcome.
+  await setHide(false);
+  await expect.poll(hides).toEqual([true, false, true, false]);
+  const hellos = voice.hellos.length;
+  voice.drop();
+  await expect.poll(() => voice.hellos.length, { timeout: 15000 }).toBe(hellos + 1);
+  await expect.poll(connected, { timeout: 10000 }).toBe(true);
+  expect(hello().hideWindows).toBe(false);
+  await expect.poll(hides).toEqual([true, false, true, false, false]);
+  expect(voice.rukooWindows()).toEqual({ hidden: [], shown: [rukooPid] });
+
+  // The screen recorder of this meeting came from an older Voice and can't keep Rukoo in: the header and Settings say so.
+  confirm([], false);
+  await expect(view().locator('.mt-hidden')).toHaveAttribute('title', /started in an older Rukoo Voice/);
+  expect((await voiceState()).meetingHidden).toBe(true);
+  confirm([rukooPid]);
+  await expect(view().locator('.mt-visible')).toHaveText('Visible in screen recordings');
+
+  // Settings › Meetings says the same as the header: confirmed, then pending once the switch changes.
+  await win.evaluate(() => document.querySelector('[data-action="settings"]').click());
+  await win.locator('[data-a="mtset-open"]').click();
+  const now = win.locator('.page.settings .mtset-now');
+  await expect(now).toHaveText("Rukoo shows in this meeting's screen recording now.");
+  await setHide(true);
+  await expect(now).toHaveText("Hiding Rukoo from this meeting's screen recording…");
+  confirm([]);
+  await expect(now).toHaveText('Rukoo is hidden from screen recordings now, because a meeting is recording.');
+  await setHide(false);
+  await expect(now).toHaveText("Showing Rukoo in this meeting's screen recording…");
+  confirm([rukooPid]);
+  await expect(now).toHaveText("Rukoo shows in this meeting's screen recording now.");
+  await win.click('.page.settings [data-a="back"]');
+  await win.click('.page.settings [data-a="back"]');
+
+  // A Voice from before windows.hide leaves Rukoo out whatever the switch says, and Rukoo says so.
+  voice.handlers['windows.hide'] = () => ({ error: { code: 'unknown_command', message: "Voice doesn't know the command `windows.hide`." } });
+  voice.drop();
+  await expect.poll(async () => (await voiceState()).alwaysHidden, { timeout: 15000 }).toBe(true);
+  // Rukoo connects to a newer Voice again: it finds out again.
+  const asked = hides().length;
+  delete voice.handlers['windows.hide'];
+  voice.drop();
+  await expect.poll(() => hides().length, { timeout: 15000 }).toBe(asked + 1);
+  await expect.poll(async () => (await voiceState()).alwaysHidden).toBe(false);
+  expect((await voiceState()).status).toBe('connected');
+  expect(voice.rukooWindows()).toEqual({ hidden: [], shown: [rukooPid] });
+  voice.append('meeting.state', id, { state: 'done', at: 20000, endedAt: Date.now() });
 });
 
 test('the Screen button moves the recording to another monitor; a Voice that can\'t do that loses the button', async () => {

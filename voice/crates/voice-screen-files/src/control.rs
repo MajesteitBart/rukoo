@@ -2,7 +2,7 @@
 //! control port") on `127.0.0.1`, one JSON object per line, each request carrying the token.
 //!
 //! Commands: `status`, `monitors`, `monitor { id }`, `pause`, `resume`, `stop`, `mode`, and on
-//! macOS `exclude { pids }`.
+//! macOS `exclude { pids, shown }`.
 //!
 //! Connection threads only read, check and answer what is wrong with a request; the process's
 //! main loop answers the rest, so the journal keeps a single writer.
@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
+
+use crate::exclude::{Exclusions, MAX_PIDS};
 
 pub const MAX_CONNECTIONS: usize = 8;
 /// A connection that sends no complete request within this time is closed.
@@ -33,29 +35,31 @@ pub const COMMANDS: [&str; 7] = [
 pub const COMMANDS: [&str; 8] = [
     "status", "monitors", "monitor", "pause", "resume", "stop", "mode", "exclude",
 ];
-/// The most pids `exclude` takes.
-#[cfg(target_os = "macos")]
-pub const MAX_EXCLUDED: usize = 64;
+/// What an `exclude` request says: `pids`, the processes to leave out, and `shown`, the Rukoo
+/// processes to keep in, each an array of at most [`MAX_PIDS`] pids from 1 up. `shown` is
+/// optional: a screen process from before it existed reads only `pids` and keeps leaving Rukoo
+/// out. `None` when either isn't such an array.
+pub fn exclusions(request: &Value) -> Option<Exclusions> {
+    let hidden = pid_list(&request["pids"])?;
+    let shown = match &request["shown"] {
+        Value::Null => Vec::new(),
+        list => pid_list(list)?,
+    };
+    Some(Exclusions::new(hidden, shown))
+}
 
-/// The pids of an `exclude` request: an array of at most `MAX_EXCLUDED` pids from 1 up, sorted
-/// and without repeats. `None` when `pids` isn't that.
-#[cfg(target_os = "macos")]
-pub fn excluded_pids(request: &Value) -> Option<Vec<u32>> {
-    let list = request["pids"].as_array()?;
-    if list.len() > MAX_EXCLUDED {
+fn pid_list(value: &Value) -> Option<Vec<u32>> {
+    let list = value.as_array()?;
+    if list.len() > MAX_PIDS {
         return None;
     }
-    let mut pids = list
-        .iter()
+    list.iter()
         .map(|pid| {
             pid.as_u64()
                 .and_then(|pid| u32::try_from(pid).ok())
                 .filter(|&pid| pid > 0)
         })
-        .collect::<Option<Vec<u32>>>()?;
-    pids.sort_unstable();
-    pids.dedup();
-    Some(pids)
+        .collect()
 }
 /// The longest monitor id `monitor` takes, as `screen.select` in the bridge.
 pub const MAX_MONITOR_ID: usize = 64;
@@ -191,7 +195,7 @@ fn check(request: &Value) -> Result<(), &'static str> {
         }
     }
     #[cfg(target_os = "macos")]
-    if cmd == "exclude" && excluded_pids(request).is_none() {
+    if cmd == "exclude" && exclusions(request).is_none() {
         return Err("bad_request");
     }
     if cmd == "mode" && !matches!(request["mode"].as_str(), Some("off" | "frames" | "video")) {
@@ -534,7 +538,9 @@ mod tests {
             with(json!({ "cmd": "exclude", "pids": [0] })),
             with(json!({ "cmd": "exclude", "pids": ["4821"] })),
             with(json!({ "cmd": "exclude", "pids": [-1] })),
-            with(json!({ "cmd": "exclude", "pids": vec![7; MAX_EXCLUDED + 1] })),
+            with(json!({ "cmd": "exclude", "pids": vec![7; MAX_PIDS + 1] })),
+            with(json!({ "cmd": "exclude", "pids": [], "shown": [0] })),
+            with(json!({ "cmd": "exclude", "pids": [], "shown": 4821 })),
         ] {
             assert_eq!(
                 exchange(&mut stream, &line),
@@ -545,23 +551,42 @@ mod tests {
         assert!(seen.try_recv().is_err(), "the main loop saw none of them");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn exclude_takes_a_short_list_of_pids() {
+    fn exclude_takes_short_lists_of_pids() {
+        let hidden = |pids: Vec<u32>| Some(Exclusions::new(pids, []));
         assert_eq!(
-            excluded_pids(&json!({ "pids": [4821, 77, 4821] })),
-            Some(vec![77, 4821])
+            exclusions(&json!({ "pids": [4821, 77, 4821] })),
+            hidden(vec![77, 4821])
         );
-        assert_eq!(excluded_pids(&json!({ "pids": [] })), Some(vec![]));
+        assert_eq!(exclusions(&json!({ "pids": [] })), hidden(vec![]));
         assert_eq!(
-            excluded_pids(&json!({ "pids": [u64::from(u32::MAX) + 1] })),
+            exclusions(&json!({ "pids": [u64::from(u32::MAX) + 1] })),
             None
         );
-        assert_eq!(excluded_pids(&json!({ "pids": 4821 })), None);
-        assert_eq!(excluded_pids(&json!({ "pids": [1.5] })), None);
+        assert_eq!(exclusions(&json!({ "pids": 4821 })), None);
+        assert_eq!(exclusions(&json!({ "pids": [1.5] })), None);
+        assert_eq!(exclusions(&json!({ "shown": [4821] })), None);
         assert_eq!(
-            excluded_pids(&json!({ "pids": vec![9; MAX_EXCLUDED] })),
-            Some(vec![9])
+            exclusions(&json!({ "pids": vec![9; MAX_PIDS] })),
+            hidden(vec![9])
+        );
+        // A Rukoo that wants its windows in the recording, and one whose connections disagree.
+        assert_eq!(
+            exclusions(&json!({ "pids": [77], "shown": [4821, 4821] })),
+            Some(Exclusions::new([77], [4821]))
+        );
+        assert_eq!(
+            exclusions(&json!({ "pids": [4821], "shown": [4821] })),
+            Some(Exclusions::new([4821], []))
+        );
+        assert_eq!(
+            exclusions(&json!({ "pids": [], "shown": null })),
+            hidden(vec![])
+        );
+        assert_eq!(exclusions(&json!({ "pids": [], "shown": [0] })), None);
+        assert_eq!(
+            exclusions(&json!({ "pids": [], "shown": vec![9; MAX_PIDS + 1] })),
+            None
         );
     }
 

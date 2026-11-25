@@ -10190,7 +10190,35 @@
   },
   "meeting.head.hiddenHelp": {
     "message": "Rukoo's windows stay out of screen recordings and screen shares until the meeting ends.",
-    "description": "Meeting view header and title bar indicator: tooltip explaining Hidden from screen recordings. src/renderer/meeting.js (renderHead, renderIndicator)"
+    "description": "Meeting view header and title bar indicator on Windows: tooltip explaining Hidden from screen recordings. src/renderer/meeting.js (hiddenHelp)"
+  },
+  "meeting.head.hiddenHelpMac": {
+    "message": "Rukoo Voice and older screen recorders leave Rukoo's windows out until the meeting ends. On macOS 15 and later, other apps' screen shares still show them.",
+    "description": "Meeting view header and title bar indicator on macOS: tooltip explaining Hidden from screen recordings, and what it doesn't cover. src/renderer/meeting.js (hiddenHelp)"
+  },
+  "meeting.head.hiding": {
+    "message": "Hiding from screen recordings…",
+    "description": "Meeting view header on macOS: chip while Rukoo Voice is taking Rukoo out of the meeting's screen recording and hasn't confirmed it yet. src/renderer/meeting.js (screenChip)"
+  },
+  "meeting.head.hidingHelp": {
+    "message": "Rukoo Voice is taking Rukoo's windows out of this meeting's recording. It records nothing of the screen until they're out.",
+    "description": "Meeting view header on macOS: tooltip of Hiding from screen recordings. src/renderer/meeting.js (screenChip)"
+  },
+  "meeting.head.showing": {
+    "message": "Showing in screen recordings…",
+    "description": "Meeting view header on macOS: chip while Rukoo Voice is taking Rukoo into the meeting's screen recording and hasn't confirmed it yet. src/renderer/meeting.js (screenChip)"
+  },
+  "meeting.head.hiddenThisMeetingHelp": {
+    "message": "This meeting's screen recording started in an older Rukoo Voice, which leaves Rukoo's windows out until the meeting ends, even with hiding turned off.",
+    "description": "Meeting view header on macOS: tooltip of Hidden from screen recordings when the screen recorder of this meeting came from an older Rukoo Voice and can't show Rukoo. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.head.hiddenPendingHelp": {
+    "message": "Rukoo Voice is taking Rukoo's windows into this meeting's recording. Until it has, they stay out.",
+    "description": "Meeting view header on macOS: tooltip of Hidden from screen recordings while hiding is off and Rukoo Voice hasn't confirmed Rukoo is in its recording yet. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.head.hiddenByVoiceHelp": {
+    "message": "This version of Rukoo Voice always leaves Rukoo's windows out of its recording, even with hiding turned off. Update Rukoo Voice to show them.",
+    "description": "Meeting view header on macOS: tooltip of Hidden from screen recordings when the connected Rukoo Voice is too old to show Rukoo in its recording. src/renderer/meeting.js (renderHead)"
   },
   "meeting.head.screen": {
     "message": "Screen: {mode}",
@@ -10563,6 +10591,26 @@
   "settings.meetings.hiddenNow": {
     "message": "Rukoo is hidden from screen recordings now, because a meeting is recording.",
     "description": "Settings > Meetings: note under the switches while the windows are hidden. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hiding": {
+    "message": "Hiding Rukoo from this meeting's screen recording…",
+    "description": "Settings > Meetings on macOS: line while Rukoo Voice is taking Rukoo out of the recording meeting's screen recording and hasn't confirmed it yet. src/renderer/meeting-settings.js (nowLine)"
+  },
+  "settings.meetings.showing": {
+    "message": "Showing Rukoo in this meeting's screen recording…",
+    "description": "Settings > Meetings on macOS: line while Rukoo Voice is taking Rukoo into the recording meeting's screen recording and hasn't confirmed it yet. src/renderer/meeting-settings.js (nowLine)"
+  },
+  "settings.meetings.visibleNow": {
+    "message": "Rukoo shows in this meeting's screen recording now.",
+    "description": "Settings > Meetings on macOS: line once Rukoo Voice confirmed Rukoo is in the recording meeting's screen recording. src/renderer/meeting-settings.js (nowLine)"
+  },
+  "settings.meetings.hideOldScreen": {
+    "message": "The meeting that is recording now started in an older Rukoo Voice, which leaves Rukoo out of its recording until the meeting ends, even with this switch off.",
+    "description": "Settings > Meetings on macOS: second line of the hide switch's description while the screen recorder of the meeting recording now came from an older Rukoo Voice. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hideOldVoice": {
+    "message": "This version of Rukoo Voice always leaves Rukoo out of its recordings, even with this switch off. Update Rukoo Voice to show Rukoo in them.",
+    "description": "Settings > Meetings on macOS: second line of the hide switch's description when the connected Rukoo Voice is too old to show Rukoo in its screen recording. src/renderer/meeting-settings.js"
   },
   "settings.meetings.agents": {
     "message": "Agents can read meetings",

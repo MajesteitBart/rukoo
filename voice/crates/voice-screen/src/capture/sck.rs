@@ -2,9 +2,10 @@
 //!
 //! The stream is set up once per capture session, on a thread of its own, from one read of
 //! `SCShareableContent`: the display with the id the monitor list chose, and every running
-//! application that stays out of the recording (Voice's own app, Rukoo, and the pids the command
-//! line names). Its filter is `initWithDisplay:excludingApplications:exceptingWindows:`, so those
-//! applications' windows are not in the frames and the desktop behind them is. The stream's size
+//! application that stays out of the recording (Voice's own app, Rukoo unless Rukoo asked to be
+//! in it, and the pids the command line names; `voice_screen_files::exclude` has the rules). Its
+//! filter is `initWithDisplay:excludingApplications:exceptingWindows:`, so those applications'
+//! windows are not in the frames and the desktop behind them is. The stream's size
 //! is the filter's content in pixels. The main thread, which answers the control port, never
 //! waits for a stream to start.
 //!
@@ -43,6 +44,7 @@ use objc2_screen_capture_kit::{
     SCStreamConfiguration, SCStreamDelegate, SCStreamErrorCode, SCStreamFrameInfoDirtyRects,
     SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
+use voice_screen_files::exclude::{self, Applied, Exclusions, FilterStep, Matched, StreamFilter};
 use voice_screen_files::monitors::MonitorInfo;
 
 use super::mac::PixelBuffer;
@@ -53,15 +55,6 @@ use crate::platform::{Frame, PlatformError, Source};
 use crate::record::{CaptureStop, Ev};
 use crate::video::size::video_size;
 use crate::video::FPS;
-
-/// The apps whose windows stay out of the recording, by bundle id: Rukoo, and Voice itself, whose
-/// pill, Settings and dialogs would otherwise be in the meeting's frames and video. A development
-/// Rukoo runs from Electron, which only its pid tells apart, so `--exclude-pid` covers that.
-pub const EXCLUDED_BUNDLES: [&str; 3] = [
-    "nl.bvdm.rukoo-mail",
-    "nl.bvdm.rukoo.voice",
-    "nl.bvdm.rukoo.voice.dev",
-];
 
 /// How long the shareable content and a starting stream may take.
 const ANSWER_WAIT: Duration = Duration::from_secs(5);
@@ -80,6 +73,9 @@ const STALL_AFTER: Duration = Duration::from_secs(10);
 /// How often the running stream's exclusions are read again: an app that starts, restarts or
 /// connects after the stream began must stay out of the recording too.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
+/// How long a read waits after one that failed, in 100 ns units: half a second. A change that
+/// hides holds the frames meanwhile.
+const REFRESH_RETRY_100NS: u64 = 5_000_000;
 
 /// The real screen. `start` hands the work to a thread of its own, so the main thread, which
 /// answers the control port, never waits on ScreenCaptureKit to start a stream: the shareable
@@ -88,8 +84,9 @@ const REFRESH_EVERY: Duration = Duration::from_secs(2);
 /// stops by itself does.
 pub struct ScreenSource {
     to_main: SyncSender<Ev<PixelBuffer>>,
-    /// The pids from `--exclude-pid`.
-    exclude_pids: Vec<u32>,
+    /// `--exclude-pid` and `--show-pid`, or the last `exclude`, and that change's revision.
+    exclusions: Exclusions,
+    revision: u64,
     shared: Arc<Mutex<Shared>>,
     /// The display and size of the last start, for starting a stalled stream again.
     last_start: Option<(u32, (u32, u32))>,
@@ -112,6 +109,22 @@ struct Shared {
     refreshing: bool,
     /// The last reason a re-read failed, so the log says it once.
     refresh_error: Option<String>,
+    /// The newest revision asked for: a re-read made for an older one installs nothing.
+    latest: u64,
+    /// After a read or a filter that failed, the next read waits until then, on the awake clock.
+    retry_at: Option<u64>,
+    /// The newest revision whose filter a stream has in place, and the boot time it was
+    /// confirmed; frames captured before it may come from the filter before.
+    applied: (u64, u64),
+}
+
+impl Shared {
+    /// A stream has the filter of `revision` in place from `boot` on.
+    fn applied(&mut self, revision: u64, boot: u64) {
+        if revision > self.applied.0 {
+            self.applied = (revision, boot);
+        }
+    }
 }
 
 /// A running stream and what it needs to keep running.
@@ -122,8 +135,8 @@ struct Live {
     /// The stream was started again after the one before it stalled.
     restarted: bool,
     display: u32,
-    /// What the stream's filter leaves out.
-    applied: Matched,
+    /// What the stream's filter applies, as far as is known.
+    filter: StreamFilter,
     stream: Retained<SCStream>,
     /// The stream's output and delegate. `Live` holds it until the stream stopped: whether a
     /// stream retains its delegate isn't in the header.
@@ -138,11 +151,20 @@ struct Live {
 unsafe impl Send for Live {}
 
 impl ScreenSource {
-    pub fn new(to_main: SyncSender<Ev<PixelBuffer>>, exclude_pids: Vec<u32>) -> ScreenSource {
+    pub fn new(
+        to_main: SyncSender<Ev<PixelBuffer>>,
+        exclusions: Exclusions,
+        revision: u64,
+    ) -> ScreenSource {
+        let shared = Shared {
+            latest: revision,
+            ..Shared::default()
+        };
         ScreenSource {
             to_main,
-            exclude_pids,
-            shared: Arc::new(Mutex::new(Shared::default())),
+            exclusions,
+            revision,
+            shared: Arc::new(Mutex::new(shared)),
             last_start: None,
             next_refresh: 0,
         }
@@ -150,28 +172,36 @@ impl ScreenSource {
 
     /// Reads the shareable content again on a thread of its own, at most every `REFRESH_EVERY`
     /// and one read at a time, and gives the running stream a new filter when what it must leave
-    /// out changed.
+    /// out changed. A stream whose filter is older than the newest change is due at once, also
+    /// while a read runs: the next tick after it starts the next one.
     fn refresh(&mut self) {
         let now = clock_mac::awake_100ns();
-        if now < self.next_refresh {
-            return;
-        }
-        self.next_refresh = now + REFRESH_EVERY.as_nanos() as u64 / 100;
         let generation = {
             let mut shared = lock(&self.shared);
             let Some(live) = shared.live.as_ref() else {
                 return;
             };
-            if shared.refreshing {
+            // A stream whose filter update was lost starts over instead.
+            if shared.refreshing
+                || shared.failed.is_some()
+                || live.filter.lost()
+                || shared.retry_at.is_some_and(|at| now < at)
+            {
+                return;
+            }
+            if now < self.next_refresh && live.filter.revision() >= self.revision {
                 return;
             }
             let generation = live.generation;
             shared.refreshing = true;
+            shared.retry_at = None;
             generation
         };
+        self.next_refresh = now + REFRESH_EVERY.as_nanos() as u64 / 100;
         let job = RefreshJob {
             generation,
-            pids: ScreenSource::excluded_pids(&self.exclude_pids),
+            revision: self.revision,
+            exclusions: ScreenSource::exclusions(&self.exclusions),
             shared: self.shared.clone(),
         };
         let spawned = std::thread::Builder::new()
@@ -194,7 +224,8 @@ impl ScreenSource {
         let job = StartJob {
             display,
             fallback,
-            pids: ScreenSource::excluded_pids(&self.exclude_pids),
+            exclusions: ScreenSource::exclusions(&self.exclusions),
+            revision: self.revision,
             generation,
             restarted,
             to_main: self.to_main.clone(),
@@ -207,19 +238,16 @@ impl ScreenSource {
             .map_err(|e| PlatformError::new(format!("can't start the capture's thread: {e}")))
     }
 
-    /// The pids whose windows stay out of the recording: this process, its parent (the Voice app
-    /// that started it), and the ones the command line names.
-    pub fn excluded_pids(from_args: &[u32]) -> Vec<u32> {
+    /// What stays out of the recording: `from`, with this process and its parent (the Voice
+    /// app that started it) hidden too.
+    pub fn exclusions(from: &Exclusions) -> Exclusions {
         // SAFETY: the call takes no arguments and only reads this process's parent.
         let parent = unsafe { libc::getppid() };
-        let mut pids = vec![std::process::id()];
+        let mut own = vec![std::process::id()];
         if parent > 1 {
-            pids.push(parent as u32);
+            own.push(parent as u32);
         }
-        pids.extend(from_args.iter().copied().filter(|&pid| pid != 0));
-        pids.sort_unstable();
-        pids.dedup();
-        pids
+        from.hiding(own)
     }
 }
 
@@ -252,10 +280,34 @@ impl Source for ScreenSource {
         }
     }
 
-    fn exclude(&mut self, pids: &[u32]) {
-        self.exclude_pids = pids.to_vec();
-        // The next tick reads the exclusions again.
+    fn exclude(&mut self, exclusions: &Exclusions, revision: u64) {
+        self.exclusions = exclusions.clone();
+        self.revision = revision;
+        lock(&self.shared).latest = revision;
+        // The next tick reads the exclusions again, or the one after a read that runs.
         self.next_refresh = 0;
+    }
+
+    fn applied(&self) -> Option<Applied> {
+        let shared = lock(&self.shared);
+        // Without an active stream nothing is recorded, so no Rukoo is kept in.
+        let shown = shared
+            .live
+            .as_ref()
+            .map(|live| live.filter.shown().to_vec())
+            .unwrap_or_default();
+        Some(Applied {
+            revision: shared.applied.0,
+            at: shared.applied.1,
+            shown,
+        })
+    }
+
+    fn already_out(&self, pid: u32) -> bool {
+        lock(&self.shared)
+            .live
+            .as_ref()
+            .is_some_and(|live| live.filter.leaves_out(pid))
     }
 
     fn health(&mut self) -> Option<CaptureStop> {
@@ -305,10 +357,11 @@ impl Source for ScreenSource {
     }
 }
 
-/// One re-read of the exclusions of a running stream.
+/// One re-read of the exclusions of a running stream, for the change of `revision`.
 struct RefreshJob {
     generation: u64,
-    pids: Vec<u32>,
+    revision: u64,
+    exclusions: Exclusions,
     shared: Arc<Mutex<Shared>>,
 }
 
@@ -340,22 +393,32 @@ impl RefreshJob {
                     ));
                     shared.refresh_error = Some(e.message.clone());
                 }
+                shared.retry_at = Some(clock_mac::awake_100ns() + REFRESH_RETRY_100NS);
                 return;
             }
         };
-        let exclusions = Exclusions::of(&content, &self.pids);
+        let exclusions = Excluded::of(&content, &self.exclusions);
         let (stream, display) = {
             let mut shared = lock(&self.shared);
             shared.refresh_error = None;
+            let latest = shared.latest;
             let Some(live) = shared
                 .live
-                .as_ref()
+                .as_mut()
                 .filter(|live| live.generation == self.generation)
             else {
                 return;
             };
-            if live.applied == exclusions.matched {
-                return;
+            match live.filter.next(self.revision, latest, &exclusions.matched) {
+                // A newer change came while the applications were read: the read for it follows.
+                FilterStep::Stale => return,
+                // The stream's filter already leaves out what this revision asks.
+                FilterStep::InPlace => {
+                    live.filter.in_place(self.revision, &self.exclusions);
+                    shared.applied(self.revision, clock_mac::boot_100ns());
+                    return;
+                }
+                FilterStep::Install => {}
             }
             (live.stream.clone(), live.display)
         };
@@ -382,29 +445,53 @@ impl RefreshJob {
         });
         match updated {
             Ok(()) => {
-                crate::log(format_args!("the capture now {}", exclusions.describe()));
+                // Frames from here on have this filter. A newer change that came meanwhile
+                // finds this revision older and is read next; frames wait for it if it hides.
+                let boot = clock_mac::boot_100ns();
+                crate::log(format_args!(
+                    "the capture now {} (revision {})",
+                    exclusions.describe(),
+                    self.revision
+                ));
                 let mut shared = lock(&self.shared);
                 if let Some(live) = shared
                     .live
                     .as_mut()
                     .filter(|live| live.generation == self.generation)
                 {
-                    live.applied = exclusions.matched;
+                    live.filter.installed(
+                        self.revision,
+                        exclusions.matched,
+                        self.exclusions.clone(),
+                    );
+                    if !live.filter.lost() {
+                        shared.applied(self.revision, boot);
+                    }
                 }
             }
             Err(e) => {
+                // The update failed or didn't answer, and may still land: what the stream's
+                // filter does isn't known any more, so the stream starts over with the newest
+                // exclusions, through the capture's bounded retries.
+                crate::log(format_args!("{e}; the capture starts over"));
                 let mut shared = lock(&self.shared);
-                if e.permission && shared.wanted == self.generation {
+                shared.retry_at = Some(clock_mac::awake_100ns() + REFRESH_RETRY_100NS);
+                if let Some(live) = shared
+                    .live
+                    .as_mut()
+                    .filter(|live| live.generation == self.generation)
+                {
+                    live.filter.lose(&self.exclusions);
+                }
+                if shared.wanted == self.generation {
                     shared.failed = Some((
                         self.generation,
                         CaptureStop {
                             why: e.to_string(),
-                            permission_lost: true,
+                            permission_lost: e.permission,
                             by_user: false,
                         },
                     ));
-                } else {
-                    crate::log(format_args!("{e}"));
                 }
             }
         }
@@ -428,7 +515,9 @@ struct StartJob {
     display: u32,
     /// The monitor's pixels, for a filter that doesn't say its own size.
     fallback: (u32, u32),
-    pids: Vec<u32>,
+    /// What the filter leaves out, and the change it was made for.
+    exclusions: Exclusions,
+    revision: u64,
     generation: u64,
     /// A stream started again after the one before it stalled.
     restarted: bool,
@@ -440,8 +529,12 @@ impl StartJob {
     fn run(self) {
         match self.open() {
             Opened::Running(live) => {
+                let boot = clock_mac::boot_100ns();
                 let mut shared = lock(&self.shared);
                 if shared.wanted == self.generation {
+                    // The stream captures with this revision's filter from its start. When a
+                    // newer change came meanwhile, the next tick reads it.
+                    shared.applied(self.revision, boot);
                     shared.live = Some(live);
                 } else {
                     // Stopped, or started again, while this start ran.
@@ -495,7 +588,7 @@ impl StartJob {
                 self.display
             )));
         };
-        let exclusions = Exclusions::of(&content, &self.pids);
+        let exclusions = Excluded::of(&content, &self.exclusions);
         crate::log(format_args!("the capture {}", exclusions.describe()));
         // SAFETY: every object lives until the filter has retained what it needs, and the empty
         // windows array is an exception list of none.
@@ -563,7 +656,11 @@ impl StartJob {
             started: clock_mac::awake_100ns(),
             restarted: self.restarted,
             display: self.display,
-            applied: exclusions.matched.clone(),
+            filter: StreamFilter::started(
+                self.revision,
+                exclusions.matched.clone(),
+                self.exclusions.clone(),
+            ),
             stream,
             output,
             _queue: queue,
@@ -679,36 +776,23 @@ pub fn stream_size(width: u32, height: u32) -> (u32, u32) {
     video_size(width, height)
 }
 
-/// Whether an application's windows stay out of the recording.
-fn excludes(pid: i32, bundle: &str, exclude_pids: &[u32]) -> bool {
-    pid > 0 && (exclude_pids.contains(&(pid as u32)) || EXCLUDED_BUNDLES.contains(&bundle))
-}
-
 /// What a filter leaves out, from one read of the shareable content.
-struct Exclusions {
+struct Excluded {
     applications: Vec<Retained<SCRunningApplication>>,
-    /// The pids and bundle ids that matched, and the pids asked for that no shareable
-    /// application has, such as a process without a window.
+    /// The pids and bundle ids that matched, the Rukoo pids kept in, and the pids asked for that
+    /// no shareable application has, such as a process without a window.
     matched: Matched,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Matched {
-    /// Sorted.
-    pids: Vec<u32>,
-    bundles: Vec<String>,
-    unmatched: Vec<u32>,
-}
-
-impl Exclusions {
-    fn of(content: &SCShareableContent, pids: &[u32]) -> Exclusions {
+impl Excluded {
+    fn of(content: &SCShareableContent, exclusions: &Exclusions) -> Excluded {
         let all = unsafe { content.applications() }.to_vec();
         let listed: Vec<(i32, String)> = all
             .iter()
             .map(|application| (unsafe { application.processID() }, bundle_id(application)))
             .collect();
-        let (chosen, matched) = matching(&listed, pids);
-        Exclusions {
+        let (chosen, matched) = exclude::matching(&listed, exclusions);
+        Excluded {
             applications: chosen.into_iter().map(|n| all[n].clone()).collect(),
             matched,
         }
@@ -717,49 +801,6 @@ impl Exclusions {
     fn describe(&self) -> String {
         self.matched.describe()
     }
-}
-
-impl Matched {
-    /// For the log: pids and bundle ids only, never window titles.
-    fn describe(&self) -> String {
-        let mut line = format!(
-            "leaves out pids {:?} (bundles {:?})",
-            self.pids, self.bundles
-        );
-        if !self.unmatched.is_empty() {
-            line.push_str(&format!(
-                "; no shareable application has pids {:?}",
-                self.unmatched
-            ));
-        }
-        line
-    }
-}
-
-/// Which of the `listed` applications (pid, bundle id) a filter leaves out for `pids`, by index,
-/// and what matched.
-fn matching(listed: &[(i32, String)], pids: &[u32]) -> (Vec<usize>, Matched) {
-    let mut chosen = Vec::new();
-    let mut matched = Matched::default();
-    for (n, (pid, bundle)) in listed.iter().enumerate() {
-        if !excludes(*pid, bundle, pids) {
-            continue;
-        }
-        chosen.push(n);
-        matched.pids.push(*pid as u32);
-        if EXCLUDED_BUNDLES.contains(&bundle.as_str()) && !matched.bundles.contains(bundle) {
-            matched.bundles.push(bundle.clone());
-        }
-    }
-    matched.pids.sort_unstable();
-    matched.pids.dedup();
-    matched.bundles.sort();
-    matched.unmatched = pids
-        .iter()
-        .copied()
-        .filter(|pid| !matched.pids.contains(pid))
-        .collect();
-    (chosen, matched)
 }
 
 /// An application's bundle id, or `""` for a process without one. The generated binding says the
@@ -1140,37 +1181,6 @@ mod tests {
         }
     }
 
-    /// The filter leaves out the applications with the pids asked for and Voice's and Rukoo's
-    /// bundles, and says which asked-for pids no application has.
-    #[test]
-    fn the_filter_leaves_out_pids_and_bundles() {
-        let listed = vec![
-            (10, "com.apple.finder".to_string()),
-            (20, "nl.bvdm.rukoo-mail".to_string()),
-            (30, String::new()),
-            (40, "nl.bvdm.rukoo.voice.dev".to_string()),
-            (50, "com.github.Electron".to_string()),
-            (0, "nl.bvdm.rukoo.voice".to_string()),
-        ];
-        let (chosen, matched) = matching(&listed, &[50, 30, 77]);
-        assert_eq!(chosen, [1, 2, 3, 4]);
-        assert_eq!(matched.pids, [20, 30, 40, 50]);
-        assert_eq!(
-            matched.bundles,
-            ["nl.bvdm.rukoo-mail", "nl.bvdm.rukoo.voice.dev"]
-        );
-        assert_eq!(matched.unmatched, [77]);
-        assert!(
-            matched.describe().contains("[77]"),
-            "{}",
-            matched.describe()
-        );
-        // A restarted Voice is a new pid with the same bundle: the set the filter needs changes.
-        let mut restarted = listed.clone();
-        restarted[3].0 = 41;
-        assert_ne!(matching(&restarted, &[50, 30, 77]).1, matched);
-    }
-
     /// The stream's size is the filter's content in pixels: points times the scale.
     #[test]
     fn the_filters_pixels_are_points_times_the_scale() {
@@ -1182,31 +1192,19 @@ mod tests {
     }
 
     /// The exclusions are this process, its parent and the command line's, without repeats and
-    /// without the 0 a bad caller could pass.
+    /// without the 0 a bad caller could pass, and the Rukoo processes shown stay shown.
     #[test]
     fn the_exclusions_name_this_process_and_the_command_line() {
-        let pids = ScreenSource::excluded_pids(&[7, 7, 0, 42]);
+        let exclusions = ScreenSource::exclusions(&Exclusions::new([7, 7, 0, 42], [90]));
+        let pids = &exclusions.hidden;
         assert!(pids.contains(&std::process::id()));
         assert!(pids.contains(&42) && pids.contains(&7));
         assert!(!pids.contains(&0));
         let mut sorted = pids.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted, pids, "not sorted and unique");
-    }
-
-    /// Voice, a development Voice and Rukoo are left out by bundle id, and anything else by pid.
-    #[test]
-    fn the_excluded_applications_are_voice_rukoo_and_the_named_pids() {
-        assert!(excludes(10, "nl.bvdm.rukoo-mail", &[]));
-        assert!(excludes(11, "nl.bvdm.rukoo.voice", &[]));
-        assert!(excludes(12, "nl.bvdm.rukoo.voice.dev", &[]));
-        assert!(excludes(13, "com.github.Electron", &[13]));
-        assert!(!excludes(14, "com.github.Electron", &[13]));
-        assert!(!excludes(15, "com.apple.Safari", &[]));
-        // A process without a bundle id, as some helpers have, is still excluded by pid.
-        assert!(excludes(16, "", &[16]));
-        assert!(!excludes(0, "nl.bvdm.rukoo-mail", &[]));
+        assert_eq!(&sorted, pids, "not sorted and unique");
+        assert_eq!(exclusions.shown, [90]);
     }
 
     /// A screen sample as ScreenCaptureKit hands one over: `picture` with a presentation time on
@@ -1564,7 +1562,7 @@ mod tests {
             return;
         };
         let (sender, receiver) = mpsc::sync_channel(8);
-        let mut source = ScreenSource::new(sender, Vec::new());
+        let mut source = ScreenSource::new(sender, Exclusions::default(), 1);
         // The start runs on a thread of its own; a failure comes back as an event.
         source.start(monitor, 1).expect("the capture didn't start");
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
@@ -1631,30 +1629,47 @@ mod tests {
     fn the_exclusions_reach_the_shareable_applications() {
         assert!(monitors_mac::has_permission());
         let content = shareable().expect("no shareable content");
-        let pids = ScreenSource::excluded_pids(&[]);
-        let exclusions = Exclusions::of(&content, &pids);
-        eprintln!("the filter {}", exclusions.describe());
+        let asked = ScreenSource::exclusions(&Exclusions::default());
+        let excluded = Excluded::of(&content, &asked);
+        eprintln!("the filter {}", excluded.describe());
         let all = unsafe { content.applications() }.to_vec();
-        for application in &exclusions.applications {
+        for application in &excluded.applications {
             let pid = unsafe { application.processID() };
             assert!(
-                excludes(pid, &bundle_id(application), &pids),
+                exclude::leaves_out(pid, &[bundle_id(application).as_str()], &asked),
                 "pid {pid} is left out without a reason"
             );
         }
         for application in &all {
-            if EXCLUDED_BUNDLES.contains(&bundle_id(application).as_str()) {
+            let bundle = bundle_id(application);
+            if exclude::VOICE_BUNDLES.contains(&bundle.as_str())
+                || exclude::RUKOO_BUNDLES.contains(&bundle.as_str())
+            {
                 let pid = unsafe { application.processID() } as u32;
-                assert!(
-                    exclusions.matched.pids.contains(&pid),
-                    "pid {pid} is missed"
-                );
+                assert!(excluded.matched.pids.contains(&pid), "pid {pid} is missed");
             }
         }
         // A pid asked for that matches nothing is named, not lost.
-        for pid in &exclusions.matched.unmatched {
-            assert!(pids.contains(pid));
+        for pid in &excluded.matched.unmatched {
+            assert!(asked.hidden.contains(pid));
         }
+        // A running Rukoo whose pid is shown stays in, and every other application stays as it
+        // was.
+        if let Some(rukoo) = all
+            .iter()
+            .find(|application| exclude::RUKOO_BUNDLES.contains(&bundle_id(application).as_str()))
+        {
+            let pid = unsafe { rukoo.processID() } as u32;
+            let shown = Excluded::of(&content, &Exclusions::new(asked.hidden.clone(), [pid]));
+            assert!(!shown.matched.pids.contains(&pid));
+            assert_eq!(shown.matched.kept, [pid]);
+            assert_eq!(
+                shown.applications.len() + 1,
+                excluded.applications.len(),
+                "showing Rukoo changed more than Rukoo"
+            );
+        }
+        let exclusions = excluded;
         let Some(display) = unsafe { content.displays() }.to_vec().into_iter().next() else {
             eprintln!("no display");
             return;

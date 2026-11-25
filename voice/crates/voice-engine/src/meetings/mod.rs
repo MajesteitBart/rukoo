@@ -47,7 +47,12 @@ pub struct Meetings {
 }
 
 /// What the last `status` event said: recording, dictating, the screen default.
-type Published = (Option<String>, bool, ScreenMode);
+type Published = (
+    Option<String>,
+    bool,
+    ScreenMode,
+    Option<voice_protocol::RukooWindowsReport>,
+);
 
 impl Meetings {
     pub fn new(
@@ -98,14 +103,18 @@ impl Meetings {
                 .and_then(std::sync::Weak::upgrade)
                 .map_or_else(Vec::new, |bridge| bridge.protection_clients())
         }));
-        // On macOS the screen process leaves every connected Rukoo's windows out of its capture.
+        // On macOS the screen process leaves every connected Rukoo's windows out of its capture,
+        // and keeps those of a Rukoo whose user turned hiding off.
         #[cfg(target_os = "macos")]
         let weak = bridge.as_ref().map(Arc::downgrade);
         #[cfg(target_os = "macos")]
         screen.set_exclude_pids(Box::new(move || {
-            weak.as_ref()
+            let windows = weak
+                .as_ref()
                 .and_then(std::sync::Weak::upgrade)
-                .map_or_else(Vec::new, |bridge| bridge.rukoo_pids())
+                .map(|bridge| bridge.rukoo_windows())
+                .unwrap_or_default();
+            voice_screen_files::exclude::Exclusions::new(windows.hidden, windows.shown)
         }));
         Meetings {
             controller,
@@ -232,20 +241,23 @@ impl Meetings {
         let recording = self.controller.current().map(|r| r.id);
         let dictating = self.dictating();
         let screen = self.controller.screen_default();
+        // On macOS, which Rukoo the screen recording keeps in.
+        let windows = self.screen.rukoo_windows();
         let mut published = self
             .published
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let now = (recording, dictating, screen);
+        let now = (recording, dictating, screen, windows);
         if published.as_ref() == Some(&now) {
             return;
         }
+        let mut status =
+            json!({"recording": now.0, "dictating": dictating, "screenDefault": screen});
+        if let Some(windows) = &now.3 {
+            status["rukooWindows"] = json!(windows);
+        }
         if log
-            .append(
-                voice_protocol::events::STATUS,
-                None,
-                json!({"recording": now.0, "dictating": dictating, "screenDefault": screen}),
-            )
+            .append(voice_protocol::events::STATUS, None, status)
             .is_ok()
         {
             *published = Some(now);

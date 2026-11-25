@@ -10754,6 +10754,24 @@ button.mt-person:disabled {
 .mtset-pill.is-error i {
   background: var(--danger);
 }
+/* What the recording does with Rukoo now, under the hide switch's description, as the meeting header says it. */
+.mtset-now {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+}
+.mtset-now.is-pending {
+  color: var(--text-2);
+}
+/* A second line in the hide switch's description: an older Mac Voice leaves Rukoo out whatever the switch says. */
+.mtset-warn {
+  display: block;
+  margin-top: 4px;
+  color: var(--warn);
+}
+:root.light .mtset-warn {
+  color: color-mix(in srgb, var(--warn) 55%, var(--text));
+}
 
 /* ---------- team chat ---------- */
 

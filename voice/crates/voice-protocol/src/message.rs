@@ -61,6 +61,7 @@ pub mod commands {
     pub const MEDIA_OPEN: &str = "media.open";
     pub const MEDIA_READ: &str = "media.read";
     pub const SPEAKERS_SPLIT: &str = "speakers.split";
+    pub const WINDOWS_HIDE: &str = "windows.hide";
 }
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
@@ -366,10 +367,15 @@ pub struct Hello {
     pub client: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
-    /// Rukoo's process id, when it sent one: the process that owns its windows. Voice uses it
-    /// to leave Rukoo out of its own screen recording.
+    /// Rukoo's process id, when it sent one: the process that owns its windows. Voice on macOS
+    /// uses it to leave Rukoo out of its own screen recording, or to keep it in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u64>,
+    /// Whether Rukoo wants its windows left out of Voice's screen recording: `Some(false)` when
+    /// the user turned hiding off in Rukoo's Settings. Left out, as an older Rukoo does, it
+    /// counts as `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_windows: Option<bool>,
     /// The instance Rukoo last saw, or `None` on its first connection.
     pub instance: Option<String>,
     /// The last sequence number Rukoo saw, or 0.
@@ -385,6 +391,7 @@ impl fmt::Debug for Hello {
             .field("client", &self.client)
             .field("client_version", &self.client_version)
             .field("pid", &self.pid)
+            .field("hide_windows", &self.hide_windows)
             .field("instance", &self.instance)
             .field("after", &self.after)
             .finish()
@@ -419,6 +426,35 @@ pub struct Status {
         skip_serializing_if = "Option::is_none"
     )]
     pub screen_default: Option<ScreenMode>,
+    /// What the screen recording does with Rukoo's windows, from a Mac Voice that knows
+    /// `windows.hide`. Voice elsewhere, and an older one, leaves it out.
+    #[serde(
+        rename = "rukooWindows",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rukoo_windows: Option<RukooWindowsReport>,
+}
+
+/// `rukooWindows` in a status: the Rukoo processes whose windows the screen recording keeps in
+/// now, as its screen process confirmed, and whether it can keep one in at all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RukooWindowsReport {
+    /// Sorted pids; empty while nothing records the screen or every Rukoo is left out.
+    pub shown: Vec<u32>,
+    /// False while the screen process that records can't keep a Rukoo in: one an older Voice
+    /// started, reattached after Voice started again, which leaves Rukoo out until it ends.
+    pub can_show: bool,
+}
+
+impl Default for RukooWindowsReport {
+    fn default() -> RukooWindowsReport {
+        RukooWindowsReport {
+            shown: Vec::new(),
+            can_show: true,
+        }
+    }
 }
 
 /// The message Voice sends before it closes a connection it refuses.
@@ -705,6 +741,11 @@ pub enum CommandBody {
         meeting: MeetingId,
         track: Track,
     },
+    /// Changes `hideWindows` of this connection's `hello`: whether Voice leaves the windows of
+    /// Rukoo's `pid` out of its screen recording.
+    WindowsHide {
+        hide: bool,
+    },
     /// A command this version doesn't know. Voice answers `unknown_command`.
     Unknown {
         command: String,
@@ -734,6 +775,7 @@ impl CommandBody {
             CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
             CommandBody::MediaRead { .. } => commands::MEDIA_READ,
             CommandBody::SpeakersSplit { .. } => commands::SPEAKERS_SPLIT,
+            CommandBody::WindowsHide { .. } => commands::WINDOWS_HIDE,
             CommandBody::Unknown { command, .. } => command,
         }
     }
@@ -817,6 +859,9 @@ impl CommandBody {
             CommandBody::SpeakersSplit { meeting, track } => {
                 args.insert("meeting".into(), meeting.as_str().into());
                 args.insert("track".into(), track.as_str().into());
+            }
+            CommandBody::WindowsHide { hide } => {
+                args.insert("hide".into(), (*hide).into());
             }
             CommandBody::Unknown { args: unknown, .. } => return Value::Object(unknown.clone()),
         }
@@ -1071,6 +1116,7 @@ mod tests {
             client: "rukoo".into(),
             client_version: None,
             pid: Some(4821),
+            hide_windows: Some(false),
             instance: None,
             after: 0,
         };

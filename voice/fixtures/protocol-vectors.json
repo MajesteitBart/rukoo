@@ -48,6 +48,11 @@
       "message": { "type": "hello", "protocol": 2, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "clientVersion": "2.2.0", "pid": 4821, "instance": null, "after": 0 }
     },
     {
+      "name": "hello from a Mac Rukoo that wants its windows in the recording",
+      "from": "rukoo",
+      "message": { "type": "hello", "protocol": 2, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "clientVersion": "2.2.0", "pid": 4821, "hideWindows": false, "instance": null, "after": 0 }
+    },
+    {
       "name": "hello with a cursor and an unknown field",
       "from": "rukoo",
       "message": { "type": "hello", "protocol": 1, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041, "future": true }
@@ -461,6 +466,21 @@
       "name": "a microphone passage that moved to another voice",
       "from": "voice",
       "message": { "type": "event", "seq": 1201, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700100, "data": { "id": "mic-000081000", "track": "mic", "speaker": "mic-2", "start": 81000, "end": 84500, "text": "I can do that, I have the export open already.", "revision": 2, "dictation": false, "language": "en" } }
+    },
+    {
+      "name": "windows.hide",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-61", "command": "windows.hide", "args": { "hide": false } }
+    },
+    {
+      "name": "status from a Mac Voice whose recording keeps Rukoo in",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1300, "event": "status", "createdAt": 1793003800000, "data": { "recording": "m-20261030-171203-4f2a", "dictating": false, "screenDefault": "frames", "rukooWindows": { "shown": [4821], "canShow": true } } }
+    },
+    {
+      "name": "status from a Mac Voice whose reattached screen recorder can't keep Rukoo in",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1301, "event": "status", "createdAt": 1793003800100, "data": { "recording": "m-20261030-171203-4f2a", "dictating": false, "rukooWindows": { "shown": [], "canShow": false } } }
     }
   ],
   "invalid": [
@@ -492,6 +512,13 @@
     { "name": "hello with a fractional protocol", "from": "rukoo", "reason": "protocol", "message": { "type": "hello", "protocol": 1.5, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "instance": null, "after": 0 } },
     { "name": "hello with an empty client", "from": "rukoo", "reason": "client", "message": { "type": "hello", "protocol": 1, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "", "instance": null, "after": 0 } },
     { "name": "hello with a pid of 0", "from": "rukoo", "reason": "pid", "message": { "type": "hello", "protocol": 2, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "pid": 0, "instance": null, "after": 0 } },
+    { "name": "hello with hideWindows as text", "from": "rukoo", "reason": "hideWindows", "message": { "type": "hello", "protocol": 2, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "pid": 4821, "hideWindows": "false", "instance": null, "after": 0 } },
+    { "name": "windows.hide without hide", "from": "rukoo", "reason": "hide", "message": { "type": "command", "id": "c-61", "command": "windows.hide", "args": {} } },
+    { "name": "windows.hide with a number", "from": "rukoo", "reason": "hide", "message": { "type": "command", "id": "c-61", "command": "windows.hide", "args": { "hide": 0 } } },
+    { "name": "rukooWindows without canShow", "from": "voice", "reason": "canShow", "message": { "type": "event", "seq": 5, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false, "rukooWindows": { "shown": [4821] } } } },
+    { "name": "rukooWindows with a pid of 0", "from": "voice", "reason": "shown", "message": { "type": "event", "seq": 5, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false, "rukooWindows": { "shown": [0], "canShow": true } } } },
+    { "name": "rukooWindows with a pid above 32 bits", "from": "voice", "reason": "shown", "message": { "type": "event", "seq": 5, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false, "rukooWindows": { "shown": [4294967296], "canShow": true } } } },
+    { "name": "rukooWindows with canShow as text", "from": "voice", "reason": "canShow", "message": { "type": "event", "seq": 5, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false, "rukooWindows": { "shown": [4821], "canShow": "yes" } } } },
     { "name": "event with seq 0", "from": "voice", "reason": "seq", "message": { "type": "event", "seq": 0, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false } } },
     { "name": "event with a negative seq", "from": "voice", "reason": "seq", "message": { "type": "event", "seq": -4, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false } } },
     { "name": "event without data", "from": "voice", "reason": "data", "message": { "type": "event", "seq": 5, "event": "status", "createdAt": 1793000000000 } },

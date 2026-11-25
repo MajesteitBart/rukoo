@@ -95,10 +95,11 @@ class Serve {
   }
 }
 
-// Rukoo as its main process runs it: the bridge client feeding the store, the store giving the cursor.
-function connect(t, file, store, cursor = () => store.cursor()) {
+// Rukoo as its main process runs it: the bridge client feeding the store, the store giving the cursor. extra: more
+// bridge options, such as a Mac's platform.
+function connect(t, file, store, cursor = () => store.cursor(), extra = {}) {
   const r = { events: [], invalid: [], welcomes: [] };
-  r.bridge = new VoiceBridge({ file, clientVersion: '9.9.9', cursor, ...FAST });
+  r.bridge = new VoiceBridge({ file, clientVersion: '9.9.9', cursor, ...FAST, ...extra });
   r.bridge.on('welcome', (msg) => {
     r.welcomes.push(msg);
     store.welcome(msg);
@@ -395,6 +396,31 @@ test('Rukoo talks to the real Voice bridge server', { skip: ENABLED ? false : 's
     assert.equal(call.code, 'bad_request');
     assert.equal((await refusal(b.command('speakers.split', { meeting: 'm-20200101-000000-0000', track: 'mic' }))).code, 'not_found');
     assert.deepEqual(r.invalid, []);
+  });
+
+  await t.test('a Mac Rukoo moves its windows in and out of the recording', async () => {
+    // Another Rukoo, as on a Mac whose user turned hiding off: Voice's server keeps its pid in the recording. On a Mac
+    // runner the first connection sends its own pid too, so only this one's is checked.
+    const PID = 4821;
+    const macStore = new VoiceStore({ dataDir: path.join(dir, 'rukoo-mac') });
+    t.after(() => macStore.close());
+    const mac = connect(t, file, macStore, undefined, { platform: 'darwin', pid: PID, hideWindows: () => false });
+    await until(() => mac.bridge.connected, 'the Mac connection');
+    const where = async () => {
+      const { hidden, shown } = await voice.send({ op: 'windows' });
+      return { hidden: hidden.includes(PID), shown: shown.includes(PID) };
+    };
+    assert.deepEqual(await where(), { hidden: false, shown: true });
+    assert.deepEqual(await mac.bridge.command('windows.hide', { hide: true }), {});
+    assert.deepEqual(await where(), { hidden: true, shown: false });
+    assert.deepEqual(await mac.bridge.command('windows.hide', { hide: false }), {});
+    assert.deepEqual(await where(), { hidden: false, shown: true });
+    const bad = await refusal(raw(mac.bridge, { type: 'command', id: 'c-raw-hide', command: 'windows.hide', args: { hide: 'no' } }));
+    assert.equal(bad.code, 'bad_request');
+    assert.deepEqual(await where(), { hidden: false, shown: true });
+    mac.bridge.close();
+    await until(async () => !(await where()).shown, 'the Mac Rukoo gone');
+    assert.deepEqual(mac.invalid, []);
   });
 
   let B;

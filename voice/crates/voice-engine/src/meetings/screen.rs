@@ -23,8 +23,10 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use voice_bridge::{ControlError, EventLog};
 use voice_meetings::Library;
-use voice_protocol::{events, ScreenMode, StartedBy};
+use voice_protocol::{events, RukooWindowsReport, ScreenMode, StartedBy};
 use voice_screen_files::caps::Capabilities;
+use voice_screen_files::exclude::Exclusions;
+use voice_screen_files::exclude::SHOWN_RENEW;
 use voice_screen_files::journal::{self, JournalReader, Line};
 use voice_screen_files::monitors::{self, MonitorInfo};
 use voice_screen_files::policy::{Part, Reason};
@@ -101,8 +103,9 @@ pub type FreeBytes = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 /// app run.
 pub type RukooClients = Box<dyn Fn() -> (usize, bool) + Send + Sync>;
 pub type ProtectionClients = Box<dyn Fn() -> Vec<u64> + Send + Sync>;
-/// The pids whose windows the screen process leaves out, as `--exclude-pid`.
-pub type ExcludePids = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
+/// Whose windows the screen process leaves out, as `--exclude-pid`, and the Rukoo processes it
+/// keeps in, as `--show-pid`.
+pub type ExcludePids = Box<dyn Fn() -> Exclusions + Send + Sync>;
 
 pub struct ScreenOptions {
     pub data_dir: PathBuf,
@@ -157,6 +160,9 @@ pub enum ScreenChange {
     Monitors {
         count: usize,
     },
+    /// What the screen recording does with Rukoo's windows changed, as `rukoo_windows` reports
+    /// it. macOS only.
+    Windows,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,11 +201,15 @@ struct ScreenLive {
     /// that follow aren't a graphics device: their reason has a notice of its own.
     no_permission: bool,
     monitors: Option<usize>,
-    /// The pids the screen process with this pid was last told to leave out, by `exclude` or on
-    /// its command line. Another process, or other pids, and the watchdog tells it again. macOS
-    /// only.
+    /// What the screen process with this pid was last told to leave out and keep in, by
+    /// `exclude` or on its command line. Another process, or other pids, and the watchdog tells
+    /// it again. macOS only.
     #[cfg(target_os = "macos")]
-    excluded: Option<(u32, Vec<u32>)>,
+    excluded: Option<(u32, Exclusions)>,
+    /// When that was last said, for renewing the permission to keep a Rukoo in, which lapses
+    /// in the screen process without it. macOS only.
+    #[cfg(target_os = "macos")]
+    renewed: Option<Instant>,
 }
 
 impl ScreenLive {
@@ -224,6 +234,8 @@ impl ScreenLive {
             monitors: None,
             #[cfg(target_os = "macos")]
             excluded: None,
+            #[cfg(target_os = "macos")]
+            renewed: None,
         }
     }
 
@@ -395,6 +407,9 @@ pub struct ScreenSupervisor {
     on_change: Box<dyn Fn(ScreenChange) + Send + Sync>,
     stopped: AtomicBool,
     watchdog: Mutex<Option<JoinHandle<()>>>,
+    /// The last `rukoo_windows` reported through `ScreenChange::Windows`. macOS only.
+    #[cfg(target_os = "macos")]
+    windows: Mutex<Option<RukooWindowsReport>>,
 }
 
 struct ModeProtection {
@@ -434,6 +449,8 @@ impl ScreenSupervisor {
             on_change: Box::new(on_change),
             stopped: AtomicBool::new(false),
             watchdog: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            windows: Mutex::new(None),
         });
         let weak = Arc::downgrade(&supervisor);
         let thread = thread::Builder::new()
@@ -453,10 +470,11 @@ impl ScreenSupervisor {
         *lock(&self.protection_clients) = Some(clients);
     }
 
-    /// The pids the screen process leaves out of its capture, on macOS. A launch passes them on
-    /// its command line, and the watchdog sends the running process `exclude` when they change,
-    /// as when a Rukoo connects, reconnects with another pid or quits mid-meeting. Nothing sets
-    /// them elsewhere, so the command line stays as before and no `exclude` goes out.
+    /// The pids the screen process leaves out of its capture, and the Rukoo pids it keeps in, on
+    /// macOS. A launch passes them on its command line, and the watchdog sends the running
+    /// process `exclude` when they change, as when a Rukoo connects, reconnects with another pid,
+    /// quits or turns hiding on or off mid-meeting. Nothing sets them elsewhere, so the command
+    /// line stays as before and no `exclude` goes out.
     pub fn set_exclude_pids(&self, pids: ExcludePids) {
         *lock(&self.exclude_pids) = Some(pids);
     }
@@ -467,23 +485,23 @@ impl ScreenSupervisor {
             .map_or_else(HashSet::new, |clients| clients().into_iter().collect())
     }
 
-    fn exclude_pids(&self) -> Vec<u32> {
-        let mut pids = lock(&self.exclude_pids)
+    fn exclusions(&self) -> Exclusions {
+        let wanted = lock(&self.exclude_pids)
             .as_ref()
-            .map_or_else(Vec::new, |pids| pids());
-        pids.sort_unstable();
-        pids.dedup();
-        pids
+            .map_or_else(Exclusions::default, |pids| pids());
+        // Sorted, without repeats, and a pid both hidden and shown stays hidden.
+        Exclusions::new(wanted.hidden, wanted.shown)
     }
 
-    /// Tells the running screen process which pids to leave out. A process that doesn't know
-    /// the command, from an older Voice, keeps what its command line said; only a request that
-    /// didn't arrive is tried again on the next round. macOS only.
+    /// Tells the running screen process which pids to leave out and which Rukoo pids to keep
+    /// in. A process that doesn't know the command keeps what its command line said, and one
+    /// from before `shown` existed reads only `pids` and keeps leaving Rukoo out; only a request
+    /// that didn't arrive is tried again on the next round. macOS only.
     #[cfg(target_os = "macos")]
-    fn send_exclude(&self, id: &str, file: &ScreenFile, pids: Vec<u32>) {
+    fn send_exclude(&self, id: &str, file: &ScreenFile, wanted: Exclusions) {
         let reply = match request(
             file,
-            json!({ "cmd": "exclude", "pids": pids }),
+            json!({ "cmd": "exclude", "pids": wanted.hidden, "shown": wanted.shown }),
             REQUEST_WAIT,
         ) {
             Ok(reply) => reply,
@@ -500,7 +518,74 @@ impl ScreenSupervisor {
             .as_mut()
             .filter(|l| l.id == id && l.file.as_ref() == Some(file))
         {
-            live.excluded = Some((file.pid, pids));
+            live.excluded = Some((file.pid, wanted));
+            live.renewed = Some(Instant::now());
+        }
+    }
+
+    /// What the screen recording does with Rukoo's windows, for Rukoo's `status`: the Rukoo pids
+    /// its screen process confirmed it keeps in, and whether it can keep one in. A screen process
+    /// from before `shown` existed, reattached after Voice started again, has no `shown` in its
+    /// status and leaves Rukoo out until it ends. `None` off macOS, where Voice can't filter by
+    /// process.
+    pub fn rukoo_windows(&self) -> Option<RukooWindowsReport> {
+        #[cfg(target_os = "macos")]
+        {
+            let slot = self.lock();
+            let status = slot
+                .as_ref()
+                .filter(|live| live.phase == Phase::Running && live.file.is_some())
+                .and_then(|live| live.status.as_ref());
+            Some(windows_report(status))
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
+    }
+
+    /// Reports a change of `rukoo_windows` once, as `ScreenChange::Windows`. macOS only.
+    #[cfg(target_os = "macos")]
+    fn report_windows(&self) {
+        let now = self.rukoo_windows();
+        let mut last = lock(&self.windows);
+        if *last == now {
+            return;
+        }
+        *last = now;
+        drop(last);
+        (self.on_change)(ScreenChange::Windows);
+    }
+
+    /// Voice is quitting: a screen process that keeps a Rukoo in leaves it out from now on,
+    /// instead of when Voice's permission lapses. The watchdog has stopped, so no renewal
+    /// follows. It goes out whether or not an `exclude` was answered before: the screen process
+    /// hides every Rukoo it ever showed, the command line's `--show-pid`s too, once an `exclude`
+    /// doesn't show it, and this one shows none. macOS only.
+    #[cfg(target_os = "macos")]
+    fn revoke_shown(&self) {
+        let wanted = self.exclusions();
+        let target = {
+            let slot = self.lock();
+            slot.as_ref().and_then(|live| {
+                let file = live.file.clone()?;
+                let said = live.excluded.as_ref().map(|(_, said)| said.clone());
+                let all = Exclusions::new(
+                    wanted
+                        .hidden
+                        .iter()
+                        .chain(said.iter().flat_map(|s| s.hidden.iter()))
+                        .copied(),
+                    wanted
+                        .shown
+                        .iter()
+                        .chain(said.iter().flat_map(|s| s.shown.iter()))
+                        .copied(),
+                );
+                Some((live.id.clone(), file, all.hiding_shown()))
+            })
+        };
+        if let Some((id, file, hidden)) = target {
+            log::info!("screen: {id}: Voice quits; leaving every Rukoo out");
+            self.send_exclude(&id, &file, hidden);
         }
     }
 
@@ -1490,6 +1575,8 @@ impl ScreenSupervisor {
     }
 
     /// Stops watching. A screen process that records goes on; the next start reattaches to it.
+    /// On macOS it leaves every Rukoo out from now on: without Voice nothing renews the
+    /// permission to keep one in.
     pub fn shutdown(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.changed.notify_all();
@@ -1500,6 +1587,8 @@ impl ScreenSupervisor {
                 let _ = thread.join();
             }
         }
+        #[cfg(target_os = "macos")]
+        self.revoke_shown();
     }
 
     // The process ----------------------------------------------------------------------------
@@ -1528,7 +1617,7 @@ impl ScreenSupervisor {
             resume,
             self.test_monitor.as_deref(),
             self.test.as_deref(),
-            &self.exclude_pids(),
+            &self.exclusions(),
         ));
         let log_name = format!("screen-{id}.log");
         command
@@ -1598,13 +1687,21 @@ impl ScreenSupervisor {
 
     // The watchdog ---------------------------------------------------------------------------
 
-    /// One watchdog round. The status request runs without the slot's lock, so a screen process
-    /// that is slow to answer doesn't hold up `screen.get`, `screen.select` or the pill.
+    /// One watchdog round, and on macOS a report when what the recording does with Rukoo's
+    /// windows changed.
     fn check(&self) {
+        self.check_live();
+        #[cfg(target_os = "macos")]
+        self.report_windows();
+    }
+
+    /// The status request runs without the slot's lock, so a screen process that is slow to
+    /// answer doesn't hold up `screen.get`, `screen.select` or the pill.
+    fn check_live(&self) {
         // Read before the slot's lock: the bridge answers it under a lock of its own. macOS only.
         #[cfg(target_os = "macos")]
-        let wanted = self.exclude_pids();
-        let (id, file, exited, mut changes) = {
+        let wanted = self.exclusions();
+        let (id, file, exited, mut changes, exclude) = {
             let mut slot = self.lock();
             let Some(live) = slot.as_mut() else {
                 return;
@@ -1617,8 +1714,29 @@ impl ScreenSupervisor {
                 .child
                 .as_mut()
                 .is_some_and(|child| !matches!(child.try_wait(), Ok(None)));
-            (live.id.clone(), live.file.clone(), exited, changes)
+            // Changed, or a Rukoo is kept in and its permission needs renewing before it lapses.
+            // It goes before the status request, so slow status answers don't let it lapse.
+            #[cfg(target_os = "macos")]
+            let exclude = live.file.clone().filter(|file| {
+                !exited
+                    && needs_exclude(
+                        live.excluded.as_ref(),
+                        file.pid,
+                        &wanted,
+                        live.renewed,
+                        Instant::now(),
+                    )
+            });
+            #[cfg(not(target_os = "macos"))]
+            let exclude: Option<ScreenFile> = None;
+            (live.id.clone(), live.file.clone(), exited, changes, exclude)
         };
+        #[cfg(target_os = "macos")]
+        if let Some(file) = &exclude {
+            self.send_exclude(&id, file, wanted.clone());
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = exclude;
         let status = match (&file, exited) {
             (Some(file), false) => request(file, json!({"cmd": "status"}), REQUEST_WAIT)
                 .ok()
@@ -1648,15 +1766,7 @@ impl ScreenSupervisor {
                 });
             }
             live.status = Some(status);
-            #[cfg(target_os = "macos")]
-            let exclude = file
-                .clone()
-                .filter(|file| live.excluded.as_ref() != Some(&(file.pid, wanted.clone())));
             drop(slot);
-            #[cfg(target_os = "macos")]
-            if let Some(file) = exclude {
-                self.send_exclude(&id, &file, wanted);
-            }
             self.emit_all(changes);
             return;
         }
@@ -1778,7 +1888,7 @@ fn record_args(
     resume: bool,
     test_monitor: Option<&str>,
     test: Option<&str>,
-    exclude_pids: &[u32],
+    exclusions: &Exclusions,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "record".into(),
@@ -1798,12 +1908,61 @@ fn record_args(
         args.push("--test".into());
         args.push(test.into());
     }
-    // Every connected Rukoo's pid, so its windows stay out of the recording.
-    for pid in exclude_pids {
+    // Every connected Rukoo's pid, so its windows stay out of the recording, unless its user
+    // turned hiding off: then the recording keeps it in.
+    for pid in &exclusions.hidden {
         args.push("--exclude-pid".into());
         args.push(pid.to_string().into());
     }
+    for pid in &exclusions.shown {
+        args.push("--show-pid".into());
+        args.push(pid.to_string().into());
+    }
     args
+}
+
+/// Whether the screen process with pid `pid` needs an `exclude` now: what it was last told isn't
+/// `wanted`, or a Rukoo is kept in and the last renewal, at `renewed`, is [`SHOWN_RENEW`] old.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn needs_exclude(
+    said: Option<&(u32, Exclusions)>,
+    pid: u32,
+    wanted: &Exclusions,
+    renewed: Option<Instant>,
+    now: Instant,
+) -> bool {
+    said.is_none_or(|(to, what)| *to != pid || what != wanted)
+        || (!wanted.shown.is_empty()
+            && renewed.is_none_or(|at| now.duration_since(at) >= SHOWN_RENEW))
+}
+
+/// The `rukooWindows` of a status from a screen process's status reply: `shown` there is what
+/// its capture confirmed. A reply without it comes from a screen process that can't keep Rukoo
+/// in; no reply, from no running screen process, keeps nothing in and could.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn windows_report(status: Option<&Value>) -> RukooWindowsReport {
+    let Some(status) = status else {
+        return RukooWindowsReport::default();
+    };
+    match status["shown"].as_array() {
+        Some(list) => {
+            let mut shown: Vec<u32> = list
+                .iter()
+                .filter_map(|pid| pid.as_u64().and_then(|pid| u32::try_from(pid).ok()))
+                .filter(|&pid| pid > 0)
+                .collect();
+            shown.sort_unstable();
+            shown.dedup();
+            RukooWindowsReport {
+                shown,
+                can_show: true,
+            }
+        }
+        None => RukooWindowsReport {
+            shown: Vec::new(),
+            can_show: false,
+        },
+    }
 }
 
 fn watch(supervisor: Weak<ScreenSupervisor>) {
@@ -1935,7 +2094,6 @@ mod tests {
         assert_eq!(timing.end_wait, Duration::from_secs(10));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn the_screen_process_learns_the_pids_to_leave_out() {
         let args = record_args(
@@ -1944,7 +2102,7 @@ mod tests {
             false,
             None,
             None,
-            &[4821, 77],
+            &Exclusions::new([4821, 77], [90]),
         );
         assert_eq!(
             args,
@@ -1955,9 +2113,11 @@ mod tests {
                 "--mode",
                 "frames",
                 "--exclude-pid",
-                "4821",
-                "--exclude-pid",
                 "77",
+                "--exclude-pid",
+                "4821",
+                "--show-pid",
+                "90",
             ]
             .map(OsString::from)
         );
@@ -1968,7 +2128,7 @@ mod tests {
             true,
             Some("display-2"),
             Some("synthetic:640x480"),
-            &[],
+            &Exclusions::default(),
         );
         assert_eq!(
             none,
@@ -1985,6 +2145,64 @@ mod tests {
                 "synthetic:640x480",
             ]
             .map(OsString::from)
+        );
+    }
+
+    /// The watchdog tells the screen process what changed, and renews a shown Rukoo's
+    /// permission every `SHOWN_RENEW`, whatever the status requests do.
+    #[test]
+    fn the_watchdog_renews_the_permission_on_its_own_clock() {
+        let now = Instant::now();
+        let shown = Exclusions::new([77], [4821]);
+        let hidden = Exclusions::new([77, 4821], []);
+        assert!(needs_exclude(None, 9, &hidden, None, now));
+        let told = (9, hidden.clone());
+        assert!(!needs_exclude(Some(&told), 9, &hidden, None, now));
+        // Another screen process, or other lists.
+        assert!(needs_exclude(Some(&told), 10, &hidden, None, now));
+        assert!(needs_exclude(Some(&told), 9, &shown, None, now));
+        let told = (9, shown.clone());
+        assert!(!needs_exclude(Some(&told), 9, &shown, Some(now), now));
+        assert!(!needs_exclude(
+            Some(&told),
+            9,
+            &shown,
+            Some(now),
+            now + SHOWN_RENEW / 2
+        ));
+        assert!(needs_exclude(
+            Some(&told),
+            9,
+            &shown,
+            Some(now),
+            now + SHOWN_RENEW
+        ));
+        assert!(SHOWN_RENEW * 3 <= voice_screen_files::exclude::SHOWN_LEASE);
+    }
+
+    /// Rukoo hears what the screen process confirmed it keeps in, and that a screen process
+    /// from before `shown` can't keep it in.
+    #[test]
+    fn the_windows_report_follows_the_screen_process_status() {
+        assert_eq!(windows_report(None), RukooWindowsReport::default());
+        assert_eq!(
+            windows_report(Some(&json!({ "ok": true, "shown": [4821, 77, 4821] }))),
+            RukooWindowsReport {
+                shown: vec![77, 4821],
+                can_show: true,
+            }
+        );
+        assert_eq!(
+            windows_report(Some(&json!({ "ok": true, "shown": [] }))),
+            RukooWindowsReport::default()
+        );
+        // An older screen process: its status says nothing about Rukoo.
+        assert_eq!(
+            windows_report(Some(&json!({ "ok": true, "state": "recording" }))),
+            RukooWindowsReport {
+                shown: Vec::new(),
+                can_show: false,
+            }
         );
     }
 

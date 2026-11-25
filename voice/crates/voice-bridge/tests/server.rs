@@ -14,7 +14,7 @@ use common::{
     NEW_MEETING,
 };
 use serde_json::{json, Value};
-use voice_bridge::{EventLog, Options};
+use voice_bridge::{EventLog, Options, RukooWindows, COMMAND_BACKLOG};
 use voice_protocol::{validate_discovery, CLIP_WAIT, MAX_RUKOO_MESSAGE};
 
 const A: &str = "m-20261030-171203-4f2a";
@@ -68,30 +68,60 @@ fn protection_waits_for_rukoo_windows_but_not_diagnostic_clients() {
 }
 
 /// The pid a Rukoo on macOS sends in its `hello`.
-#[cfg(target_os = "macos")]
 const RUKOO_PID: u32 = 4821;
 
-/// A Rukoo client whose `hello` carries a pid, as Rukoo on macOS sends it.
-#[cfg(target_os = "macos")]
-fn rukoo_with_pid(bridge: &Bridge) -> Client {
+/// A Rukoo client whose `hello` carries a pid, as Rukoo on macOS sends it, and `hideWindows`
+/// when `hide` is given.
+fn rukoo_with_pid(bridge: &Bridge, hide: Option<bool>) -> Client {
     let mut client = Client::connect(bridge.port());
-    client.send(json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"rukoo", "clientVersion":"2.3.0", "pid": RUKOO_PID, "instance":null, "after":0}));
+    let mut hello = json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"rukoo", "clientVersion":"2.3.0", "pid": RUKOO_PID, "instance":null, "after":0});
+    if let Some(hide) = hide {
+        hello["hideWindows"] = hide.into();
+    }
+    client.send(hello);
     assert_eq!(client.read()["type"], "welcome");
     client
 }
 
-/// macOS leaves the windows of every connected Rukoo out of its screen recording, by pid.
-#[cfg(target_os = "macos")]
+fn hidden(pids: &[u32]) -> RukooWindows {
+    RukooWindows {
+        hidden: pids.to_vec(),
+        shown: Vec::new(),
+    }
+}
+
+fn shown(pids: &[u32]) -> RukooWindows {
+    RukooWindows {
+        hidden: Vec::new(),
+        shown: pids.to_vec(),
+    }
+}
+
+/// Sends `windows.hide` and returns its reply.
+fn windows_hide(client: &mut Client, id: &str, hide: bool) -> Value {
+    client.command(id, "windows.hide", json!({ "hide": hide }));
+    loop {
+        let message = client.read();
+        if message["type"] == "reply" && message["id"] == id {
+            return message;
+        }
+    }
+}
+
+/// macOS leaves the windows of every connected Rukoo out of its screen recording, by pid, unless
+/// that Rukoo says it wants them in.
 #[test]
 fn the_pids_are_the_welcomed_rukoo_clients_that_sent_one() {
     let bridge = Bridge::start("server-rukoo-pids");
     let handle = bridge.handle.as_ref().unwrap();
-    assert!(handle.rukoo_pids().is_empty());
-    let mut rukoo = rukoo_with_pid(&bridge);
+    assert_eq!(handle.rukoo_windows(), RukooWindows::default());
+    // A Rukoo that leaves hideWindows out, as one before it existed does, hides its windows.
+    let mut rukoo = rukoo_with_pid(&bridge, None);
     assert!(read_until_status_reply(&mut rukoo, "rukoo-ready").is_empty());
-    assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
     let clients = handle.clients();
     assert_eq!(clients.connected[0].pid, Some(u64::from(RUKOO_PID)));
+    assert!(clients.connected[0].hide_windows);
 
     // A client with another name, or one without a pid, isn't a Rukoo window to leave out.
     let mut probe = Client::connect(bridge.port());
@@ -100,21 +130,181 @@ fn the_pids_are_the_welcomed_rukoo_clients_that_sent_one() {
     let mut older = Client::connect(bridge.port());
     older.send(json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"rukoo", "clientVersion":"2.1.0", "instance":null, "after":0}));
     assert_eq!(older.read()["type"], "welcome");
-    assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
 
     // A second Rukoo on the same pid is one process: it is named once.
-    let mut again = rukoo_with_pid(&bridge);
+    let mut again = rukoo_with_pid(&bridge, Some(true));
     assert!(read_until_status_reply(&mut again, "rukoo-again").is_empty());
-    assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
 
     // A client that leaves takes its pid with it.
     drop(rukoo);
     drop(again);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !handle.rukoo_pids().is_empty() {
+    while handle.rukoo_windows() != RukooWindows::default() {
         assert!(Instant::now() < deadline, "the pid stayed in the list");
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A Rukoo whose user turned hiding off says so in its hello, and `windows.hide` changes it while
+/// the connection lasts, also behind a command that is still running.
+#[test]
+fn windows_hide_moves_a_rukoo_between_hidden_and_shown() {
+    let bridge = Bridge::start("server-windows-hide");
+    let handle = bridge.handle.as_ref().unwrap();
+    let mut rukoo = rukoo_with_pid(&bridge, Some(false));
+    assert!(read_until_status_reply(&mut rukoo, "rukoo-ready").is_empty());
+    assert_eq!(handle.rukoo_windows(), shown(&[RUKOO_PID]));
+    assert!(!handle.clients().connected[0].hide_windows);
+
+    let reply = windows_hide(&mut rukoo, "hide-1", true);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["result"], json!({}));
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
+    assert!(handle.clients().connected[0].hide_windows);
+    let reply = windows_hide(&mut rukoo, "hide-2", false);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(handle.rukoo_windows(), shown(&[RUKOO_PID]));
+
+    // A bad one changes nothing.
+    rukoo.command("hide-3", "windows.hide", json!({ "hide": "yes" }));
+    let reply = rukoo.read();
+    assert_eq!(reply["error"]["code"], "bad_request", "{reply}");
+    assert_eq!(handle.rukoo_windows(), shown(&[RUKOO_PID]));
+
+    // It doesn't wait behind a command that is still running.
+    let (open, gate) = std::sync::mpsc::channel();
+    *bridge.control.gate.lock().unwrap() = Some(gate);
+    rukoo.command(
+        "mark-1",
+        "meeting.mark",
+        json!({ "meeting": DONE_MEETING, "label": "wait" }),
+    );
+    let reply = windows_hide(&mut rukoo, "hide-4", true);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
+    open.send(()).unwrap();
+    rukoo.read_reply("mark-1");
+    assert_eq!(windows_hide(&mut rukoo, "hide-5", false)["ok"], true);
+
+    // Another connection of the same process that still hides wins: the recording fails closed.
+    let mut stale = rukoo_with_pid(&bridge, None);
+    assert!(read_until_status_reply(&mut stale, "stale-ready").is_empty());
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
+    drop(stale);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while handle.rukoo_windows() != shown(&[RUKOO_PID]) {
+        assert!(
+            Instant::now() < deadline,
+            "the closed connection still hid the windows"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// With a command running and its queue full, the connection keeps reading: ordinary commands
+/// wait in its backlog and are answered in order later, and a `windows.hide` after them is
+/// answered and applied at once.
+#[test]
+fn windows_hide_doesnt_wait_behind_a_full_queue() {
+    let bridge = Bridge::start("server-full-queue");
+    let handle = bridge.handle.as_ref().unwrap();
+    let (open, gate) = std::sync::mpsc::channel();
+    *bridge.control.gate.lock().unwrap() = Some(gate);
+    let mut rukoo = rukoo_with_pid(&bridge, Some(false));
+    assert!(read_until_status_reply(&mut rukoo, "rukoo-ready").is_empty());
+    rukoo.command(
+        "mark-1",
+        "meeting.mark",
+        json!({ "meeting": DONE_MEETING, "label": "wait" }),
+    );
+    // The mark runs and holds the queue; 32 fill it and the rest wait behind them.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !bridge
+        .control
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c.starts_with("mark"))
+    {
+        assert!(Instant::now() < deadline, "the mark didn't start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    const WAITING: usize = 80;
+    for n in 0..WAITING {
+        rukoo.command(&format!("q-{n}"), "status.get", json!({}));
+    }
+    let reply = windows_hide(&mut rukoo, "hide-1", true);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(handle.rukoo_windows(), hidden(&[RUKOO_PID]));
+    // The rest are answered in order once the mark is done.
+    open.send(()).unwrap();
+    rukoo.read_reply("mark-1");
+    for n in 0..WAITING {
+        assert_eq!(rukoo.read_reply(&format!("q-{n}"))["ok"], true);
+    }
+}
+
+/// Past `COMMAND_BACKLOG` waiting commands, the next is answered `busy` at once, and the
+/// connection goes on.
+#[test]
+fn a_full_backlog_answers_busy() {
+    let bridge = Bridge::start("server-full-backlog");
+    let (open, gate) = std::sync::mpsc::channel();
+    *bridge.control.gate.lock().unwrap() = Some(gate);
+    let (mut client, _) = bridge.client(None, 0);
+    client.command(
+        "mark-1",
+        "meeting.mark",
+        json!({ "meeting": DONE_MEETING, "label": "wait" }),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !bridge
+        .control
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c.starts_with("mark"))
+    {
+        assert!(Instant::now() < deadline, "the mark didn't start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    // 32 in the queue and COMMAND_BACKLOG behind them; the one after is refused.
+    let waiting = 32 + COMMAND_BACKLOG;
+    for n in 0..waiting {
+        client.command(&format!("q-{n}"), "status.get", json!({}));
+    }
+    client.command("over", "status.get", json!({}));
+    let busy = client.read();
+    assert_eq!(busy["id"], "over", "{busy}");
+    assert_eq!(busy["error"]["code"], "busy", "{busy}");
+    open.send(()).unwrap();
+    client.read_reply("mark-1");
+    for n in 0..waiting {
+        assert_eq!(client.read_reply(&format!("q-{n}"))["ok"], true);
+    }
+}
+
+#[test]
+fn rukoo_windows_hide_a_process_any_connection_hides() {
+    assert_eq!(
+        RukooWindows::of([
+            (7, false),
+            (5, true),
+            (7, true),
+            (9, false),
+            (9, false),
+            (0, true)
+        ]),
+        RukooWindows {
+            hidden: vec![5, 7],
+            shown: vec![9],
+        }
+    );
+    assert_eq!(RukooWindows::of([]), RukooWindows::default());
 }
 
 #[test]

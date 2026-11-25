@@ -8,12 +8,13 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 use voice_screen_files::clock::Now;
+use voice_screen_files::exclude::Exclusions;
 use voice_screen_files::frames::Thumb;
 use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 
 use crate::args::TestSpec;
 use crate::capture::mac::PixelBuffer;
-use crate::capture::sck::{self, ScreenSource};
+use crate::capture::sck::ScreenSource;
 use crate::capture::{monitors_mac, session_mac, synthetic_mac};
 use crate::clock_mac;
 use crate::frames::jpeg_mac;
@@ -135,7 +136,11 @@ impl Platform for MacPlatform {
     ) -> Box<dyn Source> {
         match &options.test {
             Some(spec) => Box::new(synthetic_mac::new(to_main, spec)),
-            None => Box::new(ScreenSource::new(to_main, options.exclude_pids.clone())),
+            None => Box::new(ScreenSource::new(
+                to_main,
+                options.exclusions.clone(),
+                options.revision,
+            )),
         }
     }
 
@@ -210,15 +215,12 @@ impl Displays for MacDisplays {
         }
     }
 
-    fn z_order(&self, exclude_pids: &[u32]) -> Vec<WindowInfo> {
+    fn z_order(&self, exclusions: &Exclusions) -> Vec<WindowInfo> {
         // The windows the recording leaves out are the ones the stream's filter leaves out: this
-        // process and Voice's, the pids named, and Rukoo and Voice by their bundle ids. The
-        // bundles come from the owners' executables, so the display choice never waits on
-        // ScreenCaptureKit before the control port answers.
-        monitors_mac::z_order_without(
-            &ScreenSource::excluded_pids(exclude_pids),
-            &sck::EXCLUDED_BUNDLES,
-        )
+        // process and Voice's, the pids named, and Voice and Rukoo by their bundle ids, unless
+        // Rukoo asked to be shown. The bundles come from the owners' executables, so the display
+        // choice never waits on ScreenCaptureKit before the control port answers.
+        monitors_mac::z_order(&ScreenSource::exclusions(exclusions))
     }
 
     fn cursor_monitor(&self) -> Option<String> {

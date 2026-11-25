@@ -12,12 +12,13 @@ use crate::message::{
     commands, events, Command, CommandBody, Discovery, ErrorMessage, Event, EventBody, Frame,
     Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingStarting,
     MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply,
-    ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status, Track, Welcome,
+    ReplyError, RukooWindowsReport, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status,
+    Track, Welcome,
 };
 use crate::{
     is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
     MAX_CONTEXT_BYTES, MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_MEDIA_READ, MAX_MEDIA_SPAN_MS,
-    MAX_TITLE_CHARS,
+    MAX_TITLE_CHARS, MAX_WINDOWS_PIDS,
 };
 
 /// A message that breaks a rule. `reason` names the field, as the fixtures do.
@@ -125,6 +126,7 @@ fn hello(f: &Fields) -> Checked<Hello> {
         Some(0) => return invalid("pid"),
         pid => pid,
     };
+    let hide_windows = f.optional_boolean("hideWindows")?;
     let instance = match f.nullable_string("instance")? {
         Some(instance) if !is_instance(instance) => return invalid("instance"),
         instance => instance.map(str::to_owned),
@@ -136,6 +138,7 @@ fn hello(f: &Fields) -> Checked<Hello> {
         client,
         client_version,
         pid,
+        hide_windows,
         instance,
         after,
     })
@@ -177,10 +180,34 @@ fn status(f: &Fields) -> Checked<Status> {
             None => return invalid("screenDefault"),
         },
     };
+    let rukoo_windows = match f.optional("rukooWindows") {
+        None => None,
+        Some(Value::Object(windows)) => {
+            let w = Fields(windows);
+            let shown = w.present("shown")?;
+            let shown = shown
+                .as_array()
+                .filter(|list| list.len() <= MAX_WINDOWS_PIDS)
+                .and_then(|list| {
+                    list.iter()
+                        .map(|pid| {
+                            uint_value(pid)
+                                .and_then(|pid| u32::try_from(pid).ok())
+                                .filter(|&pid| pid > 0)
+                        })
+                        .collect::<Option<Vec<u32>>>()
+                })
+                .ok_or_else(|| Invalid::new("shown"))?;
+            let can_show = w.boolean("canShow")?;
+            Some(RukooWindowsReport { shown, can_show })
+        }
+        Some(_) => return invalid("rukooWindows"),
+    };
     Ok(Status {
         recording,
         dictating,
         screen_default,
+        rukoo_windows,
     })
 }
 
@@ -447,6 +474,9 @@ fn command(f: &Fields) -> Checked<Command> {
             };
             CommandBody::SpeakersSplit { meeting, track }
         }
+        commands::WINDOWS_HIDE => CommandBody::WindowsHide {
+            hide: a.boolean("hide")?,
+        },
         unknown => CommandBody::Unknown {
             command: unknown.to_owned(),
             args: args.clone(),
@@ -588,6 +618,13 @@ impl<'a> Fields<'a> {
         self.present(key)?
             .as_bool()
             .ok_or_else(|| Invalid::new(key))
+    }
+
+    /// A boolean, or `None` when the key is missing or `null`.
+    fn optional_boolean(&self, key: &str) -> Checked<Option<bool>> {
+        self.optional(key)
+            .map(|value| value.as_bool().ok_or_else(|| Invalid::new(key)))
+            .transpose()
     }
 
     fn string(&self, key: &str) -> Checked<&'a str> {
@@ -762,6 +799,7 @@ mod tests {
                 client: "rukoo".into(),
                 client_version: None,
                 pid: Some(4821),
+                hide_windows: None,
                 instance: None,
                 after: 0,
             })
@@ -773,6 +811,42 @@ mod tests {
                 panic!("not a hello")
             };
             assert_eq!(hello.pid, None);
+        }
+    }
+
+    #[test]
+    fn hello_takes_an_optional_hide_windows() {
+        let hello = |hide: Value| json!({ "type": "hello", "protocol": 2, "token": TOKEN, "client": "rukoo", "pid": 4821, "hideWindows": hide, "instance": null, "after": 0 });
+        let read = |value: Value| match validate_incoming(Side::Rukoo, &value).unwrap() {
+            Message::Hello(hello) => hello.hide_windows,
+            other => panic!("not a hello: {other:?}"),
+        };
+        assert_eq!(read(hello(json!(false))), Some(false));
+        assert_eq!(read(hello(json!(true))), Some(true));
+        // Left out or null, as from an older Rukoo.
+        assert_eq!(read(hello(Value::Null)), None);
+        assert_eq!(reason(Side::Rukoo, hello(json!("false"))), "hideWindows");
+        assert_eq!(reason(Side::Rukoo, hello(json!(0))), "hideWindows");
+    }
+
+    #[test]
+    fn windows_hide_takes_a_boolean() {
+        let check = |args: Value| {
+            validate_incoming(Side::Rukoo, &command("c-1", "windows.hide", args)).map(|m| match m {
+                Message::Command(Command { body, .. }) => body,
+                other => panic!("not a command: {other:?}"),
+            })
+        };
+        let body = check(json!({ "hide": false })).unwrap();
+        assert_eq!(body, CommandBody::WindowsHide { hide: false });
+        assert_eq!(body.name(), "windows.hide");
+        assert_eq!(body.args(), json!({ "hide": false }));
+        assert_eq!(
+            check(json!({ "hide": true })).unwrap(),
+            CommandBody::WindowsHide { hide: true }
+        );
+        for args in [json!({}), json!({ "hide": null }), json!({ "hide": "no" })] {
+            assert_eq!(check(args.clone()).unwrap_err().reason, "hide", "{args}");
         }
     }
 
@@ -890,6 +964,67 @@ mod tests {
         let starting = json!({ "type": "event", "seq": 5, "event": "meeting.starting", "createdAt": 0,
             "data": { "screen": "frames" } });
         assert_eq!(reason(Side::Voice, starting), "meeting");
+    }
+
+    #[test]
+    fn status_rukoo_windows_is_optional() {
+        let status = |windows: Value| {
+            json!({ "type": "event", "seq": 5, "event": "status", "createdAt": 0,
+            "data": { "recording": null, "dictating": false, "rukooWindows": windows } })
+        };
+        let read = |windows: Value| match validate_incoming(Side::Voice, &status(windows)).unwrap()
+        {
+            Message::Event(Event {
+                body: EventBody::Status(status),
+                ..
+            }) => status.rukoo_windows,
+            other => panic!("not a status: {other:?}"),
+        };
+        assert_eq!(
+            read(json!({ "shown": [4821], "canShow": true })),
+            Some(RukooWindowsReport {
+                shown: vec![4821],
+                can_show: true,
+            })
+        );
+        assert_eq!(
+            read(json!({ "shown": [], "canShow": false })),
+            Some(RukooWindowsReport {
+                shown: Vec::new(),
+                can_show: false,
+            })
+        );
+        assert_eq!(read(Value::Null), None);
+        for (windows, why) in [
+            (json!({ "canShow": true }), "shown"),
+            (json!({ "shown": [0], "canShow": true }), "shown"),
+            (json!({ "shown": ["4821"], "canShow": true }), "shown"),
+            (
+                json!({ "shown": vec![7; MAX_WINDOWS_PIDS + 1], "canShow": true }),
+                "shown",
+            ),
+            (json!({ "shown": [] }), "canShow"),
+            (json!([4821]), "rukooWindows"),
+        ] {
+            assert_eq!(
+                reason(Side::Voice, status(windows.clone())),
+                why,
+                "{windows}"
+            );
+        }
+        // It round-trips, and a status without it serializes as before.
+        let report = RukooWindowsReport {
+            shown: vec![4821],
+            can_show: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            json!({ "shown": [4821], "canShow": false })
+        );
+        assert_eq!(
+            serde_json::to_value(Status::default()).unwrap(),
+            json!({ "recording": null, "dictating": false })
+        );
     }
 
     #[test]

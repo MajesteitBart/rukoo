@@ -12,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
-const { PROTOCOL, MIN_PROTOCOL, VOICE_MESSAGE_MAX, RUKOO_MESSAGE_MAX, DISCOVERY_MAX, validate, validateDiscovery, negotiate } = require('./protocol');
+const { PROTOCOL, MIN_PROTOCOL, VOICE_MESSAGE_MAX, RUKOO_MESSAGE_MAX, DISCOVERY_MAX, validate, validateStatus, validateDiscovery, negotiate } = require('./protocol');
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 // The longest wait while the discovery file names a Voice that runs. A meeting Voice starts itself waits up to 5 s
@@ -70,6 +70,8 @@ class VoiceBridge extends EventEmitter {
     pollMs = POLL_MS,
     alive = pidAlive,
     platform = process.platform,
+    pid = process.pid,
+    hideWindows = () => true,
     log = () => {}
   } = {}) {
     super();
@@ -85,6 +87,9 @@ class VoiceBridge extends EventEmitter {
     this.pollMs = pollMs;
     this.alive = alive;
     this.platform = platform;
+    this.pid = pid;
+    // Whether the user wants Rukoo's windows out of Voice's screen recording (Settings > Meetings).
+    this.hideWindows = hideWindows;
     this.log = log;
     this.ws = null;
     this.welcomed = false;
@@ -227,8 +232,7 @@ class VoiceBridge extends EventEmitter {
     ws.addEventListener('open', () => {
       if (!mine()) return;
       const { instance, after } = this.cursor();
-      // On macOS the hello carries Rukoo's pid, so Voice's screen process leaves Rukoo's windows out of the capture.
-      this.sendRaw({ type: 'hello', protocol: d.protocol, token: d.discovery.token, client: 'rukoo', clientVersion: this.clientVersion, ...(process.platform === 'darwin' ? { pid: process.pid } : {}), instance: instance || null, after: Number.isInteger(after) && after >= 0 ? after : 0 });
+      this.sendRaw({ type: 'hello', protocol: d.protocol, token: d.discovery.token, client: 'rukoo', clientVersion: this.clientVersion, ...this.windowsHello(), instance: instance || null, after: Number.isInteger(after) && after >= 0 ? after : 0 });
       this.welcomeTimer = setTimeout(() => {
         if (!mine() || this.welcomed) return;
         this.log('bridge', 'no welcome from Voice');
@@ -244,6 +248,14 @@ class VoiceBridge extends EventEmitter {
     ws.addEventListener('close', (e) => {
       if (mine()) this.onClose(e.code, d);
     });
+  }
+
+  // On macOS the hello carries Rukoo's pid and whether the user wants Rukoo hidden: Voice's screen process leaves the
+  // windows of that process out of its capture, or keeps them in when hideWindows is false. Voice filters by process
+  // only on a Mac; elsewhere Rukoo hides its own windows (voice/PROTOCOL.md).
+  windowsHello() {
+    if (this.platform !== 'darwin') return {};
+    return { pid: this.pid, hideWindows: Boolean(this.hideWindows()) };
   }
 
   onMessage(data, d) {
@@ -351,7 +363,12 @@ class VoiceBridge extends EventEmitter {
     if (!this.heartbeatMs) return;
     this.heartbeatTimer = setInterval(() => {
       this.command('status.get', {})
-        .then((status) => this.emit('status', status))
+        .then((status) => {
+          // Checked as a status event is: a reply that breaks the rules says nothing.
+          const checked = validateStatus(status);
+          if (checked.ok) this.emit('status', status);
+          else this.log('bridge', `Voice's status had an invalid ${checked.reason}`);
+        })
         .catch((err) => {
           if (err.code === 'timeout') {
             this.log('bridge', 'Voice stopped answering; connecting again');

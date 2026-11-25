@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use serde_json::Value;
+#[cfg(target_os = "macos")]
+use voice_bridge::RukooWindows;
 use voice_bridge::{
     BridgeServer, Clients, ControlError, EventLog, Handle, MediaOpenArgs, MeetingControl, Refused,
 };
@@ -142,6 +144,7 @@ impl Control {
                 .and_then(|r| MeetingId::parse(&r.id)),
             dictating: self.dictating.load(Ordering::SeqCst),
             screen_default: Some(self.controller.screen_default()),
+            rukoo_windows: self.screen.rukoo_windows(),
         }
     }
 
@@ -413,15 +416,15 @@ impl Bridge {
             .map_or_else(Vec::new, Handle::protection_clients)
     }
 
-    /// The pids of the connected Rukoo clients that sent one, for the screen process's
-    /// `--exclude-pid`. macOS only.
+    /// The pids of the connected Rukoo clients that sent one, split by whether they hide their
+    /// windows, for the screen process's `--exclude-pid` and `--show-pid`. macOS only.
     #[cfg(target_os = "macos")]
-    pub fn rukoo_pids(&self) -> Vec<u32> {
+    pub fn rukoo_windows(&self) -> RukooWindows {
         self.handle
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map_or_else(Vec::new, Handle::rukoo_pids)
+            .map_or_else(RukooWindows::default, Handle::rukoo_windows)
     }
     pub fn start(log: EventLog, control: Arc<Control>, path: PathBuf, version: &str) -> Bridge {
         let bridge = Bridge {
@@ -537,6 +540,7 @@ mod tests {
             client: name.into(),
             client_version: Some("2.2.0".into()),
             pid: None,
+            hide_windows: true,
             protocol: 1,
             after: 0,
             sent,
