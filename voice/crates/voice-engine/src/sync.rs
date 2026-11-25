@@ -78,14 +78,14 @@ impl PullHooks for EnginePull {
         swapped
     }
 
-    fn deleted(&self, meeting: &str) -> bool {
+    fn deleted(&self, meeting: &str, still: &dyn Fn() -> bool) -> bool {
         let Some(core) = self.0.upgrade() else {
             return false;
         };
         let Some(control) = core.meetings.control() else {
             return false;
         };
-        match control.delete_meeting(meeting) {
+        match control.delete_meeting_if(meeting, still) {
             Ok(()) => {
                 log::info!("sync: a meeting deleted on another computer is gone here too");
                 core.settings.forget_storage();

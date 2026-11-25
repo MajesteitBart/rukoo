@@ -74,7 +74,10 @@ impl PullHooks for Hooks {
         Ok(())
     }
 
-    fn deleted(&self, meeting: &str) -> bool {
+    fn deleted(&self, meeting: &str, still: &dyn Fn() -> bool) -> bool {
+        if !still() {
+            return false;
+        }
         if *self.refuse_delete.lock().unwrap() {
             return false;
         }
@@ -524,7 +527,16 @@ fn newer_text_a_crash_left_unnoted_is_noted_and_never_sent_back() {
     let newer = manifest(&fake, &a.key(), &m.id).unwrap().gen;
     // B crashed after the newer transcript was in place, before its version was noted.
     let _ = fs::remove_file(dir.join("transcript.db-wal"));
-    fs::copy(m.path("transcript.db"), dir.join("transcript.db")).unwrap();
+    let _ = fs::remove_file(dir.join("transcript.db-shm"));
+    fs::remove_file(dir.join("transcript.db")).unwrap();
+    // As a pull stages it: a consistent snapshot of A's transcript.
+    rusqlite::Connection::open(m.path("transcript.db"))
+        .unwrap()
+        .execute(
+            "VACUUM INTO ?1",
+            [dir.join("transcript.db").to_str().unwrap()],
+        )
+        .unwrap();
     let tmp = b.meetings().join(format!(".update-{}", m.id));
     fs::create_dir_all(tmp.join("files")).unwrap();
     let key = a.key();
@@ -535,6 +547,7 @@ fn newer_text_a_crash_left_unnoted_is_noted_and_never_sent_back() {
         "mhash": voice_sync::names::meeting_hash(&key.name_key(), &m.id),
         "target": config(&fake.endpoint()).target(),
         "kid": key.kid(),
+        "transcriptDigest": voice_sync::digest::transcript_digest(&dir.join("transcript.db")).unwrap(),
     });
     fs::write(tmp.join("install.json"), journal.to_string()).unwrap();
     let before = puts(&fake).len();
@@ -603,4 +616,32 @@ fn a_replacement_left_from_another_bucket_lets_the_meeting_go_up_to_this_one() {
         manifest(&fake, &a.key(), &m.id).is_some(),
         "it went up to this bucket"
     );
+}
+
+#[test]
+fn a_replacement_whose_file_is_neither_staged_nor_in_place_is_let_go() {
+    let root = scratch("pull-half-staged");
+    let _c = Cleanup(root.clone());
+    let data = root.join("b");
+    let (m, before) = {
+        let b = Voice::open(&data);
+        let (m, _) = finished(&b.meetings(), "Half staged", 3_600_000);
+        let tmp = b.meetings().join(format!(".update-{}", m.id));
+        fs::create_dir_all(tmp.join("files")).unwrap();
+        // The journal names a transcript that isn't staged, and the one in place isn't it.
+        let journal = serde_json::json!({
+            "paths": ["transcript.db"],
+            "manifest": {"v": 1, "meeting": m.id, "gen": 2, "state": "done", "updatedAt": 0,
+                         "mediaRemovedAt": null, "files": [{"path": "transcript.db", "kind": "transcript",
+                         "object": "o", "size": 1, "sha256": "0".repeat(64)}]},
+            "manifestId": "0".repeat(64), "mhash": "0".repeat(32), "target": "t", "kid": "k"
+        });
+        fs::write(tmp.join("install.json"), journal.to_string()).unwrap();
+        let before = Meeting::passages(&m.dir);
+        (m, before)
+    };
+    let b = Voice::open(&data);
+    assert!(!b.meetings().join(format!(".update-{}", m.id)).exists());
+    assert!(!voice_sync::pull::pending_install(&b.meetings(), &m.id));
+    assert_eq!(Meeting::passages(&m.dir), before);
 }

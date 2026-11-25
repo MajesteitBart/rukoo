@@ -392,6 +392,13 @@ pub(crate) fn clear_partial(meetings: &Path) {
                         log::warn!("sync: can't remove an unfinished pull: {e}");
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    // Not all of it is staged or in place: the text here is this computer's own.
+                    log::warn!(
+                        "sync: a meeting's newer text didn't all arrive; its text here goes up"
+                    );
+                    let _ = fs::remove_dir_all(entry.path());
+                }
                 Err(e) => log::warn!("sync: can't finish putting newer meeting text in place: {e}"),
             }
             continue;

@@ -86,8 +86,10 @@ pub trait PullHooks: Send + Sync {
     ) -> Result<(), SyncError>;
 
     /// Another computer deleted the meeting. True once it is gone here too; false while it can't
-    /// go, for instance while a clip of it is being cut. The next pull tries again.
-    fn deleted(&self, meeting: &str) -> bool;
+    /// go, for instance while a clip of it is being cut. The next pull tries again. `still` says
+    /// whether the deletion still comes from the bucket sync uses: the engine asks it at the last
+    /// moment before anything goes, and leaves the meeting when it says no.
+    fn deleted(&self, meeting: &str, still: &dyn Fn() -> bool) -> bool;
 }
 
 /// The last pull, for Settings (voice/ui/API.md, `sync.pull`).
@@ -214,6 +216,17 @@ pub(crate) fn pull_once(
     binding: &Binding,
 ) -> Result<(), SyncError> {
     let check = || shared.still(binding);
+    // Replacements that stopped before their version was noted go first, from disk: they hold
+    // their meetings out of uploads, whatever the bucket's indexes say now.
+    for id in pending_installs(&shared.opts.meetings_dir) {
+        check()?;
+        if let Err(e) = settle_install(shared, binding, hooks, &id) {
+            if e.kind == SyncErrorKind::Off {
+                return Err(e);
+            }
+            log::warn!("sync: can't finish a meeting's newer text: {e}");
+        }
+    }
     let indexes = read_indexes(remote, &check)?;
     // What every data folder says of each meeting: two meetings can share an id, and two computers
     // can publish the same generation.
@@ -289,8 +302,7 @@ fn pull_meeting(
             let same = created_at_of(&pending.join(voice_meetings::MEETING_FILE))
                 .is_none_or(|at| others.iter().any(|e| e.deleted && e.created_at == at));
             if same && merged.deleted {
-                shared.still(binding)?;
-                hooks.deleted(id);
+                hooks.deleted(id, &|| shared.still(binding).is_ok());
             }
             return Ok(false);
         }
@@ -328,8 +340,7 @@ fn pull_meeting(
     if entry.deleted {
         // Also when it is forgotten here already: a deletion that stopped halfway goes on. Only
         // while the tombstone is from the bucket sync uses now.
-        shared.still(binding)?;
-        return Ok(!hooks.deleted(id));
+        return Ok(!hooks.deleted(id, &|| shared.still(binding).is_ok()));
     }
     let row = shared.queue.meeting(id)?;
     if row.as_ref().is_some_and(|r| r.phase == "forgotten") {
@@ -372,6 +383,21 @@ fn pull_meeting(
     Ok(true)
 }
 
+/// The meetings whose replacement stopped before its version was noted.
+fn pending_installs(meetings: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(meetings) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let id = name.strip_prefix(UPDATE_PREFIX)?;
+            (MeetingId::parse(id).is_some() && pending_install(meetings, id)).then(|| id.to_owned())
+        })
+        .collect()
+}
+
 /// Whether newer text of the meeting is in place but its version isn't noted yet. The worker
 /// leaves such a meeting alone until a pull noted it.
 pub fn pending_install(meetings: &Path, id: &str) -> bool {
@@ -402,6 +428,10 @@ fn update_one(
     created_at: Option<u64>,
 ) -> Result<(), SyncError> {
     let tmp = update_dir(shared, id);
+    if tmp.join(INSTALL).is_file() {
+        // A replacement that started is settled from its journal, never fetched over.
+        return Ok(());
+    }
     let check = || shared.still(binding);
     let mhash = names::meeting_hash(&remote.name_key, id);
     let object = names::manifest_object(&remote.kid, &mhash);
@@ -425,12 +455,10 @@ fn update_one(
     let result = update_from(
         shared, remote, binding, hooks, &manifest, &theirs, id, &mhash, &tmp, local_gen, created_at,
     );
-    // Whatever came down goes; a replacement that started stays for the next pull, or for `open`,
-    // until the queue noted its version.
+    // Whatever came down goes; a replacement that started stays whole, its files too, for the next
+    // pull or for `open`, until the queue noted its version.
     if !tmp.join(INSTALL).is_file() {
         let _ = fs::remove_dir_all(&tmp);
-    } else {
-        let _ = fs::remove_dir_all(&files);
     }
     result
 }
@@ -475,6 +503,9 @@ fn update_from(
         ));
     }
     let mut swap: Vec<String> = Vec::new();
+    // What the version's transcript says, as it came down: recovery notes it, never what the
+    // transcript here says by then.
+    let mut transcript_digest: Option<String> = None;
     for file in manifest
         .files
         .iter()
@@ -513,6 +544,7 @@ fn update_from(
             shared
                 .queue
                 .set_transcript_digest(id, &file.sha256, &theirs)?;
+            transcript_digest = Some(theirs.clone());
             // The same text in other bytes: what another computer's pipeline noted for its own
             // event log. Nothing to change here.
             if ours.as_deref() == Some(theirs.as_str()) {
@@ -532,8 +564,15 @@ fn update_from(
         mhash: mhash.to_owned(),
         target: binding.target.clone(),
         kid: binding.kid.clone(),
+        transcript_digest,
     };
     check_meeting_file(&title_file, id)?;
+    // The downloads are on disk, names included, before the journal says to move them.
+    for path in &swap {
+        if let Some(parent) = files.join(path).parent() {
+            sync_dir(parent).map_err(|e| local("Voice can't keep newer meeting text", &e))?;
+        }
+    }
     // Under `busy`, right before anything changes: the meeting is still at the version the pull
     // started from, with nothing of it on its way up, and its transcript says what it said.
     let unchanged = || -> Result<(), SyncError> {
@@ -588,6 +627,9 @@ struct Journal {
     mhash: String,
     target: String,
     kid: String,
+    /// What the downloaded transcript says ([`crate::digest`]), when one came down.
+    #[serde(default)]
+    transcript_digest: Option<String>,
 }
 
 fn read_journal(tmp: &Path) -> io::Result<Option<Journal>> {
@@ -630,14 +672,16 @@ fn record(
         kid: &journal.kid,
         update: true,
     };
-    // What the transcript here says is the version's: following it here isn't a change to send.
+    // What the version's transcript says, as it came down: following it here isn't a change to
+    // send, and a change made here since, such as a split, still goes up.
     let transcript = voice_meetings::transcript::FILE_NAME;
-    if let Some(file) = manifest.files.iter().find(|f| f.path == transcript) {
-        let here = shared.meeting_dir(id).join(transcript);
-        let digest = crate::digest::transcript_digest(&here)?;
+    if let (Some(file), Some(digest)) = (
+        manifest.files.iter().find(|f| f.path == transcript),
+        &journal.transcript_digest,
+    ) {
         shared
             .queue
-            .set_transcript_digest(id, &file.sha256, &digest)?;
+            .set_transcript_digest(id, &file.sha256, digest)?;
     }
     if !shared.queue.import(&import)? {
         return Err(SyncError::new(
@@ -691,8 +735,18 @@ fn settle_install(
     let mut finish = || -> Result<(), SyncError> {
         let _busy = shared.busy();
         shared.still(binding)?;
-        finish_install(&meetings, id)
-            .map_err(|e| local("Voice can't put newer meeting text in place", &e))?;
+        match finish_install(&meetings, id) {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                // A file of the version is neither staged nor in place: the meeting holds text of
+                // two versions. It is this computer's own now and goes up as a change.
+                log::warn!("sync: a meeting's newer text didn't all arrive; its text here goes up");
+                let _ = fs::remove_dir_all(&tmp);
+                shared.rescan_soon();
+                return Ok(());
+            }
+            Err(e) => return Err(local("Voice can't put newer meeting text in place", &e)),
+        }
         record(shared, id, &journal, &installed)?;
         let _ = fs::remove_dir_all(&tmp);
         Ok(())
@@ -702,11 +756,18 @@ fn settle_install(
 
 /// Lets go of a meeting whose replacement stopped for a bucket or key sync no longer uses: its text
 /// is this computer's own now. True when it did, or there is nothing to let go.
-pub(crate) fn release_elsewhere(meetings: &Path, id: &str, target: Option<&str>) -> bool {
+pub(crate) fn release_elsewhere(
+    meetings: &Path,
+    id: &str,
+    target: Option<&str>,
+    kid: Option<&str>,
+) -> bool {
     let tmp = meetings.join(format!("{UPDATE_PREFIX}{id}"));
     match read_journal(&tmp) {
         Ok(None) => true,
-        Ok(Some(journal)) if Some(journal.target.as_str()) != target => {
+        Ok(Some(journal))
+            if Some(journal.target.as_str()) != target || Some(journal.kid.as_str()) != kid =>
+        {
             fs::remove_dir_all(&tmp).is_ok()
         }
         _ => false,
@@ -739,20 +800,34 @@ pub(crate) fn finish_install(meetings: &Path, id: &str) -> io::Result<bool> {
         Err(e) => return Err(e),
     };
     let journal: Journal = serde_json::from_slice(&text).map_err(io::Error::other)?;
-    let paths = journal.paths;
+    let paths = &journal.paths;
     let dir = meetings.join(id);
     // Rukoo hears of it once the engine follows the meeting again.
     write_marker(&dir)?;
     let files = tmp.join(FILES);
-    for path in &paths {
+    for path in paths {
         if !TEXT.contains(&path.as_str()) {
             continue;
         }
         let from = files.join(path);
+        let dest = dir.join(path);
         if !from.is_file() {
+            // Moved before the crash, when what is in place is the version's file.
+            let wanted = journal
+                .manifest
+                .files
+                .iter()
+                .find(|f| f.path == *path)
+                .map(|f| f.sha256.as_str());
+            let have = crate::worker::sha256_file(&dest).ok().map(|(sha, _)| sha);
+            if wanted.is_none() || have.as_deref() != wanted {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "a file of the newer version is neither staged nor in place",
+                ));
+            }
             continue;
         }
-        let dest = dir.join(path);
         if path == voice_meetings::transcript::FILE_NAME {
             for suffix in ["-wal", "-shm"] {
                 match fs::remove_file(with_suffix(&dest, suffix)) {

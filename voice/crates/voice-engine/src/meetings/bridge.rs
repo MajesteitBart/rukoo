@@ -82,6 +82,16 @@ impl Control {
     }
 
     pub(crate) fn delete_meeting(&self, id: &str) -> Result<(), ControlError> {
+        self.delete_meeting_if(id, &|| true)
+    }
+
+    /// Deletes the meeting when `still` says yes at the last moment before anything goes: a
+    /// deletion another computer made counts only while it comes from the bucket sync uses.
+    pub(crate) fn delete_meeting_if(
+        &self,
+        id: &str,
+        still: &dyn Fn() -> bool,
+    ) -> Result<(), ControlError> {
         let _deleting = self.deleting.lock().unwrap_or_else(PoisonError::into_inner);
         if MeetingId::parse(id).is_none() {
             return Err(ControlError::not_found("There is no meeting with that id."));
@@ -106,6 +116,12 @@ impl Control {
                     "Stop the meeting and let it finish saving before deleting it.",
                 ));
             }
+        }
+        if !still() {
+            return Err(ControlError::new(
+                voice_protocol::ErrorCode::Busy,
+                "Bucket sync changed while the meeting was to be deleted.",
+            ));
         }
         if !media::forget_meeting(&source, || self.media.forget_meeting(id))? {
             return Err(ControlError::new(voice_protocol::ErrorCode::Busy, "A video clip is still being prepared. Try deleting the meeting again when it finishes."));

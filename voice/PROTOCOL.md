@@ -194,6 +194,7 @@ A stretch of transcript.
 
 - `id` is the track, a dash and the start in milliseconds as nine digits. It stays the same when Voice transcribes the passage again.
 - A passage with a higher `revision` replaces the one Rukoo has. Voice sends a new revision when a better transcript or a settled speaker arrives.
+- When newer text of the meeting from another computer replaced its transcript, Voice sends each passage whose words changed. One whose revision isn't higher than the one Rukoo has, because this computer changed it too, first gets the next revision after Rukoo's, so any Rukoo takes it and keeps its correction.
 - `speaker` is a speaker id, or `null` while Voice doesn't know. With speaker labels, a call passage can arrive with `null` when Voice couldn't tell whose words they were, and a later revision can name the speaker. Voice never moves a passage from one speaker id to another, with one exception: `speakers.split` moves a microphone passage from `mic` to the voice that said it, or cuts it where the voice changes.
 - `dictation` is true when the user was dictating into another app while the meeting recorded. Those words reached the call, but weren't part of the conversation.
 - `language` is a BCP 47 code when the recognizer reports one, otherwise `null`.
@@ -204,7 +205,7 @@ A stretch of transcript.
 { "id": "call-000065320" }
 ```
 
-Voice removed a passage, for example when it transcribed a stretch again with other boundaries, or when newer text of the meeting from another computer replaced its transcript. When that newer text has the passage with other words at a revision that isn't higher than the one Rukoo has, Voice sends `passage.removed` and then the passage again, so its words win.
+Voice removed a passage, for example when it transcribed a stretch again with other boundaries, or when newer text of the meeting from another computer replaced its transcript without it.
 
 ### `mark`
 

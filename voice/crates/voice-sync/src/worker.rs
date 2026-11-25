@@ -1001,10 +1001,12 @@ impl Worker {
             // longer uses.
             if crate::pull::pending_install(&shared.opts.meetings_dir, &id) {
                 let target = shared.lock().target.clone();
+                let kid = shared.queue.meta("kid").ok().flatten();
                 if !crate::pull::release_elsewhere(
                     &shared.opts.meetings_dir,
                     &id,
                     target.as_deref(),
+                    kid.as_deref(),
                 ) {
                     continue;
                 }

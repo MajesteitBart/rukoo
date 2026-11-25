@@ -209,9 +209,22 @@ impl Meetings {
                     .flatten()
                     .is_some_and(|s| matches!(s.data["state"].as_str(), Some("done" | "failed")));
                 if followed && ended {
-                    if self.reconcile_replaced(id) {
-                        if let Err(e) = std::fs::remove_file(&marker) {
-                            log::warn!("meeting: {id}: can't mark a pulled meeting as sent: {e}");
+                    // It can write the transcript: no split meanwhile.
+                    let reserved = self
+                        .control
+                        .as_ref()
+                        .is_none_or(|control| control.split.begin_replace(id));
+                    if reserved {
+                        let sent = self.reconcile_replaced(id);
+                        if let Some(control) = &self.control {
+                            control.split.end_replace(id);
+                        }
+                        if sent {
+                            if let Err(e) = std::fs::remove_file(&marker) {
+                                log::warn!(
+                                    "meeting: {id}: can't mark a pulled meeting as sent: {e}"
+                                );
+                            }
                         }
                     }
                     false
@@ -277,11 +290,13 @@ impl Meetings {
     }
 
     /// After newer text from another computer replaced a meeting's transcript, what Rukoo has of
-    /// its passages follows the transcript. For each passage the log's latest version (after its
-    /// removals) is compared with the transcript's: one Rukoo lacks goes out, one with other words
-    /// goes out too, after a `passage.removed` when its revision isn't higher than the one Rukoo has
-    /// (two computers can have changed one passage to the same revision with other words), and one
-    /// the transcript lacks is removed. True when the log holds all of it.
+    /// its passages follows the transcript. The log is read the way Rukoo and `meeting.get` read
+    /// it: a passage counts at its highest revision, a later one at the same revision replaces it,
+    /// and a removal drops it. Then each transcript passage Rukoo lacks or has in other words goes
+    /// out. One whose revision is lower than the one Rukoo has, as when this computer changed it
+    /// too, would be ignored: it gets the next revision here first, in the transcript too, so its
+    /// words win everywhere and the user's correction of it stays. A passage the transcript lacks is
+    /// removed. Nothing may write the transcript meanwhile. True when the log holds all of it.
     pub fn reconcile_replaced(&self, id: &str) -> bool {
         let (Some(log), Some(dir)) = (&self.log, self.library().dir(id)) else {
             return false;
@@ -289,6 +304,7 @@ impl Meetings {
         let Ok((_, stored)) = log.meeting_events(id) else {
             return false;
         };
+        let revision = |v: &serde_json::Value| v["revision"].as_u64().unwrap_or(0);
         let mut sent: std::collections::BTreeMap<String, serde_json::Value> =
             std::collections::BTreeMap::new();
         for event in stored {
@@ -297,7 +313,12 @@ impl Meetings {
             };
             match event.event.as_str() {
                 voice_protocol::events::PASSAGE => {
-                    sent.insert(passage, event.data);
+                    if sent
+                        .get(&passage)
+                        .is_none_or(|old| revision(&event.data) >= revision(old))
+                    {
+                        sent.insert(passage, event.data);
+                    }
                 }
                 voice_protocol::events::PASSAGE_REMOVED => {
                     sent.remove(&passage);
@@ -305,8 +326,14 @@ impl Meetings {
                 _ => {}
             }
         }
-        let passages = match voice_meetings::Transcript::open(dir.path()).and_then(|t| t.passages())
-        {
+        let transcript = match voice_meetings::Transcript::open(dir.path()) {
+            Ok(transcript) => transcript,
+            Err(e) => {
+                log::warn!("meeting: {id}: can't read the newer transcript: {e}");
+                return false;
+            }
+        };
+        let passages = match transcript.passages() {
             Ok(passages) => passages,
             Err(e) => {
                 log::warn!("meeting: {id}: can't read the newer transcript: {e}");
@@ -314,36 +341,42 @@ impl Meetings {
             }
         };
         let mut ok = true;
-        let mut send = |event: &str, data: serde_json::Value| {
-            if let Err(e) = log.append(event, Some(id), data) {
-                log::warn!("meeting: {id}: can't send what newer text changed: {e}");
-                ok = false;
-            }
-        };
         let mut present = std::collections::HashSet::new();
         for stored in passages {
-            let passage = stored.passage;
+            let mut passage = stored.passage;
             present.insert(passage.id.clone());
             let Ok(data) = serde_json::to_value(&passage) else {
                 continue;
             };
-            match sent.get(&passage.id) {
-                Some(last) if *last == data => {}
-                Some(last) if last["revision"].as_u64().unwrap_or(0) >= passage.revision => {
-                    send(
-                        voice_protocol::events::PASSAGE_REMOVED,
-                        json!({ "id": passage.id }),
-                    );
-                    send(voice_protocol::events::PASSAGE, data);
+            let last = sent.get(&passage.id);
+            if last == Some(&data) {
+                continue;
+            }
+            if let Some(last) = last.filter(|last| revision(last) > passage.revision) {
+                passage.revision = revision(last) + 1;
+                if let Err(e) = transcript.update_passage(&passage) {
+                    log::warn!("meeting: {id}: can't give a passage its next revision: {e}");
+                    ok = false;
+                    continue;
                 }
-                _ => send(voice_protocol::events::PASSAGE, data),
+            }
+            let Ok(data) = serde_json::to_value(&passage) else {
+                continue;
+            };
+            if let Err(e) = log.append(voice_protocol::events::PASSAGE, Some(id), data) {
+                log::warn!("meeting: {id}: can't send what newer text changed: {e}");
+                ok = false;
             }
         }
         for passage in sent.keys().filter(|p| !present.contains(*p)) {
-            send(
+            if let Err(e) = log.append(
                 voice_protocol::events::PASSAGE_REMOVED,
+                Some(id),
                 json!({ "id": passage }),
-            );
+            ) {
+                log::warn!("meeting: {id}: can't send a removed passage: {e}");
+                ok = false;
+            }
         }
         ok
     }

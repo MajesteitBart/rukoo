@@ -1322,6 +1322,7 @@ fn changes_and_deletions_reach_the_other_computer() {
 
     // B had changed the same passage on its own, to a higher revision: what A's newer text says
     // still has to win in Rukoo there.
+    let stale_revision = passages[0]["revision"].as_u64().unwrap() + 5;
     {
         let first = &passages[0];
         let mut stale = first.clone();
@@ -1347,19 +1348,18 @@ fn changes_and_deletions_reach_the_other_computer() {
     }
     wait_long("B hears of the newer text", Duration::from_secs(60), || {
         let events = events_of(&b.data(), &id);
-        // Its revision is lower than the one B logged: it goes out after a removal, which any
-        // Rukoo takes.
+        // Its revision is lower than the one B logged: it goes out with the next revision after
+        // that one, which any Rukoo takes, and the user's correction of it stays.
         let last = events
             .iter()
-            .rposition(|(e, d)| e == "passage" && d["id"] == kept.as_str());
-        let reworded = last.is_some_and(|i| {
-            events[i].1["text"] == "Reworded on the other computer"
-                && events[..i]
-                    .iter()
-                    .rev()
-                    .find(|(_, d)| d["id"] == kept.as_str())
-                    .is_some_and(|(e, _)| e == "passage.removed")
-        });
+            .rev()
+            .find(|(e, d)| e == "passage" && d["id"] == kept.as_str());
+        let reworded = last.is_some_and(|(_, d)| {
+            d["text"] == "Reworded on the other computer"
+                && d["revision"].as_u64() == Some(stale_revision + 1)
+        }) && !events
+            .iter()
+            .any(|(e, d)| e == "passage.removed" && d["id"] == kept.as_str());
         let removed = events
             .iter()
             .any(|(e, d)| e == "passage.removed" && d["id"] == dropped.as_str());
@@ -1385,7 +1385,16 @@ fn changes_and_deletions_reach_the_other_computer() {
         Some(json!("Reworded on the other computer")),
         "{snapshot}"
     );
-    // What B followed doesn't go back: A's manifest stays at the generation A uploaded.
+    // B's transcript carries that revision now, and goes up once; A takes it and nothing more goes
+    // back and forth.
+    wait_long("A takes B's revision", Duration::from_secs(60), || {
+        events_of(&a.data(), &id).iter().rev().any(|(e, d)| {
+            e == "passage"
+                && d["id"] == kept.as_str()
+                && d["revision"].as_u64() == Some(stale_revision + 1)
+                && d["text"] == "Reworded on the other computer"
+        })
+    });
     let manifests = |fake: &FakeS3| {
         fake.log()
             .iter()
@@ -1393,6 +1402,8 @@ fn changes_and_deletions_reach_the_other_computer() {
             .count()
     };
     wait_uploaded(&engine_a);
+    wait_uploaded(&engine_b);
+    std::thread::sleep(Duration::from_secs(3));
     let before = manifests(&fake);
     std::thread::sleep(Duration::from_secs(5));
     assert_eq!(manifests(&fake), before, "the meeting went back and forth");
