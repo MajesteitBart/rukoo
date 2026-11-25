@@ -1,15 +1,21 @@
 // The pages write keyboard shortcuts as inline code (`Ctrl+Shift+R`). This Sätteri hast plugin renders those as keys,
 // one <kbd> per key, so they look like the keycaps on the rest of rukoo.io. Other inline code, such as file names,
 // commands and characters you type (`@`, `/`), stays code.
-const KEY = /^(?:Ctrl|Control|Command|Cmd|Shift|Alt|Option|Enter|Return|Esc|Escape|Tab|Space|Up|Down|Left|Right|Delete|Backspace|Home|End|F(?:[1-9]|1[0-2])|[A-Z0-9])$/;
+const MODIFIER = /^(?:Ctrl|Control|Command|Cmd|Shift|Alt|Option)$/;
+const NAMED = /^(?:Enter|Return|Esc|Escape|Tab|Space|Up|Down|Left|Right|Delete|Backspace|Home|End|F(?:[1-9]|1[0-2]))$/;
+const KEY = (key) => MODIFIER.test(key) || NAMED.test(key) || /^[A-Z0-9]$/.test(key);
 
-/** The keys of a shortcut, or null when the text isn't one. A combination may end in a mouse click (`Shift+click`). */
+/**
+ * The keys of a shortcut, or null when the text isn't one. A single key is a named key or a letter (`Enter`, `F5`,
+ * `X`); a bare digit could be a value. A combination starts with a modifier (`Ctrl+Shift+R`) and may end in a mouse
+ * click (`Shift+click`).
+ */
 export function shortcutKeys(text) {
   if (typeof text !== 'string' || text !== text.trim() || !text) return null;
   const parts = text.split('+');
-  if (parts.some((part) => !part)) return null;
-  const keys = parts.at(-1) === 'click' && parts.length > 1 ? parts.slice(0, -1) : parts;
-  return keys.every((key) => KEY.test(key)) ? parts : null;
+  if (parts.length === 1) return NAMED.test(text) || /^[A-Z]$/.test(text) ? parts : null;
+  const keys = parts.at(-1) === 'click' ? parts.slice(0, -1) : parts;
+  return MODIFIER.test(keys[0]) && keys.every(KEY) ? parts : null;
 }
 
 const text = (value) => ({ type: 'text', value });

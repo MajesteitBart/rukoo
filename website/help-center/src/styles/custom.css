@@ -25,7 +25,6 @@
 :root {
   --sl-font: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --sl-font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace;
-  --sl-color-accent-low: #123c35; --sl-color-accent: #16f0a3; --sl-color-accent-high: #b9ffe6;
   /* A calmer scale than Starlight's: headings structure an answer, they don't announce it. */
   --sl-text-h1: clamp(2rem, 1.6rem + 1.25vw, 2.5rem);
   --sl-text-h2: 1.5rem;
@@ -34,40 +33,8 @@
   --sl-line-height: 1.7;
   /* 44px touch targets on a phone, as on the rest of rukoo.io. */
   --sl-menu-button-size: 2.75rem;
-}
-/* Dark is the default, also before the theme script runs. */
-:root:not([data-theme='light']) {
-  --sl-color-white: #f7f8f8;
-  --sl-color-gray-3: #858a93;
-  --sl-color-gray-5: #2a2c33;
-  --sl-color-gray-6: #111215;
-  --sl-color-black: #08090a;
-  --sl-color-bg-nav: rgba(8, 9, 10, 0.82);
-  --sl-color-bg-sidebar: #08090a;
-  --sl-color-hairline: rgba(255, 255, 255, 0.07);
-  --sl-color-hairline-light: rgba(255, 255, 255, 0.12);
-  --sl-color-hairline-shade: rgba(255, 255, 255, 0.07);
-  --rk-tint: rgba(22, 240, 163, 0.1);
-  --rk-hover: rgba(255, 255, 255, 0.05);
-  --rk-field: #111215;
-  --rk-link: var(--sl-color-white);
-  --rk-link-hover: #16f0a3;
-  --rk-link-line: rgba(22, 240, 163, 0.55);
-  --rk-current: #b9ffe6;
-  --rk-code-bg: rgba(255, 255, 255, 0.06);
-  --rk-key-bg: linear-gradient(#1c1d21, #141518);
-  --rk-key-edge: 0 1px 0 rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --rk-scroll-edge: rgba(255, 255, 255, 0.12);
-  --rk-shadow-pop: 0 16px 40px rgba(0, 0, 0, 0.55);
-  --rk-selection: rgba(22, 240, 163, 0.28);
-}
-:root[data-theme='light'] {
-  --sl-color-accent-low: #dcfff2; --sl-color-accent: #087e5b; --sl-color-accent-high: #1c2340;
-  --sl-color-bg-nav: rgba(255, 255, 255, 0.85);
-  --sl-color-bg-sidebar: #ffffff;
-  --sl-color-hairline: rgba(23, 24, 28, 0.08);
-  --sl-color-hairline-light: rgba(23, 24, 28, 0.12);
-  --sl-color-hairline-shade: rgba(23, 24, 28, 0.08);
+  /* The help center's own tokens, light values first. Light mode and print use these; print keeps Starlight's
+     own light palette for everything else. */
   --rk-tint: rgba(8, 126, 91, 0.09);
   --rk-hover: rgba(23, 24, 28, 0.04);
   --rk-field: #f6f6f7;
@@ -81,6 +48,42 @@
   --rk-scroll-edge: rgba(23, 24, 28, 0.12);
   --rk-shadow-pop: 0 16px 40px rgba(23, 24, 28, 0.16);
   --rk-selection: rgba(8, 126, 91, 0.2);
+}
+@media screen {
+  :root { --sl-color-accent-low: #123c35; --sl-color-accent: #16f0a3; --sl-color-accent-high: #b9ffe6; }
+  /* Dark is the default, also before the theme script runs. */
+  :root:not([data-theme='light']) {
+    --sl-color-white: #f7f8f8;
+    --sl-color-gray-3: #858a93;
+    --sl-color-gray-5: #2a2c33;
+    --sl-color-gray-6: #111215;
+    --sl-color-black: #08090a;
+    --sl-color-bg-nav: rgba(8, 9, 10, 0.82);
+    --sl-color-bg-sidebar: #08090a;
+    --sl-color-hairline: rgba(255, 255, 255, 0.07);
+    --sl-color-hairline-light: rgba(255, 255, 255, 0.12);
+    --sl-color-hairline-shade: rgba(255, 255, 255, 0.07);
+    --rk-tint: rgba(22, 240, 163, 0.1);
+    --rk-hover: rgba(255, 255, 255, 0.05);
+    --rk-field: #111215;
+    --rk-link-hover: #16f0a3;
+    --rk-link-line: rgba(22, 240, 163, 0.55);
+    --rk-current: #b9ffe6;
+    --rk-code-bg: rgba(255, 255, 255, 0.06);
+    --rk-key-bg: linear-gradient(#1c1d21, #141518);
+    --rk-key-edge: 0 1px 0 rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --rk-scroll-edge: rgba(255, 255, 255, 0.12);
+    --rk-shadow-pop: 0 16px 40px rgba(0, 0, 0, 0.55);
+    --rk-selection: rgba(22, 240, 163, 0.28);
+  }
+  :root[data-theme='light'] {
+    --sl-color-accent-low: #dcfff2; --sl-color-accent: #087e5b; --sl-color-accent-high: #1c2340;
+    --sl-color-bg-nav: rgba(255, 255, 255, 0.85);
+    --sl-color-bg-sidebar: #ffffff;
+    --sl-color-hairline: rgba(23, 24, 28, 0.08);
+    --sl-color-hairline-light: rgba(23, 24, 28, 0.12);
+    --sl-color-hairline-shade: rgba(23, 24, 28, 0.08);
+  }
 }
 
 body {
@@ -112,7 +115,6 @@ site-search dialog { border-color: var(--sl-color-hairline-light); background-co
 #starlight__search { --pagefind-ui-border: var(--sl-color-hairline-light); --pagefind-ui-border-radius: 12px; }
 #starlight__search .pagefind-ui__search-input { border-radius: 12px; }
 #starlight__search .pagefind-ui__search-input:focus { outline: 2px solid var(--sl-color-accent); outline-offset: -1px; border-color: transparent; }
-#starlight__search .pagefind-ui__result { border-radius: 12px; }
 
 /* ---------- sidebar ---------- */
 
@@ -127,7 +129,8 @@ site-search dialog { border-color: var(--sl-color-hairline-light); background-co
 
 starlight-toc h2 { font-size: 0.875rem; }
 starlight-toc a { transition: color 120ms ease; }
-mobile-starlight-toc .toggle { border-radius: 999px; border-color: var(--sl-color-hairline-light); }
+mobile-starlight-toc .toggle { border-radius: 999px; }
+mobile-starlight-toc details:not([open]) .toggle:not(:hover) { border-color: var(--sl-color-hairline-light); }
 /* The open list is a raised panel over the page, like the search dialog. */
 mobile-starlight-toc .dropdown { border-color: var(--sl-color-hairline-light); border-top-color: transparent; background-color: var(--rk-field); box-shadow: var(--rk-shadow-pop); }
 
@@ -223,15 +226,20 @@ h1#_top { font-weight: 650; letter-spacing: -0.02em; text-wrap: balance; }
 
 /* ---------- touch targets on a phone ---------- */
 
-/* 44px, as on the rest of rukoo.io: the search and menu buttons, the menu's links and groups, and the page sections. */
+/* 44px, as on the rest of rukoo.io: the search and menu buttons and the menu's links and groups on a phone, and the
+   page sections wherever Starlight shows them as a menu, which is up to 72rem wide (a phone held sideways too). */
 @media (max-width: 49.99rem) {
-  :root { --sl-mobile-toc-height: 3.5rem; }
   button[data-open-modal] { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
   #starlight__sidebar a { padding-block: 0.6875rem; }
   #starlight__sidebar summary { min-height: 2.75rem; }
   #starlight__sidebar a[rel='me'] { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
+}
+@media (max-width: 71.99rem) {
+  :root { --sl-mobile-toc-height: 3.5rem; }
   mobile-starlight-toc .toggle { min-height: 2.75rem; }
   mobile-starlight-toc .dropdown a { min-height: 2.75rem; align-items: center; }
+  /* Centred rows no longer stretch the current section's checkmark, so it gets its own height. */
+  mobile-starlight-toc .dropdown a::after { block-size: 1rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
