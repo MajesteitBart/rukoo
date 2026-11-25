@@ -11080,17 +11080,29 @@
     "message": "Last reply {time}",
     "description": "Message list: text beside the reply count. {time}: when the newest reply came. src/renderer/chat-view.js"
   },
-  "chat.log.replyTo": {
-    "message": "replied to {name}: {text}",
-    "description": "Message list: context line above a reply in the main timeline; a click opens its thread. {name}: the author of the thread's first message; {text}: the start of that message. src/renderer/chat-view.js"
+  "chat.log.threadNew": {
+    "message": { "one": "{count} new reply in a thread", "other": "{count} new replies in a thread" },
+    "description": "Message list: pill at the top of a conversation when one thread whose first message is out of view has replies that came since you last read it; a click opens that thread. Replies show only in their thread. {count}: the new replies. src/renderer/chat-view.js"
   },
-  "chat.log.replyToRemoved": {
-    "message": "replied to a removed message",
-    "description": "Message list: context line above a reply whose thread's first message was removed. src/renderer/chat-view.js"
+  "chat.log.threadsNew": {
+    "message": { "one": "{count} new reply in {threads} threads", "other": "{count} new replies in {threads} threads" },
+    "description": "Message list: the same pill when two or more threads out of view have new replies; a click opens the thread with the oldest of them. {count}: the new replies, always 2 or more; {threads}: the threads. src/renderer/chat-view.js"
   },
-  "chat.log.replyInThread": {
-    "message": "replied in a thread",
-    "description": "Message list: context line above a reply whose thread's first message isn't on this computer. src/renderer/chat-view.js"
+  "chat.log.repliesUnsent": {
+    "message": { "one": "{count} reply not sent", "other": "{count} replies not sent" },
+    "description": "Message list: part of the reply line under a thread's first message while replies of yours wait to go out or were refused; a click opens the thread, where they show with Retry and Discard. {count}: those replies. src/renderer/chat-view.js"
+  },
+  "chat.log.rootGone": {
+    "message": "This message is no longer kept",
+    "description": "Message list: row where the first message of a thread was, after the server stopped keeping it (retention) while it still keeps replies; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
+  "chat.log.rootEarlier": {
+    "message": "Reply to an earlier message",
+    "description": "Message list: row for replies of yours that weren't sent yet, to a message further up that isn't loaded; the reply line under it opens the thread. src/renderer/chat-view.js"
+  },
+  "chat.log.threadNewOpen": {
+    "message": "open the thread",
+    "description": "Message list: end of the accessible name of the new replies pill, after its text and a comma, as in \"2 new replies in a thread, open the thread\". src/renderer/chat-view.js"
   },
   "chat.sys.created": {
     "message": "{actor} made #{name}",
@@ -11992,6 +12004,22 @@
     "message": "You're the last one here, so leaving archives #{name}.",
     "description": "Leave a channel: confirmation text when the user is its last member. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
   },
+  "chat.channel.leaveAgent": {
+    "message": "Your agent {name} leaves with you.",
+    "description": "Leave a private channel, leave any channel as its last person, or hand a private channel over and leave: second paragraph when one agent the user made is in it, since a private channel keeps someone's agents only while they are in it and the last person's leaving archives the channel and takes every agent out. {name}: the agent's name. Android chat_channel_leave_agent. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgents": {
+    "message": "Your agents {names} leave with you.",
+    "description": "The same as chat.channel.leaveAgent, for two or three agents. {names}: their names as the language lists them (\"Clark and Bee\"). Android chat_channel_leave_agents. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsMany": {
+    "message": { "one": "Your {count} agent in this channel leaves with you.", "other": "Your {count} agents in this channel leave with you." },
+    "description": "The same as chat.channel.leaveAgents, for more than three agents. {count}: how many. Android chat_channel_leave_agents_many. src/renderer/chat-model.js (leavingAgentsText)"
+  },
+  "chat.channel.leaveAgentsUnknown": {
+    "message": "Any agents of yours in this channel leave with you.",
+    "description": "The same as chat.channel.leaveAgent, when the channel's members couldn't be loaded, so the user's agents in it can't be named. It must be true whether or not any are in it. Android chat_channel_leave_agents_unknown. src/renderer/chat-model.js (leavingAgentsText)"
+  },
   "chat.channel.leave": {
     "message": "Leave",
     "description": "Leave a channel: confirmation button. src/renderer/chat-dialogs.js"
@@ -12620,6 +12648,14 @@
     "message": "{name}: {text}",
     "description": "Team chat notification: body line. {name}: the author; {text}: the first 120 characters of the message, with mentions as @Name. src/main/workspaces/notify.js"
   },
+  "chat.notify.reply": {
+    "message": "{name} replied: {text}",
+    "description": "Team chat notification: body line for a reply in a thread, which shows only in its thread; a click opens the thread at it. {name}: the author; {text}: the first 120 characters of the reply, with mentions as @Name. src/main/workspaces/notify.js"
+  },
+  "chat.notify.open": {
+    "message": "Open",
+    "description": "Team chat toast: button on an alert shown while Rukoo's window has focus; it opens the conversation at the message, and a reply in its thread, as a click on the notification does. src/renderer/app.js, src/renderer/web-shell.js"
+  },
   "chat.notify.summaryTitle": {
     "message": "Team chat",
     "description": "Team chat notification: title of the summary when more than three conversations have new messages. src/main/workspaces/notify.js"
@@ -12795,6 +12831,10 @@
   "chat.errors.mentions": {
     "message": "Someone you mentioned isn't in this conversation any more.",
     "description": "Team chat error, shown under an unsent message: the server refused it because someone it mentions left the conversation. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.rootRemoved": {
+    "message": "The message you replied to is no longer available.",
+    "description": "Team chat error, shown under an unsent reply in a thread: the server refused it because the thread's first message was removed meanwhile. src/renderer/chat-view.js (reasonText)"
   },
   "chat.errors.reactionLimit": {
     "message": "This message has 20 different reactions, the most it can hold.",

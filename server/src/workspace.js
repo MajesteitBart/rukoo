@@ -1352,13 +1352,13 @@ export class Workspace extends DurableObject {
   // ---- Dispatch ----
 
   // A Worker of an older build may still call this object during a deploy, without the fields that came later: no
-  // attachments on a post, no readMark on a read and no version on events and the feed.
+  // attachments on a post, no readMark on a read and no version on events, the feed and the directory.
   async #dispatch(op, me, who, a) {
     switch (op) {
       case 'workspace.get':
         return reply(200, { workspace: await this.#workspaceOut(), me: this.#memberOut(me) });
       case 'members.list':
-        return this.#members(me);
+        return this.#members(me, a.version ?? 1);
       case 'agents.list':
         return this.#agents(me);
       case 'agent.me':
@@ -1480,9 +1480,10 @@ export class Workspace extends DurableObject {
   }
 
   // Full members see everyone who is active, and the most recent of those who left, so old messages keep their
-  // author's name. A guest sees the people in the channels they were let into, and so does an agent. An agent's chosen
-  // members are left out of what a guest or an agent sees when they aren't among those people.
-  #members(me) {
+  // author's name. A guest sees the people in the channels they were let into, and so does an agent. An agent's sponsor
+  // and chosen members are left out of what a guest or an agent sees when they aren't among those people. version: the
+  // reader's wire version (#memberOut).
+  #members(me, version = 1) {
     if (!FULL.has(me.role)) {
       const rows = this.sql
         .exec(
@@ -1494,7 +1495,7 @@ export class Workspace extends DurableObject {
         )
         .toArray();
       const visible = new Set(rows.map((row) => row.id));
-      return reply(200, { members: rows.map((row) => this.#memberOut(row, visible)), more: false });
+      return reply(200, { members: rows.map((row) => this.#memberOut(row, visible, version)), more: false });
     }
     const active = this.sql.exec("SELECT * FROM member WHERE state = 'active'").toArray();
     const former = this.sql
@@ -1505,13 +1506,20 @@ export class Workspace extends DurableObject {
   }
 
   // A member for the directory, with an agent's settings: { sponsor, answers, members, agents }. Its key and lastSeen
-  // are never in the directory. visible: the member ids the viewer may know of, or null for all of them.
-  #memberOut(row, visible = null) {
+  // are never in the directory. visible: the member ids the viewer may know of, or null for all of them. The sponsor
+  // and the chosen members the viewer may not know of are left out. A reader of wire version 2 gets sponsor null then.
+  // One of version 1 gets the agent without its settings, since the Android nightly 0.6.1-nightly.20261124.17 reads
+  // version 1 and refuses the whole page over a null sponsor; every published app reads an agent without settings.
+  #memberOut(row, visible = null, version = 1) {
     if (row.kind !== 'agent') return memberOut(row);
     const settings = this.sql.exec('SELECT answers, members, agents FROM agent WHERE member = ?', row.n).toArray()[0];
     if (!settings) return memberOut(row);
-    const chosen = this.#idsOf(JSON.parse(settings.members)).filter((id) => !visible || visible.has(id));
-    return memberOut(row, { sponsor: this.#idOf(row.sponsor), answers: settings.answers, members: chosen, agents: settings.agents === 1 });
+    const known = (id) => !visible || visible.has(id);
+    const chosen = this.#idsOf(JSON.parse(settings.members)).filter(known);
+    const sponsor = this.#idOf(row.sponsor);
+    const shown = sponsor && known(sponsor) ? sponsor : null;
+    if (!shown && version < 2) return memberOut(row);
+    return memberOut(row, { sponsor: shown, answers: settings.answers, members: chosen, agents: settings.agents === 1 });
   }
 
   // The ids of the active members among the keys ns, in the order of their keys.
