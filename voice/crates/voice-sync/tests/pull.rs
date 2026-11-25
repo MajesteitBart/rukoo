@@ -81,9 +81,17 @@ impl PullHooks for Hooks {
         if *self.refuse_delete.lock().unwrap() {
             return false;
         }
-        // As the engine's deletion does, also for one that stopped after renaming the folder.
-        let _ = fs::remove_dir_all(self.meetings.join(meeting));
-        let _ = fs::remove_dir_all(self.meetings.join(format!(".deleted-{meeting}")));
+        // As the engine's deletion does, also for one that stopped after renaming the folder. A
+        // folder Windows won't remove yet, while sync still reads a file in it, stays for the
+        // next pull, as the engine's deletion does then.
+        for dir in [
+            self.meetings.join(meeting),
+            self.meetings.join(format!(".deleted-{meeting}")),
+        ] {
+            if fs::remove_dir_all(&dir).is_err() && dir.exists() {
+                return false;
+            }
+        }
         self.deleted.lock().unwrap().push(meeting.to_owned());
         true
     }
@@ -528,7 +536,11 @@ fn newer_text_a_crash_left_unnoted_is_noted_and_never_sent_back() {
     // B crashed after the newer transcript was in place, before its version was noted.
     let _ = fs::remove_file(dir.join("transcript.db-wal"));
     let _ = fs::remove_file(dir.join("transcript.db-shm"));
-    fs::remove_file(dir.join("transcript.db")).unwrap();
+    // On Windows not while B's sync still reads it.
+    assert!(wait_for(WAIT, || fs::remove_file(
+        dir.join("transcript.db")
+    )
+    .is_ok()));
     // As a pull stages it: a consistent snapshot of A's transcript.
     rusqlite::Connection::open(m.path("transcript.db"))
         .unwrap()
