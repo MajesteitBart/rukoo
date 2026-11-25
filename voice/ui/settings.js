@@ -14,9 +14,14 @@ const LATER = mocked && params.get('later') === '1';
 const feature = (name) => LATER || state?.features?.[name] === true;
 
 const HOTKEYS = ['right alt', 'right ctrl', 'right shift', 'f13', 'f14', 'f15', 'pause', 'scroll lock'];
-// A Mac keyboard has no Pause or Scroll Lock, and adds Right Command. Right Option is the same key
-// as Right Alt, so it keeps that name in the config and gets a Mac label here.
-const MAC_HOTKEYS = ['right alt', 'right command', 'right ctrl', 'right shift', 'f13', 'f14', 'f15'];
+// The keys every Mac keyboard has, a MacBook's included: Right Option, Right Command and Right Shift.
+// Right Control and F13 to F15 exist only on extended and PC keyboards, and Pause and Scroll Lock
+// not at all. Right Option is the same key as Right Alt, so it keeps that name in the config and
+// gets a Mac label here. Same list as MACOS_HOTKEYS in voice-core's config.rs.
+const MAC_HOTKEYS = ['right alt', 'right command', 'right shift'];
+// Every key Voice knows, in the order a key list shows them. A stored key the list doesn't offer, such
+// as F13 from an extended keyboard, still shows as the current choice in its place.
+const KEY_ORDER = ['right alt', 'right command', 'right ctrl', 'right shift', 'f13', 'f14', 'f15', 'pause', 'scroll lock'];
 const KEY_NAMES = {
   'right alt': 'settings.keys.rightAlt',
   'right ctrl': 'settings.keys.rightCtrl',
@@ -244,6 +249,16 @@ function dictionaryCount() {
   return `${t('settings.dictionary.words', { count: vocabulary.length })} · ${t('settings.dictionary.corrections', { count: corrections.length })}`;
 }
 
+// The rewrite key's row, on the main page beside the dictation key and on the Rewriting page.
+function rewriteKeyRow() {
+  return row({
+    title: t('settings.rewriting.key'),
+    desc: t('settings.rewriting.keyHelp'),
+    value: keyName(state.config.dictation.rewriteHotkey),
+    action: 'choose:dictation.rewriteHotkey'
+  });
+}
+
 function rewritingValue() {
   const { auto } = state.config.rewriting;
   const edits = state.config.dictation.rewriteHotkey !== 'off';
@@ -438,8 +453,11 @@ function mainPage() {
         : '')
   );
 
+  // Both keys sit together here, each with the same picker. The Rewriting page shows the rewrite key's row too:
+  // one setting, one picker, so the two rows can't disagree.
   const dictationCard = card(
     row({ title: t('settings.dictation.key'), desc: t('settings.dictation.keyHelp'), value: keyName(c.dictation.hotkey), action: 'choose:dictation.hotkey' }) +
+      rewriteKeyRow() +
       row({ title: t('settings.dictation.paste'), desc: t('settings.dictation.pasteHelp'), toggle: c.dictation.pasteMode, action: 'toggle:dictation.pasteMode' }) +
       row({ title: t('settings.dictation.chime'), desc: t('settings.dictation.chimeHelp'), toggle: c.dictation.readyChime, action: 'toggle:dictation.readyChime' }) +
       row({
@@ -834,8 +852,7 @@ function rewritingPage() {
       ),
       section(
         'edits',
-        groupTitle(t('settings.rewriting.voiceEdits')) +
-          card(row({ title: t('settings.rewriting.key'), desc: t('settings.rewriting.keyHelp'), value: keyName(state.config.dictation.rewriteHotkey), action: 'choose:dictation.rewriteHotkey' }))
+        groupTitle(t('settings.rewriting.voiceEdits')) + card(rewriteKeyRow())
       )
     ]
   };
@@ -1403,15 +1420,18 @@ async function keyChoice(role) {
       .filter(([key]) => key && key !== 'off')
   );
   const ownkeyKeys = state.ownkey.running ? state.ownkey.keys : [];
-  const keys = role === 'dictation.hotkey' ? hotkeyList() : ['off', ...hotkeyList()];
+  const current = getPath(c, role);
+  const offered = hotkeyList();
+  const listed = KEY_ORDER.filter((key) => offered.includes(key) || key === current);
+  const keys = role === 'dictation.hotkey' ? listed : ['off', ...listed];
   const options = keys.map((key) => ({
     value: key,
     label: keyName(key),
     disabled: Boolean(taken[key]),
     hint: taken[key] ? t(taken[key]) : ownkeyKeys.includes(key) ? t('settings.keys.ownkey') : ''
   }));
-  const value = await choose({ title: t(KEY_TITLES[role]), options, current: getPath(c, role), note: state.devMode && !macos() ? t('settings.keys.dev') : '' });
-  if (value != null && value !== getPath(c, role)) setValue(role, value);
+  const value = await choose({ title: t(KEY_TITLES[role]), options, current, note: state.devMode && !macos() ? t('settings.keys.dev') : '' });
+  if (value != null && value !== current) setValue(role, value);
 }
 
 async function pairChoice(key, title, pairs) {

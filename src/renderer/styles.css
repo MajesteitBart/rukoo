@@ -4964,14 +4964,22 @@ body.compose-window {
   padding: 0 10px 10px;
 }
 /* In the input while the agent cannot take a message: why, and the way to Settings. */
+/* A long custom agent name (up to 40 characters) wraps the sentence and ends the link in an ellipsis, inside the input. */
 .agentpane .ap-setup {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   flex-wrap: wrap;
   gap: 2px 6px;
   color: var(--text-2);
+  overflow-wrap: anywhere;
 }
 .agentpane .ap-setup .link-btn {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: inherit;
   padding: 1px 2px;
 }
@@ -13680,7 +13688,6 @@ button.ch-replies .ch-replies-n {
   width: 32px;
   height: 30px;
   border-radius: 6px;
-  font-size: 17px;
   color: var(--text-2);
 }
 .ch-emoji-tab svg {
@@ -13689,6 +13696,12 @@ button.ch-replies .ch-replies-n {
 }
 .ch-emoji-tab:hover {
   background: var(--hover);
+  color: var(--text);
+}
+/* The group at the top of the list: its tab is grey like a selected row, its icon in the content ink. */
+.ch-emoji-tab[aria-selected='true'] {
+  background: var(--sel);
+  color: var(--text);
 }
 /* Positioned, so a group's offsetTop is its place in the list its tab scrolls to. */
 .ch-emoji-grid {

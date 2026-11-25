@@ -46,7 +46,10 @@ import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.theme.Rk
 
-/** Notifications for new mail and agent replies, and Android 13's permission they need. */
+/**
+ * Notifications for new mail, agent replies and team chat, Android 13's permission they need, and the battery setting
+ * that decides how soon team chat notifies with Rukoo in the background.
+ */
 @Composable
 fun NotificationsPage(app: AppViewModel) {
     val s = app.services
@@ -102,7 +105,8 @@ fun NotificationsPage(app: AppViewModel) {
             )
             // Team chat's switch, only where Chat shows (contract §3.1, §3.10).
             val workspaces = s.workspaces
-            val chatAvailable = workspaces?.state?.collectAsStateWithLifecycle()?.value?.available == true
+            val chatState = workspaces?.state?.collectAsStateWithLifecycle()?.value
+            val chatAvailable = chatState?.available == true
             if (chatAvailable) {
                 SettingsSwitchRow(
                     title = stringResource(R.string.settings_general_chat_notifications),
@@ -113,6 +117,12 @@ fun NotificationsPage(app: AppViewModel) {
                         if (on) turnedOn()
                     },
                 )
+            }
+            // How soon a message notifies with Rukoo in the background: Android's battery setting, and Phone tools.
+            // It shows with the switch on or off, while someone is signed in; its line says what the switch's state means.
+            if (BatteryTexts.showUnderChat(chatAvailable, signedIn = chatState?.signedIn == true)) {
+                val phoneTools = s.mcp.status.collectAsStateWithLifecycle().value.running
+                BatteryRow(BatteryPlace.TeamChat, phoneTools = phoneTools, notifyChat = settings.notifyChat)
             }
         }
         Spacer(Modifier.height(10.dp))
