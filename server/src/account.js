@@ -181,7 +181,7 @@ export class Account extends DurableObject {
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
     this.identity = null;
     this.cleaning = false;
-    // Push wakes in memory: when each session last got one, and the one each still waits to send (#wake).
+    // Push wakes in memory: when each session last got one, and the one each still waits to send (wake).
     this.pushWindow = PUSH_WINDOW;
     this.wakeSent = new Map();
     this.wakeLater = new Map();
@@ -423,12 +423,18 @@ export class Account extends DurableObject {
         this.wakeSent.set(row.id, now);
         sends.push(this.#sendWake(row.id));
       } else if (!this.wakeLater.has(row.id)) {
-        const timer = setTimeout(() => {
-          this.wakeLater.delete(row.id);
-          this.wakeSent.set(row.id, Date.now());
-          this.#sendWake(row.id).catch((err) => console.error('A push wake failed:', err?.message || err));
-        }, this.pushWindow - since);
-        this.wakeLater.set(row.id, timer);
+        // The wake at the end of the window, which waitUntil keeps this object alive for.
+        const later = new Promise((resolve) => {
+          setTimeout(() => {
+            this.wakeLater.delete(row.id);
+            this.wakeSent.set(row.id, Date.now());
+            this.#sendWake(row.id)
+              .catch((err) => console.error('A push wake failed:', err?.message || err))
+              .finally(resolve);
+          }, this.pushWindow - since);
+        });
+        this.wakeLater.set(row.id, later);
+        this.ctx.waitUntil?.(later);
       }
     }
     await Promise.all(sends);

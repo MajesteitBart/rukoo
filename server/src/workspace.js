@@ -1184,6 +1184,7 @@ export class Workspace extends DurableObject {
   // Push wakes (webpush.js; WORKSPACES.md, Push wakes): each member's account sends a wake to the devices that
   // registered a push endpoint, apart from the sessions whose socket to this workspace works (SOCKET_LIVE), which heard
   // of it there. Not awaited: a post's answer never waits for a push service, and a failure only costs that wake.
+  // waitUntil keeps the object from being evicted before the account has answered.
   #push(members) {
     if (!members.size || !pushSwitch(this.env)) return;
     const now = Date.now();
@@ -1200,9 +1201,10 @@ export class Workspace extends DurableObject {
           // A socket that is gone counts as not working.
         }
       }
-      accountObject(this.env, row.account)
+      const asked = accountObject(this.env, row.account)
         .wake(row.incarnation, live)
         .catch((err) => console.error('Could not ask an account to send a push wake:', err?.message || err));
+      this.ctx.waitUntil?.(asked);
     }
   }
 
