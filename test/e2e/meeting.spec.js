@@ -2230,16 +2230,18 @@ test('on a Mac, turning hiding off and on during a meeting tells Voice each time
   await expect.poll(hides).toEqual([true, false]);
   expect(voice.rukooWindows()).toEqual({ hidden: [], shown: [rukooPid] });
   expect((await voiceState()).alwaysHidden).toBe(false);
-  // Not confirmed yet: still hidden, saying Voice is taking Rukoo in.
-  await expect(view().locator('.mt-hidden')).toHaveAttribute('title', /taking Rukoo's windows into this meeting's recording/);
+  // Not confirmed yet: Showing…, saying Voice is taking Rukoo in.
+  await expect(view().locator('.mt-pending')).toHaveText('Showing in screen recordings…');
+  await expect(view().locator('.mt-pending')).toHaveAttribute('title', /taking Rukoo's windows into this meeting's recording/);
   confirm([rukooPid]);
   await expect(view().locator('.mt-visible')).toHaveText('Visible in screen recordings');
   await expect(view().locator('.mt-hidden')).toHaveCount(0);
   await setHide(true);
   await expect.poll(hides).toEqual([true, false, true]);
   expect(voice.rukooWindows()).toEqual({ hidden: [rukooPid], shown: [] });
-  // Hidden only once Voice confirms it.
-  await expect(view().locator('.mt-visible')).toHaveText('Visible in screen recordings');
+  // Hidden only once Voice confirms it: Hiding… until then.
+  await expect(view().locator('.mt-pending')).toHaveText('Hiding from screen recordings…');
+  await expect(view().locator('.mt-visible')).toHaveCount(0);
   confirm([]);
   await expect(view().locator('.mt-hidden')).toHaveText('Hidden from screen recordings');
   await expect(view().locator('.mt-visible')).toHaveCount(0);
@@ -2261,6 +2263,22 @@ test('on a Mac, turning hiding off and on during a meeting tells Voice each time
   expect((await voiceState()).meetingHidden).toBe(true);
   confirm([rukooPid]);
   await expect(view().locator('.mt-visible')).toHaveText('Visible in screen recordings');
+
+  // Settings › Meetings says the same as the header: confirmed, then pending once the switch changes.
+  await win.evaluate(() => document.querySelector('[data-action="settings"]').click());
+  await win.locator('[data-a="mtset-open"]').click();
+  const now = win.locator('.page.settings .mtset-now');
+  await expect(now).toHaveText("Rukoo shows in this meeting's screen recording now.");
+  await setHide(true);
+  await expect(now).toHaveText("Hiding Rukoo from this meeting's screen recording…");
+  confirm([]);
+  await expect(now).toHaveText('Rukoo is hidden from screen recordings now, because a meeting is recording.');
+  await setHide(false);
+  await expect(now).toHaveText("Showing Rukoo in this meeting's screen recording…");
+  confirm([rukooPid]);
+  await expect(now).toHaveText("Rukoo shows in this meeting's screen recording now.");
+  await win.click('.page.settings [data-a="back"]');
+  await win.click('.page.settings [data-a="back"]');
 
   // A Voice from before windows.hide leaves Rukoo out whatever the switch says, and Rukoo says so.
   voice.handlers['windows.hide'] = () => ({ error: { code: 'unknown_command', message: "Voice doesn't know the command `windows.hide`." } });

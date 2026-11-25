@@ -176,6 +176,22 @@ test("a Mac Rukoo reads in Voice's status whether the screen recording has its w
   assert.equal(s.state().inRecording, null);
 });
 
+test("the heartbeat's status.get reply is checked as a status event is: a broken one says nothing", async (t) => {
+  const { file, voice } = await setup(t);
+  voice.writeDiscovery();
+  let reply = { recording: null, dictating: false, rukooWindows: { shown: [4294967296], canShow: true } };
+  voice.handlers['status.get'] = () => reply;
+  const bridge = new VoiceBridge({ file, ...FAST, heartbeatMs: 30, platform: 'darwin', pid: 4821 }).start();
+  t.after(() => bridge.close());
+  const heard = [];
+  bridge.on('status', (status) => heard.push(status));
+  await until(() => voice.commands.filter((c) => c.command === 'status.get').length >= 3, 'three heartbeats');
+  assert.deepEqual(heard, []);
+  reply = { recording: null, dictating: false, rukooWindows: { shown: [4821], canShow: true } };
+  await until(() => heard.length > 0, 'a good status');
+  assert.deepEqual(heard[0].rukooWindows, { shown: [4821], canShow: true });
+});
+
 test('off a Mac Rukoo sends no pid, no hideWindows and no windows.hide: Voice there relies on content protection', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
@@ -589,7 +605,7 @@ test('without a connection, meeting commands fail with offline', async (t) => {
     const err = await call().then(() => null, (e) => e);
     assert.equal(err.code, 'offline');
   }
-  assert.deepEqual(s.state(), { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null, alwaysHidden: false, inRecording: null, meetingHidden: false });
+  assert.deepEqual(s.state(), { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null, alwaysHidden: false, inRecording: null, meetingHidden: false, wantHidden: true, recordsScreen: false });
 });
 
 test('a meeting Voice starts stays without a calendar event, even when exactly one fits; linking it by hand gives a 1:1 the guest\'s name', async (t) => {

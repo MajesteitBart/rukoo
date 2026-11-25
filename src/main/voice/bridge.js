@@ -12,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
-const { PROTOCOL, MIN_PROTOCOL, VOICE_MESSAGE_MAX, RUKOO_MESSAGE_MAX, DISCOVERY_MAX, validate, validateDiscovery, negotiate } = require('./protocol');
+const { PROTOCOL, MIN_PROTOCOL, VOICE_MESSAGE_MAX, RUKOO_MESSAGE_MAX, DISCOVERY_MAX, validate, validateStatus, validateDiscovery, negotiate } = require('./protocol');
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 // The longest wait while the discovery file names a Voice that runs. A meeting Voice starts itself waits up to 5 s
@@ -363,7 +363,12 @@ class VoiceBridge extends EventEmitter {
     if (!this.heartbeatMs) return;
     this.heartbeatTimer = setInterval(() => {
       this.command('status.get', {})
-        .then((status) => this.emit('status', status))
+        .then((status) => {
+          // Checked as a status event is: a reply that breaks the rules says nothing.
+          const checked = validateStatus(status);
+          if (checked.ok) this.emit('status', status);
+          else this.log('bridge', `Voice's status had an invalid ${checked.reason}`);
+        })
         .catch((err) => {
           if (err.code === 'timeout') {
             this.log('bridge', 'Voice stopped answering; connecting again');

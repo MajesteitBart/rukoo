@@ -225,7 +225,11 @@ class VoiceService extends EventEmitter {
       screenDefault: status.screenDefault,
       alwaysHidden: s.status === 'connected' && this.alwaysHidden,
       inRecording: windows ? windows.shown.includes(this.bridge.pid) : null,
-      meetingHidden: Boolean(windows && windows.canShow === false)
+      meetingHidden: Boolean(windows && windows.canShow === false),
+      // The switch, and whether a meeting may record the screen now: with inRecording, the header and Settings
+      // tell a confirmed state from one Voice is still applying.
+      wantHidden: Boolean(this.hide()),
+      recordsScreen: this.screenRecording()
     };
   }
 

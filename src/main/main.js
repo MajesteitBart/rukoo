@@ -221,7 +221,7 @@ function protectWindows(on) {
 
 // What the meeting view and Settings show about Voice. Never the discovery file: its token stays in main.
 function voiceState() {
-  const base = voice ? voice.state() : { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null, alwaysHidden: false, inRecording: null, meetingHidden: false };
+  const base = voice ? voice.state() : { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null, alwaysHidden: false, inRecording: null, meetingHidden: false, wantHidden: true, recordsScreen: false };
   return { ...base, hidden: windowsHidden, canHide: process.platform === 'win32' || process.platform === 'darwin' };
 }
 

@@ -111,7 +111,8 @@ function status(o) {
   if (given(o, 'rukooWindows')) {
     const w = o.rukooWindows;
     check(isObj(w), 'rukooWindows');
-    check(Array.isArray(w.shown) && w.shown.length <= WINDOWS_PIDS_MAX && w.shown.every((pid) => Number.isInteger(pid) && pid >= 1), 'shown');
+    // Process ids, as Voice reads them: 1 to the largest 32-bit unsigned integer.
+    check(Array.isArray(w.shown) && w.shown.length <= WINDOWS_PIDS_MAX && w.shown.every((pid) => Number.isInteger(pid) && pid >= 1 && pid <= 0xffffffff), 'shown');
     bool(w, 'canShow');
   }
 }
@@ -329,6 +330,18 @@ function validate(from, message) {
 }
 
 // The discovery file, parsed.
+// The status object of a status event, welcome or status.get reply: { ok: true } or { ok: false, reason }.
+function validateStatus(o) {
+  try {
+    check(isObj(o), 'status');
+    status(o);
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof Invalid) return { ok: false, reason: e.reason };
+    throw e;
+  }
+}
+
 function validateDiscovery(file) {
   try {
     check(isObj(file), 'file');
@@ -385,6 +398,7 @@ module.exports = {
   MEDIA_READ_MAX,
   SPLIT_TRACKS,
   validate,
+  validateStatus,
   validateDiscovery,
   negotiate,
   replayPlan,

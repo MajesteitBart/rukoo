@@ -40,7 +40,8 @@ const M = {
   // leaves Rukoo out of its recording whatever the setting says, because it is older than windows.hide. inRecording:
   // whether a Mac Voice confirmed its screen recording has Rukoo's windows in it, or null when it doesn't say.
   // meetingHidden: the screen recorder of this meeting came from an older Voice and leaves Rukoo out until it ends.
-  voice: { status: 'absent', reason: 'none', voiceVersion: null, older: null, recording: null, dictating: false, hidden: false, canHide: false, alwaysHidden: false, inRecording: null, meetingHidden: false, screenDefault: null },
+  // wantHidden: the Settings switch, so a state Voice hasn't confirmed yet shows as pending.
+  voice: { status: 'absent', reason: 'none', voiceVersion: null, older: null, recording: null, dictating: false, hidden: false, canHide: false, alwaysHidden: false, inRecording: null, meetingHidden: false, wantHidden: true, screenDefault: null },
   // Summaries, newest first (meetingList).
   list: [],
   listLoaded: false,
@@ -653,6 +654,27 @@ function hiddenHelp() {
   return t(window.mail.platform === 'darwin' ? 'meeting.head.hiddenHelpMac' : 'meeting.head.hiddenHelp');
 }
 
+// The chip that says whether this meeting's screen recording has Rukoo in it. A Mac Voice that reports it confirms it:
+// visible or hidden once its screen process applied that, and Hiding… or Showing… while the switch asks for the other.
+// Elsewhere Rukoo shows in the frames when it isn't hidden from capture, where it could be, and an older Mac Voice
+// leaves Rukoo out even with hiding off.
+function screenChip(s, screen) {
+  const v = M.voice;
+  if (!live(s)) return '';
+  const chip = (cls, icon, key, help) => `<span class="${cls}" title="${esc(help)}">${icon}<span>${esc(t(key))}</span></span>`;
+  const hidden = (help) => chip('mt-hidden', icons.eyeOff, 'meeting.head.hidden', help);
+  const visible = () => chip('mt-visible', icons.eye, 'meeting.head.visible', t('meeting.head.visibleHelp'));
+  if (screen && typeof v.inRecording === 'boolean') {
+    if (v.inRecording) return v.wantHidden ? chip('mt-hidden mt-pending', icons.eyeOff, 'meeting.head.hiding', t('meeting.head.hidingHelp')) : visible();
+    if (v.alwaysHidden) return hidden(t('meeting.head.hiddenByVoiceHelp'));
+    if (v.meetingHidden) return hidden(t('meeting.head.hiddenThisMeetingHelp'));
+    return v.wantHidden ? hidden(hiddenHelp()) : chip('mt-hidden mt-pending', icons.eye, 'meeting.head.showing', t('meeting.head.hiddenPendingHelp'));
+  }
+  if (screen && v.canHide && !v.hidden && !v.alwaysHidden) return visible();
+  if (v.hidden) return hidden(hiddenHelp());
+  return screen && v.alwaysHidden ? hidden(t('meeting.head.hiddenByVoiceHelp')) : '';
+}
+
 function renderHead() {
   const head = $('.meeting .mt-head');
   const d = M.data;
@@ -664,21 +686,13 @@ function renderHead() {
   const ms = elapsed(s);
   const when = Number.isFinite(s.startedAt) ? readerDate(s.startedAt) : '';
   const screen = screenOf(s);
-  // A Mac Voice that says so confirms whether its recording has Rukoo in it: visible only once it has, and hidden only
-  // once it has left Rukoo out. Elsewhere Rukoo shows in the frames when it isn't hidden from capture, where it could
-  // be. An older Mac Voice leaves Rukoo out even with hiding off.
-  const confirmed = typeof M.voice.inRecording === 'boolean';
-  const visible = live(s) && screen && (confirmed ? M.voice.inRecording : M.voice.canHide && !M.voice.hidden && !M.voice.alwaysHidden);
-  const voiceHides = live(s) && screen && !visible && !M.voice.hidden && (M.voice.alwaysHidden || confirmed);
-  const hidden = live(s) && !visible && (M.voice.hidden || voiceHides);
-  const hiddenTitle = !voiceHides ? hiddenHelp() : M.voice.alwaysHidden ? t('meeting.head.hiddenByVoiceHelp') : M.voice.meetingHidden ? t('meeting.head.hiddenThisMeetingHelp') : t('meeting.head.hiddenPendingHelp');
+  const chip = screenChip(s, screen);
   const meta = [
     stateHtml(s),
     ms !== null ? `<span class="mt-elapsed" title="${esc(t('meeting.head.length'))}">${esc(live(s) ? clock(ms) : length(ms))}</span>` : '',
     when ? `<span class="mt-when">${esc(when)}</span>` : '',
     screen ? `<span class="mt-screen">${icons.monitor}<span>${esc(t('meeting.head.screen', { mode: screenMode(screen) }))}</span></span>` : '',
-    hidden ? `<span class="mt-hidden" title="${esc(hiddenTitle)}">${icons.eyeOff}<span>${esc(t('meeting.head.hidden'))}</span></span>` : '',
-    visible ? `<span class="mt-visible" title="${esc(t('meeting.head.visibleHelp'))}">${icons.eye}<span>${esc(t('meeting.head.visible'))}</span></span>` : ''
+    chip
   ]
     .filter(Boolean)
     .join('');
