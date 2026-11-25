@@ -33,6 +33,8 @@ const ERROR_CODES = ['bad_request', 'unknown_command', 'not_found', 'not_recordi
 
 // media.open and media.read: what Voice prepares, its ids, the longest range and the most bytes one read returns.
 const MEDIA_KINDS = ['audio', 'frame', 'video'];
+// What media.prefetch fetches ahead.
+const PREFETCH_KINDS = ['frames'];
 const MEDIA_ID = /^md-[A-Za-z0-9_-]{22}$/;
 const MEDIA_SPAN_MAX = 3600000;
 const MEDIA_READ_MAX = 1024 * 1024;
@@ -185,6 +187,15 @@ const COMMAND_ARGS = {
   'speakers.split': (a) => {
     pattern(a, 'meeting', MEETING_ID);
     oneOf(a, 'track', SPLIT_TRACKS);
+  },
+  // Only frame images are fetched ahead.
+  'media.prefetch': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    oneOf(a, 'kind', PREFETCH_KINDS);
+  },
+  'media.keep': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    if (given(a, 'keep')) bool(a, 'keep');
   }
 };
 
@@ -370,6 +381,7 @@ module.exports = {
   ERROR_CODES,
   MEETING_EVENTS,
   MEDIA_KINDS,
+  PREFETCH_KINDS,
   MEDIA_ID,
   MEDIA_SPAN_MAX,
   MEDIA_READ_MAX,

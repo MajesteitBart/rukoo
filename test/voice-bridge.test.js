@@ -386,6 +386,51 @@ test('opening the meetings asks Voice to look for meetings from the other comput
   assert.equal(s.connected, true);
 });
 
+test('a frame from the bucket passes pending and inBucket on, and the first pending asks Voice to fetch the frames ahead once', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, { ...started('From the other computer'), screen: 'frames' });
+  voice.append('frame', M1, { id: 'f-000001000', at: 1000, width: 1280, height: 720, text: 'Slide 1' });
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s = service(t, dir, file).init();
+  await until(() => s.store.cursor().after === 3, 'the replay');
+  const frame = { id: 'f-000001000', at: 1000, width: 1280, height: 720, text: 'Slide 1' };
+  const answers = [{ frame, image: null, pending: true }, { frame, image: null, pending: true }, { frame, image: null, inBucket: true }];
+  voice.handlers['frame.get'] = () => answers.shift();
+  assert.equal((await s.frame(M1, 1500)).pending, true);
+  assert.equal((await s.frame(M1, 1500)).pending, true);
+  assert.equal((await s.frame(M1, 1500)).inBucket, true);
+  await until(() => voice.commands.some((c) => c.command === 'media.prefetch'), 'media.prefetch');
+  const prefetches = voice.commands.filter((c) => c.command === 'media.prefetch');
+  assert.deepEqual(prefetches.map((c) => c.args), [{ meeting: M1, kind: 'frames' }], 'once per meeting');
+});
+
+test('keeping a meeting on this computer: Voice says how its media stands, Rukoo keeps that in the summary, and an older Voice offers nothing', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Kept for the train'));
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s = service(t, dir, file).init();
+  await until(() => s.store.cursor().after === 2, 'the replay');
+  voice.keeps.set(M1, { keep: false, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(await s.keepMedia(M1), { keep: false, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(voice.commands.filter((c) => c.command === 'media.keep').pop().args, { meeting: M1 });
+  assert.deepEqual(await s.keepMedia(M1, true), { keep: true, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(voice.commands.filter((c) => c.command === 'media.keep').pop().args, { meeting: M1, keep: true });
+  assert.deepEqual(s.list().find((m) => m.id === M1).media, { keep: true, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(s.get(M1).meeting.media, { keep: true, have: 1000, total: 9000, stalled: false });
+  // A reply Rukoo can't read is an error, and changes nothing.
+  voice.handlers['media.keep'] = () => ({ keep: true, have: 9001, total: 9000 });
+  await assert.rejects(s.keepMedia(M1), (err) => err.code === 'failed');
+  assert.equal(s.get(M1).meeting.media.have, 1000);
+  // An older Voice, or one without bucket sync: null.
+  voice.handlers['media.keep'] = () => ({ error: { code: 'unknown_command', message: 'media.keep' } });
+  assert.equal(await s.keepMedia(M1, false), null);
+  voice.handlers['media.keep'] = () => ({ error: { code: 'not_available', message: 'Keeping media on this computer needs bucket sync.' } });
+  assert.equal(await s.keepMedia(M1), null);
+  await assert.rejects(s.keepMedia('m-20261030-090000-ffff'), (err) => err.code === 'not_found');
+});
+
 test('a bad event is skipped and the ones after it still apply', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();

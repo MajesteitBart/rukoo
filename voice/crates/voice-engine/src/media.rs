@@ -34,6 +34,7 @@ use voice_screen_files::policy::reserve_ok;
 use voice_sync::manifest::is_segment_file;
 use voice_sync::{BucketSync, ScreenFile, ScreenFiles, SyncError, SyncErrorKind};
 
+use crate::cache::MediaCache;
 use crate::meetings::controller::Controller;
 
 /// Prepared audio mixes: `<data>/media/<media id>.wav`.
@@ -315,6 +316,21 @@ pub struct MediaService {
     inner: Mutex<Inner>,
     stopping: AtomicBool,
     this: std::sync::Weak<MediaService>,
+    /// Fetches behind the scenes and the cache limit.
+    cache: Arc<MediaCache>,
+}
+
+/// What `frame.get` can say about a frame image that isn't on this computer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameFetch {
+    /// It is on this computer now.
+    Ready,
+    /// It is coming back from the bucket.
+    Pending,
+    /// The bucket has it, but Voice can't fetch it now.
+    Unreachable,
+    /// Nobody has it any more.
+    Gone,
 }
 
 impl MediaService {
@@ -322,17 +338,69 @@ impl MediaService {
         self.sync.clone()
     }
 
+    /// Background fetches and the cache limit.
+    pub fn cache(&self) -> &Arc<MediaCache> {
+        &self.cache
+    }
+
+    /// Whether a job prepares now: background fetches wait for it.
+    pub(crate) fn busy(&self) -> bool {
+        self.lock()
+            .jobs
+            .values()
+            .any(|job| matches!(job.state, State::Preparing))
+    }
+
+    /// The image of the frame at or before `at` for `frame.get`, whose own reply found it missing
+    /// here: a fetch from the bucket starts on a `media-prepare` thread, as for `media.open`, and
+    /// this answers at once.
+    pub fn fetch_frame(&self, meeting: &str, at: u64) -> FrameFetch {
+        let Some(id) = voice_protocol::MeetingId::parse(meeting) else {
+            return FrameFetch::Gone;
+        };
+        let args = MediaOpenArgs {
+            meeting: id,
+            kind: MediaKind::Frame,
+            start: at,
+            end: None,
+        };
+        match self.open(&args) {
+            Ok(answer) if answer["ready"] == true => FrameFetch::Ready,
+            Ok(_) => FrameFetch::Pending,
+            Err(e) if e.code == ErrorCode::NotFound => FrameFetch::Gone,
+            Err(e) if e.code == ErrorCode::NotAvailable && !self.frame_in_bucket(meeting, at) => {
+                FrameFetch::Gone
+            }
+            // In the bucket, but sync can't fetch now or the fetch failed: Rukoo asks again later.
+            Err(_) => FrameFetch::Unreachable,
+        }
+    }
+
+    fn frame_in_bucket(&self, meeting: &str, at: u64) -> bool {
+        let (Some(sync), Some(dir)) = (&self.sync, self.controller.library().dir(meeting)) else {
+            return false;
+        };
+        matches!(self.screen.frame_at(dir.path(), at), Ok(Some((path, _))) if sync.in_bucket(meeting, &path))
+    }
+
+    /// `frame.get` read this frame's image from disk: fetched media counts as used.
+    pub fn frame_used(&self, meeting: &str, path: &str) {
+        self.used(meeting, &[path.to_owned()]);
+    }
+
     /// Stops new media of a meeting that is about to be deleted. A running preparation must
     /// finish first, so a late bucket fetch cannot recreate the meeting folder afterwards. Links
     /// prepared already keep working until [`evict_meeting`](Self::evict_meeting), so a deletion
     /// that doesn't go ahead ([`keep_meeting`](Self::keep_meeting)) leaves them as they were.
     pub(crate) fn forget_meeting(&self, meeting: &str) -> Result<(), ControlError> {
+        self.cache.forget(meeting)?;
         let mut inner = self.lock();
         if inner
             .jobs
             .values()
             .any(|job| job.key.meeting == meeting && matches!(job.state, State::Preparing))
         {
+            self.cache.unforget(meeting);
             return Err(ControlError::new(
                 ErrorCode::Busy,
                 "Voice is still preparing this meeting's media. Try deleting it again in a moment.",
@@ -361,7 +429,9 @@ impl MediaService {
     /// Undoes [`forget_meeting`](Self::forget_meeting) for a deletion that didn't go ahead.
     pub(crate) fn keep_meeting(&self, meeting: &str) {
         self.lock().deleted.remove(meeting);
+        self.cache.unforget(meeting);
     }
+
     /// Empties `<data>/media/`: nothing prepared before this start is still asked for.
     pub fn new(
         data_dir: &Path,
@@ -374,6 +444,7 @@ impl MediaService {
         let _ = fs::remove_dir_all(&dir);
         Arc::new_cyclic(|this| MediaService {
             dir,
+            cache: MediaCache::new(sync.clone(), Arc::clone(&controller), this.clone()),
             controller,
             sync,
             screen,
@@ -821,7 +892,10 @@ impl MediaService {
             ));
         };
         sync.ensure_local(meeting, paths, &self.stopping)
-            .map_err(fetch_error)
+            .map_err(fetch_error)?;
+        // What came back counts against the cache limit at once.
+        self.cache.trim();
+        Ok(())
     }
 
     /// Writes the mix of every track as a WAV file in `<data>/media/`.
@@ -952,6 +1026,7 @@ impl MediaService {
     /// Stops the jobs that run: a fetch or a mix ends at its next step.
     pub fn shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.cache.shutdown();
         let mut inner = self.lock();
         let queued: Vec<String> = inner.queue.drain(..).map(|(id, _)| id).collect();
         for id in queued {

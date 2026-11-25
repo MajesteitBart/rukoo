@@ -1283,6 +1283,8 @@ test('each voice has a player: it plays a clip of that voice, steps through its 
   await expect.poll(playing).toEqual([{ paused: false, wav: true }]);
   await expect(rows().nth(3)).toHaveClass(/is-playing/);
   await expect(hear('call-1')).toHaveAttribute('aria-pressed', 'true');
+  // While it plays, the first clip of the next voice without a name, where Assign goes, comes ahead of time.
+  await expect.poll(audioAsked).toContainEqual([8000, 11000]);
 
   // The keyboard works inside the player: Left takes the previous clip and plays it, Space pauses.
   await player().locator('[data-mt="assign"]').focus();
@@ -2027,6 +2029,119 @@ test("the view keeps at most the cached frames' images, and a frame scrolled bac
   await expect(frame(back)).toHaveClass(/has-image/);
   // Asked again at least once; a row near the edge of the view can leave the cache and come back more than once.
   expect(frameGets().filter((at) => at === back).length).toBeGreaterThanOrEqual(2);
+});
+
+// A meeting that finished on another computer and came through the bucket as text: its media is in the bucket.
+function fromTheBucket({ title = 'Planning from the laptop', total = 48_000_000 } = {}) {
+  const id = voice.meetingId();
+  const startedAt = Date.now() - 2 * 3600 * 1000;
+  voice.append('meeting.started', id, { title, startedAt, tracks: ['mic', 'call'], screen: 'frames', startedBy: 'voice', context: null });
+  for (const s of [MIC, CALL_1]) voice.append('speaker', id, s);
+  say(id, 'mic', 1000, 'Shall we look at the roadmap first?');
+  frameAt(id, 4000, 'Q3 roadmap\nLaunch in September');
+  say(id, 'call', 6000, 'Yes, the launch moved to September.');
+  frameAt(id, 9000, 'Pricing page\nThree plans');
+  say(id, 'call', 11000, 'And the pricing page goes first.');
+  voice.append('meeting.state', id, { state: 'done', at: 15000, endedAt: startedAt + 15000 });
+  voice.keeps.set(id, { keep: false, have: 0, total, stalled: false });
+  return id;
+}
+
+test('a frame from the bucket shows that it loads, then its image; the bucket and Voice being away are said as such', async () => {
+  test.setTimeout(90000);
+  let pending = 3;
+  voice.handlers['frame.get'] = ((own) =>
+    function (args) {
+      const res = own.call(this, args);
+      // Voice fetches the first slide back from the bucket, and can't reach the bucket for the second.
+      if (args.at >= 4000 && args.at < 9000 && pending-- > 0) return { frame: res.frame, image: null, pending: true };
+      if (args.at >= 9000) return { frame: res.frame, image: null, inBucket: true };
+      return res;
+    })(voice.handlers['frame.get']);
+  const id = fromTheBucket();
+  await openMeetings();
+  await expect(rows()).toHaveCount(3);
+  await expect(frame(4000)).toHaveClass(/is-loading/);
+  await expect(frame(4000).locator('.mt-frame-note')).toHaveText('Loading from your bucket…');
+  await expect(frame(4000).locator('.mt-shot .spinner')).toHaveCount(1);
+  await expect(frame(4000).locator('.mt-frame-line')).toHaveText('Q3 roadmap');
+  await expect(frame(4000)).toHaveClass(/has-image/, { timeout: 15000 });
+  await expect(frame(4000)).not.toHaveClass(/is-loading/);
+  await expect(frame(4000).locator('.mt-frame-note')).toHaveCount(0);
+  // Rukoo asked again until the image came, and asked Voice once to fetch the meeting's other frames ahead.
+  expect(frameGets().filter((at) => at === 4000).length).toBe(4);
+  expect(voice.commands.filter((c) => c.command === 'media.prefetch').map((c) => c.args)).toEqual([{ meeting: id, kind: 'frames' }]);
+  await expect(frame(9000).locator('.mt-frame-note')).toHaveText('The image shows once Rukoo Voice can reach your bucket.');
+  await expect(frame(9000).locator('.mt-frame-line')).toHaveText('Pricing page');
+
+  // Without Voice, the transcript and the frames' text stay; the media says it is in the bucket.
+  await voice.close();
+  voice.removeDiscovery();
+  await expect.poll(connected).toBe(false);
+  await expect(frame(9000).locator('.mt-frame-note')).toHaveText('The image shows once Rukoo Voice can reach your bucket.');
+  await expect(frame(4000)).toHaveClass(/has-image/);
+  await hear('call-1').click();
+  await expect(player().locator('.mt-pnote')).toHaveText('The audio is in your bucket. Clips play once Rukoo Voice can reach the bucket.');
+  await expect(rows()).toHaveCount(3);
+});
+
+test('Keep on this computer downloads a meeting from the bucket, shows how far it got, survives a restart and can be turned off', async () => {
+  test.setTimeout(120000);
+  const id = fromTheBucket();
+  // Voice brings a quarter of the meeting each time Rukoo asks how far it got.
+  voice.handlers['media.keep'] = function (args) {
+    const now = this.keeps.get(args.meeting);
+    if (typeof args.keep === 'boolean') now.keep = args.keep;
+    else if (now.keep && !now.stalled) now.have = Math.min(now.total, now.have + 12_000_000);
+    return { ...now };
+  };
+  await openMeetings();
+  await expect(rows()).toHaveCount(3);
+  await expect.poll(() => voice.commands.some((c) => c.command === 'media.keep' && c.args.meeting === id)).toBe(true);
+  const keepItem = () => menu().getByRole('menuitemcheckbox', { name: /Keep on this computer/ });
+  await view().locator('[data-mt="more"]').click();
+  await expect(keepItem()).toHaveAttribute('aria-checked', 'false');
+  await expect(keepItem()).toContainText('For use without a connection');
+  await keepItem().click();
+  expect(voice.commands.filter((c) => c.command === 'media.keep').pop().args).toEqual({ meeting: id, keep: true });
+  await expect(view().locator('.mt-keep')).toContainText(/Downloading \S+ MB of 45\.8 MB/);
+  await expect(view().locator('.mt-keep-bar')).toHaveAttribute('aria-valuenow', /^(25|50|75)$/);
+  // Done: the line goes, and the menu has it checked, in the header and in the sidebar.
+  await expect(view().locator('.mt-keep')).toHaveCount(0, { timeout: 15000 });
+  await view().locator('[data-mt="more"]').click();
+  await expect(keepItem()).toHaveAttribute('aria-checked', 'true');
+  await win.keyboard.press('Escape');
+  await win.locator(`[data-mt-open="${id}"]`).click({ button: 'right' });
+  await expect(keepItem()).toHaveAttribute('aria-checked', 'true');
+  await win.keyboard.press('Escape');
+
+  // After a restart, a kept meeting whose media Voice can't reach says the download waits for the bucket.
+  voice.keeps.set(id, { keep: true, have: 30_000_000, total: 48_000_000, stalled: true });
+  await closeApp(app);
+  await launch();
+  await expect.poll(connected).toBe(true);
+  await openMeetings();
+  await expect(view().locator('.mt-keep')).toHaveText(/Download waits for your bucket/);
+
+  // Turned off, the cache limit applies to it again.
+  voice.keeps.set(id, { keep: true, have: 48_000_000, total: 48_000_000, stalled: false });
+  await view().locator('[data-mt="more"]').click();
+  await keepItem().click();
+  expect(voice.commands.filter((c) => c.command === 'media.keep').pop().args).toEqual({ meeting: id, keep: false });
+  await view().locator('[data-mt="more"]').click();
+  await expect(keepItem()).toHaveAttribute('aria-checked', 'false');
+  await win.keyboard.press('Escape');
+
+  // A Voice that can't keep media offers nothing.
+  voice.handlers['media.keep'] = () => ({ error: { code: 'unknown_command', message: 'media.keep' } });
+  await closeApp(app);
+  await launch();
+  await expect.poll(connected).toBe(true);
+  await openMeetings();
+  await expect.poll(() => voice.commands.filter((c) => c.command === 'media.keep').length).toBeGreaterThan(0);
+  await view().locator('[data-mt="more"]').click();
+  await expect(menu()).toBeVisible();
+  await expect(keepItem()).toHaveCount(0);
 });
 
 test('marks about the screen say what happened to it, apart from the audio', async () => {

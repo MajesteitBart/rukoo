@@ -312,7 +312,7 @@ pub(crate) fn ensure_local(
 
 /// Audio, frames and video: files that never change once they went up, so one on disk with
 /// another size than its row is damaged and comes back from the bucket.
-fn is_media_path(path: &str) -> bool {
+pub(crate) fn is_media_path(path: &str) -> bool {
     ["audio/", "screen/frames/", "screen/video/"]
         .iter()
         .any(|dir| path.starts_with(dir))

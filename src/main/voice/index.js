@@ -67,6 +67,7 @@ function summary(e, now = Date.now()) {
     startedBy: e.startedBy,
     eventId: e.eventId,
     removed: e.removed,
+    media: e.media || null,
     duration: e.startedAt && end ? Math.max(0, end - e.startedAt) : null,
     rev: e.rev
   };
@@ -173,6 +174,8 @@ class VoiceService extends EventEmitter {
     // The microphone splits Rukoo follows, by meeting (splitMic): {state: 'running', at, end} or {state: 'error', code,
     // reason}. A finished split lives in the store.
     this.splits = new Map();
+    // Meetings whose frames Voice was asked to fetch ahead on this connection (prefetchFrames).
+    this.prefetched = new Set();
     this.closed = false;
   }
 
@@ -183,6 +186,7 @@ class VoiceService extends EventEmitter {
     // A new connection has nothing in flight: its clips don't wait for the old one's.
     this.bridge.on('closed', () => {
       this.clipChain = null;
+      this.prefetched.clear();
     });
     this.bridge.on('welcome', (msg) => this.onWelcome(msg));
     this.bridge.on('event', (ev) => this.onEvent(ev));
@@ -609,15 +613,47 @@ class VoiceService extends EventEmitter {
     return this.bridge.command('meeting.mark', args);
   }
 
-  // The frame at or before at (meeting time in ms): {frame, image: {type, data}}. A frame Rukoo has without its text
-  // (a snapshot left it out) gets the text from the answer, and the renderer hears of it with the next delta.
+  // The frame at or before at (meeting time in ms): {frame, image: {type, data}}, with pending while Voice fetches
+  // the image back from the bucket and inBucket when the bucket has it but Voice can't reach it now. A frame Rukoo has
+  // without its text (a snapshot left it out) gets the text from the answer, and the renderer hears of it with the
+  // next delta. The first frame of a meeting that comes from the bucket asks Voice to fetch the others ahead.
   async frame(id, at) {
     this.mustConnect();
     const res = await this.bridge.command('frame.get', { meeting: id, at });
     const before = this.revOf(id);
     const change = this.store.frameText(id, res && res.frame);
     if (change) this.note(change, before);
+    if (res && res.pending === true) this.prefetchFrames(id);
     return res;
+  }
+
+  // media.prefetch, once per meeting while connected. An older Voice answers unknown_command; nothing changes then.
+  prefetchFrames(id) {
+    if (!this.connected || this.prefetched.has(id)) return;
+    this.prefetched.add(id);
+    this.bridge.command('media.prefetch', { meeting: id, kind: 'frames' }).catch(() => {});
+  }
+
+  // media.keep: keep all of the meeting's media on this computer (keep true), let Voice's cache limit apply again
+  // (false), or only ask how it stands (undefined). {keep, have, total, stalled}, also kept in the meeting's summary.
+  // null from a Voice that can't: an older one, or one without bucket sync.
+  async keepMedia(id, keep) {
+    const e = this.store.entry(id);
+    if (!e || e.removed) throw new VoiceError('not_found', 'No such meeting.');
+    this.mustConnect();
+    const args = { meeting: id };
+    if (typeof keep === 'boolean') args.keep = keep;
+    let r;
+    try {
+      r = await this.bridge.command('media.keep', args);
+    } catch (err) {
+      if (err.code === 'unknown_command' || err.code === 'not_available') return null;
+      throw err;
+    }
+    const valid = r && typeof r.keep === 'boolean' && count(r.have) && count(r.total) && r.total >= r.have;
+    if (!valid) throw badReply('how a meeting\'s media stands');
+    this.change(id, 'meeting', () => this.store.setMedia(id, r));
+    return { keep: r.keep, have: r.have, total: r.total, stalled: r.stalled === true };
   }
 
   // The meeting's video between start and end (ms), cut by Voice into MP4 files on this computer: {clips: [{path,

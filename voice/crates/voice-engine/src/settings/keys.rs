@@ -93,6 +93,7 @@ pub fn view(cfg: &Config, start_at_login: bool, secret_saved: bool) -> Value {
                 "prefix": sync_text("prefix"),
                 "accessKeyId": sync_text("accessKeyId"),
                 "retention": sync.get("retention").and_then(Value::as_str).unwrap_or("keep"),
+                "cache": crate::sync::cache_choice(cfg),
                 "secretSaved": secret_saved,
                 "tested": tested,
                 // The secret never reaches the page.
@@ -150,6 +151,17 @@ fn set_sync(cfg: &mut Config, key: &str, value: Value) -> Result<(), ApiError> {
                 .filter(|n| voice_sync::BucketRetention::parse(n).is_some())
                 .ok_or_else(|| invalid(key))?;
             sync_object(cfg).insert("retention".into(), json!(name));
+            return Ok(());
+        }
+        "cache" => {
+            let name = text(&value)
+                .filter(|n| {
+                    crate::sync::CACHE_LIMITS
+                        .iter()
+                        .any(|(known, _)| known == n)
+                })
+                .ok_or_else(|| invalid(key))?;
+            sync_object(cfg).insert("cache".into(), json!(name));
             return Ok(());
         }
         "service" => text(&value)

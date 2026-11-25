@@ -168,6 +168,22 @@ pub trait MeetingControl: Send + Sync {
     /// happens without bucket sync.
     fn pull_meetings(&self) {}
 
+    /// `media.prefetch` with `kind` `frames`: fetch the meeting's frame images that aren't on this
+    /// computer back from the bucket in the background, at low priority. Answers `{}` at once.
+    fn prefetch_frames(&self, _id: &str) -> Result<Value, ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't fetch media ahead.",
+        ))
+    }
+
+    /// `media.keep`: with `keep`, keep all of the meeting's media on this computer or let the
+    /// cache limit apply again; either way `{ keep, have, total, stalled }` in bytes.
+    fn keep_media(&self, _id: &str, _keep: Option<bool>) -> Result<Value, ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't keep media on this computer.",
+        ))
+    }
+
     fn status(&self) -> Status;
 }
 

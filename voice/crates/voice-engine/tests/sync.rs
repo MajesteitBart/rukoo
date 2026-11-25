@@ -108,6 +108,10 @@ fn main() {
             changes_and_deletions_reach_the_other_computer,
         ),
         (
+            "a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit",
+            a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit,
+        ),
+        (
             "media_open_for_video_answers_within_50_ms",
             media_open_for_video_answers_within_50_ms,
         ),
@@ -1417,6 +1421,203 @@ fn changes_and_deletions_reach_the_other_computer() {
     });
     assert!(!meeting_dir(&b.data(), &id).exists());
     engine_a.shutdown();
+    engine_b.shutdown();
+    fake.stop();
+}
+
+// Media on request ----------------------------------------------------------------------------
+
+/// A stand-in JPEG of about 8 KB, different for each `n`.
+fn small_jpeg(n: u8) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    bytes.extend_from_slice(b"JFIF\0");
+    bytes.extend((0..8_000u32).map(|i| (i as u8).wrapping_mul(n)));
+    bytes.extend_from_slice(&[0xFF, 0xD9]);
+    bytes
+}
+
+/// Frames at these meeting times, with their screen journal, as a screen recording leaves them.
+const SHOTS: [u64; 3] = [500, 1500, 2500];
+
+fn shot(at: u64) -> String {
+    voice_screen_files::paths::frame_file(&voice_screen_files::paths::frame_id(at))
+}
+
+fn write_shots(dir: &Path, end: u64) {
+    std::fs::create_dir_all(dir.join("screen").join("frames")).unwrap();
+    let mut lines = vec![ScreenLine::Mode {
+        t: 0,
+        id: "mode-1".into(),
+        mode: "frames".into(),
+        reason: "user".into(),
+    }];
+    for (i, at) in SHOTS.iter().enumerate() {
+        std::fs::write(dir.join(shot(*at)), small_jpeg(i as u8 + 3)).unwrap();
+        lines.push(ScreenLine::Frame {
+            t: *at,
+            id: voice_screen_files::paths::frame_id(*at),
+            file: shot(*at),
+            width: 1280,
+            height: 720,
+            text: format!("Slide {}", i + 1),
+            ocr: "ok".into(),
+            language: None,
+        });
+    }
+    lines.push(ScreenLine::Stop {
+        t: end,
+        reason: "meeting".into(),
+    });
+    let text: String = lines
+        .iter()
+        .map(|l| serde_json::to_string(l).unwrap() + "\n")
+        .collect();
+    std::fs::write(dir.join("screen").join("journal.jsonl"), text).unwrap();
+}
+
+/// The media files of a meeting folder on disk, relative and sorted.
+fn media_files(dir: &Path) -> Vec<String> {
+    let mut files: Vec<String> = voice_meetings::MediaPart::ORDER
+        .iter()
+        .flat_map(|part| part.files(dir))
+        .collect();
+    files.sort();
+    files
+}
+
+/// A meeting recorded on computer A comes to B as text. On B its frame images come back from the
+/// bucket on request (`frame.get` answers `pending`, then the image) and ahead of time
+/// (`media.prefetch`), what came back stays within the cache limit, least recently used going
+/// first, while media B recorded itself and never uploaded stays; and a meeting kept on this
+/// computer downloads everything, keeps it from the limit and survives a restart.
+fn a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit() {
+    let fake = fake_s3();
+    let a = harness("keep-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    write_shots(&meeting_dir(&a.data(), &id), 3000);
+    wait_long("the frames in the bucket", Duration::from_secs(60), || {
+        bucket_kinds(&fake, &code)
+            .iter()
+            .filter(|k| **k == "jpeg")
+            .count()
+            == SHOTS.len()
+    });
+    wait_uploaded(&engine_a);
+    engine_a.shutdown();
+
+    // B: a GB of the cache limit is 5,000 bytes here, so the default limit, 5 GB, is 25,000.
+    let mut b = harness("keep-b", json!({"meetings_retention": "keep"}));
+    b.sync_timing.cache_gb = 5_000;
+    b.sync_timing.cache_in_use = Duration::ZERO;
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    let dir = meeting_dir(&b.data(), &id);
+    assert!(media_files(&dir).is_empty(), "the meeting came as text");
+    let control = engine_b.meeting_control().unwrap();
+
+    // frame.get answers at once with pending, then with the image.
+    let first = control.frame(&id, 1600).unwrap();
+    assert_eq!(
+        (&first["image"], &first["pending"], &first["frame"]["text"]),
+        (&Value::Null, &json!(true), &json!("Slide 2")),
+        "{first}"
+    );
+    let mut image = Value::Null;
+    wait_long(
+        "the frame image from the bucket",
+        Duration::from_secs(30),
+        || {
+            let reply = control.frame(&id, 1600).unwrap();
+            image = reply["image"].clone();
+            !image.is_null()
+        },
+    );
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(image["data"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(data, small_jpeg(4));
+
+    // media.prefetch brings the others in the background.
+    assert_eq!(control.prefetch_frames(&id).unwrap(), json!({}));
+    wait_long("the frames fetched ahead", Duration::from_secs(30), || {
+        SHOTS.iter().all(|at| dir.join(shot(*at)).is_file())
+    });
+    // The last frame is the one used last.
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!control.frame(&id, 2600).unwrap()["image"].is_null());
+
+    // B records a meeting the bucket never gets.
+    fake.faults().refuse = true;
+    let own = record(&engine_b, &b.data(), 2000);
+    let own_media = media_files(&meeting_dir(&b.data(), &own));
+    assert!(!own_media.is_empty());
+
+    // 2 GB is 10,000 bytes here: the two frames used longest ago go, the newest stays, and so does
+    // everything B recorded itself.
+    engine_b
+        .settings_set("storage.sync.cache", json!("gb2"))
+        .unwrap();
+    wait_long("the cache limit", Duration::from_secs(30), || {
+        !dir.join(shot(500)).exists() && !dir.join(shot(1500)).exists()
+    });
+    assert!(dir.join(shot(2500)).is_file(), "the frame used last stays");
+    assert_eq!(media_files(&meeting_dir(&b.data(), &own)), own_media);
+    wait_long(
+        "Settings to show the cache",
+        Duration::from_secs(30),
+        || engine_b.settings_state()["storage"]["cacheBytes"] == json!(small_jpeg(5).len()),
+    );
+    fake.faults().refuse = false;
+
+    // Keep on this computer: everything comes down and the limit leaves it alone.
+    let kept = control.keep_media(&id, Some(true)).unwrap();
+    assert_eq!(kept["keep"], true, "{kept}");
+    wait_long("the kept meeting's media", Duration::from_secs(60), || {
+        let state = control.keep_media(&id, None).unwrap();
+        state["have"] == state["total"]
+    });
+    let all = media_files(&dir);
+    assert!(all.iter().any(|p| p.starts_with("audio/")), "{all:?}");
+    assert!(SHOTS.iter().all(|at| all.contains(&shot(*at))), "{all:?}");
+    // One file goes missing while Voice is closed; the choice and the download outlive a restart.
+    std::fs::remove_file(dir.join(&all[0])).unwrap();
+    engine_b.shutdown();
+    let engine_b = b.start();
+    let control = engine_b.meeting_control().unwrap();
+    wait_long(
+        "the kept meeting complete again",
+        Duration::from_secs(60),
+        || {
+            let state = control.keep_media(&id, None).unwrap();
+            state["keep"] == true && state["have"] == state["total"]
+        },
+    );
+    assert_eq!(
+        media_files(&dir),
+        all,
+        "the cache limit left the kept meeting alone"
+    );
+
+    // Not kept any more: the limit applies to it again.
+    assert_eq!(control.keep_media(&id, Some(false)).unwrap()["keep"], false);
+    wait_long(
+        "the limit on the meeting again",
+        Duration::from_secs(30),
+        || media_files(&dir).len() < all.len(),
+    );
+    assert_eq!(media_files(&meeting_dir(&b.data(), &own)), own_media);
+
+    // Deleting the meeting drops the choice.
+    control.keep_media(&id, Some(true)).unwrap();
+    control.delete(&id).unwrap();
+    assert_eq!(code_of(control.keep_media(&id, None)), ErrorCode::NotFound);
     engine_b.shutdown();
     fake.stop();
 }

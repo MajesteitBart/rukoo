@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS restored (
   used_at     INTEGER NOT NULL,
   PRIMARY KEY (meeting, path)
 );
+CREATE TABLE IF NOT EXISTS kept (meeting TEXT PRIMARY KEY, kept_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS errors (at INTEGER NOT NULL, code TEXT NOT NULL, message TEXT NOT NULL);
 "#;
 
@@ -569,6 +570,7 @@ impl Queue {
     ///               or has_media and the meeting has no meetings row yet
     ///               or has_media and the meeting is live or still uploading (phase live or after) ) )
     /// or a restored row of the meeting was used in the last 24 hours
+    /// or the user keeps the meeting on this computer
     /// ```
     ///
     /// The phase line covers files the scan hasn't reached yet: a meeting counts as synced only once
@@ -583,7 +585,8 @@ impl Queue {
         self.with(|c| {
             let recent = now.saturating_sub(RESTORED_HOLD_MS);
             let restored: bool = c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM restored WHERE meeting = ?1 AND used_at > ?2)",
+                "SELECT EXISTS (SELECT 1 FROM restored WHERE meeting = ?1 AND used_at > ?2) \
+                 OR EXISTS (SELECT 1 FROM kept WHERE meeting = ?1)",
                 params![meeting, to_i64(recent)],
                 |r| r.get(0),
             )?;
@@ -747,6 +750,70 @@ impl Queue {
                 params![meeting, path, to_i64(now)],
             )
             .map(drop)
+        })
+    }
+
+    /// Every restored file, least recently used first: (meeting, path, used_at), for the cache
+    /// limit. Files of meetings the user keeps on this computer aren't listed.
+    pub(crate) fn restored_files(&self) -> Result<Vec<(String, String, u64)>, SyncError> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT meeting, path, used_at FROM restored \
+                 WHERE meeting NOT IN (SELECT meeting FROM kept) ORDER BY used_at, meeting, path",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, to_u64(r.get(2)?))))?;
+            rows.collect()
+        })
+    }
+
+    /// Forgets a restored file the cache limit removed.
+    pub(crate) fn forget_restored(&self, meeting: &str, path: &str) -> Result<(), SyncError> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM restored WHERE meeting = ?1 AND path = ?2",
+                params![meeting, path],
+            )
+            .map(drop)
+        })
+    }
+
+    /// The meeting's audio, frames and video in the bucket: each path's newest finished row and
+    /// its size, in path order.
+    pub(crate) fn media_in_bucket(&self, meeting: &str) -> Result<Vec<(String, u64)>, SyncError> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT path, size FROM files f WHERE meeting = ?1 AND state = 'done' \
+                   AND kind IN ('audio', 'frame', 'video') \
+                   AND id = (SELECT MAX(id) FROM files g WHERE g.meeting = f.meeting \
+                     AND g.path = f.path AND g.state = 'done') \
+                 ORDER BY path",
+            )?;
+            let rows = stmt.query_map([meeting], |r| Ok((r.get(0)?, to_u64(r.get(1)?))))?;
+            rows.collect()
+        })
+    }
+
+    /// Keeps the meeting's media on this computer, or lets the cache limit apply to it again.
+    pub(crate) fn set_kept(&self, meeting: &str, keep: bool, now: u64) -> Result<(), SyncError> {
+        self.with(|c| {
+            if keep {
+                c.execute(
+                    "INSERT OR IGNORE INTO kept (meeting, kept_at) VALUES (?1, ?2)",
+                    params![meeting, to_i64(now)],
+                )
+            } else {
+                c.execute("DELETE FROM kept WHERE meeting = ?1", [meeting])
+            }
+            .map(drop)
+        })
+    }
+
+    /// The meetings the user keeps on this computer, oldest choice first.
+    pub(crate) fn kept(&self) -> Result<Vec<String>, SyncError> {
+        self.with(|c| {
+            let mut stmt = c.prepare("SELECT meeting FROM kept ORDER BY kept_at, meeting")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.collect()
         })
     }
 
@@ -1403,6 +1470,7 @@ impl Queue {
             )?;
             tx.execute("DELETE FROM files WHERE meeting = ?1", [meeting])?;
             tx.execute("DELETE FROM restored WHERE meeting = ?1", [meeting])?;
+            tx.execute("DELETE FROM kept WHERE meeting = ?1", [meeting])?;
             tx.execute(
                 "DELETE FROM meta WHERE key LIKE ?1 OR key = ?2",
                 [

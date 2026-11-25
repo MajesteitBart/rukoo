@@ -141,6 +141,8 @@ class FakeVoice {
     // media.open's files by id ({ file, ready }) and their ids by arguments.
     this.media = new Map();
     this.mediaIds = new Map();
+    // media.keep: each meeting's { keep, have, total, stalled }; a meeting without one has all its media here.
+    this.keeps = new Map();
   }
 
   async listen(port = 0) {
@@ -331,6 +333,18 @@ const DEFAULTS = {
   // Voice looks in the bucket on its own; what it finds arrives as ordinary events.
   'sync.pull'() {
     return {};
+  },
+  // Voice fetches the frame images in the background; nothing here to fetch.
+  'media.prefetch'(args) {
+    if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    return {};
+  },
+  // Keeping a meeting downloads nothing here: a kept meeting has all of its media at once, unless a test set keeps.
+  'media.keep'(args) {
+    if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    const now = this.keeps.get(args.meeting) || { keep: false, have: 1000000, total: 1000000, stalled: false };
+    if (typeof args.keep === 'boolean') this.keeps.set(args.meeting, { ...now, keep: args.keep });
+    return { ...now, ...(this.keeps.get(args.meeting) || {}) };
   },
   'meeting.get'(args) {
     const snap = this.snapshot(args.meeting);

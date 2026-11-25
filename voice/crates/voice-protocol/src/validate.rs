@@ -13,6 +13,7 @@ use crate::message::{
     Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingStarting,
     MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply,
     ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status, Track, Welcome,
+    PREFETCH_FRAMES,
 };
 use crate::{
     is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
@@ -448,6 +449,20 @@ fn command(f: &Fields) -> Checked<Command> {
             };
             CommandBody::SpeakersSplit { meeting, track }
         }
+        commands::MEDIA_PREFETCH => {
+            let meeting = a.meeting("meeting")?;
+            if a.string("kind")? != PREFETCH_FRAMES {
+                return invalid("kind");
+            }
+            CommandBody::MediaPrefetch { meeting }
+        }
+        commands::MEDIA_KEEP => CommandBody::MediaKeep {
+            meeting: a.meeting("meeting")?,
+            keep: a
+                .optional("keep")
+                .map(|value| value.as_bool().ok_or_else(|| Invalid::new("keep")))
+                .transpose()?,
+        },
         unknown => CommandBody::Unknown {
             command: unknown.to_owned(),
             args: args.clone(),

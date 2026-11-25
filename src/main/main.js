@@ -2235,10 +2235,17 @@ Object.assign(api, {
   meetingCorrect: (id, passageId, text) => voiceService().correct(meetingId(id), meetingText(passageId, 100), text === null ? null : meetingText(text, 20000)),
   // The image of the frame at or before atMs (meeting time in ms, a frame's at), as a data URL, or null. A frame the
   // meeting view got without its text gets the text with the delta that follows.
+  // {url, text, pending, inBucket}: url is null while Voice fetches the image back from the bucket (pending), when the
+  // bucket has it but Voice can't reach it now (inBucket), and when nobody has it any more.
   meetingFrame: async (id, atMs) => {
     if (!Number.isInteger(atMs) || atMs < 0) throw new Error('invalid');
-    return frameUrl(await voiceService().frame(meetingId(id), atMs));
+    const res = await voiceService().frame(meetingId(id), atMs);
+    const text = res && res.frame && typeof res.frame.text === 'string' ? res.frame.text : null;
+    return { url: frameUrl(res), text, pending: Boolean(res && res.pending === true), inBucket: Boolean(res && res.inBucket === true) };
   },
+  // Keep all of the meeting's media on this computer (keep true or false), or ask how it stands (keep left out):
+  // {keep, have, total, stalled} in bytes, or null when Voice can't keep media.
+  meetingKeep: (id, keep) => voiceService().keepMedia(meetingId(id), typeof keep === 'boolean' ? keep : undefined),
   // The meeting's screen recording and the monitors it can move to (voice/index.js screenInfo).
   meetingScreen: (id) => voiceService().screenInfo(meetingId(id)),
   meetingScreenSet: (id, screen, monitor = null) => voiceService().setScreen(meetingId(id), screen, typeof monitor === 'string' ? monitor : null),

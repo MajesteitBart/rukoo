@@ -62,7 +62,12 @@ pub mod commands {
     pub const MEDIA_READ: &str = "media.read";
     pub const SPEAKERS_SPLIT: &str = "speakers.split";
     pub const SYNC_PULL: &str = "sync.pull";
+    pub const MEDIA_PREFETCH: &str = "media.prefetch";
+    pub const MEDIA_KEEP: &str = "media.keep";
 }
+
+/// What `media.prefetch` fetches: the only `kind` it takes.
+pub const PREFETCH_FRAMES: &str = "frames";
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
 macro_rules! named {
@@ -708,6 +713,17 @@ pub enum CommandBody {
         meeting: MeetingId,
         track: Track,
     },
+    /// Fetch the meeting's frame images back from the bucket in the background. The checks allow
+    /// only `kind` [`PREFETCH_FRAMES`].
+    MediaPrefetch {
+        meeting: MeetingId,
+    },
+    /// Keep all of the meeting's media on this computer (`Some(true)`), let the cache limit apply
+    /// again (`Some(false)`), or only say how it stands (`None`).
+    MediaKeep {
+        meeting: MeetingId,
+        keep: Option<bool>,
+    },
     /// A command this version doesn't know. Voice answers `unknown_command`.
     Unknown {
         command: String,
@@ -738,6 +754,8 @@ impl CommandBody {
             CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
             CommandBody::MediaRead { .. } => commands::MEDIA_READ,
             CommandBody::SpeakersSplit { .. } => commands::SPEAKERS_SPLIT,
+            CommandBody::MediaPrefetch { .. } => commands::MEDIA_PREFETCH,
+            CommandBody::MediaKeep { .. } => commands::MEDIA_KEEP,
             CommandBody::Unknown { command, .. } => command,
         }
     }
@@ -821,6 +839,16 @@ impl CommandBody {
             CommandBody::SpeakersSplit { meeting, track } => {
                 args.insert("meeting".into(), meeting.as_str().into());
                 args.insert("track".into(), track.as_str().into());
+            }
+            CommandBody::MediaPrefetch { meeting } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("kind".into(), PREFETCH_FRAMES.into());
+            }
+            CommandBody::MediaKeep { meeting, keep } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                if let Some(keep) = keep {
+                    args.insert("keep".into(), (*keep).into());
+                }
             }
             CommandBody::Unknown { args: unknown, .. } => return Value::Object(unknown.clone()),
         }

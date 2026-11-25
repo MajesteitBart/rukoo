@@ -2,12 +2,13 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::keys::{KeyStore, SECRET_FILE};
+use crate::manifest::is_meeting_path;
 use crate::protect::Protector;
 use crate::pull::{PullInfo, PullOrigin};
 use crate::queue::Queue;
@@ -43,6 +44,10 @@ pub struct SyncTiming {
     pub single_max: u64,
     /// How often the indexes are read for meetings from the other computers ([`crate::pull`]).
     pub pull_every: Duration,
+    /// The bytes one GB of the cache limit stands for; tests make it small.
+    pub cache_gb: u64,
+    /// The cache limit never removes media used this recently: a link may still read it.
+    pub cache_in_use: Duration,
 }
 
 impl Default for SyncTiming {
@@ -62,6 +67,8 @@ impl Default for SyncTiming {
             part_size: 8 << 20,
             single_max: 16 << 20,
             pull_every: Duration::from_secs(5 * 60),
+            cache_gb: 1_000_000_000,
+            cache_in_use: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -182,6 +189,8 @@ pub struct TestReport {
 
 pub struct BucketSync {
     shared: Arc<Shared>,
+    /// One cache trim at a time.
+    trimming: Mutex<()>,
 }
 
 /// `Core::shutdown` waits this long for the worker (2.9).
@@ -204,7 +213,10 @@ impl BucketSync {
             .map_err(|e| worker::local("Voice can't start the sync worker", &e))?;
         crate::pull::spawn(shared.clone())
             .map_err(|e| worker::local("Voice can't start pulling meetings", &e))?;
-        Ok(BucketSync { shared })
+        Ok(BucketSync {
+            shared,
+            trimming: Mutex::new(()),
+        })
     }
 
     /// Lets the `sync-pull` thread bring meetings from the other computers: until the engine says
@@ -588,6 +600,100 @@ impl BucketSync {
         cancel: &AtomicBool,
     ) -> Result<(), SyncError> {
         crate::restore::ensure_local(&self.shared, meeting, paths, cancel)
+    }
+
+    /// The meeting's audio, frames and video that reached the bucket: each file's path and size,
+    /// in path order. Empty while sync moves to another bucket.
+    pub fn media_in_bucket(&self, meeting: &str) -> Vec<(String, u64)> {
+        if self.shared.lock().moving() {
+            return Vec::new();
+        }
+        self.shared
+            .queue
+            .media_in_bucket(meeting)
+            .unwrap_or_default()
+    }
+
+    /// Keeps the meeting's media on this computer, out of the cache limit and retention, or lets
+    /// both apply again. Deleting the meeting forgets the choice.
+    pub fn set_kept(&self, meeting: &str, keep: bool) -> Result<(), SyncError> {
+        if voice_protocol::MeetingId::parse(meeting).is_none() {
+            return Err(SyncError::new(SyncErrorKind::Local, "Invalid meeting id."));
+        }
+        self.shared.queue.set_kept(meeting, keep, self.shared.now())
+    }
+
+    /// The meetings the user keeps on this computer.
+    pub fn kept(&self) -> Vec<String> {
+        self.shared.queue.kept().unwrap_or_default()
+    }
+
+    /// The fetched media the cache limit counts: what came back from the bucket, outside the
+    /// meetings the user keeps, and is on disk now. (meeting, path, bytes, used_at), least
+    /// recently used first.
+    fn cached(&self) -> Vec<(String, String, u64, u64)> {
+        let shared = &self.shared;
+        let Ok(rows) = shared.queue.restored_files() else {
+            return Vec::new();
+        };
+        rows.into_iter()
+            .filter(|(_, path, _)| crate::restore::is_media_path(path) && is_meeting_path(path))
+            .filter_map(|(meeting, path, used_at)| {
+                let meta = std::fs::metadata(shared.meeting_dir(&meeting).join(&path)).ok()?;
+                meta.is_file()
+                    .then_some((meeting, path, meta.len(), used_at))
+            })
+            .collect()
+    }
+
+    /// Bytes of fetched media the cache limit counts now.
+    pub fn cache_bytes(&self) -> u64 {
+        self.cached().iter().map(|(_, _, bytes, _)| bytes).sum()
+    }
+
+    /// Removes fetched media, least recently used first, until what the cache counts fits in
+    /// `limit` bytes. Never a file that isn't in the bucket, one used in the last
+    /// [`SyncTiming::cache_in_use`], or one being fetched. Returns the bytes removed.
+    pub fn trim_cache(&self, limit: u64) -> u64 {
+        let _one = self.trimming.lock().unwrap_or_else(PoisonError::into_inner);
+        let shared = &self.shared;
+        let cached = self.cached();
+        let mut total: u64 = cached.iter().map(|(_, _, bytes, _)| bytes).sum();
+        let recent = shared
+            .now()
+            .saturating_sub(worker::millis(shared.opts.timing.cache_in_use));
+        let mut removed = 0;
+        for (meeting, path, bytes, used_at) in cached {
+            if total <= limit {
+                break;
+            }
+            if used_at > recent || !self.in_bucket(&meeting, &path) {
+                continue;
+            }
+            let file = shared.meeting_dir(&meeting).join(&path);
+            let fetching = shared
+                .fetching
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(&file);
+            if fetching {
+                continue;
+            }
+            match std::fs::remove_file(&file) {
+                Ok(()) => {
+                    total = total.saturating_sub(bytes);
+                    removed += bytes;
+                    if let Err(e) = shared.queue.forget_restored(&meeting, &path) {
+                        log::warn!("sync: can't forget removed cached media: {e}");
+                    }
+                }
+                Err(e) => log::warn!("sync: cached media of {meeting} stays: {e}"),
+            }
+        }
+        if removed > 0 {
+            log::info!("sync: the cache limit removed {removed} bytes of fetched media");
+        }
+        removed
     }
 
     /// The bucket's meetings that aren't on this computer, newest first. Settings' restore count
