@@ -10,7 +10,7 @@ export function loadPages() {
  const files=walk(root); const pages=[];
  for(const file of files) {
   if(!file.endsWith('.md')) throw new Error(`Only Markdown pages allowed: ${file}`);
-  const text=fs.readFileSync(file,'utf8'); assertPublic(text,file);
+  const text=fs.readFileSync(file,'utf8').replace(/\r\n/g,'\n'); assertPublic(text,file);
   const parts=text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/); if(!parts) throw new Error(`Missing frontmatter: ${file}`);
   const data=parse(parts[1]);
   const keys=['pageId','slug','title','description','docType','productArea','appliesTo','reviewed','behaviorChecked'];

@@ -1,11 +1,12 @@
 # Rukoo website
 
-The website at [rukoo.io](https://rukoo.io): the landing page, the pricing page, the changelog, the early access form and Rukoo in the browser at `/app`. It runs on Cloudflare as the `rukoo-site` Worker. The Worker serves the files in `site/` and passes every other request on to the account server in [`server/`](../server/README.md#how-rukooio-is-set-up).
+The website at [rukoo.io](https://rukoo.io): the landing page, the pricing page, the changelog, the help center at `/help`, the early access form and Rukoo in the browser at `/app`. It runs on Cloudflare as the `rukoo-site` Worker. The Worker serves the files in `site/` and passes every other request on to the account server in [`server/`](../server/README.md#how-rukooio-is-set-up).
 
 ## What's where
 
-- `site/`: the files the Worker serves, as they are. There is no build step for the landing page and the changelog: edit the HTML, CSS and JavaScript directly. `site/app/` is the exception: `npm run app:build` makes it, and it isn't committed.
-- `cloudflare/`: the Worker. `worker.js` redirects www, answers the site's files and forwards the rest to the account server. `early-access.js` answers the early access form. `web-app.js` serves `/app` and sends invitation links at `/join` there.
+- `site/`: the files the Worker serves, as they are. There is no build step for the landing page and the changelog: edit the HTML, CSS and JavaScript directly. `site/app/` and `site/help/` are the exceptions: `npm run app:build` and `npm run help:build` make them, and they aren't committed.
+- `cloudflare/`: the Worker. `worker.js` redirects www, answers the site's files and forwards the rest to the account server. `early-access.js` answers the early access form. `web-app.js` serves `/app` and sends invitation links at `/join` there. `help-center.js` serves `/help`.
+- `help-center/`: the help center, an Astro Starlight project with its own `package.json`, 60 Markdown pages and its own [README](help-center/README.md) and [AGENTS.md](help-center/AGENTS.md).
 - `content/changelog/`: one `.mdx` file per release. `npm run changelog` builds `site/changelog/index.html` from them.
 - `assets-src/`: full-size screenshots and sounds. `npm run images` and `npm run changelog:images` make the AVIF and WebP sizes in `site/img/`.
 - `tools/`: the scripts behind those commands, the icon sprite, the social card and a section-by-section screenshot check. `build-app.mjs` assembles `site/app/`.
@@ -23,9 +24,11 @@ Run these from this folder, after `npm install`:
 | `npm run images` | Rebuilds the landing page images from `assets-src/shots/` |
 | `npm run changelog:images` | Rebuilds the changelog images from `assets-src/changelog/` |
 | `npm run app:build` | Builds Rukoo in the browser into `site/app/` |
+| `npm run help:build` | Installs `help-center/` with `npm ci`, checks its pages and builds it into `site/help/` |
+| `npm run help:test` | Runs the help center's validator and build-step tests |
 | `npm run app:dev` | Builds the app, runs the site and the account server on your computer, and rebuilds on every change |
 | `npm run test:browser` | Runs the app in headless Chromium against a local account server |
-| `npm run deploy` | Builds the app and deploys the live site to rukoo.io |
+| `npm run deploy` | Builds the app and the help center and deploys the live site to rukoo.io |
 
 A change to the template in `tools/build-changelog.mjs` also needs `npm run changelog`, or the next rebuild undoes the edit in `site/changelog/index.html`.
 

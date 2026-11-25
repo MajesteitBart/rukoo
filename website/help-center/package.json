@@ -4,17 +4,18 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=24.0.0 <25"
+    "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev --host 127.0.0.1",
-    "build": "npm run validate && ASTRO_TELEMETRY_DISABLED=1 astro build && npm run check:output",
-    "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview --host 127.0.0.1",
+    "dev": "node scripts/astro.mjs dev --host 127.0.0.1",
+    "build": "npm run validate && node scripts/astro.mjs build && node scripts/publish.mjs && npm run check:output",
+    "preview": "node scripts/astro.mjs preview --host 127.0.0.1",
     "validate": "node scripts/validate.mjs && node scripts/check-source-map.mjs",
     "check:output": "node scripts/check-output.mjs",
-    "test": "node scripts/test-validators.mjs && node scripts/test-source-map.mjs"
+    "test": "node scripts/test-validators.mjs && node scripts/test-source-map.mjs && node --test scripts/markdown-base.test.mjs scripts/publish.test.mjs"
   },
   "dependencies": {
+    "@astrojs/markdown-satteri": "0.4.10",
     "@astrojs/starlight": "0.43.1",
     "astro": "7.4.13"
   },
