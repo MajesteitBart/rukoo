@@ -5418,11 +5418,11 @@
   },
   "settings.modes.offCalendar": {
     "message": "Calendar is turned off, so Rukoo can't show this.",
-    "description": "Notice in the main window when the user opens a calendar file or an event while Calendar is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Calendar on and then opens the file. src/renderer/app.js (modeOffNotice)"
+    "description": "Notice in the main window when the user opens a calendar file or an event while Calendar is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Calendar on and then opens the file or the event. src/renderer/app.js (modeOffNotice)"
   },
   "settings.modes.offMeeting": {
     "message": "Meet is turned off, so Rukoo can't show this meeting.",
-    "description": "Notice in the main window when the user opens a meeting, such as from a chat about it, while Meet is turned off in Settings > General > Tabs. Followed by a Turn on button. src/renderer/app.js (modeOffNotice)"
+    "description": "Notice in the main window when the user opens a meeting, such as from a chat about it, while Meet is turned off in Settings > General > Tabs. Followed by a Turn on button, which turns Meet on and then opens that meeting. src/renderer/app.js (modeOffNotice)"
   },
   "settings.modes.offChat": {
     "message": "Chat is turned off, so Rukoo can't open your invitation.",

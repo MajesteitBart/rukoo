@@ -586,6 +586,52 @@ test('with Mail off an open compose window still saves and sends, and Undo send,
   expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual(['mail']);
 });
 
+test('an email being written in the reading pane moves to a compose window when Mail goes off, as one draft', async () => {
+  await start({ language: 'en' });
+  await win.click('[data-action="compose"]');
+  await expect(win.locator('.composer .editor')).toBeVisible();
+  await win.fill('.composer [data-field="subject"]', 'Half written when Mail went');
+  await win.click('.composer .editor');
+  await win.keyboard.type('Keep this text.');
+
+  // Mail goes: the reading pane goes with it, and the email opens in a compose window with what was written.
+  const [popped] = await Promise.all([app.waitForEvent('window'), setHidden(['mail'])]);
+  await popped.waitForSelector('.composer .editor');
+  await expect(popped.locator('[data-field="subject"]')).toHaveValue('Half written when Mail went');
+  await expect(popped.locator('.editor')).toContainText('Keep this text.');
+  await expect(shell()).toHaveClass(/calendar-mode/);
+  await expect(win.locator('#app .reader .composer')).toHaveCount(0);
+  const drafts = async () => (await subjects('drafts')).filter((s) => s === 'Half written when Mail went').length;
+  expect(await drafts()).toBe(1);
+
+  // The compose window goes on with that draft: a save there replaces it.
+  await popped.click('.editor');
+  await popped.keyboard.press('Control+End');
+  await popped.keyboard.type(' And this.');
+  await popped.keyboard.press('Control+s');
+  await expect(popped.locator('.composer')).toHaveAttribute('data-dirty', 'false');
+  expect(await drafts()).toBe(1);
+});
+
+test('a calendar event asked for while Calendar is off opens after Turn on', async () => {
+  await start({ language: 'en' });
+  // An event days ahead, outside the week the calendar starts on.
+  const from = Date.now() + 8 * 86400000;
+  const events = () => win.evaluate((r) => window.mail.call('calendarView', r).then((v) => v.events), { start: from, end: from + 7 * 86400000 });
+  await expect.poll(async () => (await events()).length, { timeout: 15000 }).toBeGreaterThan(0);
+  const target = (await events())[0];
+
+  await setHidden(['calendar']);
+  // As a meeting's event link asks for it (meeting.js open-event).
+  await win.evaluate(async ([id, start]) => (await import('./app.js')).ctx.openCalendarEvent(id, start), [target.id, target.start]);
+  await expect(notice()).toContainText("Calendar is turned off, so Rukoo can't show this.");
+  await expect(win.locator('.cal-pop')).toHaveCount(0);
+  await notice().locator('button').click();
+  await expect(shell()).toHaveClass(/calendar-mode/);
+  await expect(win.locator('.cal-pop #cal-pop-title')).toHaveText(target.title);
+  expect(await app.evaluate(() => global.__semEngine.settings.hiddenModes)).toEqual([]);
+});
+
 // ---------- the chat panel and Mail off ----------
 
 test('with Mail off an email source and a draft card in the chat panel say so, and Turn on opens what they are then', async ({}, testInfo) => {

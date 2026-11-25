@@ -2350,3 +2350,25 @@ test('screenshots: a recording meeting in dark and light, English and Dutch, wid
   await settled();
   await shot('narrow-light-en-chat');
 });
+
+test('a meeting asked for while Meet is off opens after Turn on, that meeting and no other', async () => {
+  const first = voiceStarts({ title: 'Launch review' });
+  say(first, 'call', 1000, 'We agreed to ship on Thursday.');
+  voice.append('meeting.state', first, { state: 'done', at: 5000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  const second = voiceStarts({ title: 'Budget check' });
+  say(second, 'call', 1000, 'The budget holds.');
+  await openMeetings();
+  await expect(win.locator('.sidebar [data-mt-open]', { hasText: 'Launch review' })).toBeVisible();
+  await expect(view().locator('h1')).toHaveText('Budget check');
+  await win.keyboard.press('Control+1');
+
+  await win.evaluate(() => window.mail.call('updateSettings', { hiddenModes: ['meeting'] }));
+  await expect(win.locator('[data-mode="meeting"]')).toHaveCount(0);
+  // As a meeting's chat in the chat panel asks for it (panel.js openChat).
+  await win.evaluate(async (id) => (await import('./app.js')).ctx.openMeeting(id), first);
+  await expect(win.locator('#toast')).toContainText("Meet is turned off, so Rukoo can't show this meeting.");
+  await win.locator('#toast button').click();
+  await expect(win.locator('[data-mode="meeting"]')).toHaveAttribute('aria-selected', 'true');
+  await expect(view().locator('h1')).toHaveText('Launch review');
+});

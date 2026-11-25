@@ -259,7 +259,7 @@ async function takeInviteFiles() {
 
 // Open in calendar on an invitation's card, and an event a meeting was recorded for.
 function openCalendarEvent(id, start) {
-  if (!modeShown('calendar')) return modeOffNotice('calendar');
+  if (!modeShown('calendar')) return modeOffNotice('calendar', { run: () => openCalendarEvent(id, start) });
   setMode('calendar');
   calendar.openEvent(id, Number.isFinite(start) ? start : undefined);
 }
@@ -369,6 +369,8 @@ function modesChanged() {
   document.body.classList.toggle('hides-meeting', !modeShown('meeting'));
   document.body.classList.toggle('hides-chat', !modeShown('chat'));
   for (const m of gone) dropTaggedToast(MODE_TOASTS[m]);
+  // The reading pane goes with Mail: an email being written there moves to a compose window, as its pop-out does.
+  if (gone.includes('mail')) S.composer?.popOut();
   // A notice that a mode is off goes once it is on again.
   dropTaggedToast((tag) => tag.startsWith('mode-off:') && now.includes(tag.slice(9)));
   S.composer?.modesChanged(S.data);
@@ -1280,7 +1282,7 @@ function switchMode(mode) {
 // The meeting view on one meeting: from the title bar's indicator, a calendar card or a new recording.
 function openMeeting(id) {
   if (!id || !S.data || !S.data.accounts.length) return;
-  if (!modeShown('meeting')) return modeOffNotice('meeting');
+  if (!modeShown('meeting')) return modeOffNotice('meeting', { run: () => openMeeting(id) });
   setMode('meeting');
   meeting.open(id);
 }

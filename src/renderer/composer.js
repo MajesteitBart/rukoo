@@ -1847,6 +1847,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     },
     leave,
     close,
+    popOut,
     focus: focusStart,
     setContent,
     getDraft,
