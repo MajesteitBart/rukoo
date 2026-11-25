@@ -250,6 +250,18 @@ A moment the screen changed noticeably, in a meeting that records the screen.
 
 Voice removed the meeting and its events. `data` is `{}` for retention or an ordinary removal. An explicit user deletion sends `{ "reason": "user" }`; every connected Rukoo then purges its notes, names, corrections and cached transcript, and remembers the deleted id so stale replay cannot restore it. Chats remain, with a deleted-meeting label.
 
+### `meeting.data`
+
+What Rukoo owns of the meeting, as one computer's Rukoo last gave it: renamed title, notes, speaker names, corrections, the linked calendar event and how the microphone shows.
+
+```json
+{ "writer": "3f9a1c0e5b7d2a4c6e8f0a1b2c3d4e5f", "data": { "v": 1, "device": "…", "name": "Laptop", "fields": { "title": { "v": "Weekly with Anna", "at": 1793000600000, "by": "…" } } } }
+```
+
+- `writer` says whose copy it is: `local` for this computer's, which Voice gives back after `meeting.data.set` so a Rukoo with a new profile gets it too, or another computer's data folder by the name it has in the user's bucket. Voice keeps only each writer's newest copy, so a replay can skip older ones.
+- `data` is the object Rukoo sent with `meeting.data.set`, unchanged. Voice doesn't read it. Rukoo merges it field by field: `fields` maps each field to its value `v`, when it changed (`at`, wall ms) and on which device (`by`); the later change wins, and notes changed on two devices at once both stay (docs/meetings.md, Your other computers).
+- With bucket sync, Voice takes another computer's copy from the bucket whenever it looks for meetings from the other computers.
+
 ## Commands
 
 Rukoo sends commands; Voice answers each with one reply.
@@ -288,6 +300,7 @@ Rukoo sends commands; Voice answers each with one reply.
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `speakers.split` | `meeting`, `track` | `{ "state", … }` | `not_found`, `not_available`, `busy`, `failed` |
 | `sync.pull` | | `{}` | |
+| `meeting.data.set` | `meeting`, `data` | `{}` | `not_found` |
 | `status.get` | | the `status` object | |
 
 - `meeting.start` uses the Settings default for every argument left out. `title` is at most 200 characters, `tracks` a non-empty list of `mic` and `call`, `screen` one of the values of `meeting.started`, and `context` an object of at most 16 KiB.
@@ -316,6 +329,8 @@ Rukoo sends commands; Voice answers each with one reply.
 
 - `sync.pull` asks Voice to look in the user's bucket for meetings from their other computers now; Rukoo sends it when its meetings open, at most once a minute. Voice answers at once and looks on its own thread. What it finds reaches Rukoo as ordinary events: a meeting that finished on another computer arrives like a meeting Voice transcribes, newer text of a meeting as new passage revisions and `passage.removed`, and a meeting deleted on another computer as `meeting.removed` with reason `user`. Without bucket sync nothing happens. An older Voice answers `unknown_command`, which Rukoo ignores.
 
+- `meeting.data.set` keeps `data`, what Rukoo owns of the meeting, in the meeting's folder and gives it back as `meeting.data` with writer `local`. With bucket sync it goes up, encrypted, as this computer's own copy, in no manifest; the other computers take it when they next look. Rukoo sends it a moment after the user changed something, and again when it connects with changes Voice hasn't taken. An older Voice answers `unknown_command`; Rukoo then keeps the changes and tries again after the next connection.
+
 Errors carry a `code` and an English `message` for logs. Rukoo shows its own text for a code.
 
 | `code` | Meaning |
@@ -338,6 +353,7 @@ Both sides check what they receive with the same rules and drop a message that b
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
 - `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.
+- `meeting.data` needs `writer` (1 to 64 characters) and an object in `data`. `meeting.data.set` needs `meeting` and an object in `data`.
 - `speakers.split` needs `meeting` and `track`, which is `mic`. Its result's `state` is `running`, with `at` and `end`, or `done`, with `voices` of 1 or more; an error's `reason`, when present, is a string.
 - `media.open` needs `meeting`, `kind` (`audio`, `frame` or `video`) and `start`; `end`, when given, is ≥ `start` and at most 3,600,000 more. `media.read` needs `media`, which matches `^md-[A-Za-z0-9_-]{22}$`, `offset`, and `length` from 1 to 1,048,576.
 - A `reply` with `ok` true has an object in `result`; with `ok` false, an `error` with `code` and `message`.

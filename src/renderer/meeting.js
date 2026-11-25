@@ -496,7 +496,7 @@ function applyDelta(p) {
   }
   if (Array.isArray(p.speakers)) d.speakers = p.speakers;
   if (p.mic) d.mic = p.mic;
-  if (p.notes) notesArrived(p.notes);
+  if (p.notes) notesArrived(p.notes, p.notesOther);
   if (!M.open) return;
   renderHead();
   renderNotice();
@@ -560,7 +560,7 @@ function renderView({ fetched = false } = {}) {
     renderTranscript(true, { bottom: true });
   } else if (fetched) {
     renderTranscript(true);
-    if (d.notes) notesArrived(d.notes);
+    if (d.notes) notesArrived(d.notes, d.notesOther ?? null);
   }
   el.dataset.tab = M.tab;
   renderHead();
@@ -634,6 +634,7 @@ function shellHtml() {
         </section>
         <section class="mt-card mt-notes-card" data-pane="notes">
           <div class="mt-card-head"><h2 class="mt-card-title" id="mt-notes-title">${esc(t('meeting.notes.title'))}</h2><span class="mt-notes-status" aria-live="polite"></span></div>
+          <div class="mt-notes-other" role="status" hidden></div>
           <div class="mt-notes-toolbar" role="toolbar" aria-label="${esc(t('composer.format.label'))}">${formatButtons()}<span class="sep"></span><button class="icon-btn sm" data-cmd="formatBlock" data-value="h2" title="${esc(t('meeting.notes.heading'))}" aria-label="${esc(t('meeting.notes.heading'))}">H2</button></div>
           <div class="mt-notes-input editor sel" contenteditable="true" role="textbox" aria-multiline="true" spellcheck="true" aria-labelledby="mt-notes-title" data-placeholder="${esc(t('meeting.notes.placeholder'))}"></div>
         </section>
@@ -2007,6 +2008,53 @@ function fillNotes(d) {
   area.innerHTML = markdownToNotes(blocked ?? (d.notes ? d.notes.text : ''));
   area.contentEditable = "true";
   notesStatus(blocked !== undefined ? t('meeting.notes.tooLong') : d.notes && d.notes.updatedAt ? t('meeting.notes.saved') : '', blocked !== undefined);
+  renderNotesOther();
+}
+
+// Notes another computer changed at the same time as these: the newer text is the notes, and the other waits here until
+// the user uses it or lets it go.
+function renderNotesOther() {
+  const box = $('.meeting .mt-notes-other');
+  if (!box) return;
+  const o = M.data && M.data.notesOther;
+  box.hidden = !o;
+  if (!o) {
+    box.innerHTML = '';
+    return;
+  }
+  const time = o.at ? new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(o.at)) : '';
+  const text = o.replaced
+    ? t('meeting.notes.otherReplaced', { time })
+    : o.mine
+      ? t('meeting.notes.otherMine', { time })
+      : t('meeting.notes.otherTheirs', { device: o.device || t('meeting.notes.otherDevice'), time });
+  const open = box.dataset.open === '1';
+  box.innerHTML = `<p class="mt-notes-other-text">${esc(text)}</p>
+    <div class="mt-notes-other-actions">
+      <button class="btn sm" data-mt="notes-other-show" aria-expanded="${open}">${esc(t(open ? 'meeting.notes.otherHide' : 'meeting.notes.otherShow'))}</button>
+      <button class="btn sm" data-mt="notes-other-use">${esc(t('meeting.notes.otherUse'))}</button>
+      <button class="btn sm ghost" data-mt="notes-other-dismiss">${esc(t('meeting.notes.otherDismiss'))}</button>
+    </div>
+    ${open ? `<div class="mt-notes-other-preview editor">${markdownToNotes(o.text)}</div>` : ''}`;
+}
+
+async function notesOther(action) {
+  const id = M.data && M.data.meeting.id;
+  if (!id) return;
+  const box = $('.meeting .mt-notes-other');
+  if (action === 'show') {
+    if (box) box.dataset.open = box.dataset.open === '1' ? '' : '1';
+    renderNotesOther();
+    return;
+  }
+  // Writing here goes out first, so the choice is made about the notes as they are.
+  await saveNotes();
+  try {
+    await api('meetingNotesOther', id, action);
+    if (box) box.dataset.open = '';
+  } catch (_) {
+    notesStatus(t('meeting.notes.failed'), true);
+  }
 }
 
 function notesStatus(text, error = false) {
@@ -2024,10 +2072,15 @@ function notesTyped() {
   N.timer = setTimeout(saveNotes, NOTES_WAIT);
 }
 
-// Notes from main: another save, or what main kept when the view opened. Text being written stays.
-function notesArrived(notes) {
+// Notes from main: another save, notes from another computer, or what main kept when the view opened. Text being
+// written stays.
+function notesArrived(notes, other) {
   if (!M.data) return;
   M.data.notes = notes;
+  if (other !== undefined) {
+    M.data.notesOther = other;
+    renderNotesOther();
+  }
   const area = $('.meeting .mt-notes-input');
   if (!area || N.id !== M.data.meeting.id || N.dirty || N.saving || N.blocked.has(N.id) || document.activeElement === area) return;
   if (notes.rev !== N.rev) {
@@ -2115,6 +2168,12 @@ async function onClick(e) {
   const d = M.data;
   const id = d && d.meeting.id;
   switch (b.dataset.mt) {
+    case 'notes-other-show':
+      return notesOther('show');
+    case 'notes-other-use':
+      return notesOther('use');
+    case 'notes-other-dismiss':
+      return notesOther('dismiss');
     case 'rename':
       return beginRename(id);
     case 'more':

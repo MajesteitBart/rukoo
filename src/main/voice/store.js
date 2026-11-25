@@ -18,9 +18,17 @@
 // A meeting.get snapshot can leave out the text of older frames to stay under Voice's reply limit ("textOmitted"). A
 // frame Rukoo already has keeps its text; one it hasn't seen keeps textOmitted until frame.get brings the text
 // (frameText()).
+//
+// What Rukoo owns of a meeting also reaches the user's other computers, through Voice's bucket (voice/PROTOCOL.md,
+// meeting.data). Each field carries a stamp: when it changed (wall ms) and on which device. dataDoc() is this computer's
+// view of every stamped field, which Voice uploads; applyData() takes another computer's view field by field, the later
+// change winning. Notes changed on two computers before either heard of the other keep both texts: the newer one is
+// the notes, the other waits in notesOther until the user picks.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { validate, isMeetingId, STATES, SCREENS } = require('./protocol');
 const { screenAt } = require('./screen');
 
@@ -34,6 +42,11 @@ const CORRECTION_MAX = 20000;
 const EVENT_ID_MAX = 4000;
 const ENDED = new Set(['processing', 'done', 'failed']);
 const NAME_SOURCES = new Set(['calendar', 'user', 'auto', 'agent']);
+const DATA_VERSION = 1;
+// The fields of a meeting's data document, and the ids in a name or correction key: Voice's speaker and passage ids.
+const DATA_KEY = /^(?:title|event|notes|you|joined|name:[A-Za-z0-9_-]{1,64}|correction:[A-Za-z0-9_-]{1,64})$/;
+const DEVICE = /^[0-9a-f]{32}$/;
+const DEVICE_NAME_MAX = 100;
 
 const isObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 const int = (v, fallback = 0) => (Number.isInteger(v) && v >= 0 ? v : fallback);
@@ -50,7 +63,7 @@ function writeAtomic(file, data) {
 const screenDefault = (v) => (SCREENS.includes(v) ? v : null);
 
 function emptyIndex() {
-  return { version: VERSION, instance: null, lastSeq: 0, tick: 0, status: { recording: null, dictating: false, screenDefault: null }, meetings: {}, deleted: {} };
+  return { version: VERSION, instance: null, lastSeq: 0, tick: 0, device: null, status: { recording: null, dictating: false, screenDefault: null }, meetings: {}, deleted: {}, unsent: {} };
 }
 
 // A frame as Rukoo keeps it. textOmitted: Voice left the text out of a snapshot, and Rukoo doesn't have it yet.
@@ -67,9 +80,25 @@ function emptyMic() {
   return { you: 'mic', joined: false, voices: null };
 }
 
+// stamps: when each field Rukoo owns last changed, {at, by, base?} by key (DATA_KEY); notesOther: the notes another
+// computer changed at the same time, {text, at, device}; notesFrom: the revision of the notes another computer wrote,
+// {rev, at, device}, while no edit here followed it; dataRev counts this computer's changes, dataSent the last one Voice
+// took.
 function emptyMeeting(id) {
-  return { version: VERSION, id, speakers: {}, passages: {}, marks: {}, frames: {}, names: {}, notes: null, corrections: {}, correctedEnds: {}, mic: emptyMic() };
+  return { version: VERSION, id, speakers: {}, passages: {}, marks: {}, frames: {}, names: {}, notes: null, corrections: {}, correctedEnds: {}, mic: emptyMic(), stamps: {}, notesOther: null, notesFrom: null, dataRev: 0, dataSent: 0 };
 }
+
+// A stamp as stored or as another computer sent it, or null.
+function stampOf(v) {
+  if (!isObj(v) || !Number.isInteger(v.at) || v.at < 0 || typeof v.by !== 'string' || !v.by || v.by.length > 64) return null;
+  const s = { at: v.at, by: v.by };
+  if (Number.isInteger(v.base) && v.base >= 0) s.base = v.base;
+  return s;
+}
+
+// Whether stamp a is a later change than b: the later time, and on a tie the larger device id, so every computer
+// picks the same one.
+const later = (a, b) => !b || a.at > b.at || (a.at === b.at && a.by > b.by);
 
 const MIC_VOICE = /^mic(?:-[1-9]\d{0,2})?$/;
 
@@ -147,14 +176,26 @@ function normalizeMeeting(id, raw) {
   const newest = Object.values(m.passages).reduce((n, p) => Math.max(n, int(p.changed), int(p.added)), 0);
   for (const k of Object.keys(m.corrections)) if (!m.correctedEnds[k] && m.passages[k] && Number.isInteger(m.passages[k].end)) m.correctedEnds[k] = { end: m.passages[k].end, at: newest };
   m.mic = normalizeMic(raw.mic);
+  if (isObj(raw.stamps)) for (const [k, v] of Object.entries(raw.stamps)) if (DATA_KEY.test(k) && stampOf(v)) m.stamps[k] = stampOf(v);
+  if (isObj(raw.notesOther) && typeof raw.notesOther.text === 'string') {
+    m.notesOther = { text: text(raw.notesOther.text, NOTES_MAX), at: int(raw.notesOther.at, 0), device: text(raw.notesOther.device, DEVICE_NAME_MAX) };
+    if (raw.notesOther.replaced === true) m.notesOther.replaced = true;
+  }
+  if (isObj(raw.notesFrom) && Number.isInteger(raw.notesFrom.rev)) m.notesFrom = { rev: raw.notesFrom.rev, at: int(raw.notesFrom.at, 0), device: text(raw.notesFrom.device, DEVICE_NAME_MAX) };
+  m.dataRev = int(raw.dataRev, 0);
+  m.dataSent = Math.min(int(raw.dataSent, 0), m.dataRev);
   return m;
 }
 
 class VoiceStore {
-  constructor({ dataDir, now = Date.now, saveMs = SAVE_MS, log = () => {} } = {}) {
+  constructor({ dataDir, now = Date.now, saveMs = SAVE_MS, log = () => {}, deviceName = os.hostname() } = {}) {
     this.file = path.join(dataDir, 'voice.json');
     this.dir = path.join(dataDir, 'meetings');
     this.now = now;
+    // Shown with notes another computer changed at the same time.
+    this.deviceName = text(deviceName, DEVICE_NAME_MAX);
+    // Told when the user changed something Rukoo owns, so it can go to Voice and the other computers.
+    this.onOwnChange = null;
     this.saveMs = saveMs;
     this.log = log;
     this.index = emptyIndex();
@@ -206,16 +247,25 @@ class VoiceStore {
       index.instance = typeof raw.instance === 'string' ? raw.instance : null;
       index.lastSeq = int(raw.lastSeq, 0);
       index.tick = int(raw.tick, 0);
+      index.device = typeof raw.device === 'string' && DEVICE.test(raw.device) ? raw.device : null;
       if (isObj(raw.deleted)) for (const [id, deleted] of Object.entries(raw.deleted)) if (isMeetingId(id) && deleted === true) index.deleted[id] = true;
       const st = isObj(raw.status) ? raw.status : {};
       index.status = { recording: isMeetingId(st.recording) ? st.recording : null, dictating: st.dictating === true, screenDefault: screenDefault(st.screenDefault) };
       for (const [id, v] of Object.entries(raw.meetings)) if (isMeetingId(id) && isObj(v) && !index.deleted[id]) index.meetings[id] = indexEntry(id, v);
+      // Meetings with changes Voice hasn't taken yet, so a connection sends them without reading every meeting file.
+      if (isObj(raw.unsent)) for (const id of Object.keys(raw.unsent)) if (index.meetings[id]) index.unsent[id] = true;
     } else if (raw) {
       this.keepAside(this.file);
+    }
+    // Which device made a change, in the stamps of what Rukoo owns. Made once per profile.
+    if (!index.device) {
+      index.device = crypto.randomBytes(16).toString('hex');
+      this.indexDirty = true;
     }
     this.index = index;
     // The cursor on disk: Voice replays after it, so it only moves once every meeting file before it is written.
     this.savedCursor = { instance: index.instance, lastSeq: index.lastSeq };
+    if (this.indexDirty) this.scheduleSave();
     return this;
   }
 
@@ -420,6 +470,8 @@ class VoiceStore {
         return this.frame(id, d);
       case 'meeting.removed':
         return this.remove(id, { purge: d.reason === 'user' }) ? { meeting: id, kind: 'removed' } : null;
+      case 'meeting.data':
+        return this.applyData(id, d.data);
       default:
         return null;
     }
@@ -632,6 +684,7 @@ class VoiceStore {
     const e = this.index.meetings[id];
     const m = this.data(id);
     if (purge) this.index.deleted[id] = true;
+    delete this.index.unsent[id];
     if (!e && !m) {
       if (purge) this.touchIndex();
       return purge;
@@ -656,6 +709,18 @@ class VoiceStore {
 
   // ---------- what Rukoo owns ----------
 
+  // A change the user made to something Rukoo owns: its stamp says when and here, and it goes to Voice.
+  stamp(id, key, extra = {}) {
+    const m = this.data(id, true);
+    if (!m) return;
+    m.stamps[key] = { at: this.now(), by: this.index.device, ...extra };
+    m.dataRev += 1;
+    this.index.unsent[id] = true;
+    this.touchIndex();
+    this.touchMeeting(id);
+    if (this.onOwnChange) this.onOwnChange(id);
+  }
+
   setTitle(id, value) {
     const e = this.index.meetings[id];
     if (!e || e.removed || typeof value !== 'string') return false;
@@ -663,7 +728,7 @@ class VoiceStore {
     if (!title || Array.from(title).length > 200) return false;
     const before = JSON.stringify(e);
     e.ownTitle = title;
-    this.entryChanged(e, before);
+    if (this.entryChanged(e, before)) this.stamp(id, 'title');
     return true;
   }
 
@@ -671,6 +736,7 @@ class VoiceStore {
   setName(id, speakerId, value) {
     const m = this.data(id);
     if (!m || !this.index.meetings[id] || typeof speakerId !== 'string' || !m.speakers[speakerId]) return false;
+    const before = JSON.stringify(m.names[speakerId] || null);
     if (value === null) delete m.names[speakerId];
     else {
       const name = text(value && value.name, NAME_MAX).trim();
@@ -678,6 +744,7 @@ class VoiceStore {
       else m.names[speakerId] = { name, address: text(value.address, ADDRESS_MAX).trim(), from: NAME_SOURCES.has(value.from) ? value.from : 'user' };
     }
     this.meetingChanged(id);
+    if (JSON.stringify(m.names[speakerId] || null) !== before) this.stamp(id, `name:${speakerId}`);
     return true;
   }
 
@@ -686,10 +753,13 @@ class VoiceStore {
     const m = this.data(id);
     const s = m && this.index.meetings[id] && typeof speakerId === 'string' ? m.speakers[speakerId] : null;
     if (!s || s.track !== 'mic') return false;
+    const named = Boolean(m.names[speakerId]);
     m.mic.you = speakerId;
     // The user isn't one of the people they name.
     delete m.names[speakerId];
     this.meetingChanged(id);
+    this.stamp(id, 'you');
+    if (named) this.stamp(id, `name:${speakerId}`);
     return true;
   }
 
@@ -699,6 +769,7 @@ class VoiceStore {
     if (!m || !this.index.meetings[id]) return false;
     m.mic.joined = joined === true;
     this.meetingChanged(id);
+    this.stamp(id, 'joined');
     return true;
   }
 
@@ -721,11 +792,42 @@ class VoiceStore {
     const m = this.data(id);
     if (!m || !this.index.meetings[id]) return null;
     const current = m.notes ? m.notes.rev : 0;
-    if (rev !== current) return { conflict: true, rev: current, text: m.notes ? m.notes.text : '' };
+    // Notes from another computer arrived while the editor here wrote from an older version: the editor's text is
+    // saved, and theirs waits beside it, so neither is lost.
+    const crossed = rev !== current && m.notesFrom && m.notesFrom.rev === current;
+    if (rev !== current && !crossed) return { conflict: true, rev: current, text: m.notes ? m.notes.text : '' };
     if (typeof value === 'string' && value.length > NOTES_MAX) return { tooLong: true, maxLength: NOTES_MAX, rev: current };
-    m.notes = { text: text(value, NOTES_MAX), rev: current + 1, updatedAt: this.now() };
+    const was = m.notes ? m.notes.text : '';
+    const next = text(value, NOTES_MAX);
+    if (crossed && next !== was && was.trim()) m.notesOther = { text: was, at: m.notesFrom.at, device: m.notesFrom.device };
+    m.notes = { text: next, rev: current + 1, updatedAt: this.now() };
+    m.notesFrom = null;
     this.meetingChanged(id);
+    // base: the version these notes were written from, so another computer can tell a change made at the same time.
+    // Written over notes that came meanwhile, they were written from none that computer knows.
+    if (m.notes.text !== was) this.stamp(id, 'notes', { base: crossed ? 0 : m.stamps.notes ? m.stamps.notes.at : 0 });
     return { rev: m.notes.rev };
+  }
+
+  // The notes another computer changed at the same time: 'use' makes them the notes and keeps the replaced ones in
+  // their place, 'dismiss' lets them go. Either way the choice is a change of its own.
+  resolveNotes(id, action) {
+    const m = this.data(id);
+    if (!m || !this.index.meetings[id] || !m.notesOther) return null;
+    const other = m.notesOther;
+    m.notesOther = null;
+    if (action === 'use') {
+      const current = m.notes ? m.notes.rev : 0;
+      const was = m.notes ? m.notes.text : '';
+      const wasAt = m.stamps.notes ? m.stamps.notes.at : 0;
+      // The notes it replaces wait in their place, so Use it instead takes them back.
+      if (was.trim() && was !== other.text) m.notesOther = { text: was, at: wasAt, device: m.notesFrom ? m.notesFrom.device : this.deviceName, replaced: true };
+      m.notes = { text: other.text, rev: current + 1, updatedAt: this.now() };
+      m.notesFrom = null;
+      this.stamp(id, 'notes', { base: wasAt });
+    } else this.touchMeeting(id);
+    this.meetingChanged(id);
+    return { rev: m.notes ? m.notes.rev : 0 };
   }
 
   // The user's correction of a passage's text, or null to go back to Voice's. The agent sees it as a change.
@@ -744,16 +846,152 @@ class VoiceStore {
     }
     m.passages[passageId].changed = tick;
     this.meetingChanged(id, tick);
+    this.stamp(id, `correction:${passageId}`);
     return true;
   }
 
   setEvent(id, eventId) {
     const e = this.index.meetings[id];
     if (!e) return false;
+    const was = e.eventId;
     e.eventId = typeof eventId === 'string' && eventId ? eventId.slice(0, EVENT_ID_MAX) : null;
     e.rev = this.nextTick();
     this.touchIndex();
+    if (e.eventId !== was) this.stamp(id, 'event');
     return true;
+  }
+
+  // ---------- what Rukoo owns, on the user's other computers ----------
+
+  // The value a data document gives a field.
+  ownValue(id, m, key) {
+    const e = this.index.meetings[id] || {};
+    if (key === 'title') return e.ownTitle ?? null;
+    if (key === 'event') return e.eventId ?? null;
+    if (key === 'notes') return m.notes ? m.notes.text : '';
+    if (key === 'you') return m.mic.you;
+    if (key === 'joined') return m.mic.joined;
+    if (key.startsWith('name:')) {
+      const n = m.names[key.slice(5)];
+      return n ? { name: n.name, address: n.address, from: n.from } : null;
+    }
+    const pid = key.slice('correction:'.length);
+    return Object.hasOwn(m.corrections, pid) ? m.corrections[pid] : null;
+  }
+
+  // This computer's view of what Rukoo owns of the meeting, for Voice to upload (voice/PROTOCOL.md, meeting.data.set).
+  // null without anything stamped.
+  dataDoc(id) {
+    const m = this.data(id);
+    if (!m || !this.index.meetings[id] || !Object.keys(m.stamps).length) return null;
+    const fields = {};
+    for (const [key, s] of Object.entries(m.stamps).sort(([a], [b]) => (a < b ? -1 : 1))) fields[key] = { v: this.ownValue(id, m, key), ...s };
+    return { v: DATA_VERSION, device: this.index.device, name: this.deviceName, fields };
+  }
+
+  // The meetings with changes Voice hasn't taken yet, and the change count each one's document has.
+  unsentData() {
+    const out = [];
+    for (const id of Object.keys(this.index.unsent)) {
+      const m = this.index.meetings[id] ? this.data(id) : null;
+      if (m && m.dataRev > m.dataSent) out.push({ id, rev: m.dataRev });
+      else {
+        delete this.index.unsent[id];
+        this.touchIndex();
+      }
+    }
+    return out;
+  }
+
+  // Voice took the document with changes up to rev.
+  dataTaken(id, rev) {
+    const m = this.data(id);
+    if (!m || !Number.isInteger(rev) || rev <= m.dataSent) return;
+    m.dataSent = Math.min(rev, m.dataRev);
+    if (m.dataSent >= m.dataRev) {
+      delete this.index.unsent[id];
+      this.touchIndex();
+    }
+    this.touchMeeting(id);
+  }
+
+  // Whether a value fits the field it says it is for.
+  validValue(key, v) {
+    if (key === 'title') return v === null || (typeof v === 'string' && v.trim() !== '' && Array.from(v.trim()).length <= 200);
+    if (key === 'event') return v === null || (typeof v === 'string' && v.length <= EVENT_ID_MAX);
+    if (key === 'notes') return typeof v === 'string' && v.length <= NOTES_MAX;
+    if (key === 'you') return typeof v === 'string' && MIC_VOICE.test(v);
+    if (key === 'joined') return typeof v === 'boolean';
+    if (key.startsWith('name:')) return v === null || (isObj(v) && typeof v.name === 'string' && v.name.trim() !== '' && v.name.length <= NAME_MAX);
+    return v === null || (typeof v === 'string' && v.length <= CORRECTION_MAX);
+  }
+
+  // Another computer's view of what Rukoo owns of a meeting (meeting.data): each field it changed later than this one
+  // did comes in. Applying a document twice gives the same result. {meeting, kind: 'data'} when anything changed.
+  applyData(id, doc) {
+    const m = isObj(doc) && isObj(doc.fields) && this.index.meetings[id] ? this.data(id, true) : null;
+    if (!m) return null;
+    const theirs = text(doc.name, DEVICE_NAME_MAX);
+    let changed = false;
+    for (const [key, f] of Object.entries(doc.fields)) {
+      const s = DATA_KEY.test(key) && isObj(f) ? stampOf(f) : null;
+      if (!s || !this.validValue(key, f.v)) continue;
+      const mine = m.stamps[key];
+      if (mine && mine.at === s.at && mine.by === s.by) continue;
+      if (!later(s, mine)) {
+        // This computer's notes are newer, but theirs weren't written from them: both stay.
+        if (key === 'notes' && s.at > (mine.base || 0) && f.v !== this.ownValue(id, m, key) && f.v.trim() && !(m.notesOther && m.notesOther.at === s.at)) {
+          m.notesOther = { text: f.v, at: s.at, device: theirs };
+          changed = true;
+        }
+        continue;
+      }
+      if (key === 'notes') {
+        const ours = this.ownValue(id, m, key);
+        // Theirs are newer, but weren't written from this computer's: this computer's stay beside them.
+        if (mine && mine.at > (s.base || 0) && ours !== f.v && ours.trim()) m.notesOther = { text: ours, at: mine.at, device: this.deviceName };
+      }
+      this.setOwnValue(id, m, key, f.v);
+      m.stamps[key] = s;
+      if (key === 'notes') m.notesFrom = { rev: m.notes.rev, at: s.at, device: theirs };
+      changed = true;
+    }
+    if (!changed) return null;
+    this.meetingChanged(id);
+    return { meeting: id, kind: 'data' };
+  }
+
+  // Sets a field from another computer, without a stamp of this one.
+  setOwnValue(id, m, key, v) {
+    const e = this.index.meetings[id];
+    if (key === 'title') {
+      e.ownTitle = v === null ? null : v.trim();
+      this.touchIndex();
+    } else if (key === 'event') {
+      e.eventId = v;
+      this.touchIndex();
+    } else if (key === 'notes') {
+      const rev = m.notes ? m.notes.rev : 0;
+      m.notes = { text: v, rev: rev + 1, updatedAt: this.now() };
+    } else if (key === 'you') m.mic.you = v;
+    else if (key === 'joined') m.mic.joined = v;
+    else if (key.startsWith('name:')) {
+      const sid = key.slice(5);
+      if (v === null) delete m.names[sid];
+      else m.names[sid] = { name: text(v.name, NAME_MAX).trim(), address: text(v.address, ADDRESS_MAX).trim(), from: NAME_SOURCES.has(v.from) ? v.from : 'user' };
+    } else {
+      const pid = key.slice('correction:'.length);
+      const tick = this.nextTick();
+      if (v === null) {
+        delete m.corrections[pid];
+        delete m.correctedEnds[pid];
+      } else {
+        m.corrections[pid] = v;
+        const p = m.passages[pid];
+        if (p && !m.correctedEnds[pid]) m.correctedEnds[pid] = { end: p.end, at: tick };
+      }
+      if (m.passages[pid]) m.passages[pid].changed = tick;
+    }
   }
 
   // ---------- reading ----------
@@ -837,6 +1075,8 @@ class VoiceStore {
       marks,
       frames,
       notes: m.notes ? { ...m.notes } : { text: '', rev: 0, updatedAt: null },
+      // mine: the text this computer wrote, kept beside newer notes from another computer.
+      notesOther: m.notesOther ? { ...m.notesOther, mine: m.notesOther.device === this.deviceName } : null,
       mic: { you: mic.you, joined: mic.joined, split: mic.split, voices: mic.voices },
       rev: e.rev
     };

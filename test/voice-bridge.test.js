@@ -386,6 +386,47 @@ test('opening the meetings asks Voice to look for meetings from the other comput
   assert.equal(s.connected, true);
 });
 
+test("what the user changes goes to Voice a moment later, and another computer's copy comes back in", async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Weekly'));
+  voice.append('speaker', M1, { id: 'call-1', track: 'call', label: 'Speaker 1' });
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s = service(t, dir, file, { dataAfterMs: 20, deviceName: 'Laptop' }).init();
+  await until(() => s.store.cursor().after === 3, 'the replay');
+  s.rename(M1, 'Weekly with Anna');
+  s.setSpeaker(M1, 'call-1', { name: 'Anna' });
+  await until(() => (voice.dataSets || []).length >= 1, 'meeting.data.set');
+  const sent = voice.dataSets.at(-1);
+  assert.equal(sent.meeting, M1);
+  assert.equal(sent.data.name, 'Laptop');
+  assert.equal(sent.data.fields.title.v, 'Weekly with Anna');
+  assert.deepEqual(sent.data.fields['name:call-1'].v, { name: 'Anna', address: '', from: 'user' });
+  await until(() => s.store.unsentData().length === 0, 'Voice took it');
+  // Another computer renamed it later.
+  voice.append('meeting.data', M1, { writer: 'a'.repeat(32), data: { v: 1, device: 'b'.repeat(32), name: 'Desktop', fields: { title: { v: 'Renamed on the desktop', at: Date.now() + 60000, by: 'b'.repeat(32) } } } });
+  await until(() => s.get(M1) && s.get(M1).meeting.title === 'Renamed on the desktop', 'the other copy');
+  // Taking it in sends nothing back.
+  const count = voice.dataSets.length;
+  await pause(100);
+  assert.equal(voice.dataSets.length, count);
+});
+
+test('an older Voice that doesn\'t keep the data is asked again only after the next connection', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Weekly'));
+  voice.handlers['meeting.data.set'] = () => ({ error: { code: 'unknown_command', message: 'meeting.data.set' } });
+  const s = service(t, dir, file, { dataAfterMs: 20 }).init();
+  await until(() => s.store.cursor().after === 1, 'the replay');
+  s.rename(M1, 'One');
+  await until(() => voice.commands.some((c) => c.command === 'meeting.data.set'), 'the first try');
+  s.rename(M1, 'Two');
+  await pause(150);
+  assert.equal(voice.commands.filter((c) => c.command === 'meeting.data.set').length, 1);
+  assert.equal(s.store.unsentData().length, 1, 'kept for a Voice that takes it');
+});
+
 test('a bad event is skipped and the ones after it still apply', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();

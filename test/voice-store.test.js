@@ -705,3 +705,155 @@ test("a passage Voice removes and sends again takes the place of a higher revisi
   assert.equal(p.text, 'Let us move it to Friday.');
   assert.equal(p.revision, 2);
 });
+
+// ---------- what Rukoo owns, on the user's other computers ----------
+
+// Two computers' stores of the same meeting, each with its own device and clock.
+function twoComputers() {
+  const clock = { a: 1793000600000, b: 1793000600000 };
+  const a = store(tempDir('rukoo-data-a-'), { now: () => clock.a, deviceName: 'Laptop' });
+  const b = store(tempDir('rukoo-data-b-'), { now: () => clock.b, deviceName: 'Desktop' });
+  for (const s of [a, b]) {
+    s.apply(started());
+    s.apply(ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }));
+    s.apply(passage('mic', 0, 'Hello there'));
+  }
+  return { a, b, clock };
+}
+
+test("the user's changes carry a stamp and go into the meeting's document until Voice took them", () => {
+  const { a, clock } = twoComputers();
+  const changed = [];
+  a.onOwnChange = (id) => changed.push(id);
+  assert.equal(a.dataDoc(M), null);
+  a.setTitle(M, 'Design review');
+  clock.a += 1000;
+  a.setName(M, 'call-1', { name: 'Anna', address: 'anna@example.com' });
+  a.correct(M, 'mic-000000000', 'Hello, there');
+  a.saveNotes(M, 'Ship on Thursday', 0);
+  assert.equal(changed.length, 4);
+  const doc = a.dataDoc(M);
+  assert.equal(doc.v, 1);
+  assert.match(doc.device, /^[0-9a-f]{32}$/);
+  assert.equal(doc.name, 'Laptop');
+  assert.deepEqual(Object.keys(doc.fields), ['correction:mic-000000000', 'name:call-1', 'notes', 'title']);
+  assert.deepEqual(doc.fields.title, { v: 'Design review', at: 1793000600000, by: doc.device });
+  assert.deepEqual(doc.fields['name:call-1'].v, { name: 'Anna', address: 'anna@example.com', from: 'user' });
+  assert.equal(doc.fields.notes.base, 0);
+  const unsent = a.unsentData();
+  assert.deepEqual(unsent, [{ id: M, rev: 4 }]);
+  a.dataTaken(M, 4);
+  assert.deepEqual(a.unsentData(), []);
+  // Voice's own changes aren't the user's: a passage or a split don't go into the document.
+  a.apply(passage('mic', 0, 'Hello there.', 2));
+  assert.deepEqual(a.unsentData(), []);
+});
+
+test("another computer's document comes in field by field, the later change winning, and twice changes nothing", () => {
+  const { a, b, clock } = twoComputers();
+  a.setTitle(M, 'From the laptop');
+  a.setName(M, 'call-1', { name: 'Anna' });
+  clock.b += 5000;
+  b.setTitle(M, 'From the desktop');
+  assert.deepEqual(b.applyData(M, a.dataDoc(M)), { meeting: M, kind: 'data' });
+  // The desktop's title is newer; the laptop's name is new to it.
+  assert.equal(b.meeting(M).meeting.title, 'From the desktop');
+  assert.equal(b.meeting(M).speakers.find((s) => s.id === 'call-1').name, 'Anna');
+  assert.equal(b.applyData(M, a.dataDoc(M)), null);
+  assert.deepEqual(a.applyData(M, b.dataDoc(M)), { meeting: M, kind: 'data' });
+  assert.equal(a.meeting(M).meeting.title, 'From the desktop');
+  // Both say the same now, and taking it in sends nothing back.
+  assert.deepEqual(a.dataDoc(M).fields, b.dataDoc(M).fields);
+  assert.deepEqual(b.unsentData(), [{ id: M, rev: 1 }]);
+  // A name taken away, a correction and the calendar link travel too.
+  clock.a += 10000;
+  a.setName(M, 'call-1', null);
+  a.correct(M, 'mic-000000000', 'Hello, there!');
+  a.setEvent(M, 'acc:cal:other');
+  b.applyData(M, a.dataDoc(M));
+  const m = b.meeting(M);
+  assert.equal(m.speakers.find((s) => s.id === 'call-1').name, null);
+  assert.equal(m.passages[0].text, 'Hello, there!');
+  assert.equal(m.meeting.eventId, 'acc:cal:other');
+  // Anything malformed is left out.
+  assert.equal(b.applyData(M, { fields: { title: { v: 7, at: 1, by: 'x' }, 'nope:x': { v: 'y', at: 1, by: 'x' } } }), null);
+  assert.equal(b.applyData(OTHER, a.dataDoc(M)), null);
+});
+
+test('notes changed on two computers at once keep both texts until the user picks', () => {
+  const { a, b, clock } = twoComputers();
+  a.saveNotes(M, 'Agreed: launch Thursday', 0);
+  b.applyData(M, a.dataDoc(M));
+  // Both write from the same notes before either hears of the other.
+  clock.a += 1000;
+  a.saveNotes(M, 'Agreed: launch Thursday. Anna owns QA', a.meeting(M).notes.rev);
+  clock.b += 2000;
+  b.saveNotes(M, 'Agreed: launch Friday', b.meeting(M).notes.rev);
+  // The laptop's are older: the desktop keeps its own and the laptop's wait beside them.
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Agreed: launch Friday');
+  assert.deepEqual(b.meeting(M).notesOther, { text: 'Agreed: launch Thursday. Anna owns QA', at: 1793000601000, device: 'Laptop', mine: false });
+  // The desktop's are newer: the laptop takes them, and what it wrote waits beside them.
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Agreed: launch Friday');
+  assert.equal(a.meeting(M).notesOther.text, 'Agreed: launch Thursday. Anna owns QA');
+  assert.equal(a.meeting(M).notesOther.mine, true);
+  // Using the other text is a change of its own, written from the newest notes: no new conflict on the other side.
+  clock.a += 5000;
+  assert.deepEqual(a.resolveNotes(M, 'use'), { rev: a.meeting(M).notes.rev });
+  assert.equal(a.meeting(M).notes.text, 'Agreed: launch Thursday. Anna owns QA');
+  // The notes it replaced wait in their place: using them again switches back.
+  const replaced = a.meeting(M).notesOther;
+  assert.deepEqual({ ...replaced, at: undefined }, { text: 'Agreed: launch Friday', at: undefined, device: 'Desktop', replaced: true, mine: false });
+  assert.ok(replaced.at > 0, 'when the desktop wrote them');
+  a.resolveNotes(M, 'dismiss');
+  assert.equal(a.meeting(M).notesOther, null);
+  b.resolveNotes(M, 'dismiss');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Agreed: launch Thursday. Anna owns QA');
+  assert.equal(b.meeting(M).notesOther, null);
+  // Notes written one after the other never conflict.
+  clock.b += 5000;
+  b.saveNotes(M, 'Final', b.meeting(M).notes.rev);
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Final');
+  assert.equal(a.meeting(M).notesOther, null);
+});
+
+test("a save from an editor that started before another computer's notes arrived keeps those notes too", () => {
+  const { a, b, clock } = twoComputers();
+  b.saveNotes(M, 'Draft', 0);
+  const rev = b.meeting(M).notes.rev;
+  clock.a += 1000;
+  a.saveNotes(M, 'From the laptop', 0);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'From the laptop');
+  // The desktop's editor saves what it had open, written from its own draft.
+  clock.b += 3000;
+  assert.deepEqual(b.saveNotes(M, 'Draft, finished', rev), { rev: b.meeting(M).notes.rev });
+  assert.equal(b.meeting(M).notes.text, 'Draft, finished');
+  assert.deepEqual(b.meeting(M).notesOther, { text: 'From the laptop', at: 1793000601000, device: 'Laptop', mine: false });
+  // The laptop sees a change made without its notes, and keeps its own beside it.
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Draft, finished');
+  assert.equal(a.meeting(M).notesOther.text, 'From the laptop');
+  // A save that crossed this editor's own earlier save is still just a conflict to retry.
+  const current = b.meeting(M).notes.rev;
+  b.saveNotes(M, 'Again', current);
+  assert.equal(b.saveNotes(M, 'Older tab', current).conflict, true);
+});
+
+test('stamps, the other notes and what Voice took survive a restart', () => {
+  const dir = tempDir('rukoo-data-restart-');
+  const s = store(dir, { deviceName: 'Laptop' });
+  s.apply(started());
+  s.saveNotes(M, 'Kept', 0);
+  s.setTitle(M, 'Renamed');
+  s.dataTaken(M, 1);
+  const before = s.dataDoc(M);
+  s.close();
+  const again = store(dir, { deviceName: 'Laptop' });
+  assert.deepEqual(again.dataDoc(M), before);
+  assert.deepEqual(again.unsentData(), [{ id: M, rev: 2 }]);
+  again.close();
+});

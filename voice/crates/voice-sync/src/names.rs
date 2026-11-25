@@ -46,8 +46,20 @@ pub fn manifest_object(kid: &str, mhash: &str) -> String {
 
 /// `rkv1/<kid>/index/<W>`, with `W = hex(HMAC(nameKey, "writer\0" + writerId))[0..32]`.
 pub fn index_object(kid: &str, name_key: &[u8; 32], writer: &str) -> String {
+    format!("{}{}", index_prefix(kid), writer_hash(name_key, writer))
+}
+
+/// `W`, a data folder's name in the bucket: `hex(HMAC(nameKey, "writer\0" + writerId))[0..32]`.
+pub fn writer_hash(name_key: &[u8; 32], writer: &str) -> String {
     let mac = hmac_sha256(name_key, &[b"writer\0", writer.as_bytes()]);
-    format!("{}{}", index_prefix(kid), hex(&mac[..16]))
+    hex(&mac[..16])
+}
+
+/// `rkv1/<kid>/m/<M>/r/<W>`: what Rukoo owns of the meeting, as data folder `W` last uploaded it.
+/// It is in no manifest, so an older Voice's restore never sees it; each data folder writes only its
+/// own, and every computer reads the others' (crate::pull).
+pub fn data_object(kid: &str, mhash: &str, writer_hash: &str) -> String {
+    format!("{ROOT}{kid}/m/{mhash}/r/{writer_hash}")
 }
 
 /// `rkv1/<kid>/index/`.

@@ -108,6 +108,10 @@ fn main() {
             changes_and_deletions_reach_the_other_computer,
         ),
         (
+            "rukoos_data_reaches_the_other_computer",
+            rukoos_data_reaches_the_other_computer,
+        ),
+        (
             "media_open_for_video_answers_within_50_ms",
             media_open_for_video_answers_within_50_ms,
         ),
@@ -1416,6 +1420,70 @@ fn changes_and_deletions_reach_the_other_computer() {
             .any(|(e, d)| e == "meeting.removed" && d["reason"] == "user")
     });
     assert!(!meeting_dir(&b.data(), &id).exists());
+    engine_a.shutdown();
+    engine_b.shutdown();
+    fake.stop();
+}
+
+/// What Rukoo owns of a meeting, such as its title and notes, goes up as this computer's copy and
+/// reaches Rukoo on the other computer, both ways, and never comes back to the one that wrote it.
+fn rukoos_data_reaches_the_other_computer() {
+    let fake = fake_s3();
+    let a = harness("data-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    wait_uploaded(&engine_a);
+
+    let b = harness("data-b", json!({"meetings_retention": "keep"}));
+    let engine_b = b.start();
+    engine_b.settings_sync_key("import", Some(code)).unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+
+    let doc = |title: &str, by: &str| json!({"v": 1, "device": by, "fields": {"title": {"v": title, "at": 2, "by": by}}});
+    let set = |engine: &Engine, data: &Value| {
+        engine
+            .meeting_control()
+            .unwrap()
+            .set_data(&id, data.as_object().unwrap())
+            .unwrap();
+    };
+    // A copy in the meeting's log, `local` for this computer's own and another computer's index
+    // name otherwise.
+    let copy = |data: &Path, local: bool, wanted: &Value| {
+        events_of(data, &id).iter().any(|(e, d)| {
+            e == "meeting.data" && (d["writer"] == "local") == local && d["data"] == *wanted
+        })
+    };
+
+    let on_a = doc("Renamed on A", "a");
+    set(&engine_a, &on_a);
+    assert!(
+        copy(&a.data(), true, &on_a),
+        "A's Rukoo gets its own copy back"
+    );
+    wait_long("B gets A's copy", Duration::from_secs(60), || {
+        copy(&b.data(), false, &on_a)
+    });
+
+    let on_b = doc("Renamed on B", "b");
+    set(&engine_b, &on_b);
+    wait_long("A gets B's copy", Duration::from_secs(60), || {
+        copy(&a.data(), false, &on_b)
+    });
+    assert!(
+        !copy(&a.data(), false, &on_a),
+        "A's own copy came back to A"
+    );
+    assert!(
+        !copy(&b.data(), false, &on_b),
+        "B's own copy came back to B"
+    );
+    // Each computer keeps its own copy in the meeting's folder, where bucket sync takes it up.
+    let kept = std::fs::read(meeting_dir(&b.data(), &id).join("rukoo.json")).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&kept).unwrap(), on_b);
     engine_a.shutdown();
     engine_b.shutdown();
     fake.stop();

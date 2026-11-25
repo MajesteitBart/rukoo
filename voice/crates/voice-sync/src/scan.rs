@@ -176,6 +176,20 @@ pub fn scan(dir: &voice_meetings::MeetingDir, screen: &dyn ScreenFiles, backfill
             }
         }
     }
+    // What Rukoo owns of the meeting: in no manifest, in this data folder's own object.
+    if let Look::File(size, mtime) = look(&root.join(crate::pull::DATA_FILE)) {
+        found.push(Found {
+            path: crate::pull::DATA_FILE.to_owned(),
+            kind: "data",
+            lane: 1,
+            size,
+            mtime,
+            track: None,
+            seq: None,
+            t: None,
+            samples: None,
+        });
+    }
     Scan {
         live,
         found,
@@ -206,6 +220,11 @@ pub(crate) fn stat(path: &Path) -> Option<(u64, u64)> {
         Look::File(size, mtime) => Some((size, mtime)),
         Look::Absent | Look::Unreadable => None,
     }
+}
+
+/// When a file last changed, wall ms, or `None` when it isn't one.
+pub(crate) fn modified_ms(path: &Path) -> Option<u64> {
+    stat(path).map(|(_, mtime)| mtime)
 }
 
 pub(crate) fn mtime_ms(meta: &fs::Metadata) -> u64 {

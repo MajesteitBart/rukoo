@@ -30,7 +30,7 @@ Voice keeps recording when Rukoo quits or loses the connection. When Rukoo comes
 
 ## The meeting view
 
-Use the edit button beside the title, or **Rename meeting** in the sidebar's right-click menu, to rename a meeting. Enter saves, Escape cancels; titles have 1 to 200 characters. Rukoo keeps the title across restarts and uses it in meeting search and transcript tools. Voice and the bucket retain their original title.
+Use the edit button beside the title, or **Rename meeting** in the sidebar's right-click menu, to rename a meeting. Enter saves, Escape cancels; titles have 1 to 200 characters. Rukoo keeps the title across restarts and uses it in meeting search and transcript tools. Voice keeps the original title; with bucket sync on, the new one reaches your other computers too ([Your other computers](#your-other-computers)).
 
 The header menu and sidebar offer **Delete meeting** once recording and processing have finished. The confirmation names the data being removed: audio, screen recordings, transcript, notes, speaker names and corrections. Deletion is permanent on this computer. Voice queues a bucket index tombstone, including while offline, so the meeting cannot be restored after the next connection, and your other computers that sync to the bucket delete it too the next time they look; encrypted objects remain subject to the bucket's lifecycle rules. Chats stay and show **Meeting deleted**. An older Voice needs an update before it can delete a meeting.
 
@@ -74,7 +74,9 @@ The agent can also get a link to the meeting's audio, one frame or up to five mi
 
 With bucket sync on in Rukoo Voice, every computer that syncs to the same bucket with the same encryption key shows the meetings the others recorded. A meeting appears once it finished on its own computer: Voice looks every 5 minutes, and at once when you open the meetings here. It opens like any other meeting, with its transcript, the text on its screen and its speakers. Its audio, frames and video stay in your bucket until you play a voice or open a frame, so those need Voice running and the bucket reachable.
 
-When another computer changes a meeting's transcript, for instance by splitting its microphone into voices, the change reaches this computer too. If two computers change one meeting's transcript before either heard of the other's change, both keep the change that reached the bucket last. A meeting deleted on one computer is deleted on the others. Your notes, the names you gave speakers, your corrections and a renamed title stay on the computer where you made them.
+When another computer changes a meeting's transcript, for instance by splitting its microphone into voices, the change reaches this computer too. If two computers change one meeting's transcript before either heard of the other's change, both keep the change that reached the bucket last. A meeting deleted on one computer is deleted on the others.
+
+What you add in Rukoo reaches your other computers the same way: a renamed title, your notes, the names you gave speakers, your corrections, the linked calendar event, and which voice at your microphone is you. Rukoo hands them to Voice a moment after you change something, and Voice keeps them, encrypted, in your bucket. Each change wins over an earlier one, field by field. When you change a meeting's notes on two computers before either heard of the other's change, the later notes show and the others wait above the notes field: **Show it** shows them, **Use it instead** makes them the notes and **Dismiss** lets them go.
 
 ## Settings
 

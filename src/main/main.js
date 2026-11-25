@@ -2231,6 +2231,8 @@ Object.assign(api, {
     if (!Number.isInteger(rev) || rev < 0) throw new Error('invalid');
     return voiceService().saveNotes(meetingId(id), typeof text === 'string' ? text : '', rev);
   },
+  // Notes another computer changed at the same time as these: 'use' them, or 'dismiss' them.
+  meetingNotesOther: (id, action) => voiceService().resolveNotes(meetingId(id), action === 'use' ? 'use' : 'dismiss'),
   // null goes back to the text Voice recognized.
   meetingCorrect: (id, passageId, text) => voiceService().correct(meetingId(id), meetingText(passageId, 100), text === null ? null : meetingText(text, 20000)),
   // The image of the frame at or before atMs (meeting time in ms, a frame's at), as a data URL, or null. A frame the

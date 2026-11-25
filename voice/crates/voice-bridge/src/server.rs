@@ -1056,6 +1056,10 @@ fn dispatch(
             control.pull_meetings();
             json!({})
         }
+        CommandBody::MeetingDataSet { meeting, data } => {
+            control.set_data(meeting.as_str(), &data)?;
+            json!({})
+        }
         CommandBody::ClipGet {
             meeting,
             start,

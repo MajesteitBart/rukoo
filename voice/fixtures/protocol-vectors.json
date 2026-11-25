@@ -463,12 +463,24 @@
       "message": { "type": "event", "seq": 1201, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700100, "data": { "id": "mic-000081000", "track": "mic", "speaker": "mic-2", "start": 81000, "end": 84500, "text": "I can do that, I have the export open already.", "revision": 2, "dictation": false, "language": "en" } }
     },
     {
+      "name": "keep what Rukoo owns of a meeting",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-62", "command": "meeting.data.set", "args": { "meeting": "m-20261030-171203-4f2a", "data": { "v": 1, "device": "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "name": "Laptop", "fields": { "title": { "v": "Weekly with Anna", "at": 1793000600000, "by": "0f1e2d3c4b5a69788796a5b4c3d2e1f0" } } } } }
+    },
+    {
+      "name": "another computer's copy of what Rukoo owns of a meeting",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1204, "event": "meeting.data", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700400, "data": { "writer": "3f9a1c0e5b7d2a4c6e8f0a1b2c3d4e5f", "data": { "v": 1, "device": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "name": "Desktop", "fields": { "notes": { "v": "Ship on Thursday.", "at": 1793000700000, "by": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "base": 0 } } } } }
+    },
+    {
       "name": "look for meetings from the other computers",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-61", "command": "sync.pull", "args": {} }
     }
   ],
   "invalid": [
+    { "name": "a meeting's data without whose copy it is", "from": "voice", "reason": "writer", "message": { "type": "event", "seq": 1205, "event": "meeting.data", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700500, "data": { "data": {} } } },
+    { "name": "a meeting's data that isn't an object", "from": "rukoo", "reason": "data", "message": { "type": "command", "id": "c-63", "command": "meeting.data.set", "args": { "meeting": "m-20261030-171203-4f2a", "data": "notes" } } },
     { "name": "split without a track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a" } } },
     { "name": "split of the call track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a", "track": "call" } } },
     { "name": "split without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "track": "mic" } } },
