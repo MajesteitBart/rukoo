@@ -193,6 +193,61 @@ pub fn shares_key(provider: &str) -> bool {
     SHARED_KEY_PROVIDER_IDS.contains(&provider)
 }
 
+/// The hosts a provider's key from Settings > API keys may go to: the HTTPS hosts of its preset
+/// endpoints, such as `api.mistral.ai`. Empty for a provider without a shared key.
+pub fn key_hosts(provider: &str) -> Vec<String> {
+    let Some(id) = ProviderId::parse(provider).filter(|_| shares_key(provider)) else {
+        return Vec::new();
+    };
+    let preset = id.preset();
+    let mut hosts: Vec<String> = Vec::new();
+    for url in preset
+        .audio_endpoints
+        .iter()
+        .chain(preset.rewrite_endpoints)
+        .chain([&preset.models_endpoint])
+    {
+        let parts = urls::split(url);
+        let host = parts.hostname();
+        if parts.scheme.eq_ignore_ascii_case("https") && !host.is_empty() && !hosts.contains(&host)
+        {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+/// Whether a request for `provider` to `endpoint` may carry the provider's key from Settings >
+/// API keys: only over HTTPS to one of that provider's own hosts ([`key_hosts`]), on the default
+/// port and without user info. A feature pointed at any other server, such as a local Ollama or a
+/// proxy, sends a key of its own for that server instead.
+pub fn shared_key_applies(provider: &str, endpoint: &str) -> bool {
+    let parts = urls::split(endpoint.trim());
+    parts.scheme.eq_ignore_ascii_case("https")
+        && !parts.netloc.contains('@')
+        && parts.port().is_none_or(|port| port == "443")
+        && key_hosts(provider).contains(&parts.hostname())
+}
+
+/// Scheme, host and port of an endpoint, lowercased, with the scheme's default port filled in:
+/// the server a key a form keeps for itself belongs to. "" without a host.
+pub fn endpoint_origin(endpoint: &str) -> String {
+    let parts = urls::split(endpoint.trim());
+    let host = parts.hostname();
+    if host.is_empty() {
+        return String::new();
+    }
+    let scheme = parts.scheme.to_lowercase();
+    let port = parts.port().map(str::to_string).unwrap_or_else(|| {
+        match scheme.as_str() {
+            "https" => "443",
+            _ => "80",
+        }
+        .to_string()
+    });
+    format!("{scheme}://{host}:{port}")
+}
+
 impl ProviderId {
     pub fn parse(id: &str) -> Option<ProviderId> {
         PRESETS

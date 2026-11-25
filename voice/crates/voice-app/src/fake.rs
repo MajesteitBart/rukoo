@@ -16,6 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
+use voice_core::providers::{endpoint_origin, shared_key_applies};
 use voice_engine::{
     Activity, ApiError, Edge, EngineApi, EngineOptions, Folder, Locale, MeetingPill, Notice,
     PillPhase, PillSnapshot, StopReason, Theme, TrayState, UiOptions, UiSink,
@@ -468,14 +469,21 @@ impl FakeEngine {
 impl State {
     /// A changed connection field or a new or removed secret: uploads pause until Test connection
     /// passes again, and the switch stays where the user put it.
-    /// Saves or removes a provider's key in API keys, for every form that uses the provider.
+    /// Saves or removes a provider's key in API keys, for the forms that follow it: on that
+    /// provider's own host, without an own key, and with a key exactly when there was one.
     fn shared_key(&mut self, provider: &str, saved: bool) {
+        let was = self.settings["config"]["apiKeys"][provider]["saved"] == true;
         self.settings["config"]["apiKeys"][provider] = json!({ "saved": saved });
         for target in KEY_FORMS {
             let form = &mut self.settings["config"][target];
-            if form["provider"] == provider {
+            let at_host =
+                shared_key_applies(provider, form["endpoint"].as_str().unwrap_or_default());
+            if form["provider"] == provider
+                && at_host
+                && form["ownKey"] != true
+                && (form["keySaved"] == true) == was
+            {
                 form["keySaved"] = json!(saved);
-                form["ownKey"] = json!(false);
             }
         }
     }
@@ -819,7 +827,8 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
                 { "id": "openrouter", "endpoints": ["https://openrouter.ai/api/v1/chat/completions"] },
                 { "id": "custom", "endpoints": ["http://localhost:1234/v1/chat/completions"] }
             ],
-            "keys": SHARED_KEY_PROVIDERS
+            "keys": SHARED_KEY_PROVIDERS,
+            "keyHosts": SHARED_KEY_PROVIDERS.iter().map(|id| (id.to_string(), json!(voice_core::providers::key_hosts(id)))).collect::<Map<String, Value>>()
         },
         "dictation": { "status": "ready" },
         "rukoo": { "state": "notRunning", "clientVersion": null, "protocol": null, "port": null, "discoveryPath": discovery, "behind": null },
@@ -1183,10 +1192,14 @@ impl EngineApi for FakeEngine {
                     "Realtime models work for meeting transcription only.",
                 ));
             }
-            let shared = SHARED_KEY_PROVIDERS.contains(&provider.as_str());
+            // As the engine: a provider's key goes only to its own hosts, and a key the form keeps
+            // belongs to its provider at its server.
+            let shared = provider != "orukeet" && shared_key_applies(&provider, &endpoint);
             let shared_saved = st.settings["config"]["apiKeys"][&provider]["saved"] == true;
             let form = &mut st.settings["config"][target];
-            let same = form["provider"] == provider.as_str();
+            let same = form["provider"] == provider.as_str()
+                && endpoint_origin(form["endpoint"].as_str().unwrap_or_default())
+                    == endpoint_origin(&endpoint);
             // As the engine: a provider in API keys brings its key, and a typed one replaces it.
             let typed = match &save["apiKey"] {
                 Value::Null => None,
@@ -1261,10 +1274,12 @@ impl EngineApi for FakeEngine {
             if SHARED_KEY_PROVIDERS.contains(&target) {
                 st.shared_key(target, false);
             } else if KEY_FORMS.contains(&target) {
-                // A feature drops its own key: the key in API keys, or none for a custom server.
+                // A feature drops its own key: the key in API keys at its provider's own host, or none.
                 let form = &st.settings["config"][target];
                 let provider = form["provider"].as_str().unwrap_or_default().to_string();
-                let saved = st.settings["config"]["apiKeys"][&provider]["saved"] == true;
+                let endpoint = form["endpoint"].as_str().unwrap_or_default().to_string();
+                let saved = shared_key_applies(&provider, &endpoint)
+                    && st.settings["config"]["apiKeys"][&provider]["saved"] == true;
                 let form = &mut st.settings["config"][target];
                 form["keySaved"] = json!(saved);
                 form["ownKey"] = json!(false);

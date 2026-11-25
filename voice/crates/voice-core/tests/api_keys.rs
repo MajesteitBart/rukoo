@@ -81,11 +81,17 @@ fn different_keys_for_one_provider_all_keep_working() {
     assert!(!cfg.has_own_key(Purpose::Meetings));
     assert!(cfg.has_own_key(Purpose::Rewrite));
 
-    // A key saved in Settings > API keys is the one key for Mistral, for every feature.
+    // A key saved in Settings > API keys reaches the features that send Mistral's key; rewriting
+    // keeps its own until it is switched over, so it never loses a key that works.
     assert!(cfg.set_shared_key("mistral", " sk-new "));
     assert_eq!(cfg.shared_key("mistral"), "sk-new");
+    assert_eq!(
+        sent(&cfg),
+        ("sk-new".into(), "sk-rewriting".into(), "sk-new".into())
+    );
+    assert!(cfg.has_own_key(Purpose::Rewrite));
+    cfg.drop_own_key(Purpose::Rewrite);
     assert_eq!(sent(&cfg), sent_by_all("sk-new"));
-    assert!(!cfg.has_own_key(Purpose::Rewrite));
 }
 
 #[test]
@@ -169,15 +175,61 @@ fn switching_a_feature_brings_that_provider_s_key() {
 }
 
 #[test]
-fn removing_a_provider_s_key_removes_it_everywhere_for_good() {
+fn removing_a_provider_s_key_leaves_own_keys_and_stays_removed() {
     let dir = TempDir::new("api-keys-remove");
     let mut cfg = load(on_mistral("sk-dictation", "sk-rewriting", ""));
     cfg.set_shared_key("mistral", "");
     assert!(cfg.api_keys.is_empty());
-    assert_eq!(sent(&cfg), sent_by_all(""), "own keys go too");
+    // Dictation and meetings sent Mistral's key and lose it; rewriting keeps the key it had.
+    assert_eq!(sent(&cfg), ("".into(), "sk-rewriting".into(), "".into()));
     cfg.save(dir.path()).unwrap();
     let loaded = Config::load_as(dir.path(), false).unwrap();
-    assert_eq!(sent(&loaded), sent_by_all(""), "nothing brings it back");
+    // The migration ran once, so rewriting's key doesn't become Mistral's key on the next load.
+    assert!(loaded.api_keys.is_empty());
+    assert_eq!(sent(&loaded), sent(&cfg));
+    // A new key reaches the features that had none, never rewriting's own.
+    let mut cfg = loaded;
+    cfg.set_shared_key("mistral", "sk-new");
+    assert_eq!(
+        sent(&cfg),
+        ("sk-new".into(), "sk-rewriting".into(), "sk-new".into())
+    );
+}
+
+#[test]
+fn a_key_an_older_voice_removed_stays_removed() {
+    // The reviewer's sequence: this Voice saves, an older Voice clears rewriting's key and saves,
+    // this Voice loads again.
+    let dir = TempDir::new("api-keys-downgrade");
+    let mut cfg = load(on_mistral("", "", ""));
+    cfg.set_shared_key("mistral", "sk-mistral");
+    cfg.save(dir.path()).unwrap();
+    // An older Voice reads only the per-feature keys, keeps api_keys as a key it doesn't know,
+    // and writes the whole file back.
+    let path = dir.join("config.json");
+    let mut raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        raw["rewrite_api_key"], "sk-mistral",
+        "the older Voice has a working key"
+    );
+    raw["rewrite_api_key"] = json!("");
+    std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+
+    let cfg = Config::load_as(dir.path(), false).unwrap();
+    assert_eq!(
+        cfg.rewrite().api_key,
+        "",
+        "the removed key doesn't come back"
+    );
+    assert_eq!(cfg.dictation_audio().api_key, "sk-mistral");
+    assert_eq!(cfg.meeting_audio().api_key, "sk-mistral");
+    assert!(!cfg.has_own_key(Purpose::Rewrite));
+    // A later save in API keys leaves it out too; the user puts it back on purpose.
+    let mut cfg = cfg;
+    cfg.set_shared_key("mistral", "sk-next");
+    assert_eq!(cfg.rewrite().api_key, "");
+    cfg.drop_own_key(Purpose::Rewrite);
+    assert_eq!(cfg.rewrite().api_key, "sk-next");
 }
 
 #[test]
@@ -208,8 +260,8 @@ fn what_an_older_voice_wrote_comes_back_without_losing_a_key() {
     assert_eq!(cfg.rewrite().api_key, "sk-mistral");
     assert_eq!(
         cfg.meeting_audio().api_key,
-        "sk-mistral",
-        "a feature without a key gets its provider's key"
+        "",
+        "an empty key in a config that has api_keys was emptied on purpose"
     );
     // A provider this Voice doesn't know keeps its key through a round trip.
     let dir = TempDir::new("api-keys-unknown-provider");
@@ -234,6 +286,124 @@ fn a_damaged_api_keys_entry_never_costs_the_other_settings() {
     }));
     assert_eq!(cfg.shared_key("openai"), "sk-openai");
     assert_eq!(cfg.api_keys.len(), 1, "{:?}", cfg.api_keys.keys());
+}
+
+#[test]
+fn a_provider_s_key_goes_only_to_its_own_hosts() {
+    use voice_core::providers::{endpoint_origin, key_hosts, shared_key_applies};
+    assert_eq!(key_hosts("mistral"), ["api.mistral.ai"]);
+    assert_eq!(key_hosts("ollama"), ["ollama.com"], "not the local server");
+    assert!(key_hosts("custom").is_empty());
+    for (provider, endpoint, applies) in [
+        (
+            "mistral",
+            "https://api.mistral.ai/v1/audio/transcriptions",
+            true,
+        ),
+        (
+            "mistral",
+            " HTTPS://API.MISTRAL.AI/v1/chat/completions ",
+            true,
+        ),
+        ("mistral", "https://api.mistral.ai:443/v1/models", true),
+        (
+            "mistral",
+            "http://api.mistral.ai/v1/audio/transcriptions",
+            false,
+        ),
+        (
+            "mistral",
+            "https://api.mistral.ai:8443/v1/audio/transcriptions",
+            false,
+        ),
+        (
+            "mistral",
+            "https://user@api.mistral.ai/v1/audio/transcriptions",
+            false,
+        ),
+        (
+            "mistral",
+            "https://eu.api.mistral.ai/v1/audio/transcriptions",
+            false,
+        ),
+        ("mistral", "https://api.mistral.ai.example.com/v1", false),
+        (
+            "mistral",
+            "https://api.openai.com/v1/audio/transcriptions",
+            false,
+        ),
+        (
+            "openai",
+            "https://proxy.example.com/v1/audio/transcriptions",
+            false,
+        ),
+        ("ollama", "http://localhost:11434/api/chat", false),
+        ("ollama", "https://ollama.com/api/chat", true),
+        (
+            "google",
+            "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            true,
+        ),
+        ("custom", "http://localhost:1234/v1/chat/completions", false),
+        ("mistral", "", false),
+    ] {
+        assert_eq!(
+            shared_key_applies(provider, endpoint),
+            applies,
+            "{provider} {endpoint}"
+        );
+    }
+    assert_eq!(
+        endpoint_origin("HTTPS://Api.Mistral.ai/v1/x"),
+        "https://api.mistral.ai:443"
+    );
+    assert_eq!(
+        endpoint_origin("http://localhost:1234/v1"),
+        "http://localhost:1234"
+    );
+    assert_eq!(endpoint_origin("not a url"), "");
+}
+
+#[test]
+fn a_local_ollama_and_a_proxy_keep_keys_of_their_own() {
+    // A config from before api_keys: rewriting on Ollama at this computer, dictation on OpenAI
+    // through a proxy, each with the key of that server.
+    let mut cfg = load(json!({
+        "audio_provider": "openai",
+        "audio_api_key": "proxy-key",
+        "audio_endpoint": "https://proxy.example.com/v1/audio/transcriptions",
+        "audio_model": "whisper-1",
+        "rewrite_provider": "ollama",
+        "rewrite_api_key": "",
+        "rewrite_endpoint": "http://localhost:11434/api/chat",
+        "rewrite_model": "llama3.2:3b"
+    }));
+    assert!(
+        cfg.api_keys.is_empty(),
+        "keys for other servers never become a provider's key"
+    );
+    assert!(!cfg.has_own_key(Purpose::Dictation));
+    // Keys for the providers' own hosts reach neither.
+    cfg.set_shared_key("openai", "sk-openai");
+    cfg.set_shared_key("ollama", "sk-ollama-cloud");
+    assert_eq!(cfg.dictation_audio().api_key, "proxy-key");
+    assert_eq!(
+        cfg.rewrite().api_key,
+        "",
+        "the cloud key never goes to localhost"
+    );
+    cfg.drop_own_key(Purpose::Rewrite);
+    assert_eq!(cfg.rewrite().api_key, "");
+    // Switching to Ollama brings its local default endpoint, and no key.
+    cfg.switch_rewrite_provider("openai");
+    assert_eq!(cfg.rewrite().api_key, "sk-openai");
+    cfg.switch_rewrite_provider("ollama");
+    assert_eq!(cfg.rewrite_endpoint, "http://localhost:11434/api/chat");
+    assert_eq!(cfg.rewrite().api_key, "");
+    // At ollama.com the cloud key applies.
+    cfg.rewrite_endpoint = "https://ollama.com/api/chat".into();
+    cfg.drop_own_key(Purpose::Rewrite);
+    assert_eq!(cfg.rewrite().api_key, "sk-ollama-cloud");
 }
 
 #[test]

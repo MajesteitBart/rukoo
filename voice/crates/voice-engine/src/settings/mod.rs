@@ -23,9 +23,9 @@ use voice_core::consent::ConsentState;
 use voice_core::local::{self, LocalState, Location, ModelErrorKind, ModelSpec, Stage};
 use voice_core::providers::stream::{streams, REALTIME_MODEL_PREFIX};
 use voice_core::providers::{
-    normalize_provider, provider_endpoints, shares_key, Activity, ProviderConfig, Purpose,
-    AUDIO_PROVIDER_IDS, MODELS_TIMEOUT, ORUKEET_MODEL_ID, REWRITE_PROVIDER_IDS,
-    SHARED_KEY_PROVIDER_IDS,
+    endpoint_origin, key_hosts, normalize_provider, provider_endpoints, shared_key_applies,
+    shares_key, Activity, ProviderConfig, Purpose, AUDIO_PROVIDER_IDS, MODELS_TIMEOUT,
+    ORUKEET_MODEL_ID, REWRITE_PROVIDER_IDS, SHARED_KEY_PROVIDER_IDS,
 };
 use voice_core::speakers::{cpu_features, Unavailable};
 use voice_core::{ErrorKind, ProviderError};
@@ -252,7 +252,7 @@ fn slow(core: &Core) -> Slow {
 /// realtime model names its prefix in `streamingPrefix`: such a model streams meetings.
 /// `defaultModel` is the model a form fills in when the user picks the provider, where Voice
 /// ships one: Mistral's, which are Voice's own defaults. `keys` lists the providers whose key is
-/// entered once, in Settings > API keys.
+/// entered once, in Settings > API keys, and `keyHosts` the HTTPS hosts each such key may go to.
 pub fn providers() -> Value {
     let audio: Vec<Value> = AUDIO_PROVIDER_IDS
         .iter()
@@ -275,7 +275,11 @@ pub fn providers() -> Value {
             })
         })
         .collect();
-    json!({ "audio": audio, "rewrite": rewrite, "keys": SHARED_KEY_PROVIDER_IDS })
+    let key_hosts: serde_json::Map<String, Value> = SHARED_KEY_PROVIDER_IDS
+        .iter()
+        .map(|id| (id.to_string(), json!(key_hosts(id))))
+        .collect();
+    json!({ "audio": audio, "rewrite": rewrite, "keys": SHARED_KEY_PROVIDER_IDS, "keyHosts": key_hosts })
 }
 
 /// Settings > Speaker labels: who labels new meetings, whether they can, and what each meeting
@@ -499,19 +503,23 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
 
     // The form's fields only, so they go onto whatever Settings hold when it is saved: a change
     // saved meanwhile, for instance while Orukeet loads, stays.
+    // A provider's key from Settings > API keys goes only to that provider's own hosts.
+    let shared = !local && shared_key_applies(&provider, &endpoint);
     let apply = |cfg: &mut Config| {
-        let same = cfg.provider_of(purpose) == provider;
-        // A key is never carried to another provider. A provider in Settings > API keys brings
-        // its own key, and a feature that keeps its provider keeps the key it sends, an own key
-        // from before included. A custom server's key belongs to the form: `null` keeps it only
-        // for the same provider.
+        // The same provider at the same server: a key the form keeps belongs to that server.
+        let same = cfg.provider_of(purpose) == provider
+            && endpoint_origin(cfg.endpoint_of(purpose)) == endpoint_origin(&endpoint);
+        // A key is never carried to another provider or another server. At the provider's own
+        // host the form brings the provider's key, and a feature that stays there keeps the key it
+        // sends, an own key from before included. Any other server's key belongs to the form:
+        // `null` keeps it only for the same provider at the same server.
         let key = if local {
             String::new()
-        } else if shares_key(&provider) {
+        } else if shared {
             if same {
                 cfg.key_of(purpose).to_string()
             } else {
-                cfg.key_for(&provider)
+                cfg.key_for(&provider, &endpoint)
             }
         } else {
             match &api_key {
@@ -549,13 +557,16 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
                 }
             }
         }
-        // A key typed for a provider in Settings > API keys is that provider's key, for every
-        // feature that uses it, as settings_save_key saves it.
-        if let Some(typed) = api_key
-            .as_deref()
-            .filter(|key| !key.is_empty() && shares_key(&provider))
-        {
+        // A key typed for a provider's own host is that provider's key in Settings > API keys, as
+        // settings_save_key saves it, and this form sends it.
+        if let Some(typed) = api_key.as_deref().filter(|key| !key.is_empty() && shared) {
             cfg.set_shared_key(&provider, typed);
+            let typed = typed.to_string();
+            match purpose {
+                Purpose::Dictation => cfg.audio_api_key = typed,
+                Purpose::Rewrite => cfg.rewrite_api_key = typed,
+                Purpose::Meetings => cfg.meetings_audio_api_key = typed,
+            }
         }
     };
     // A broken model never becomes active: Orukeet loads and is checked before the save. That can
@@ -901,12 +912,17 @@ pub fn list_models(core: &Arc<Core>, request: Value) -> Result<Vec<String>, ApiE
     if endpoint.is_empty() {
         return Err(ApiError::new("config", "Choose an endpoint first."));
     }
-    // `null`: the key the form's feature sends for its saved provider, else the key in
-    // Settings > API keys for another provider that has one.
+    // `null`: the key the form's feature sends, for its saved provider at its saved server, else
+    // the provider's key from Settings > API keys when the endpoint is one of its own hosts, else
+    // none. A model list never takes a key to an unsaved endpoint it doesn't belong to.
     let api_key = match &request["apiKey"] {
         Value::String(key) => key.trim().to_string(),
-        _ if cfg.provider_of(purpose) == provider => cfg.key_of(purpose).to_string(),
-        _ => cfg.key_for(&provider),
+        _ if cfg.provider_of(purpose) == provider
+            && endpoint_origin(cfg.endpoint_of(purpose)) == endpoint_origin(&endpoint) =>
+        {
+            cfg.key_of(purpose).to_string()
+        }
+        _ => cfg.key_for(&provider, &endpoint),
     };
     let provider_cfg = ProviderConfig {
         provider,
