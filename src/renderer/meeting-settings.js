@@ -31,6 +31,7 @@ function hideHelp(platform) {
 function shareError(e) {
   if (!e) return '';
   if (e.reason === 'screen') return t('settings.meetings.others.errorScreen');
+  if (e.reason === 'applying') return t('settings.meetings.others.errorApplying');
   if (e.reason === 'key_in_use') return t('settings.meetings.others.errorKeyInUse');
   if (e.reason === 'test') return t('settings.meetings.others.errorTest');
   if (e.reason === 'secret') return t('settings.meetings.others.errorSecret');

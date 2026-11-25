@@ -1080,6 +1080,21 @@ pub fn sync_state(engine: &Engine) -> Value {
     engine.settings_state()["sync"].clone()
 }
 
+/// What `sync.settings.get` hands Rukoo for a bucket [`connect_bucket`] connected. The sync
+/// worker makes the encryption key when it first reaches the bucket, on its own thread, so this
+/// waits for that key instead of making one: `get` never makes a key, and without one it fails.
+pub fn shared_sync_settings(engine: &Engine) -> voice_protocol::SyncSettings {
+    wait_for("the sync worker's encryption key", || {
+        sync_state(engine)["key"]["exists"] == true
+    });
+    engine
+        .meeting_control()
+        .unwrap()
+        .sync_settings()
+        .unwrap()
+        .expect("the settings of a tested bucket")
+}
+
 /// The 32 bytes of the master key in a recovery code: Crockford base32 after `RKV1-`.
 pub fn key_bytes(code: &str) -> Vec<u8> {
     const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";

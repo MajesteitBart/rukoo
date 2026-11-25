@@ -39,13 +39,16 @@ const UNSURE_MS = 5 * 60 * 1000;
 const RETRY_MS = [60 * 1000, 60 * 60 * 1000];
 const FOR_GOOD_REASONS = new Set(['key_in_use', 'settings']);
 const FOR_GOOD_CODES = new Set(['bad_request', 'not_available', 'unknown_command']);
+// Voice refuses to hand over its settings while it takes or puts back another computer's (reason applying): they are
+// half old and half new then. Rukoo publishes nothing, changes no choice, and looks again after this wait.
+const AGAIN_MS = 15 * 1000;
 const DEVICE_MAX = 100;
 
 // Settings compared without keeping them: a digest of every field.
 const digest = (settings) => (settings ? crypto.createHash('sha256').update(JSON.stringify(SYNC_FIELDS.map((k) => settings[k]))).digest('base64url') : null);
 
 class VoiceShare extends EventEmitter {
-  constructor({ account, voice, dataDir, everyMs = EVERY_MS, setTimeoutMs = SET_TIMEOUT_MS, unsureMs = UNSURE_MS, retryMs = RETRY_MS, now = Date.now, log = () => {} }) {
+  constructor({ account, voice, dataDir, everyMs = EVERY_MS, setTimeoutMs = SET_TIMEOUT_MS, unsureMs = UNSURE_MS, retryMs = RETRY_MS, againMs = AGAIN_MS, now = Date.now, log = () => {} }) {
     super();
     this.account = account;
     this.voice = voice;
@@ -54,6 +57,7 @@ class VoiceShare extends EventEmitter {
     this.setTimeoutMs = setTimeoutMs;
     this.unsureMs = unsureMs;
     this.retryMs = retryMs;
+    this.againMs = againMs;
     this.now = now;
     this.log = log;
     this.prefs = {};
@@ -71,6 +75,7 @@ class VoiceShare extends EventEmitter {
     this.failedFor = null;
     this.retry = null;
     this.retryTimer = null;
+    this.againTimer = null;
     // A use whose answer never came (Voice went away or took too long): { digest, session, until }. A look at Voice
     // that finds those settings says it worked; until then, or until the session changes or the time is up, Voice may
     // still be at it, so Rukoo neither sends it again nor takes the change for one the user made.
@@ -110,6 +115,7 @@ class VoiceShare extends EventEmitter {
   close() {
     clearInterval(this.timer);
     clearTimeout(this.retryTimer);
+    clearTimeout(this.againTimer);
   }
 
   // ---------- what the renderer sees ----------
@@ -246,7 +252,9 @@ class VoiceShare extends EventEmitter {
     try {
       here = await this.read();
     } catch (err) {
-      // A meeting records the screen (busy), or Voice went away: the next look tries again.
+      // A meeting records the screen (busy), or Voice went away: the next look tries again. While Voice takes or puts
+      // back settings, that look comes soon: a use whose answer was lost shows once Voice is done.
+      if (err && err.code === 'busy' && err.reason === 'applying') this.lookAgain();
       this.changed();
       return;
     }
@@ -338,15 +346,31 @@ class VoiceShare extends EventEmitter {
     }
   }
 
-  // An automatic use that failed for a reason that may pass goes again later, each time after a longer wait.
+  // An automatic use that failed for a reason that may pass goes again later, each time after a longer wait. The
+  // timer makes the try due when it fires: a timer can fire a little before this.now() reaches until, and the try
+  // would otherwise wait for the next look.
   later(theirs) {
     const tries = this.retry && this.retry.digest === theirs ? this.retry.tries + 1 : 1;
     const [first, most] = this.retryMs;
     const wait = Math.min(first * 2 ** (tries - 1), most);
-    this.retry = { digest: theirs, tries, until: this.now() + wait };
+    const retry = { digest: theirs, tries, until: this.now() + wait };
+    this.retry = retry;
     clearTimeout(this.retryTimer);
-    this.retryTimer = setTimeout(() => this.check(), wait);
+    this.retryTimer = setTimeout(() => {
+      if (this.retry === retry) retry.until = Math.min(retry.until, this.now());
+      this.check();
+    }, wait);
     if (this.retryTimer.unref) this.retryTimer.unref();
+  }
+
+  // One look at Voice's settings after againMs, however often Voice says it is still applying meanwhile.
+  lookAgain() {
+    if (this.againTimer) return;
+    this.againTimer = setTimeout(() => {
+      this.againTimer = null;
+      this.check();
+    }, this.againMs);
+    if (this.againTimer.unref) this.againTimer.unref();
   }
 
   // ---------- the user's choices ----------

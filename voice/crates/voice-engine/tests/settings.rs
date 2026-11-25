@@ -1142,10 +1142,7 @@ fn another_computer_takes_the_bucket_settings_through_rukoo() {
     let control_a = a.meeting_control().unwrap();
     assert_eq!(control_a.sync_settings().unwrap(), None, "sync is off");
     support::connect_bucket(&a, &fake.endpoint());
-    let shared = control_a
-        .sync_settings()
-        .unwrap()
-        .expect("the settings of a tested bucket");
+    let shared = support::shared_sync_settings(&a);
     assert_eq!(
         (
             shared.service.as_str(),
@@ -1289,12 +1286,7 @@ fn shared_settings(
     first.config(json!({}));
     let a = first.start();
     support::connect_bucket(&a, &fake.endpoint());
-    let shared = a
-        .meeting_control()
-        .unwrap()
-        .sync_settings()
-        .unwrap()
-        .expect("the settings of a tested bucket");
+    let shared = support::shared_sync_settings(&a);
     (a, first, shared)
 }
 
@@ -1523,6 +1515,123 @@ fn a_new_apply_waits_until_the_last_one_is_put_back() {
 
     control.use_sync_settings(&shared).unwrap();
     assert_eq!(control.sync_settings().unwrap().as_ref(), Some(&shared));
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+/// `sync.settings.get` while a read could mix the settings: refused with `applying`, a refusal
+/// that passes.
+fn refused_while_applying(control: &dyn voice_bridge::MeetingControl, what: &str) {
+    let refused = control.sync_settings().unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.reason.as_deref()),
+        ("busy", Some("applying")),
+        "{what}: {}",
+        refused.message
+    );
+}
+
+/// Uses `shared` on another thread that waits after `pause` (failing the steps in `fail` on the
+/// way), reads the settings meanwhile, lets the apply go on and returns what it answered. The read
+/// must answer at once: one that waits for the apply fails the test instead of hanging it.
+fn read_while_paused(
+    control: &dyn voice_bridge::MeetingControl,
+    shared: &voice_protocol::SyncSettings,
+    fail: &[&str],
+    pause: &str,
+) -> Result<(), voice_bridge::ControlError> {
+    let (reached_tx, reached) = std::sync::mpsc::channel();
+    let (go, go_rx) = std::sync::mpsc::channel::<()>();
+    let (read_tx, read) = std::sync::mpsc::channel();
+    std::thread::scope(move |scope| {
+        let applying = scope.spawn(move || {
+            for step in fail {
+                voice_sync::stops::fail_after(step);
+            }
+            voice_sync::stops::pause_after(pause, reached_tx, go_rx);
+            control.use_sync_settings(shared)
+        });
+        let paused = reached.recv_timeout(Duration::from_secs(60));
+        if paused.is_ok() {
+            scope.spawn(move || {
+                let _ = read_tx.send(control.sync_settings());
+            });
+        }
+        let answer = read.recv_timeout(Duration::from_secs(10));
+        // The apply goes on whatever the read did, so a failure below never leaves it waiting.
+        drop(go);
+        let applied = applying.join().unwrap();
+        paused.unwrap_or_else(|_| panic!("the apply never reached {pause}"));
+        let refused = answer
+            .unwrap_or_else(|_| panic!("{pause}: the read waited for the apply"))
+            .unwrap_err();
+        assert_eq!(
+            (refused.code.as_str(), refused.reason.as_deref()),
+            ("busy", Some("applying")),
+            "{pause}: {}",
+            refused.message
+        );
+        applied
+    })
+}
+
+/// Rukoo reads Voice's settings while `sync.settings.set` runs beside the bridge's queue (after
+/// its own wait timed out, say): halfway through the apply, the secret or the key is new while
+/// the bucket is still the old one. Voice refuses until the settings are whole again, new or put
+/// back, and also while a rollback that failed leaves its journal.
+#[test]
+fn a_read_while_the_settings_change_never_mixes_old_and_new() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+
+    // Paused after the new secret, and after the new key: the read waits for the whole of it.
+    for pause in ["apply:secret", "apply:key"] {
+        let (second, _flaky) = flaky_harness(&format!("sync-share-read-{}", &pause[6..]));
+        let b = second.start();
+        own_bucket(&b, &fake);
+        let control = b.meeting_control().unwrap();
+        let own = support::shared_sync_settings(&b);
+        assert_ne!(own.key, shared.key);
+        read_while_paused(&*control, &shared, &[], pause).expect("the apply");
+        assert_eq!(
+            control.sync_settings().unwrap().as_ref(),
+            Some(&shared),
+            "{pause}: the new settings, whole"
+        );
+        b.shutdown();
+    }
+
+    // Paused while a failed apply puts back the old key, with the new secret and bucket still
+    // there; then refused while a rollback that failed leaves its journal.
+    let (second, _flaky) = flaky_harness("sync-share-read-rollback");
+    let journal = second.data().join("sync").join("apply");
+    let mut b = second.start();
+    own_bucket(&b, &fake);
+    let control = b.meeting_control().unwrap();
+    let own = support::shared_sync_settings(&b);
+    let refused =
+        read_while_paused(&*control, &shared, &["apply:config"], "rollback:key-file").unwrap_err();
+    assert_eq!(refused.code.as_str(), "failed", "{}", refused.message);
+    assert_eq!(
+        control.sync_settings().unwrap().as_ref(),
+        Some(&own),
+        "the old settings, whole"
+    );
+
+    voice_sync::stops::fail_after("apply:key");
+    voice_sync::stops::fail_after("rollback:key-json");
+    control.use_sync_settings(&shared).unwrap_err();
+    assert!(journal.join("journal.json").exists());
+    refused_while_applying(&*control, "a journal that isn't put back");
+    refused_while_applying(&*control, "asked again");
+    drop(control);
+    b.shutdown();
+    // The next start puts it back, and the read answers again.
+    b = second.start();
+    assert!(!journal.exists());
+    let control = b.meeting_control().unwrap();
+    assert_eq!(control.sync_settings().unwrap().as_ref(), Some(&own));
     a.shutdown();
     b.shutdown();
     fake.stop();

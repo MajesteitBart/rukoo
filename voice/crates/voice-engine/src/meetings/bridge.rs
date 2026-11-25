@@ -230,6 +230,7 @@ fn sync_settings_error(error: crate::api::ApiError) -> ControlError {
     let (code, reason) = match error.code.as_str() {
         "recording_screen" => (ErrorCode::Busy, Some(sync_reasons::SCREEN)),
         "key_in_use" => (ErrorCode::Busy, Some(sync_reasons::KEY_IN_USE)),
+        "applying" => (ErrorCode::Busy, Some(sync_reasons::APPLYING)),
         "settings" | "invalid_value" => (ErrorCode::Failed, Some(sync_reasons::SETTINGS)),
         "test" => (ErrorCode::Failed, Some(sync_reasons::TEST)),
         "secret" => (ErrorCode::Failed, Some(sync_reasons::SECRET)),

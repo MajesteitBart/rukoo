@@ -826,10 +826,33 @@ fn shared_fields(settings: &voice_protocol::SyncSettings) -> [(&'static str, &st
 /// The bucket's settings with the saved secret and the recovery code, for Rukoo to keep in the
 /// user's account; `None` while the switch is off or the connection didn't pass Test connection.
 /// Refused while a meeting records the screen, as the key dialogs are. Never makes a key.
+///
+/// The fields, the secret and the key are read together under the apply lock, so they never mix
+/// the settings before and after [`sync_settings_set`]. While an apply or its rollback runs, or
+/// its journal is still there, the answer is `applying`, which Rukoo takes as "ask again later":
+/// the bridge runs this beside a `sync.settings.set` and must not wait for it.
 pub fn sync_settings_get(
     core: &Arc<Core>,
 ) -> Result<Option<voice_protocol::SyncSettings>, ApiError> {
     let sync = bucket_sync(core)?;
+    let applying = || {
+        ApiError::new(
+            "applying",
+            "Voice is changing its bucket settings; ask again later.",
+        )
+    };
+    let _one = match core.sync_rt.apply.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return Err(applying()),
+    };
+    if sync
+        .unfinished_apply()
+        .map_err(|e| sync_error(&e))?
+        .is_some()
+    {
+        return Err(applying());
+    }
     let Some(bucket) = crate::sync::sync_config(&core.config()) else {
         return Ok(None);
     };

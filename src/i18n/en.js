@@ -10636,6 +10636,10 @@
     "message": "Stop the meeting's screen recording first, then try again.",
     "description": "Settings > Meetings > Your other computers: error while a meeting records the screen; Rukoo Voice doesn't hand over or take its keys then. src/renderer/meeting-settings.js"
   },
+  "settings.meetings.others.errorApplying": {
+    "message": "Rukoo Voice is still switching to a bucket. Try again in a moment.",
+    "description": "Settings > Meetings > Your other computers: error of the share switch while Rukoo Voice is busy taking or putting back a bucket's settings, so it doesn't hand them over yet. src/renderer/meeting-settings.js"
+  },
   "settings.meetings.others.errorKeyInUse": {
     "message": "Rukoo Voice on this computer already uploaded meetings with its own encryption key. It keeps that key, so it can't use this bucket.",
     "description": "Settings > Meetings > Your other computers: error of Use it here too when this computer's Rukoo Voice keeps its own key. src/renderer/meeting-settings.js"

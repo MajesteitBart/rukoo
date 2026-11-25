@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use support::{
-    bucket_kinds, connect_bucket, decrypt_all, fake_s3, fast_sync, skip_on_slow_host, sync_state,
-    wait_for, Harness,
+    bucket_kinds, connect_bucket, decrypt_all, fake_s3, fast_sync, shared_sync_settings,
+    skip_on_slow_host, sync_state, wait_for, Harness,
 };
 use voice_bridge::{ControlError, EventLog, MediaKind, MediaOpenArgs, MeetingControl};
 use voice_engine::media::ScreenMedia;
@@ -1973,12 +1973,12 @@ fn a_computer_that_uploaded_keeps_its_key() {
     let first = harness("share-key-first", json!({}));
     let a = first.start();
     connect_bucket(&a, &fake.endpoint());
-    let shared = a
-        .meeting_control()
-        .unwrap()
-        .sync_settings()
-        .unwrap()
-        .expect("settings");
+    let shared = shared_sync_settings(&a);
+    assert_eq!(
+        shared.key,
+        recovery_code(&a),
+        "the key sync uses on the first computer"
+    );
 
     let second = harness("share-key-second", json!({}));
     let b = second.start();

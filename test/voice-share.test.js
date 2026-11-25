@@ -175,7 +175,8 @@ test('a refusal leaves the offer with its reason; an automatic use tries again a
   const first = sets(laptop).length;
   await laptop.share.check();
   assert.equal(sets(laptop).length, first, 'not at once');
-  await until(() => sets(laptop).length > first, 'the second try', 3000);
+  // The retry timer makes the try due when it fires (see the next test); the wait leaves room for a loaded runner.
+  await until(() => sets(laptop).length > first, 'the second try', 10000);
   laptop.fake.syncRefusal = null;
   await until(() => laptop.fake.syncSettings.secret === 'another', 'the use once the bucket is back', 5000);
   await until(() => laptop.share.state().error === null, 'the error gone');
@@ -192,6 +193,81 @@ test('a refusal leaves the offer with its reason; an automatic use tries again a
   await new Promise((r) => setTimeout(r, 800));
   await laptop.share.check();
   assert.equal(sets(laptop).length, tries);
+});
+
+test('an automatic use goes again when its timer fires, also when the clock reads a little behind the timer', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  // A clock at half speed: each timer fires before this.now() reaches the time the retry was due, as a real timer
+  // can by a millisecond. The try must still go.
+  const start = Date.now();
+  const slow = () => start + Math.floor((Date.now() - start) / 2);
+  const laptop = await computer(t, srv, 'Laptop', null, { retryMs: [150, 600], now: slow });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.share.state().offer, 'the offer');
+  assert.equal((await laptop.share.use()).follow, true);
+
+  laptop.fake.syncRefusal = { code: 'failed', message: "Rukoo Voice couldn't reach the bucket." };
+  desk.fake.syncSettings = { ...BUCKET, secret: 'behind' };
+  await desk.share.check();
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.share.state().error, 'the failed automatic use');
+  const first = sets(laptop).length;
+  await until(() => sets(laptop).length > first, 'the second try', 10000);
+  await until(() => sets(laptop).length > first + 1, 'the third try, after a longer wait', 10000);
+  laptop.fake.syncRefusal = null;
+  await until(() => laptop.fake.syncSettings.secret === 'behind', 'the use once the bucket is back', 10000);
+});
+
+test('while Voice takes or puts back settings it hands over none: Rukoo shares nothing, changes no choice and looks again soon', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET }, { againMs: 100 });
+  const laptop = await computer(t, srv, 'Laptop', null, { againMs: 100 });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await laptop.account.signIn({ email: EMAIL, password: PASSWORD });
+  const applying = () => ({ error: { code: 'busy', message: 'Voice is changing its bucket settings; ask again later.', reason: 'applying' } });
+
+  // Turning sharing on then says why, and puts nothing in the account.
+  desk.fake.handlers['sync.settings.get'] = applying;
+  const refused = await desk.share.setShare(true);
+  assert.deepEqual({ share: refused.share, error: refused.error }, { share: false, error: { action: 'share', code: 'busy', reason: 'applying' } });
+  assert.equal(desk.account.get('voicesync', 'bucket'), undefined);
+  delete desk.fake.handlers['sync.settings.get'];
+  assert.equal((await desk.share.setShare(true)).share, true);
+  await desk.account.sync();
+  await laptop.account.sync();
+  await until(() => laptop.share.state().offer, 'the offer');
+  assert.equal((await laptop.share.use()).follow, true);
+
+  // The desk's Voice is in the middle of a change: its settings stay out of the account until it answers again.
+  desk.fake.handlers['sync.settings.get'] = applying;
+  desk.fake.syncSettings = { ...BUCKET, secret: 'after-the-change' };
+  await desk.share.check();
+  assert.equal(desk.account.getSealed('voicesync', 'bucket').settings.secret, BUCKET.secret, 'not shared while Voice changes');
+  assert.deepEqual({ share: desk.share.state().share, error: desk.share.state().error }, { share: true, error: null });
+
+  // The laptop's Voice too: Rukoo sends nothing and keeps following.
+  laptop.fake.handlers['sync.settings.get'] = applying;
+  const before = sets(laptop).length;
+  const seen = laptop.share.prefs.seen;
+  delete desk.fake.handlers['sync.settings.get'];
+  // The desk looks again by itself and shares the settings Voice uses once it is done.
+  await until(() => desk.account.getSealed('voicesync', 'bucket').settings.secret === 'after-the-change', 'the desk shares after the change');
+  await desk.account.sync();
+  await laptop.account.sync();
+  await laptop.share.check();
+  assert.equal(sets(laptop).length, before, 'nothing sent while Voice changes');
+  assert.deepEqual({ follow: laptop.share.state().follow, error: laptop.share.state().error }, { follow: true, error: null });
+  assert.equal(laptop.share.prefs.seen, seen, "Voice's refusal isn't taken for a change made there");
+  delete laptop.fake.handlers['sync.settings.get'];
+  // The laptop looks again by itself, and uses the new secret.
+  await until(() => laptop.fake.syncSettings.secret === 'after-the-change', 'the laptop uses the new secret');
+  assert.equal(laptop.share.state().follow, true);
 });
 
 test('a use whose answer was lost counts once Voice says it uses the bucket', async (t) => {

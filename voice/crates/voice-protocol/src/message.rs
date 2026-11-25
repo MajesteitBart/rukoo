@@ -922,6 +922,9 @@ pub mod sync_reasons {
     pub const KEY_IN_USE: &str = "key_in_use";
     /// Voice couldn't keep the bucket secret.
     pub const SECRET: &str = "secret";
+    /// Voice is using another computer's settings, or putting back what that changed, so its
+    /// settings are half old and half new: ask again later.
+    pub const APPLYING: &str = "applying";
 }
 
 /// What `media.open` prepares.

@@ -2758,6 +2758,7 @@
   "settings.meetings.others.syncOff": "Rukoo Voice synchroniseert op deze computer niet met een bucket. Zet het aan in Instellingen > Opslag van Rukoo Voice om de bucket met je andere computers te delen.",
   "settings.meetings.others.following": "Rukoo Voice gebruikt hier de bucket die je andere computer deelt. Als de gegevens daar veranderen, past Rukoo ze hier ook aan.",
   "settings.meetings.others.errorScreen": "Stop eerst de schermopname van de meeting en probeer het dan opnieuw.",
+  "settings.meetings.others.errorApplying": "Rukoo Voice is nog bezig met overstappen op een bucket. Probeer het zo opnieuw.",
   "settings.meetings.others.errorKeyInUse": "Rukoo Voice heeft op deze computer al meetings met een eigen encryptiesleutel geüpload. Het houdt die sleutel en kan deze bucket daarom niet gebruiken.",
   "settings.meetings.others.errorTest": "Rukoo Voice kon vanaf deze computer geen verbinding maken met de bucket. Controleer op je andere computer of de bucket en de toegangssleutel nog werken.",
   "settings.meetings.others.errorSecret": "Rukoo Voice kon het geheim van de bucket niet op deze computer bewaren.",

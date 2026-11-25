@@ -488,6 +488,11 @@
       "message": { "type": "reply", "id": "c-62", "ok": false, "error": { "code": "busy", "message": "Stop the meeting's screen recording first.", "reason": "screen" } }
     },
     {
+      "name": "no bucket settings while Voice changes them",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-62", "ok": false, "error": { "code": "busy", "message": "Voice is changing its bucket settings; ask again later.", "reason": "applying" } }
+    },
+    {
       "name": "use the bucket of another computer",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-63", "command": "sync.settings.set", "args": { "settings": { "service": "other", "endpoint": "https://s3.example.com", "region": "us-east-1", "bucket": "meetings", "prefix": "voice", "accessKeyId": "EXAMPLEKEYID", "urlStyle": "path", "retention": "keep", "secret": "example-secret-0123", "key": "RKV1-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000" } } }
