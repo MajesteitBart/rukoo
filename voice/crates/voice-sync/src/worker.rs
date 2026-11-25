@@ -1345,6 +1345,7 @@ impl Worker {
             .filter(|m| m.uploaded_gen > 0)
             .map(|m| {
                 let deleted = m.phase == "forgotten";
+                let mid = shared.queue.manifest_id(&m.id).ok().flatten();
                 IndexEntry {
                     id: m.id,
                     m: m.mhash,
@@ -1360,6 +1361,7 @@ impl Worker {
                     gen: m.uploaded_gen + u64::from(deleted),
                     media_removed_at: m.media_removed_at,
                     deleted,
+                    mid,
                 }
             })
             .collect();
@@ -1820,6 +1822,9 @@ impl Worker {
         let Some(remote) = &self.remote else {
             return Ok(());
         };
+        shared
+            .queue
+            .set_manifest_id(&row.meeting, &sha256_hex(plain))?;
         let manifest: Manifest = serde_json::from_slice(plain).map_err(|e| {
             SyncError::new(
                 SyncErrorKind::Local,

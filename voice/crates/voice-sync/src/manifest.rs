@@ -71,6 +71,10 @@ pub struct IndexEntry {
     pub media_removed_at: Option<u64>,
     #[serde(default)]
     pub deleted: bool,
+    /// SHA-256 of the manifest of the version this data folder has, so two that published the
+    /// same generation can tell (crate::pull). An older Voice leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mid: Option<String>,
 }
 
 /// The meeting's next manifest: the newest version of each of its files that reached the bucket.
@@ -225,6 +229,7 @@ mod tests {
             gen,
             media_removed_at: None,
             deleted,
+            mid: None,
         }
     }
 

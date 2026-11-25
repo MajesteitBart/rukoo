@@ -306,6 +306,7 @@ pub fn start_with(
     for id in core.meetings.unfinished() {
         core.follow(&id);
     }
+    core.settle_pulled();
     core.sweep();
     core.meetings.publish_status();
     if let Some(head) = core.meetings.log.as_ref().map(|log| log.head()) {

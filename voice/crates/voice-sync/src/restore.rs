@@ -364,22 +364,41 @@ impl Drop for Claim<'_> {
     }
 }
 
-/// Removes the `.restore-<id>` folders of restores that a hard kill cut off. `open` calls it before
-/// the worker starts, when no restore runs.
+/// Removes the `.restore-<id>` folders of restores that a hard kill cut off, and the `.update-<id>`
+/// folders of pulls that didn't get to replace anything. A replacement that started goes on to the
+/// end instead (`finish_install`). `open` calls it before the worker starts and before the engine
+/// follows any meeting, when nothing reads a transcript.
 pub(crate) fn clear_partial(meetings: &Path) {
     let Ok(entries) = fs::read_dir(meetings) else {
         return;
     };
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !entry.path().is_dir() {
+            continue;
+        }
+        if let Some(id) = name.strip_prefix(crate::pull::UPDATE_PREFIX) {
+            if MeetingId::parse(id).is_none() {
+                continue;
+            }
+            match crate::pull::finish_install(meetings, id) {
+                Ok(true) => log::info!("sync: finished putting a meeting's newer text in place"),
+                Ok(false) => {
+                    if let Err(e) = fs::remove_dir_all(entry.path()) {
+                        log::warn!("sync: can't remove an unfinished pull: {e}");
+                    }
+                }
+                Err(e) => log::warn!("sync: can't finish putting newer meeting text in place: {e}"),
+            }
+            continue;
+        }
         let partial = name
-            .to_str()
-            .and_then(|n| {
-                n.strip_prefix(RESTORE_PREFIX)
-                    .or_else(|| n.strip_prefix(crate::pull::UPDATE_PREFIX))
-            })
+            .strip_prefix(RESTORE_PREFIX)
             .is_some_and(|id| MeetingId::parse(id).is_some());
-        if partial && entry.path().is_dir() {
+        if partial {
             if let Err(e) = fs::remove_dir_all(entry.path()) {
                 log::warn!("sync: can't remove an unfinished restore: {e}");
             }
@@ -582,8 +601,17 @@ pub(crate) fn restore_one(
     let tmp = meetings.join(format!("{RESTORE_PREFIX}{id}"));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| local("Voice can't make a folder to restore into", &e))?;
+    let manifest_id = crate::worker::sha256_hex(&bytes);
     let result = restore_into(
-        shared, remote, binding, &manifest, id, &mhash, &tmp, &target,
+        shared,
+        remote,
+        binding,
+        &manifest,
+        &manifest_id,
+        id,
+        &mhash,
+        &tmp,
+        &target,
     );
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp);
@@ -625,6 +653,7 @@ fn restore_into(
     remote: &Remote,
     binding: &Binding,
     manifest: &Manifest,
+    manifest_id: &str,
     id: &str,
     mhash: &str,
     tmp: &Path,
@@ -721,6 +750,9 @@ fn restore_into(
     if let Some((sha, digest)) = digest {
         shared.queue.set_transcript_digest(id, &sha, &digest)?;
     }
+    shared.queue.set_manifest_id(id, manifest_id)?;
+    // In place together with the meeting: Rukoo hears of it once the engine followed it.
+    crate::pull::write_marker(tmp).map_err(|e| local("Voice can't mark a restored meeting", &e))?;
     put_in_place(shared, binding, &import, tmp, target, &media)
 }
 

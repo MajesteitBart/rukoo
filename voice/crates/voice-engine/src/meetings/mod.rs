@@ -44,6 +44,8 @@ pub struct Meetings {
     dictating: Arc<AtomicBool>,
     pipelines: Mutex<Vec<PipelineHandle>>,
     published: Mutex<Option<Published>>,
+    /// Meetings a pipeline followed in this run, for [`Meetings::settle_pulled`].
+    followed: Mutex<std::collections::HashSet<String>>,
 }
 
 /// What the last `status` event said: recording, dictating, the screen default.
@@ -116,6 +118,7 @@ impl Meetings {
             dictating,
             pipelines: Mutex::new(Vec::new()),
             published: Mutex::new(None),
+            followed: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -144,10 +147,59 @@ impl Meetings {
         };
         let mut pipelines = self.lock();
         pipelines.retain(|p| !p.state().is_final());
+        self.followed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_owned());
         if pipelines.iter().any(|p| p.meeting() == id) {
             return;
         }
         pipelines.push(Pipeline::start(dir, log.clone(), opts));
+    }
+
+    /// Meetings that came from the bucket or changed from there, with voice-sync's
+    /// [`PULLED`](voice_sync::pull::PULLED) file: each is followed again until its pipeline
+    /// finished and the event log has its outcome, and then the file goes. A Voice that quit after
+    /// a pull put a meeting in place, but before Rukoo could get all of it, sends the rest at its
+    /// next start.
+    pub fn settle_pulled(&self, follow: impl Fn(&str)) {
+        let Some(log) = &self.log else {
+            return;
+        };
+        let following: std::collections::HashSet<String> = self
+            .pipelines()
+            .into_iter()
+            .filter(|(_, state)| !state.is_final())
+            .map(|(id, _)| id)
+            .collect();
+        for dir in self.library().dirs() {
+            let marker = dir.path().join(voice_sync::pull::PULLED);
+            if !marker.is_file() {
+                continue;
+            }
+            let id = dir.id().as_str();
+            if following.contains(id) {
+                continue;
+            }
+            let followed = self
+                .followed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(id);
+            let ended = log
+                .latest(id, voice_protocol::events::MEETING_STATE)
+                .ok()
+                .flatten()
+                .is_some_and(|s| matches!(s.data["state"].as_str(), Some("done" | "failed")));
+            if followed && ended {
+                self.send_removed_passages(id);
+                if let Err(e) = std::fs::remove_file(&marker) {
+                    log::warn!("meeting: {id}: can't mark a pulled meeting as sent: {e}");
+                }
+            } else {
+                follow(id);
+            }
+        }
     }
 
     /// Stops following a meeting, and waits until its pipeline let go of its transcript.
@@ -163,13 +215,21 @@ impl Meetings {
         shutdown_all(stopping);
     }
 
-    /// Whether something writes the meeting's transcript now: it records, or a split of it runs.
-    pub fn writing(&self, id: &str) -> bool {
-        self.controller.current().is_some_and(|r| r.id == id)
-            || self
-                .control
-                .as_ref()
-                .is_some_and(|control| control.split.running_for(id))
+    /// Holds off whatever writes the meeting's transcript while newer text replaces it: false while
+    /// it records or a split of it runs. [`Meetings::end_replace`] lets them go on.
+    pub fn begin_replace(&self, id: &str) -> bool {
+        if self.controller.current().is_some_and(|r| r.id == id) {
+            return false;
+        }
+        self.control
+            .as_ref()
+            .is_none_or(|control| control.split.begin_replace(id))
+    }
+
+    pub fn end_replace(&self, id: &str) {
+        if let Some(control) = &self.control {
+            control.split.end_replace(id);
+        }
     }
 
     /// After newer text from another computer replaced a meeting's transcript: a `passage.removed`

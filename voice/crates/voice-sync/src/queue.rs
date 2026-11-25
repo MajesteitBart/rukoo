@@ -804,6 +804,17 @@ impl Queue {
         self.meta(&digest_key(meeting, sha256))
     }
 
+    /// SHA-256 of the manifest of the version of a meeting this computer has: the one it published,
+    /// or the one it took from the bucket. Two computers that published the same generation tell
+    /// their versions apart by it.
+    pub(crate) fn manifest_id(&self, meeting: &str) -> Result<Option<String>, SyncError> {
+        self.meta(&format!("mid:{meeting}"))
+    }
+
+    pub(crate) fn set_manifest_id(&self, meeting: &str, id: &str) -> Result<(), SyncError> {
+        self.set_meta(&format!("mid:{meeting}"), Some(id))
+    }
+
     pub(crate) fn set_transcript_digest(
         &self,
         meeting: &str,
@@ -828,7 +839,7 @@ impl Queue {
             if reset {
                 tx.execute_batch(
                     "DELETE FROM parts; DELETE FROM files; DELETE FROM meetings; \
-                     DELETE FROM meta WHERE key LIKE 'digest:%';",
+                     DELETE FROM meta WHERE key LIKE 'digest:%' OR key LIKE 'mid:%';",
                 )?;
             }
             tx.execute(
@@ -913,7 +924,7 @@ impl Queue {
                  UPDATE meetings SET uploaded_gen = 0, media_removed_at = NULL, \
                    manifest_dirty = CASE WHEN phase = 'forgotten' THEN 0 ELSE 1 END, \
                    phase = CASE WHEN phase IN ('synced', 'restored') THEN 'after' ELSE phase END; \
-                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at');",
+                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at') OR key LIKE 'mid:%';",
             )?;
             tx.commit()?;
             Ok(Some(open))
@@ -1358,8 +1369,11 @@ impl Queue {
             tx.execute("DELETE FROM files WHERE meeting = ?1", [meeting])?;
             tx.execute("DELETE FROM restored WHERE meeting = ?1", [meeting])?;
             tx.execute(
-                "DELETE FROM meta WHERE key LIKE ?1",
-                [format!("{}%", digest_key(meeting, ""))],
+                "DELETE FROM meta WHERE key LIKE ?1 OR key = ?2",
+                [
+                    format!("{}%", digest_key(meeting, "")),
+                    format!("mid:{meeting}"),
+                ],
             )?;
             if tombstone {
                 tx.execute(

@@ -342,3 +342,138 @@ fn asking_pulls_at_once() {
     assert!(wait_for(WAIT, || hooks.restored() == vec![m.id.clone()]));
     assert!(b.sync.status().pull.at > first);
 }
+
+#[test]
+fn a_meeting_that_only_shares_an_id_is_never_touched() {
+    let fake = fake();
+    let root = scratch("pull-same-id");
+    let _c = Cleanup(root.clone());
+    let a = Voice::open(&root.join("a"));
+    let (m, _) = finished(&a.meetings(), "Theirs", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    // B recorded another meeting that got the same id, a millisecond later.
+    let b_root = root.join("b");
+    let mine = b_root.join("meetings").join(&m.id);
+    fs::create_dir_all(&mine).unwrap();
+    let mut file: serde_json::Value = serde_json::from_slice(&m.read("meeting.json")).unwrap();
+    file["createdAt"] = (m.created_at + 1).into();
+    file["title"] = "Mine".into();
+    fs::write(
+        mine.join("meeting.json"),
+        serde_json::to_vec(&file).unwrap(),
+    )
+    .unwrap();
+    let (b, hooks) = second_computer(&fake, &root, &a, Setup::default());
+    assert!(wait_for(WAIT, || b.sync.status().pull.at.is_some()));
+
+    a.sync.mark_deleted(&m.id).unwrap();
+    fs::remove_dir_all(&m.dir).unwrap();
+    assert!(wait_for(WAIT, || indexes(&fake, &a.key())
+        .iter()
+        .any(|i| i.meetings.iter().any(|e| e.id == m.id && e.deleted))));
+    let pulled = b.sync.status().pull.at;
+    assert!(wait_for(WAIT, || b.sync.status().pull.at > pulled));
+    assert!(hooks.deleted().is_empty());
+    assert!(hooks.updated().is_empty());
+    let kept: serde_json::Value =
+        serde_json::from_slice(&fs::read(mine.join("meeting.json")).unwrap()).unwrap();
+    assert_eq!(kept["title"], "Mine");
+}
+
+#[test]
+fn two_computers_that_publish_the_same_version_end_with_the_same_text() {
+    let fake = fake();
+    let root = scratch("pull-concurrent");
+    let _c = Cleanup(root.clone());
+    let slow = || Setup {
+        timing: voice_sync::SyncTiming {
+            pull_every: Duration::from_secs(3_600),
+            ..timing()
+        },
+        ..Setup::default()
+    };
+    let a = Voice::with(&root.join("a"), slow());
+    let (m, _) = finished(&a.meetings(), "Both at once", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    let a_hooks = Hooks::new(&a.meetings());
+    a.sync.set_pull_hooks(a_hooks.clone());
+    let (b, b_hooks) = second_computer(&fake, &root, &a, slow());
+    assert!(wait_for(WAIT, || b_hooks.restored() == vec![m.id.clone()]));
+    let gen = manifest(&fake, &a.key(), &m.id).unwrap().gen;
+    let b_dir = b.meetings().join(&m.id);
+
+    // Each changes the meeting before it hears of the other's change.
+    rewrite(&m.dir, 0, "First thing, as A heard it");
+    rewrite(&b_dir, 0, "First thing, as B heard it");
+    a.sync.nudge();
+    b.sync.nudge();
+    assert!(wait_for(WAIT, || {
+        let ups = puts(&fake);
+        ups.iter().filter(|k| k.ends_with("/manifest")).count() >= 3
+            && indexes(&fake, &a.key())
+                .iter()
+                .filter(|i| i.meetings.iter().any(|e| e.id == m.id && e.gen == gen + 1))
+                .count()
+                == 2
+    }));
+    // A few looks on each side: they settle on whichever manifest went up last.
+    let ok = wait_for(WAIT, || {
+        a.sync.pull_now();
+        b.sync.pull_now();
+        std::thread::sleep(Duration::from_millis(150));
+        Meeting::passages(&m.dir) == Meeting::passages(&b_dir)
+    });
+    assert!(
+        ok,
+        "A: {:?}\nB: {:?}",
+        Meeting::passages(&m.dir),
+        Meeting::passages(&b_dir)
+    );
+    let text = &Meeting::passages(&m.dir)[0].2;
+    assert!(text.ends_with("as A heard it") || text.ends_with("as B heard it"));
+    // And it stays that way.
+    std::thread::sleep(Duration::from_millis(800));
+    a.sync.pull_now();
+    b.sync.pull_now();
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(Meeting::passages(&m.dir), Meeting::passages(&b_dir));
+}
+
+#[test]
+fn a_replacement_a_crash_cut_off_goes_on_at_the_next_start() {
+    let root = scratch("pull-finish");
+    let _c = Cleanup(root.clone());
+    let data = root.join("b");
+    let (m, newer) = {
+        let b = Voice::open(&data);
+        let (m, _) = finished(&b.meetings(), "Halfway", 3_600_000);
+        // What a pull fetched: the same meeting with newer text, in the update folder.
+        let other = scratch("pull-finish-other");
+        let n = Meeting::new(&other, "Halfway", 3_600_000);
+        n.transcript(&[("mic", 0, 400, "Newer text")], now_ms());
+        let tmp = b.meetings().join(format!(".update-{}", m.id));
+        fs::create_dir_all(&tmp).unwrap();
+        fs::copy(n.path("transcript.db"), tmp.join("transcript.db")).unwrap();
+        let newer = Meeting::passages(&n.dir);
+        fs::remove_dir_all(&other).unwrap();
+        fs::write(tmp.join("install.json"), br#"["transcript.db"]"#).unwrap();
+        // The crash came after the old write-ahead log went.
+        let _ = fs::remove_file(m.path("transcript.db-wal"));
+        (m, newer)
+    };
+    let b = Voice::open(&data);
+    assert_eq!(Meeting::passages(&m.dir), newer);
+    assert!(m.path(".pulled").is_file(), "the engine follows it again");
+    assert!(!b.meetings().join(format!(".update-{}", m.id)).exists());
+
+    // An update folder without its list never replaced anything: it just goes.
+    let tmp = b.meetings().join(format!(".update-{}", m.id));
+    fs::create_dir_all(&tmp).unwrap();
+    fs::write(tmp.join("transcript.db"), b"half a download").unwrap();
+    drop(b);
+    let _b = Voice::open(&data);
+    assert!(!tmp.exists());
+    assert_eq!(Meeting::passages(&m.dir), newer);
+}

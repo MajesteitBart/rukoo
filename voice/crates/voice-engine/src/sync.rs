@@ -58,7 +58,7 @@ impl PullHooks for EnginePull {
             .0
             .upgrade()
             .ok_or_else(|| SyncError::new(SyncErrorKind::Local, "Voice is quitting."))?;
-        if core.meetings.writing(meeting) {
+        if !core.meetings.begin_replace(meeting) {
             return Err(SyncError::new(
                 SyncErrorKind::Local,
                 "The meeting's transcript is being written here.",
@@ -66,10 +66,12 @@ impl PullHooks for EnginePull {
         }
         core.meetings.stop_following(meeting);
         let swapped = swap();
+        core.meetings.end_replace(meeting);
         if swapped.is_ok() {
             core.meetings.send_removed_passages(meeting);
         }
-        // Again either way: with the newer text it sends what changed.
+        // Again either way: with the newer text it sends what changed. The meeting's `.pulled`
+        // file keeps it followed until Rukoo can get all of it (Meetings::settle_pulled).
         core.follow(meeting);
         swapped
     }

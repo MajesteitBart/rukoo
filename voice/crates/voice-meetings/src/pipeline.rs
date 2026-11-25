@@ -1179,9 +1179,17 @@ impl Worker {
         self.backfill_speakers()?;
         let stop = self.watcher.mapper().stop().cloned();
 
-        if let Err(reason) = (self.allowed)() {
-            shared.set(PipelineState::Waiting { reason });
-            return Ok(Step::Idle);
+        // A meeting that is transcribed already, such as one from another computer, sends nothing to
+        // a provider: it doesn't wait for this computer's consent.
+        let transcribed = self
+            .transcript
+            .outcome()?
+            .is_some_and(|o| o.state == MeetingState::Done);
+        if !transcribed {
+            if let Err(reason) = (self.allowed)() {
+                shared.set(PipelineState::Waiting { reason });
+                return Ok(Step::Idle);
+            }
         }
         if self
             .failure

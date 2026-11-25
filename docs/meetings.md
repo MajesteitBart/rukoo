@@ -74,7 +74,7 @@ The agent can also get a link to the meeting's audio, one frame or up to five mi
 
 With bucket sync on in Rukoo Voice, every computer that syncs to the same bucket with the same encryption key shows the meetings the others recorded. A meeting appears once it finished on its own computer: Voice looks every 5 minutes, and at once when you open the meetings here. It opens like any other meeting, with its transcript, the text on its screen and its speakers. Its audio, frames and video stay in your bucket until you play a voice or open a frame, so those need Voice running and the bucket reachable.
 
-When another computer changes a meeting's transcript, for instance by splitting its microphone into voices, the change reaches this computer too. A meeting deleted on one computer is deleted on the others. Your notes, the names you gave speakers, your corrections and a renamed title stay on the computer where you made them.
+When another computer changes a meeting's transcript, for instance by splitting its microphone into voices, the change reaches this computer too. If two computers change one meeting's transcript before either heard of the other's change, both keep the change that reached the bucket last. A meeting deleted on one computer is deleted on the others. Your notes, the names you gave speakers, your corrections and a renamed title stay on the computer where you made them.
 
 ## Settings
 

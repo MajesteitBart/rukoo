@@ -1234,6 +1234,11 @@ fn a_restored_meeting_reaches_the_bridge() {
     // itself, as text.
     let b = harness("restore-b", json!({"meetings_retention": "keep"}));
     let engine_b = b.start();
+    // A cloud provider this computer hasn't agreed to: a meeting transcribed elsewhere doesn't wait
+    // for it, because nothing goes to the provider.
+    engine_b
+        .settings_save_provider(json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": "sk-test-not-a-real-key", "consent": false}))
+        .unwrap();
     engine_b
         .settings_sync_key("import", Some(code.clone()))
         .unwrap();
