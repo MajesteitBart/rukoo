@@ -1346,3 +1346,130 @@ fn the_connection_check_only_opens_a_connection() {
     assert!(!endpoint_reachable("", timeout));
     assert!(!endpoint_reachable("http://127.0.0.1:99999/", timeout));
 }
+
+#[test]
+fn a_redirect_is_never_followed_with_the_key() {
+    // The second server stands for another host: nothing may reach it. ureq keeps Google's and
+    // Anthropic's key headers on a redirect, so following one would hand them the key.
+    let elsewhere = FakeServer::always(chat_reply("leaked"));
+    let target = elsewhere.url("/collect");
+    let redirecting = {
+        let target = target.clone();
+        FakeServer::start(move |request| {
+            let status = match request.path() {
+                p if p.contains("generateContent") => 301,
+                p if p.ends_with("/messages") => 308,
+                p if p.ends_with("/models") => 302,
+                _ => 307,
+            };
+            Reply::redirect(status, &target)
+        })
+    };
+    let key = "sk-redirect-test-0123";
+    let errors = [
+        stt(&cfg(
+            "openai",
+            key,
+            &redirecting.url("/v1/audio/transcriptions"),
+            "whisper-1",
+        ))
+        .transcribe(&pcm(), &hints(&[], None))
+        .unwrap_err(),
+        stt(&cfg(
+            "google",
+            key,
+            &redirecting.url("/v1beta/models/{model}:generateContent"),
+            "gemini-test",
+        ))
+        .transcribe(&pcm(), &hints(&[], None))
+        .unwrap_err(),
+        rewrite(
+            &cfg(
+                "anthropic",
+                key,
+                &redirecting.url("/v1/messages"),
+                "claude-test",
+            ),
+            "s",
+            "u",
+        )
+        .unwrap_err(),
+        list_models(
+            Activity::Rewrite,
+            &cfg("mistral", key, &redirecting.url("/v1/chat/completions"), ""),
+        )
+        .unwrap_err(),
+    ];
+    for error in &errors {
+        assert_eq!(error.kind, ErrorKind::Provider, "{error}");
+        assert!(
+            error
+                .message
+                .contains("redirected the request to 127.0.0.1")
+                && error.message.contains("Voice doesn't follow redirects"),
+            "{error}"
+        );
+        assert!(!error.message.contains(key), "{error}");
+    }
+    assert!(
+        elsewhere.requests().is_empty(),
+        "a redirect reached the other host: {:?}",
+        elsewhere.requests()
+    );
+    // The first server did get each request, with its own key header.
+    let seen = redirecting.requests();
+    assert_eq!(seen.len(), 4);
+    assert!(seen[0]
+        .header("authorization")
+        .is_some_and(|v| v.contains(key)));
+    assert_eq!(seen[1].header("x-goog-api-key"), Some(key));
+    assert_eq!(seen[2].header("x-api-key"), Some(key));
+}
+
+#[test]
+fn a_missing_key_for_another_server_points_to_the_feature_s_form() {
+    // Mistral through a proxy: API keys can't fix it, the form's key field can.
+    let proxy = cfg(
+        "mistral",
+        "",
+        "https://proxy.example.com/v1/audio/transcriptions",
+        "voxtral-mini-latest",
+    );
+    let error = stt_error(&proxy);
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert_eq!(
+        error.message,
+        "No API key set for proxy.example.com. Add it in Settings > Transcription."
+    );
+    let meetings = ProviderConfig {
+        purpose: Purpose::Meetings,
+        ..proxy.clone()
+    };
+    assert_eq!(
+        stt_error(&meetings).message,
+        "No API key set for proxy.example.com. Add it in Settings > Meetings > Transcription."
+    );
+    let error = rewriter(&cfg(
+        "openai",
+        "",
+        "https://proxy.example.com/v1/responses",
+        "gpt",
+    ))
+    .err()
+    .unwrap();
+    assert_eq!(
+        error.message,
+        "No API key set for proxy.example.com. Add it in Settings > Rewriting."
+    );
+    // At the provider's own host it is API keys, as before.
+    assert_eq!(
+        stt_error(&cfg(
+            "mistral",
+            "",
+            "https://api.mistral.ai/v1/audio/transcriptions",
+            "v"
+        ))
+        .message,
+        "No Mistral API key set. Add it in Settings > API keys."
+    );
+}

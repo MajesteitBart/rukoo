@@ -32,6 +32,11 @@ impl Http {
         // timeouts do the same.
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            // Never follow a redirect. Every request here may carry a provider key, and on a
+            // redirect to another server ureq drops `Authorization` but keeps Google's
+            // `x-goog-api-key` and Anthropic's `x-api-key`. With 0 the 3xx answer comes back as it
+            // is, and `finish` turns it into an error.
+            .max_redirects(0)
             .timeout_connect(Some(timeout))
             .timeout_per_write(Some(timeout))
             .timeout_recv_response(Some(timeout))
@@ -83,6 +88,15 @@ impl Http {
     ) -> Result<Reply, ProviderError> {
         let mut response = result.map_err(|error| self.transport_error(error, url))?;
         let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            return Err(redirect_error(self.label, &location));
+        }
         let body = response
             .body_mut()
             .read_to_vec()
@@ -129,6 +143,20 @@ fn status_kind(status: StatusCode) -> ErrorKind {
         401 | 403 => ErrorKind::Auth,
         _ => ErrorKind::Provider,
     }
+}
+
+/// A provider that answered with a redirect. Voice doesn't follow it, so the key goes nowhere but
+/// the endpoint in Settings; the message names where the provider pointed, by host only.
+pub(crate) fn redirect_error(label: &str, location: &str) -> ProviderError {
+    let host = split(location.trim()).hostname();
+    let target = if host.is_empty() {
+        "another address".to_string()
+    } else {
+        host
+    };
+    ProviderError::provider(format!(
+        "{label} redirected the request to {target}. Voice doesn't follow redirects, so your API key wasn't sent there. Check the endpoint in Settings."
+    ))
 }
 
 /// Differs from Ownkey on purpose: Ownkey said "Network error - check internet connection." even

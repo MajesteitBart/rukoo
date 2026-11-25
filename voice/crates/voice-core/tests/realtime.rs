@@ -837,3 +837,37 @@ fn parse_realtime_event_ignores_what_voice_doesnt_use() {
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Auth);
 }
+
+#[test]
+fn a_redirected_handshake_is_never_followed() {
+    // Another host the redirect points at: it must never get a connection.
+    let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+    elsewhere.set_nonblocking(true).unwrap();
+    let location = format!(
+        "wss://127.0.0.1:{}/v1/audio/transcriptions/realtime",
+        elsewhere.local_addr().unwrap().port()
+    );
+    let response = format!(
+        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+    );
+    let (endpoint, server) = raw_refusal(response.into_bytes());
+    let client = MistralRealtime::new(&cfg(&endpoint, MODEL, KEY)).unwrap();
+    let error = match client.connect(&StreamSession::default()) {
+        Ok(_) => panic!("connected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::Provider);
+    assert!(
+        error
+            .message
+            .contains("redirected the request to 127.0.0.1"),
+        "{error}"
+    );
+    assert_no_key(&error);
+    server.join().unwrap();
+    thread::sleep(Duration::from_millis(200));
+    assert!(
+        elsewhere.accept().is_err(),
+        "the client followed the redirect"
+    );
+}

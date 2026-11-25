@@ -328,6 +328,32 @@ fn a_missing_key_fails_before_anything_is_sent() {
 }
 
 #[test]
+fn a_missing_key_for_a_proxy_sends_the_user_to_the_form() {
+    let h = Harness::new("no-key-proxy");
+    h.config(json!({
+        "audio_provider": "mistral",
+        "audio_endpoint": "https://proxy.example.com/v1/audio/transcriptions",
+        "audio_model": "voxtral-mini-latest",
+        "audio_api_key": ""
+    }));
+    let engine = h.start();
+    assert_eq!(engine.settings_state()["dictation"]["status"], "noKey");
+    h.hold(Key::F13);
+    assert_eq!(last_error(&h), "pill.error.noKey");
+    assert!(h.speech.heard().is_empty(), "no audio left the computer");
+    assert_eq!(
+        h.sink.wait_note("app.notify.dictationFailed").body,
+        "No API key set for proxy.example.com. Add it in Settings > Transcription."
+    );
+    // A key on API keys can't reach the proxy, so Settings opens at the dictation form.
+    assert_eq!(
+        engine.settings_start_page().as_deref(),
+        Some("transcription")
+    );
+    engine.shutdown();
+}
+
+#[test]
 fn a_microphone_that_won_t_open_fails_and_the_next_press_works() {
     let h = Harness::new("no-mic");
     // A local server that needs no key, so the status is about the microphone alone.

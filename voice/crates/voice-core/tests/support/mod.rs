@@ -160,6 +160,8 @@ pub struct Reply {
     pub content_type: &'static str,
     /// Accept the request but never answer, to test timeouts.
     pub hang: bool,
+    /// A `Location` header, for a redirect.
+    pub location: Option<String>,
 }
 
 impl Reply {
@@ -169,6 +171,7 @@ impl Reply {
             body: body.to_string().into_bytes(),
             content_type: "application/json",
             hang: false,
+            location: None,
         }
     }
 
@@ -178,6 +181,7 @@ impl Reply {
             body: body.as_bytes().to_vec(),
             content_type: "text/plain",
             hang: false,
+            location: None,
         }
     }
 
@@ -187,6 +191,15 @@ impl Reply {
             body,
             content_type: "application/octet-stream",
             hang: false,
+            location: None,
+        }
+    }
+
+    /// A redirect to `location`.
+    pub fn redirect(status: u16, location: &str) -> Reply {
+        Reply {
+            location: Some(location.to_string()),
+            ..Reply::text(status, "")
         }
     }
 
@@ -196,6 +209,7 @@ impl Reply {
             body: Vec::new(),
             content_type: "text/plain",
             hang: true,
+            location: None,
         }
     }
 }
@@ -327,8 +341,13 @@ fn serve(stream: TcpStream, recorded: &Mutex<Vec<Recorded>>, handler: &Handler) 
         return;
     }
     let mut stream = stream;
+    let location = reply
+        .location
+        .as_deref()
+        .map(|url| format!("Location: {url}\r\n"))
+        .unwrap_or_default();
     let head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{location}Connection: close\r\n\r\n",
         reply.status,
         reason(reply.status),
         reply.content_type,
@@ -343,6 +362,10 @@ fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         206 => "Partial Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",

@@ -323,14 +323,23 @@ pub fn start_with(
                 "Welcome to Rukoo Voice. Open Settings > Transcription to choose how your voice becomes text.".into(),
             ));
         } else if status == "noKey" {
-            // An import that chose a cloud provider without its key.
-            core.settings.open_next_at("keys");
+            // An import that chose a cloud provider without its key: API keys, or the form of the
+            // other server dictation points at.
+            let audio = core.config().dictation_audio();
+            let page =
+                if voice_core::providers::shared_key_applies(&audio.provider, &audio.endpoint) {
+                    "keys"
+                } else {
+                    "transcription"
+                };
+            core.settings.open_next_at(page);
             notices.push((
                 NOTIFY_WELCOME,
                 format!(
                     "Welcome to Rukoo Voice. {}",
                     voice_core::providers::missing_key_message(
-                        &core.config().audio_provider,
+                        &audio.provider,
+                        &audio.endpoint,
                         voice_core::providers::Purpose::Dictation
                     )
                 ),

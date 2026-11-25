@@ -24,7 +24,7 @@ use tungstenite::protocol::CloseFrame;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error as WsError, HandshakeError, Message, WebSocket};
 
-use super::http::{network_error, timeout_error};
+use super::http::{network_error, redirect_error, timeout_error};
 use super::stream::{SpeechStream, StreamEvent, StreamSession, StreamingSpeech};
 use super::urls::{quote, split};
 use super::{
@@ -162,6 +162,7 @@ impl MistralRealtime {
         if cfg.api_key.trim().is_empty() {
             return Err(ProviderError::config(super::missing_key_message(
                 &cfg.provider,
+                &cfg.endpoint,
                 Purpose::Meetings,
             )));
         }
@@ -288,6 +289,16 @@ impl MistralRealtime {
 
     fn handshake_error(&self, error: WsError, url: &str) -> ProviderError {
         match error {
+            // tungstenite's handshake on a stream of Voice's own never follows a redirect; say so,
+            // as for the other provider requests.
+            WsError::Http(response) if response.status().is_redirection() => {
+                let location = response
+                    .headers()
+                    .get("location")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                redirect_error(LABEL, location)
+            }
             WsError::Http(response) => {
                 let status = response.status();
                 let body = handshake_body(&response);

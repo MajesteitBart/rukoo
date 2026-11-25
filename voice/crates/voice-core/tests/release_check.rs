@@ -116,6 +116,7 @@ fn a_check_asks_github_the_way_its_api_wants() {
         body: body.clone().into_bytes(),
         content_type: "application/json",
         hang: false,
+        location: None,
     });
     let release = check_at(
         &server.url("/repos/MajesteitBart/rukoo/releases?per_page=100"),

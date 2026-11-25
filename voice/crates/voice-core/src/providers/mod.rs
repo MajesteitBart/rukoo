@@ -645,12 +645,35 @@ pub(crate) fn redacted(key: &str) -> &'static str {
 /// The one place a provider's key is entered (voice/ui/API.md, `keys`).
 pub const KEYS_SETTINGS_PAGE: &str = "Settings > API keys";
 
+/// The Settings page that fixes a feature's missing key: API keys at the provider's own hosts,
+/// else the feature's own form, where the key for that other server is entered.
+pub fn missing_key_page(provider: &str, endpoint: &str, purpose: Purpose) -> &'static str {
+    if shared_key_applies(provider, endpoint) {
+        KEYS_SETTINGS_PAGE
+    } else {
+        match purpose {
+            Purpose::Rewrite => "Settings > Rewriting",
+            _ => audio_settings_page(purpose),
+        }
+    }
+}
+
 /// What a feature without its provider's key says, in the tray and in Settings. It names the
-/// provider and the one place to add the key. The pill reads "Add an API key" for it: it starts
+/// provider and the one place to add the key: API keys, or for a proxy or another server the
+/// feature's own form, which names that server. The pill reads "Add an API key" for it: it starts
 /// "No " and holds "API key set" (voice-engine's `is_missing_key`).
-pub fn missing_key_message(provider: &str, purpose: Purpose) -> String {
+pub fn missing_key_message(provider: &str, endpoint: &str, purpose: Purpose) -> String {
+    let page = missing_key_page(provider, endpoint, purpose);
+    if !shared_key_applies(provider, endpoint) {
+        let host = endpoint_host(endpoint);
+        let server = if host.is_empty() {
+            "this server".to_string()
+        } else {
+            host
+        };
+        return format!("No API key set for {server}. Add it in {page}.");
+    }
     let label = provider_label(provider);
-    let page = KEYS_SETTINGS_PAGE;
     match purpose {
         Purpose::Dictation => format!("No {label} API key set. Add it in {page}."),
         Purpose::Rewrite => format!("No {label} API key set for rewriting. Add it in {page}."),
@@ -700,7 +723,7 @@ pub fn speech_to_text(
     if provider_requires_key(id.as_str(), &cfg.endpoint) && cfg.api_key.trim().is_empty() {
         return Err(ProviderError::new(
             ErrorKind::Auth,
-            missing_key_message(id.as_str(), cfg.purpose),
+            missing_key_message(id.as_str(), &cfg.endpoint, cfg.purpose),
         ));
     }
     Ok(Box::new(cloud::CloudSpeech::new(id, cfg)))
@@ -729,7 +752,7 @@ pub fn rewriter(cfg: &RewriteProviderConfig) -> Result<Box<dyn Rewriter>, Provid
     if provider_requires_key(id.as_str(), &cfg.endpoint) && cfg.api_key.trim().is_empty() {
         return Err(ProviderError::new(
             ErrorKind::Auth,
-            missing_key_message(id.as_str(), Purpose::Rewrite),
+            missing_key_message(id.as_str(), &cfg.endpoint, Purpose::Rewrite),
         ));
     }
     Ok(Box::new(rewrite::CloudRewriter::new(id, cfg)))
