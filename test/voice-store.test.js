@@ -1210,3 +1210,41 @@ test('a correction from another computer keeps a passage that overlapped it from
   assert.deepEqual(mic(c), ['mic-000005000', 'mic-000007000']);
   c.close();
 });
+
+test("a computer's later notes follow its earlier ones, and keep another computer's draft where it was", () => {
+  const { a, b, clock } = twoComputers();
+  b.saveNotes(M, 'Desktop draft', 0);
+  clock.a += 5000;
+  a.saveNotes(M, 'Laptop first', 0);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther.text, 'Desktop draft');
+  // The laptop goes on writing: on the desktop that is one version after another, not a conflict.
+  clock.a += 5000;
+  a.saveNotes(M, 'Laptop second', a.meeting(M).notes.rev);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Laptop second');
+  assert.equal(b.meeting(M).notesOther.text, 'Desktop draft');
+  assert.equal(b.dataDoc(M).draft.v, 'Desktop draft');
+  // Only the laptop writing: no conflict at all.
+  const { a: x, b: y, clock: c } = twoComputers();
+  x.saveNotes(M, 'One', 0);
+  y.applyData(M, x.dataDoc(M));
+  c.a += 1000;
+  x.saveNotes(M, 'Two', x.meeting(M).notes.rev);
+  y.applyData(M, x.dataDoc(M));
+  assert.equal(y.meeting(M).notes.text, 'Two');
+  assert.equal(y.meeting(M).notesOther, null);
+});
+
+test('two changes in one millisecond, or after the clock went back, still reach the other computer', () => {
+  const { a, b, clock } = twoComputers();
+  a.setTitle(M, 'First');
+  b.applyData(M, a.dataDoc(M));
+  a.setTitle(M, 'Second');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).meeting.title, 'Second');
+  clock.a -= 60000;
+  a.setTitle(M, 'After the clock went back');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).meeting.title, 'After the clock went back');
+});

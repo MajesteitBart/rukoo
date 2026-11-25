@@ -812,7 +812,10 @@ class VoiceStore {
   stamp(id, key, extra = {}) {
     const m = this.data(id, true);
     if (!m) return;
-    m.stamps[key] = { at: this.now(), by: this.index.device, ...extra };
+    // Later than the field's last change, also within one millisecond or after the clock went back, so the other
+    // computers take it.
+    const prev = m.stamps[key];
+    m.stamps[key] = { at: Math.max(this.now(), prev ? prev.at + 1 : 0), by: this.index.device, ...extra };
     this.dataChanged(id, m);
   }
 
@@ -1088,7 +1091,8 @@ class VoiceStore {
       const dismissed = key === 'notes' && m.notesDismissed && m.notesDismissed.at === s.at && m.notesDismissed.text === f.v;
       if (!later(s, mine)) {
         // This computer's notes are newer, but theirs weren't written from them: both stay.
-        if (key === 'notes' && !dismissed && s.at > (mine.base || 0) && f.v !== this.ownValue(id, m, key) && f.v.trim() && !(m.notesOther && m.notesOther.at === s.at)) {
+        // An older version from the same computer as these notes is one they followed, not a conflict.
+        if (key === 'notes' && !dismissed && s.by !== mine.by && s.at > (mine.base || 0) && f.v !== this.ownValue(id, m, key) && f.v.trim() && !(m.notesOther && m.notesOther.at === s.at) && !(m.notesOther && m.notesOther.stamp)) {
           m.notesOther = { text: f.v, at: s.at, device: theirs };
           changed = true;
         }
@@ -1097,8 +1101,11 @@ class VoiceStore {
       if (key === 'notes') {
         const ours = this.ownValue(id, m, key);
         // Theirs are newer, but weren't written from this computer's: this computer's stay beside them, and when they
-        // were written here they keep going to the other computers until the user picks.
-        if (mine && mine.at > (s.base || 0) && ours !== f.v && ours.trim()) {
+        // were written here they keep going to the other computers until the user picks. A newer version from the
+        // computer that wrote these follows them; and a draft written here stays until the user picks it or lets it go.
+        const own = mine && mine.by === this.index.device;
+        const keepsDraft = m.notesOther && m.notesOther.stamp && !own;
+        if (mine && mine.by !== s.by && mine.at > (s.base || 0) && ours !== f.v && ours.trim() && !keepsDraft) {
           m.notesOther = { text: ours, at: mine.at, device: this.deviceName };
           if (mine.by === this.index.device) {
             m.notesOther.stamp = mine;
