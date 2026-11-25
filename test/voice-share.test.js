@@ -220,6 +220,38 @@ test('the choices and the record go when the account signs out, and stay out of 
   assert.equal(desk.share.state().share, false);
 });
 
+test('on disk the record is sealed with the keystore, and a restart opens it again', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, 'Desk', { ...BUCKET });
+  await desk.account.signUp({ email: EMAIL, password: PASSWORD });
+  await desk.share.setShare(true);
+  await desk.account.sync();
+  desk.account.flush();
+  const file = path.join(desk.dir, 'data', 'account-records.json');
+  const kept = JSON.parse(fs.readFileSync(file, 'utf8')).entries.find((e) => e.c === 'voicesync');
+  assert.equal(kept.v, undefined, 'no readable value');
+  assert.ok(kept.sv.startsWith('plain:'), 'sealed through secrets.encrypt (the test keystore is plain:)');
+  assert.ok(!JSON.stringify(kept).includes(BUCKET.key));
+
+  desk.account.close();
+  const again = new AccountService({ dataDir: path.join(desk.dir, 'data'), secrets, defaultServer: srv.url, deviceName: 'Desk', platform: 'linux' }).init();
+  t.after(() => again.close());
+  assert.deepEqual(again.get('voicesync', 'bucket').settings, BUCKET);
+
+  // A keystore that no longer opens it (another user or computer): the record stays out until the account brings it.
+  const locked = {
+    encrypt: secrets.encrypt,
+    decrypt: (s) => {
+      if (s === kept.sv) throw new Error('locked');
+      return secrets.decrypt(s);
+    }
+  };
+  again.close();
+  const elsewhere = new AccountService({ dataDir: path.join(desk.dir, 'data'), secrets: locked, defaultServer: srv.url, deviceName: 'Desk', platform: 'linux' }).init();
+  t.after(() => elsewhere.close());
+  assert.equal(elsewhere.get('voicesync', 'bucket'), undefined);
+});
+
 test('while a meeting records the screen, the switch says so and nothing goes into the account', async (t) => {
   const srv = await server(t);
   const desk = await computer(t, srv, 'Desk', { ...BUCKET });

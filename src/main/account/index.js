@@ -41,7 +41,8 @@ const FIRST_WRITE_WINS = new Set(['classification', 'bookingkey']);
 // Collections whose keys name the Rukoo account they belong to (<acct>); see bookingAcct().
 const PER_ACCOUNT = new Set(['booking', 'bookingkey']);
 // Collections that hold keys: a booking page's key pair, and Rukoo Voice's bucket secret and recovery code
-// (voice/share.js). They leave this device with the session and stay out of "Export my data".
+// (voice/share.js). On disk their values are sealed with the system keystore, as the session's token is; they leave
+// this device with the session and stay out of "Export my data".
 const SECRET_COLLECTIONS = new Set(['bookingkey', 'voicesync']);
 // Addresses Rukoo used as its default server before. A device signed in at one keeps it (pin()) while the session
 // lasts; once it ends, the device goes back to the default (forget()).
@@ -160,8 +161,10 @@ class AccountService extends EventEmitter {
   init() {
     this.state = readJson(this.file('account.json'), {});
     const saved = readJson(this.file('account-records.json'), { entries: [] });
-    for (const e of Array.isArray(saved.entries) ? saved.entries : []) {
-      if (e && typeof e.c === 'string' && typeof e.k === 'string') this.entries.set(entryKey(e.c, e.k), e);
+    for (const raw of Array.isArray(saved.entries) ? saved.entries : []) {
+      if (!raw || typeof raw.c !== 'string' || typeof raw.k !== 'string') continue;
+      const e = this.openEntry(raw);
+      if (e) this.entries.set(entryKey(e.c, e.k), e);
     }
     // The cursor as of the records last written to disk: the state on disk never goes past it.
     this.durableCursor = Number(this.state.cursor) || 0;
@@ -1096,12 +1099,37 @@ class AccountService extends EventEmitter {
     return true;
   }
 
+  // A record as account-records.json keeps it: a key's value sealed with the system keystore (secrets.js), so it
+  // never lies readable in the profile. Null when the keystore refuses it, which signing in rules out until the
+  // keyring goes away: that record then stays off the disk, and the account brings it back at the next sign-in.
+  sealEntry(e) {
+    if (!SECRET_COLLECTIONS.has(e.c) || e.v === undefined) return e;
+    const { v, ...rest } = e;
+    try {
+      return { ...rest, sv: this.secrets.encrypt(JSON.stringify(v)) };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // What sealEntry() wrote, opened again; null when the keystore no longer opens it (another user or computer): the
+  // account brings the record back at the next sign-in.
+  openEntry(e) {
+    if (typeof e.sv !== 'string') return e;
+    const { sv, ...rest } = e;
+    try {
+      return { ...rest, v: JSON.parse(this.secrets.decrypt(sv)) };
+    } catch (_) {
+      return null;
+    }
+  }
+
   // False when the disk refused the records; they are tried again a little later then.
   writeEntries() {
     this.timers.save = null;
     const cursor = Number(this.state.cursor) || 0;
     try {
-      writeJson(this.file('account-records.json'), { entries: [...this.entries.values()] });
+      writeJson(this.file('account-records.json'), { entries: [...this.entries.values()].map((e) => this.sealEntry(e)).filter(Boolean) });
       this.durableCursor = cursor;
       return true;
     } catch (_) {

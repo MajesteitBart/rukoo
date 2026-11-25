@@ -78,7 +78,7 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | `bookingkey` | `<acct>` | the booking page's key pair: `{ current, keys: { <keyId>: { privatePkcs8, publicRaw, createdAt } } }` | first write wins (`ifAbsent`) |
 | `voicesync` | `bucket` | Rukoo Voice's bucket for the person's other computers: `{ settings, at, device }`, where `settings` is the object of `sync.settings.*` in [voice/PROTOCOL.md](../voice/PROTOCOL.md) with the bucket's secret and the encryption key, `at` when it was written and `device` the name of the computer that wrote it | last write wins |
 
-`<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device leaves `bookingkey` and `voicesync` out of "Export my data" and removes them locally when it signs out.
+`<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device keeps the values of `bookingkey` and `voicesync` sealed with the system keystore on its own disk, leaves them out of "Export my data" and removes them locally when it signs out.
 
 A device ignores collections it doesn't know, so a newer app can add one without breaking older ones.
 
