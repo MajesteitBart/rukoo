@@ -1,4 +1,6 @@
-import { t, setLanguage, localize, shortcutLabel } from './i18n.js';
+import { t, setLanguage, localize, shortcutLabel, getLocale } from './i18n.js';
+import { visibleModes, modeFor, withMode } from './modes.js';
+import { modeShownNow } from './mode-check.js';
 import { icons } from './icons.js';
 import {
   api,
@@ -140,13 +142,20 @@ export const S = {
 // Layout preferences live in the renderer; they only matter to this window. mode: 'mail', 'calendar', 'meeting' or
 // 'chat'.
 const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, mode: 'mail', relatedOpen: true, ...readPrefs() };
-// Team chat is a mode only while the server has it (chat.available(), contract 5.2).
+// The modes that show: team chat is a mode only while the server has it (chat.available(), contract 5.2), and Settings >
+// General > Tabs can turn any of them off (settings.hiddenModes, modes.js). A hidden mode is gone from this window: no
+// tab, shortcut, badge or way in. Its accounts, data and sync stay, so it comes back as it was.
+// Mail, Calendar and Meet need a mail account; without one, Chat is the mode that stays (modes.js usable).
 const BASE_MODES = ['mail', 'calendar', 'meeting'];
-const modes = () => (chat.available() ? [...BASE_MODES, 'chat'] : BASE_MODES);
+const hiddenModes = () => (S.data && S.data.settings.hiddenModes) || [];
+const hasMail = () => Boolean(S.data && S.data.accounts.length);
+const shownModes = () => visibleModes(hiddenModes(), chat.available(), hasMail());
+const modeShown = (mode) => shownModes().includes(mode);
 // Chat saved as the mode waits for chat's state, which says whether it is there; the window starts in Mail meanwhile
-// and switches once it knows (restoreChat).
+// and switches once it knows (restoreChat). standIn: the mode it waits in, which is another one while Mail is hidden.
 let chatWanted = prefs.mode === 'chat';
 if (!BASE_MODES.includes(prefs.mode)) prefs.mode = 'mail';
+let standIn = chatWanted ? prefs.mode : null;
 const calendarMode = () => prefs.mode === 'calendar';
 const meetingMode = () => prefs.mode === 'meeting';
 const chatMode = () => prefs.mode === 'chat';
@@ -236,21 +245,144 @@ function searchingAll() {
 }
 
 // The .ics files main has opened and this window has yet to show (inviteFiles in main.js). Only once the first state
-// is in, so the card is in the user's language.
+// is in, so the card is in the user's language. While Calendar is hidden nothing waits: the notice's Turn on opens
+// them at once, and without it the person opens the file again later.
 async function takeInviteFiles() {
   if (!S.data) return;
-  for (const token of await api('inviteFiles').catch(() => [])) openInviteFile(token, { openEvent: openCalendarEvent });
+  const tokens = await api('inviteFiles').catch(() => []);
+  if (!tokens.length) return;
+  const open = () => {
+    for (const token of tokens) openInviteFile(token, { openEvent: openCalendarEvent, calendarOn: () => modeShown('calendar') });
+  };
+  whenModeShown('calendar', open);
 }
 
-// Open in calendar on an invitation's card.
+// Open in calendar on an invitation's card, and an event a meeting was recorded for.
 function openCalendarEvent(id, start) {
+  if (!modeShown('calendar')) return modeOffNotice('calendar', { run: () => openCalendarEvent(id, start) });
   setMode('calendar');
   calendar.openEvent(id, Number.isFinite(start) ? start : undefined);
+}
+
+// ---------- modes that show (Settings > General > Tabs) ----------
+
+const MODE_OFF = {
+  mail: 'settings.modes.offMail',
+  'mail-open': 'settings.modes.offMailOpen',
+  calendar: 'settings.modes.offCalendar',
+  meeting: 'settings.modes.offMeeting',
+  chat: 'settings.modes.offChat'
+};
+
+// The user asked for something of a hidden mode (an email link, an email from the chat panel or the sorting panel, a
+// calendar file, a meeting, a team chat invitation): a notice says the mode is off, with a button that turns it on and
+// then does what they asked for (run). Nothing asks for an account on its behalf. what: the notice's wording, when it
+// isn't the mode's own ('mail-open' for an email to show).
+// onGone: when the notice goes without Turn on.
+function modeOffNotice(mode, { run = null, what = mode, onGone = null } = {}) {
+  if (!MODE_OFF[what]) return onGone && onGone();
+  toast(t(MODE_OFF[what]), { tag: `mode-off:${mode}`, onGone, action: { label: t('settings.modes.turnOn'), shortcut: false, run: () => turnModeOn(mode, run) } });
+}
+
+// run() now while mode shows, else after the notice's Turn on.
+function whenModeShown(mode, run, what = mode) {
+  if (modeShown(mode)) return run();
+  modeOffNotice(mode, { run, what });
+}
+
+// Whether mode still shows, in this window and as main has it now: asked after an await, before something of that
+// mode opens, is marked read or shows a notice. The window's own copy of the setting follows main a moment later.
+async function stillShown(mode) {
+  return modeShown(mode) && (await modeShownNow(mode)) && modeShown(mode);
+}
+
+// An email asked for while Mail is off, such as from the sorting panel: the notice's Turn on opens it as it is then,
+// found by an identity a uid given out again can't point elsewhere with (engine.js messageIdentity). Gone by then, a
+// notice says so and nothing opens.
+async function offerMail(id, open) {
+  const ident = await api('mailIdentity', id).catch(() => null);
+  modeOffNotice('mail', { what: 'mail-open', run: async () => {
+    const now = ident ? await resolveMail(ident) : null;
+    if (!now) return toast(t('settings.modes.goneMail'));
+    return open(now);
+  } });
+}
+
+const resolveMail = (ident) => api('mailResolve', ident).catch(() => null);
+
+async function turnModeOn(mode, run = null) {
+  try {
+    // From the list as the tabs show it, like the Tabs page's switches (modes.js withMode).
+    await api('updateSettings', { hiddenModes: withMode(hiddenModes(), mode, false, chat.available(), hasMail()) });
+  } catch (err) {
+    return toast(err.message, 5000);
+  }
+  await refresh().catch(() => {});
+  if (!modeShown(mode)) return;
+  if (windowRuns()) setMode(mode);
+  if (run) run();
+}
+
+// A way in from outside the window that main turned down because its mode is hidden (main.js offerHiddenMode). An
+// email link comes with its id: Turn on starts that email after all.
+async function takeModeOff() {
+  if (!S.data) return;
+  const off = await api('takeModeOff').catch(() => null);
+  if (!off || !off.mode) return;
+  const run = off.mailto ? () => api('openHeldMailto', off.mailto).catch((err) => toast(err.message, 5000)) : null;
+  // A notice that goes without Turn on lets main forget the link, recipients and text included.
+  const onGone = off.mailto ? () => api('dropHeldMailto', off.mailto).catch(() => {}) : null;
+  modeOffNotice(off.mode, { run, onGone });
+}
+
+// A mode that no longer shows, turned off in Settings or Chat gone from the server: the window leaves it for the
+// first one that does. Before the window is drawn it just starts there.
+function leaveHiddenMode() {
+  const next = modeFor(prefs.mode, hiddenModes(), chat.available(), hasMail());
+  if (next === prefs.mode) return;
+  if (standIn === prefs.mode) standIn = next;
+  if (!$('#app .shell')) {
+    prefs.mode = next;
+    savePrefs();
+    return;
+  }
+  switchMode(next);
+}
+
+// What changed with the modes since the last pass. A mode that went takes its in-window notices along: the new-mail
+// toast, a chat alert, booking news and a notice that it is off. Others that draw a mode's controls, such as an
+// invitation's card and the composer's calendar button, hear it through rukoo:modes-changed.
+const MODE_TOASTS = {
+  mail: (tag) => tag === 'mode:mail',
+  calendar: (tag) => tag === 'mode:calendar',
+  meeting: () => false,
+  chat: (tag) => tag.startsWith('chat:')
+};
+let modesShown = null;
+function modesChanged() {
+  const now = shownModes();
+  if (modesShown && now.join(',') === modesShown.join(',')) return;
+  const gone = (modesShown || []).filter((m) => !now.includes(m));
+  modesShown = now;
+  document.body.classList.toggle('hides-mail', !modeShown('mail'));
+  document.body.classList.toggle('hides-calendar', !modeShown('calendar'));
+  document.body.classList.toggle('hides-meeting', !modeShown('meeting'));
+  document.body.classList.toggle('hides-chat', !modeShown('chat'));
+  for (const m of gone) dropTaggedToast(MODE_TOASTS[m]);
+  // The reading pane goes with Mail: an email being written there moves to a compose window, as its pop-out does.
+  if (gone.includes('mail')) S.composer?.popOut();
+  // A notice that a mode is off goes once it is on again.
+  dropTaggedToast((tag) => tag.startsWith('mode-off:') && now.includes(tag.slice(9)));
+  S.composer?.modesChanged(S.data);
+  document.dispatchEvent(new CustomEvent('rukoo:modes-changed'));
 }
 
 async function refreshOnce() {
   const data = await api('state');
   const first = !S.data;
+  // With Mail, Calendar and Meet all hidden, Chat is the only mode: the first pass waits for chat's state, so the
+  // window starts there instead of in Mail for a moment.
+  if (first && !chat.known() && BASE_MODES.every((m) => (data.settings.hiddenModes || []).includes(m))) await chat.refreshState();
   S.data = data;
   // A default account changed in Settings or a compose window: the editor's link beside From follows it.
   S.composer?.accountsChanged(data);
@@ -300,9 +432,13 @@ async function refreshOnce() {
     if (S.message) renderReader();
     S.composer?.retheme(data);
   }
+  // A mode turned off in Settings, here or in another window, goes at once.
+  leaveHiddenMode();
+  modesChanged();
   renderShell();
   // After the shell, which holds the reading pane; the newest email that opens below makes way for the editor.
   if (first) takeSendFailures();
+  if (first) takeModeOff();
   if (!data.accounts.length) return noMailAccount();
   renderSearch();
   renderSidebar();
@@ -336,23 +472,28 @@ async function refreshOnce() {
 function restoreChat() {
   if (!chatWanted || !S.data || !S.data.accounts.length || !chat.known()) return;
   chatWanted = false;
-  if (chat.available() && prefs.mode === 'mail') setMode('chat');
+  const waited = standIn;
+  standIn = null;
+  if (modeShown('chat') && prefs.mode === waited) setMode('chat');
 }
 
-// Chat's state changed whether it is there or signed in (chat.js): the switch gains or loses its segment, and a window
-// in Chat mode without it goes to Mail. Without a mail account, a Rukoo account alone opens Chat (noMailAccount).
+// Chat's state changed whether it is there or signed in (chat.js): the tabs gain or lose Chat, and a window in Chat
+// mode without it goes to the first mode that shows. Without a mail account, a Rukoo account alone opens Chat
+// (noMailAccount).
 function chatAvailability() {
   setupChatChanged();
   if (!S.data) return;
+  modesChanged();
   if (!S.data.accounts.length) return noMailAccount();
-  if (chatMode() && !chat.available()) setMode('mail');
+  if (!modeShown(prefs.mode)) leaveHiddenMode();
   else renderSidebar();
   restoreChat();
 }
 
-// Team chat without a mail account (RUK-234): signed in to a Rukoo account whose server has team chat. The window
-// runs in Chat; Mail, Calendar and Meetings open the setup page to add a mail account first (setMode).
-const chatOnly = () => Boolean(S.data && !S.data.accounts.length && chat.known() && chat.available() && chat.signedIn());
+// Team chat without a mail account (RUK-234): signed in to a Rukoo account whose server has team chat, with Chat not
+// turned off in Settings. The window runs in Chat; Mail, Calendar and Meetings open the setup page to add a mail
+// account first (setMode).
+const chatOnly = () => Boolean(S.data && !S.data.accounts.length && chat.known() && chat.available() && chat.signedIn() && modeShown('chat'));
 // The window runs: with a mail account, or with Chat alone. The first-run page covers it otherwise.
 const windowRuns = () => Boolean(S.data && (S.data.accounts.length || chatOnly()));
 
@@ -402,7 +543,7 @@ function noMailAccount() {
 async function enterChat() {
   await chat.refreshState();
   await refresh().catch(() => {});
-  if (S.data && S.data.accounts.length && chat.available()) setMode('chat');
+  if (S.data && S.data.accounts.length && modeShown('chat')) setMode('chat');
 }
 
 // ---------- older mail ----------
@@ -963,20 +1104,30 @@ function accountAvatar(acc) {
 function renderModeSwitch() {
   const box = $('.titlebar-modes');
   if (!box || !S.data) return;
+  const shown = shownModes();
+  // One mode left: no tabs, since there is nothing to switch to.
+  if (shown.length < 2) {
+    if (box.childElementCount) box.innerHTML = '';
+    box.style.minWidth = '';
+    return;
+  }
   const options = [
     { value: 'mail', label: t('calendar.mode.mail'), title: t('calendar.mode.mailShortcut'), icon: 'unread' },
     { value: 'calendar', label: t('calendar.mode.calendar'), title: t('calendar.mode.calendarShortcut'), icon: 'calendar' },
-    { value: 'meeting', label: t('meeting.mode.label'), title: t('meeting.mode.shortcut'), icon: 'mic' }
-  ];
-  const withChat = chat.available();
-  if (withChat) options.push({ value: 'chat', label: t('chat.mode.label'), title: t('chat.mode.shortcut'), icon: 'chat' });
-  const shape = `${S.data.settings.language}|${options.length}`;
+    { value: 'meeting', label: t('meeting.mode.label'), title: t('meeting.mode.shortcut'), icon: 'mic' },
+    { value: 'chat', label: t('chat.mode.label'), title: t('chat.mode.shortcut'), icon: 'chat' }
+  ].filter((o) => shown.includes(o.value));
+  const withChat = shown.includes('chat');
+  // The tabs' name lists what they choose between: the usual ones while none is turned off, else the tab names.
+  const all = BASE_MODES.every((m) => shown.includes(m));
+  const name = all ? t(withChat ? 'chat.mode.switchLabel' : 'calendar.mode.label') : new Intl.ListFormat(getLocale(), { type: 'disjunction' }).format(options.map((o) => o.label));
+  const shape = `${S.data.settings.language}|${shown.join(',')}`;
   let el = box.querySelector('.mode-tabs');
   const kept = Boolean(el) && el.dataset.shape === shape;
   if (kept) {
     for (const b of el.querySelectorAll('[role="tab"]')) b.setAttribute('aria-selected', String(b.dataset.mode === prefs.mode));
   } else {
-    box.innerHTML = `<div class="mode-tabs" role="tablist" aria-label="${esc(t(withChat ? 'chat.mode.switchLabel' : 'calendar.mode.label'))}">
+    box.innerHTML = `<div class="mode-tabs" role="tablist" aria-label="${esc(name)}">
       <span class="mode-thumb" aria-hidden="true"></span>${options
         .map(
           (o) =>
@@ -1095,13 +1246,19 @@ function watchModeTabs(tabs) {
   modeTabsResize.observe(tabs);
 }
 
+// The tabs, the shortcuts and the ways in from other places. A mode that doesn't show (modeShown) can't be chosen.
 function setMode(mode) {
-  if (mode === prefs.mode || !modes().includes(mode)) return;
-  // Chat with a Rukoo account alone: the other modes need a mail account, which the setup page adds; Mail opens on it.
+  if (mode === prefs.mode || !modeShown(mode)) return;
+  // Chat with a Rukoo account alone: the other modes need a mail account, which the setup page adds; Mail opens on it,
+  // when it shows. The page also offers to turn Mail, Calendar and Meet off instead.
   if (chatOnly() && mode !== 'chat') {
-    openSetup(ctx, { added: () => setMode('mail') });
+    openSetup(ctx, { added: () => setMode(modeShown('mail') ? 'mail' : mode), offerChatOnly: true });
     return;
   }
+  switchMode(mode);
+}
+
+function switchMode(mode) {
   const was = prefs.mode;
   prefs.mode = mode;
   savePrefs();
@@ -1125,6 +1282,7 @@ function setMode(mode) {
 // The meeting view on one meeting: from the title bar's indicator, a calendar card or a new recording.
 function openMeeting(id) {
   if (!id || !S.data || !S.data.accounts.length) return;
+  if (!modeShown('meeting')) return modeOffNotice('meeting', { run: () => openMeeting(id) });
   setMode('meeting');
   meeting.open(id);
 }
@@ -2945,6 +3103,8 @@ async function takeSendFailuresNow() {
 // it elsewhere meanwhile. Main lets it go once the editor is open; when the pane can't take it, main opens it in a
 // compose window.
 async function reopenRefused(id, restore, sendError) {
+  // With Mail hidden there is no reading pane on screen: main opens it in a compose window.
+  if (!modeShown('mail')) return api('openRefused', id).catch((err) => toast(err.message, 5000));
   setMode('mail');
   const claim = () => api('claimRefused', id).catch(() => false);
   const editor = await compose({ restore, sendError, claim }).catch(() => null);
@@ -2969,7 +3129,8 @@ async function undoSend(id) {
 // asking or saving), it opens in a compose window, so the email is never lost. sendError: why the server refused it.
 async function reopenComposer(restore, sendError = null) {
   setMode('mail');
-  const editor = await compose({ restore, sendError }).catch(() => null);
+  // With Mail hidden there is no reading pane on screen: a compose window takes it.
+  const editor = modeShown('mail') ? await compose({ restore, sendError }).catch(() => null) : null;
   if (editor) return;
   await api('openCompose', { ...restoreOpts(restore), restore, sendError }).catch((err) => toast(err.message, 5000));
 }
@@ -2979,6 +3140,8 @@ async function reopenComposer(restore, sendError = null) {
 // auto: shown without being asked for (the newest message on load); it stays unread. known: the message as a related
 // email under another one, for one the list doesn't have, such as a reply in Sent; it opens and is read like a row.
 export async function openMessage(id, { auto = false, known = null } = {}) {
+  // With Mail turned off nothing opens an email in the hidden reader (Settings > General > Tabs).
+  if (!auto && !modeShown('mail')) return;
   // Opening a message cancels a reply or forward that is still loading.
   const turn = ++composeTurn;
   if (S.composer && !(await S.composer.leave())) return;
@@ -3025,7 +3188,8 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
   renderReader();
   // Again with the full message: the panel needs its Message-ID and whether it can unsubscribe.
   agentViewChanged();
-  if (m && m.unread && m.role !== 'drafts' && !auto) setUnread([m], false);
+  // Mail turned off while the email loaded: it stays unread.
+  if (m && m.unread && m.role !== 'drafts' && !auto && (await stillShown('mail')) && S.selectedId === id) setUnread([m], false);
   if (S.message && S.message.id === id && S.message.partial) completeMessage(id);
 }
 
@@ -3353,8 +3517,13 @@ function readerBar(m) {
     ${nav}</div>`;
 }
 
+// The invitation card in the reader: aborted when the reader draws again, so the card stops listening once it is gone.
+let readerInvite = null;
+
 function renderReader() {
   const el = $('.reader');
+  readerInvite?.abort();
+  readerInvite = null;
   if (!el || S.composer) return;
   el.classList.remove('scrolled');
   if (S.checked.size > 1) {
@@ -3432,7 +3601,11 @@ function renderReader() {
   // A partly shown message gets its thumbnails once the whole message is in (completeMessage).
   if (!S.loading && !m.partial) loadPreviews(m);
   const slot = el.querySelector('.invite-slot');
-  if (slot) mountInvite(slot, { id: m.id }, m.invite, { openEvent: openCalendarEvent }).catch(() => {});
+  // With Calendar off the card shows the invitation as text, without its calendar actions, until Calendar is on again.
+  if (slot) {
+    readerInvite = new AbortController();
+    mountInvite(slot, { id: m.id }, m.invite, { openEvent: openCalendarEvent, calendarOn: () => modeShown('calendar'), signal: readerInvite.signal }).catch(() => {});
+  }
   wantLogos([m]);
 }
 
@@ -3659,10 +3832,11 @@ document.addEventListener('keydown', (e) => {
   if (e.target.closest && e.target.closest('.composer')) return;
   if (!windowRuns()) return;
   // Ctrl+1 and Ctrl+2 switch between Mail and Calendar, as in Outlook; Ctrl+3 opens the meetings and Ctrl+4 the chat,
-  // while the server has team chat.
-  if (ctrl && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2' || e.key === '3' || (e.key === '4' && chat.available()))) {
+  // while the server has team chat. Each keeps its number when another mode is hidden; a hidden one's does nothing.
+  const keyMode = { 1: 'mail', 2: 'calendar', 3: 'meeting', 4: 'chat' }[e.key];
+  if (ctrl && !e.shiftKey && !e.altKey && keyMode && modeShown(keyMode)) {
     e.preventDefault();
-    return setMode(e.key === '1' ? 'mail' : e.key === '2' ? 'calendar' : e.key === '3' ? 'meeting' : 'chat');
+    return setMode(keyMode);
   }
   if (calendarMode()) {
     if (!e.target.closest?.('.agentpane, .bui-menu, .sort-panel') && calendar.onKey(e)) e.preventDefault();
@@ -3876,6 +4050,7 @@ function showNewRows() {
 
 // A desktop notification's click, or the new-mail toast's Open: the email in Inbox.
 async function openNotified(id) {
+  if (!modeShown('mail')) return;
   setMode('mail');
   S.scope = 'all';
   S.view = 'inbox';
@@ -3884,12 +4059,14 @@ async function openNotified(id) {
   S.query = '';
   S.filter = 'all';
   await refresh();
-  openMessage(id);
+  // Mail turned off meanwhile: nothing opens.
+  if (await stillShown('mail')) openMessage(id);
 }
 
 // The new-mail toast's Show: Inbox as from the sidebar, or the category tab that holds the emails when Inbox leaves
 // them out (newMailTab).
 function showNotified(tab) {
+  if (!modeShown('mail')) return;
   setMode('mail');
   S.scope = 'all';
   S.view = 'inbox';
@@ -3907,13 +4084,14 @@ function newMailToast(mails) {
   newToast = { mails: all, at: now };
   // Several emails go to Inbox, or to their category when Inbox doesn't show it.
   const { message, open, tab } = newMailToastFor(all, S.categories, t);
-  if ($('#overlays .page')) return toast(message, { wait: true, ms: 4000 });
+  // Tagged as Mail's, so turning Mail off takes it down (modesChanged).
+  if ($('#overlays .page')) return toast(message, { wait: true, ms: 4000, tag: 'mode:mail' });
   // Once its button was used, the next new mail gets a toast of its own.
   const run = () => {
     newToast = { mails: [], at: 0 };
     return open ? openNotified(open) : showNotified(tab);
   };
-  toast(message, { wait: true, action: { label: t(open ? 'mailbox.newMail.open' : 'mailbox.newMail.show'), shortcut: false, run } });
+  toast(message, { wait: true, tag: 'mode:mail', action: { label: t(open ? 'mailbox.newMail.open' : 'mailbox.newMail.show'), shortcut: false, run } });
 }
 
 // Settings > General's sound for new mail: the coo from rukoo.io, quietly. Main says when (newMailSound()).
@@ -3928,11 +4106,14 @@ function playCoo() {
 // notifications on. One sync can bring both.
 async function onNewMail(p) {
   const mails = p && Array.isArray(p.mails) ? p.mails.filter((m) => m && m.id) : [];
-  if (!mails.length) return;
+  // Main sends none while Mail is hidden; one that crossed the change stays quiet too.
+  if (!mails.length || !modeShown('mail')) return;
   if (p.sound) playCoo();
   if (!S.data || !S.data.accounts.length) return;
   // A refresh that failed is tried again by itself (refreshFailed); the toast still says what came in meanwhile.
   await refresh().catch(() => {});
+  // Mail turned off meanwhile: the window says nothing of it (modesChanged took Mail's notices down already).
+  if (!(await stillShown('mail'))) return;
   const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
   if (here.length) {
     for (const m of here) newRows.add(m.id);
@@ -3946,7 +4127,8 @@ async function onNewMail(p) {
 // A click on a chat notification, or Open on its toast: Chat opens at that conversation and message (contract 5.7),
 // and a reply's thread at the reply.
 function openChatNotice(target) {
-  if (!windowRuns() || !chat.available()) return;
+  // Nothing after Chat went off, also from a toast's Open that still showed.
+  if (!windowRuns() || !modeShown('chat') || !chat.available()) return;
   setMode('chat');
   chat.openConversation(target.ws, target.conversation, Number.isSafeInteger(target.seq) ? target.seq : null);
 }
@@ -3970,7 +4152,7 @@ window.mail.on(async ({ type, payload }) => {
   }
   // A reminder or a booking notification was clicked: the calendar opens on that event or request, or on the day
   // when the notification names only its start.
-  if (type === 'calendar-open' && payload && S.data && S.data.accounts.length) {
+  if (type === 'calendar-open' && payload && S.data && S.data.accounts.length && modeShown('calendar')) {
     setMode('calendar');
     if (typeof payload.request === 'string') calendar.openRequest(payload.request);
     else if (typeof payload.id === 'string') calendar.openEvent(payload.id, Number.isFinite(payload.start) ? payload.start : undefined);
@@ -3981,6 +4163,8 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'booking') applyBooking(payload);
   // An .ics file opened with Rukoo, or an .ics attachment: its card.
   if (type === 'invite-file') takeInviteFiles();
+  // An email link opened with Rukoo while Mail is hidden (main.js offerHiddenMode).
+  if (type === 'mode-off') takeModeOff();
   if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
   if (type === 'categories') {
     S.categories = payload;
@@ -3996,9 +4180,13 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
-  // A chat alert while the window has focus, and the alert taken back (main.js showChatNotification). Its Open goes
-  // where a click on the notification would, such as a reply's thread.
-  if (type === 'chat-toast' && payload) toast(payload.body, { tag: payload.id, action: chatToastAction(payload.open) });
+  // A mode's news while the window has focus, such as booking news for Calendar (main.js showBookingNotification):
+  // tagged with its mode, so turning that mode off takes it down.
+  if (type === 'mode-toast' && payload && modeShown(payload.mode)) toast(String(payload.body || ''), { tag: `mode:${payload.mode}` });
+  // A chat alert while the window has focus, and the alert taken back (main.js showChatNotification). Its id starts
+  // with chat:, which turning Chat off takes down (modesChanged). Its Open goes where a click on the notification
+  // would, such as a reply's thread.
+  if (type === 'chat-toast' && payload && modeShown('chat')) toast(payload.body, { tag: payload.id, action: chatToastAction(payload.open) });
   if (type === 'chat-toast-hide') dropTaggedToast(payload);
   // Undo send (main.js): an email waits after Send, Don't quit kept emails waiting, or the server refused one that
   // waited and its editor opens again.
@@ -4062,8 +4250,10 @@ function showWhatsNew() {
   });
 }
 
-// An email from Jev's last decisions: the inbox, in the category it went to, with the email open.
+// An email from Jev's last decisions: the inbox, in the category it went to, with the email open. With Mail off the
+// email stays as it is, unread too, until the notice's Turn on.
 async function openSorted(id, category) {
+  if (!modeShown('mail')) return offerMail(id, (now) => openSorted(now, category));
   const accountId = decodeURIComponent(String(id).split(':')[0]);
   if (S.scope !== 'all' && S.scope !== accountId) S.scope = S.data.accounts.length > 1 ? 'all' : accountId;
   if (prefs.mode !== 'mail') setMode('mail');
@@ -4075,10 +4265,15 @@ async function openSorted(id, category) {
   S.checked.clear();
   S.picking = false;
   await refresh();
+  // Mail turned off while the list loaded: the email stays as it is, and the notice offers it again.
+  if (!(await stillShown('mail'))) return offerMail(id, (now) => openSorted(now, category));
   if (S.list.some((m) => m.id === id)) openMessage(id);
 }
 
 initSortActivity({ settings: () => openSettings(ctx, { view: 'categories' }), open: (id, category) => openSorted(id, category) });
+
+// The notice for a team chat invitation that waits while Chat is hidden showed already in this window.
+let joinNoticeShown = false;
 
 // Context shared with the settings and setup pages and the chat panel.
 export const ctx = {
@@ -4123,12 +4318,32 @@ export const ctx = {
   renderModeSwitch: () => renderModeSwitch(),
   chatAvailability: () => chatAvailability(),
   windowRuns: () => windowRuns(),
-  // A pending join (chat.js maybeTakeJoin): Chat opens for its Join dialog, from whatever mode the window is in.
+  // A pending join (chat.js maybeTakeJoin): Chat opens for its Join dialog, from whatever mode the window is in. With
+  // Chat hidden the join waits, and the window says why once; Turn on brings the dialog.
   showChatForJoin: () => {
-    if (windowRuns() && chat.available() && !chatMode()) setMode('chat');
+    if (!windowRuns() || !chat.available() || chatMode()) return;
+    if (modeShown('chat')) return setMode('chat');
+    if (!joinNoticeShown) {
+      joinNoticeShown = true;
+      modeOffNotice('chat');
+    }
   },
-  // The setup page's way in to team chat (setup.js): whether to offer it, the server's host, and Chat after it.
-  chatOffer: () => chat.known() && chat.available() && !chat.signedIn(),
+  // The setup page's way in to team chat (setup.js): whether to offer it, the server's host, and Chat after it. Not
+  // while Chat is turned off, unless it is the mode that stays for want of a mail account (modes.js).
+  chatOffer: () => chat.known() && chat.available() && !chat.signedIn() && modeShown('chat'),
+  // Settings > General > Tabs (modes.js): whether a mode shows, and what the chat panel does with a click that needs
+  // one, such as an email source: now, or after the notice's Turn on. what: the notice's wording.
+  modeShown: (mode) => modeShown(mode),
+  whenModeShown: (mode, run, what) => whenModeShown(mode, run, what),
+  // After an await: whether the mode still shows (stillShown), and the notice when it doesn't, whose Turn on runs run.
+  stillShown: (mode) => stillShown(mode),
+  modeOffNotice: (mode, opts) => modeOffNotice(mode, opts),
+  // An email kept while Mail is off by what can't point at another email, and its id at Turn on (offerMail).
+  mailIdentity: (id) => api('mailIdentity', id).catch(() => null),
+  resolveMail: (ident) => resolveMail(ident),
+  // The setup page's way to Settings when it is the first-run one for a profile that has settings worth reaching: a
+  // Rukoo account, or tabs turned off.
+  settingsFromSetup: () => Boolean(S.data && (hiddenModes().length || (chat.known() && chat.signedIn()))),
   chatHost: () => chat.host(),
   enterChat: () => enterChat(),
   // Chat's signed-out state: the same steps, on the setup page opened straight on them.

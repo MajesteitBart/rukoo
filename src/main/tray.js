@@ -85,7 +85,7 @@ class TestTray extends EventEmitter {
 }
 
 class TrayIcon {
-  // actions: { open, compose, sync, quit }. platform and scaleFactor (the primary display's) pick the sizes.
+  // actions: { open, compose, sync, quit, mail }; mail(), optional, says whether Mail shows. platform and scaleFactor (the primary display's) pick the sizes.
   constructor({ icon, platform, scaleFactor, actions, test = false }) {
     this.images = trayImages(icon, platform, scaleFactor);
     const { plain } = this.images;
@@ -98,12 +98,14 @@ class TrayIcon {
     this.relabel();
   }
 
-  // Builds the menu and the tooltip again, in the current language.
+  // Builds the menu and the tooltip again, in the current language, and with New email only while Mail shows
+  // (actions.mail; Settings > General > Tabs).
   relabel() {
     const a = this.actions;
+    const mail = !a.mail || a.mail();
     this.menu = Menu.buildFromTemplate([
       { id: 'open', label: t('native.tray.open'), click: () => a.open() },
-      { id: 'compose', label: t('native.tray.compose'), click: () => a.compose() },
+      ...(mail ? [{ id: 'compose', label: t('native.tray.compose'), click: () => a.compose() }] : []),
       { id: 'sync', label: t('native.tray.sync'), click: () => a.sync() },
       { type: 'separator' },
       { id: 'quit', label: t('native.tray.quit'), click: () => a.quit() }

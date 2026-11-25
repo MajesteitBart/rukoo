@@ -24,7 +24,9 @@ export function setupChatChanged() {
 
 // first: the first-run page, without a way back. chat: open straight on team chat's steps, 'link' or 'account', as
 // Chat's signed-out state does; back closes the page then. added(): after a mail account was added here.
-export function openSetup(ctx, { first = false, chat = null, added = null } = {}) {
+// offerChatOnly: opened from a mode tab by someone who uses team chat without a mail account, so the page also offers
+// to turn Mail, Calendar and Meet off instead.
+export function openSetup(ctx, { first = false, chat = null, added = null, offerChatOnly = false } = {}) {
   // Without a mail account and outside Chat, the page that replaces a first-run one is first-run too: nothing behind
   // it to go back to.
   if (current && current.first) first = true;
@@ -249,8 +251,12 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
   }
 
   function showGrid() {
+    // The first-run page has no way back. When the profile has settings worth reaching (a Rukoo account, or tabs
+    // turned off), Settings stays reachable from here, so nobody is left on this page without a way to Tabs.
+    const settings = first && ctx.settingsFromSetup && ctx.settingsFromSetup();
     page.innerHTML = `
       ${first ? '' : `<button class="icon-btn setup-back" data-s="close" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button>`}
+      ${settings ? `<button class="icon-btn setup-settings" data-s="settings" data-i18n-title="settings.title.short" title="${esc(t('settings.title.short'))}" aria-label="${esc(t('settings.title.short'))}">${icons.settings}</button>` : ''}
       <div class="setup-inner">
         ${first ? brandLogo('setup-logo') : ''}
         <h1 data-i18n="setup.title">${esc(t('setup.title'))}</h1>
@@ -267,6 +273,7 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
         </div>
         <button class="setup-demo" data-s="demo" data-i18n="setup.demo.action">${esc(t('setup.demo.action'))}</button>
         ${ctx.S.data.googleAvailable ? '' : `<button class="setup-demo" style="margin-top:4px" data-s="import-google" data-i18n="setup.google.import">${esc(t('setup.google.import'))}</button>`}
+        ${offerChatOnly ? `<button class="setup-demo" style="margin-top:4px" data-s="chat-only" data-i18n="setup.chatOnly.action">${esc(t('setup.chatOnly.action'))}</button>` : ''}
         <section class="setup-chat" data-setup-chat aria-labelledby="setup-chat-title" hidden></section>
       </div>`;
     renderChatOffer();
@@ -451,6 +458,9 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
     switch (b.dataset.s) {
       case 'close':
         return close();
+      // Settings opens over this page, which stays behind it.
+      case 'settings':
+        return ctx.openSettings();
       case 'chat-link':
         chatLink = null;
         return showChatLink();
@@ -509,6 +519,20 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
           b.disabled = true;
           const acc = await api('addAccount', { type: 'demo' });
           done(acc);
+        } catch (ex) {
+          b.disabled = false;
+          toast(ex.message, 5000);
+        }
+        return;
+      // Team chat without a mail account: Mail, Calendar and Meet go (Settings > General > Tabs), so their tabs stop
+      // leading here.
+      case 'chat-only':
+        try {
+          b.disabled = true;
+          await api('updateSettings', { hiddenModes: ['mail', 'calendar', 'meeting'] });
+          close();
+          await ctx.refresh();
+          toast(t('setup.chatOnly.done'), 6000);
         } catch (ex) {
           b.disabled = false;
           toast(ex.message, 5000);

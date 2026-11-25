@@ -15,6 +15,7 @@ const invite = require('./calendar/invite');
 const util = require('./mailutil');
 const { cleanSignatureHtml, signatureText } = require('./signature');
 const { normalizeZoom } = require('./zoom');
+const { normalizeHidden } = require('./modes');
 
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
@@ -72,6 +73,8 @@ const DEFAULT_SETTINGS = {
   sort: 'date-desc',
   syncInterval: 5,
   hiddenViews: [],
+  // Settings > General > Tabs: the modes turned off, of 'mail', 'calendar', 'meeting' and 'chat' (modes.js).
+  hiddenModes: [],
   vips: [],
   spam: [],
   defaultAccountId: null,
@@ -130,6 +133,7 @@ function normalizeSettings(s) {
   s.undoSend = UNDO_SEND_SECONDS.includes(s.undoSend) ? s.undoSend : UNDO_SEND_DEFAULT;
   s.newMailSound = s.newMailSound === true;
   s.chatNotifications = s.chatNotifications !== false;
+  s.hiddenModes = normalizeHidden(s.hiddenModes);
   s.chatAppsTip = ['show', 'done'].includes(s.chatAppsTip) ? s.chatAppsTip : '';
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
@@ -2765,6 +2769,42 @@ class Engine extends EventEmitter {
     const want = messageKey(messageId);
     const hit = want && box && box.messages.find((m) => m.messageId && messageKey(m.messageId) === want);
     return hit ? hit.uid : null;
+  }
+
+  // What a reference to an email that is used later rests on, such as an email asked for while Mail is turned off
+  // (Settings > General > Tabs): its id now, the folder's UIDVALIDITY and its Message-ID. A uid stays that email's
+  // only while the folder keeps its UIDVALIDITY (see bodyFile and undoMove), so resolveMessage checks both. null for
+  // an email that isn't there.
+  messageIdentity(id) {
+    const key = String(id || '');
+    if (key.startsWith('saved:')) return this.saved.some((s) => s.id === key) ? { id: key } : null;
+    let found = null;
+    try {
+      found = this.locate(key);
+    } catch (_) {
+      return null;
+    }
+    return { id: key, accountId: found.acc.id, folder: found.folder, uidValidity: found.box ? found.box.uidValidity : null, messageId: found.msg.messageId || null };
+  }
+
+  // The id the email of an identity (messageIdentity) has now, or null when it is gone. The same id while its folder
+  // kept its UIDVALIDITY and the email under that uid has the same Message-ID; else the email with that Message-ID in
+  // the same folder.
+  resolveMessage(ident) {
+    if (!ident || typeof ident.id !== 'string' || !ident.id) return null;
+    if (ident.id.startsWith('saved:')) return this.saved.some((s) => s.id === ident.id) ? ident.id : null;
+    let found = null;
+    try {
+      found = this.locate(ident.id);
+    } catch (_) {
+      found = null;
+    }
+    const want = messageKey(ident.messageId);
+    const sameBox = found && found.box && String(found.box.uidValidity) === String(ident.uidValidity);
+    if (sameBox && (!want || !found.msg.messageId || messageKey(found.msg.messageId) === want)) return ident.id;
+    if (!want || !this.caches.get(ident.accountId)) return null;
+    const uid = this.uidByMessageId(ident.accountId, ident.folder, ident.messageId);
+    return uid ? encodeId(ident.accountId, ident.folder, uid) : null;
   }
 
   // A draft the server refuses to delete stays in Drafts, so its row comes back. found: the draft as resolve() looked it

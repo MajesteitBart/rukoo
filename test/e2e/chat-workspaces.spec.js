@@ -772,9 +772,11 @@ test('Settings has the team chat notifications switch, and the account page coun
   const row = page.locator('[data-a="toggle:chatNotifications"]');
   await expect(row).toContainText('Team chat notifications', { timeout: 15000 });
   await expect(row).toContainText('Direct messages and mentions in your workspaces.');
-  await expect(row.locator('.switch')).toHaveAttribute('aria-checked', 'true');
+  // The row is the switch: the focusable button carries the role and its state.
+  await expect(row).toHaveAttribute('role', 'switch');
+  await expect(row).toHaveAttribute('aria-checked', 'true');
   await row.click();
-  await expect(page.locator('[data-a="toggle:chatNotifications"] .switch')).toHaveAttribute('aria-checked', 'false');
+  await expect(page.locator('[data-a="toggle:chatNotifications"]')).toHaveAttribute('aria-checked', 'false');
   await expect.poll(() => win.evaluate(() => window.mail.call('chatState').then((s) => s.notifications))).toBe(false);
 
   await page.locator('[data-a="rukoo"]').click();

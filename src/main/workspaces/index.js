@@ -232,9 +232,13 @@ class WorkspaceService extends EventEmitter {
     timers = realTimers,
     host = {},
     autoInfo = true,
-    keepJoin = true
+    keepJoin = true,
+    chatHidden = null
   }) {
     super();
+    // Whether Chat is turned off in Settings > General > Tabs, as the desktop's main decides it (src/main/modes.js);
+    // notify.js reads the setting itself when nobody says.
+    this.chatHidden = typeof chatHidden === 'function' ? chatHidden : null;
     this.account = account;
     this.dataDir = dataDir;
     this.autoInfo = autoInfo;
