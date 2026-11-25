@@ -199,6 +199,7 @@ export function show() {
   if (M.data && M.data.meeting.id === M.id) {
     openedMedia(M.id);
     for (const [frameId, entry] of F.cache) if (entry.inBucket) retryFromBucket(F.meeting, frameId);
+    for (const frameId of F.pending) loadFrame(frameId);
   }
 }
 
@@ -1269,7 +1270,7 @@ function continuations() {
 // pending: frames whose image Voice fetches back from the bucket now; their rows show that they load.
 // retries: the next question for a row whose image is in the bucket out of Voice's reach, and waits: how long it
 // waited last, by frame id.
-const F = { meeting: null, cache: new Map(), loading: new Set(), pending: new Set(), io: null, root: null, retries: new Map(), waits: new Map() };
+const F = { meeting: null, cache: new Map(), loading: new Set(), pending: new Set(), io: null, root: null, retries: new Map(), waits: new Map(), polls: new Map() };
 
 function forgetFrames(id) {
   if (F.meeting === id) return;
@@ -1280,11 +1281,17 @@ function forgetFrames(id) {
   F.pending = new Set();
 }
 
-// Leaving the view or the meeting: no more questions, and a later visit starts again at the shortest wait.
+// Leaving the view or the meeting: no more questions, and a later visit starts again at the shortest wait. An image
+// Voice was still fetching stays pending, and show() asks for it again.
 function stopBucketRetries() {
   for (const timer of F.retries.values()) clearTimeout(timer);
   F.retries.clear();
   F.waits.clear();
+  for (const [frameId, timer] of F.polls) {
+    clearTimeout(timer);
+    F.loading.delete(frameId);
+  }
+  F.polls.clear();
 }
 
 // The image is in the bucket, but Voice couldn't reach it: Rukoo asks again later, waiting longer each time, as long
@@ -1444,11 +1451,20 @@ async function loadFrame(frameId, tries = 0) {
     const first = !F.pending.has(frameId);
     F.pending.add(frameId);
     if (first && row()) updateRows([`f:${frameId}`], []);
-    setTimeout(() => {
-      if (F.meeting !== meetingId) return;
+    // Away from the meetings nothing is asked: the image stays pending, and show() asks again.
+    if (!M.open) {
       F.loading.delete(frameId);
-      loadFrame(frameId, tries + 1);
-    }, Math.min(FRAME_RETRY_MAX_MS, FRAME_RETRY_MS * 2 ** tries));
+      return;
+    }
+    F.polls.set(
+      frameId,
+      setTimeout(() => {
+        F.polls.delete(frameId);
+        if (F.meeting !== meetingId) return;
+        F.loading.delete(frameId);
+        loadFrame(frameId, tries + 1);
+      }, Math.min(FRAME_RETRY_MAX_MS, FRAME_RETRY_MS * 2 ** tries))
+    );
     return;
   }
   F.loading.delete(frameId);

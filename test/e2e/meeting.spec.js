@@ -2091,7 +2091,8 @@ test('a frame Voice could not fetch from the bucket is asked for again while the
   voice.handlers['frame.get'] = ((own) =>
     function (args) {
       const res = own.call(this, args);
-      // The first slide is here; Voice can't reach the bucket for the second.
+      // Voice is still fetching the first slide from the bucket, and can't reach the bucket for the second.
+      if (args.at >= 4000 && args.at < 9000 && down) return { frame: res.frame, image: null, pending: true };
       if (args.at >= 9000 && down) return { frame: res.frame, image: null, inBucket: true };
       return res;
     })(voice.handlers['frame.get']);
@@ -2099,23 +2100,31 @@ test('a frame Voice could not fetch from the bucket is asked for again while the
   const prefetches = () => voice.commands.filter((c) => c.command === 'media.prefetch').map((c) => c.args);
   await openMeetings();
   await expect(rows()).toHaveCount(3);
-  // Opening the meeting asks Voice to fetch its frames ahead, though the frames in view are here.
+  // Opening the meeting asks Voice to fetch its frames ahead.
   await expect.poll(prefetches).toEqual([{ meeting: id, kind: 'frames' }]);
-  await expect(frame(4000)).toHaveClass(/has-image/);
+  await expect(frame(4000).locator('.mt-frame-note')).toHaveText('Loading from your bucket…');
   await expect(frame(9000).locator('.mt-frame-note')).toHaveText('The image shows once Rukoo Voice can reach your bucket.');
   // While the meeting stays open, Rukoo asks again: 5 s later, then waiting longer.
   const asked = () => frameGets().filter((at) => at === 9000).length;
+  const polled = () => frameGets().filter((at) => at === 4000).length;
   const first = asked();
   await expect.poll(asked, { timeout: 10000 }).toBeGreaterThan(first);
-  // Away from the meetings it stops asking.
+  // Away from the meetings it stops asking, also for the image Voice is still fetching.
   await win.keyboard.press('Control+1');
   await expect(win.locator('[data-mode="mail"]')).toHaveAttribute('aria-selected', 'true');
+  // An answer on its way when the view closed may still arrive.
+  await win.waitForTimeout(1500);
   const away = asked();
+  const awayPolled = polled();
   await win.waitForTimeout(12000);
   expect(asked()).toBe(away);
-  // Back with the bucket in reach, the image comes without Voice reconnecting, and Voice is asked to fetch ahead again.
+  expect(polled()).toBe(awayPolled);
+  // Back with the bucket in reach, both images come without Voice reconnecting, and Voice is asked to fetch ahead again.
   down = false;
   await openMeetings();
+  await expect(frame(4000)).toHaveClass(/has-image/, { timeout: 20000 });
+  await expect(frame(4000).locator('.mt-frame-note')).toHaveCount(0);
+  expect(polled()).toBeGreaterThan(awayPolled);
   await expect(frame(9000)).toHaveClass(/has-image/, { timeout: 20000 });
   await expect(frame(9000).locator('.mt-frame-note')).toHaveCount(0);
   await expect.poll(prefetches).toEqual([
