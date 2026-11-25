@@ -240,13 +240,84 @@ fn a_recognizer_that_keeps_failing_after_the_stop_fails_the_meeting() {
     );
     assert_eq!(lib.list(1)[0].state, MeetingState::Failed);
 
-    // The audio stays; a later pipeline with a working recognizer finishes the meeting.
+    // The audio stays; a later pipeline with a working recognizer finishes the meeting, and Rukoo
+    // sees it transcribe again first.
     let handle = Pipeline::start(rec.dir.clone(), log.clone(), echo());
     wait_for_state(&handle, |s| *s == PipelineState::Done);
     let all = events(&log, &rec.id());
-    assert_eq!(states(&all), ["recording", "processing", "failed", "done"]);
+    assert_eq!(
+        states(&all),
+        ["recording", "processing", "failed", "processing", "done"]
+    );
+    assert_eq!(
+        *of(&all, "meeting.state")[3],
+        json!({"state":"processing","at":6500,"endedAt":1_793_000_006_500u64,"reason":"retry"})
+    );
     assert_eq!(passages(&all).len(), 2);
     assert_eq!(lib.list(1)[0].state, MeetingState::Done);
+
+    // A finished meeting isn't taken up again.
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), echo());
+    wait_for_state(&handle, |s| *s == PipelineState::Done);
+    assert_eq!(states(&events(&log, &rec.id())).len(), 5);
+}
+
+#[test]
+fn each_try_of_a_failed_meeting_sends_its_own_processing_and_failed() {
+    let tmp = TempDir::new("pipeline-retry");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = finished_recording(&lib);
+    let offline = || PipelineOptions {
+        timing: fast(),
+        ..PipelineOptions::new(Arc::new(Offline))
+    };
+    for _ in 0..2 {
+        let handle = Pipeline::start(rec.dir.clone(), log.clone(), offline());
+        wait_for_state(&handle, |s| matches!(s, PipelineState::Failed { .. }));
+    }
+    assert_eq!(
+        states(&events(&log, &rec.id())),
+        ["recording", "processing", "failed", "processing", "failed"]
+    );
+    assert_eq!(lib.list(1)[0].state, MeetingState::Failed);
+
+    // A try that waits for the Settings leaves the meeting failed and sends nothing.
+    let agreed = Arc::new(AtomicBool::new(false));
+    let options = PipelineOptions {
+        transcription_allowed: {
+            let agreed = agreed.clone();
+            Arc::new(move || {
+                if agreed.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("waiting".into())
+                }
+            })
+        },
+        ..echo()
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_for_state(&handle, |s| matches!(s, PipelineState::Waiting { .. }));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(states(&events(&log, &rec.id())).len(), 5);
+    assert_eq!(lib.list(1)[0].state, MeetingState::Failed);
+
+    agreed.store(true, Ordering::SeqCst);
+    handle.wake();
+    wait_for_state(&handle, |s| *s == PipelineState::Done);
+    assert_eq!(
+        states(&events(&log, &rec.id())),
+        [
+            "recording",
+            "processing",
+            "failed",
+            "processing",
+            "failed",
+            "processing",
+            "done"
+        ]
+    );
 }
 
 #[test]

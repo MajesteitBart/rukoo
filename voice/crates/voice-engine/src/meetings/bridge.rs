@@ -6,14 +6,17 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 use serde_json::Value;
 use voice_bridge::{
     BridgeServer, Clients, ControlError, EventLog, Handle, MediaOpenArgs, MeetingControl, Refused,
 };
-use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status, Track};
+use voice_protocol::{
+    retry_reasons, MeetingId, MeetingState, MeetingSummary, Refusal, StartArgs, StartedBy, Status,
+    Track,
+};
 use voice_screen_files::frames::FrameIndex;
 use voice_screen_files::media::{self, ClipCheck, MediaError};
 use voice_screen_files::{paths, policy};
@@ -36,7 +39,13 @@ pub struct Control {
     /// `speakers.split`.
     pub split: Arc<SplitService>,
     deleting: Mutex<()>,
+    /// Starts a meeting's pipeline with the engine's options, for `meeting.retry`, or says why
+    /// the Settings don't let Voice transcribe now. Set once the engine is built.
+    retry: OnceLock<RetryHook>,
 }
+
+/// What `meeting.retry` calls once the meeting may be transcribed again.
+pub type RetryHook = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 impl Control {
     pub fn new(
@@ -56,7 +65,50 @@ impl Control {
             media,
             split,
             deleting: Mutex::new(()),
+            retry: OnceLock::new(),
         }
+    }
+
+    /// Lets `meeting.retry` start a pipeline. Only the first call counts.
+    pub fn set_retry(&self, hook: RetryHook) {
+        let _ = self.retry.set(hook);
+    }
+
+    fn retry_meeting(&self, id: &str) -> Result<(), ControlError> {
+        let library = self.controller.library();
+        let (Some(dir), Some(snapshot)) = (library.dir(id), library.get(id, &self.log)) else {
+            return Err(ControlError::not_found("There is no meeting with that id."));
+        };
+        let state = snapshot["meeting"]["state"]
+            .as_str()
+            .and_then(MeetingState::parse);
+        if self.controller.current().is_some_and(|r| r.id == id) {
+            return Err(ControlError::busy(id, "The meeting is still recording."));
+        }
+        match state {
+            Some(MeetingState::Processing | MeetingState::Failed) => {}
+            Some(MeetingState::Done) => {
+                return Err(ControlError::not_available(
+                    "The meeting's transcript is complete.",
+                ))
+            }
+            Some(MeetingState::Recording | MeetingState::Paused) | None => {
+                return Err(ControlError::busy(id, "The meeting is still recording."))
+            }
+        }
+        if !dir.audio_dir().is_dir() {
+            return Err(ControlError::not_available(
+                "The meeting's audio is no longer on this computer.",
+            )
+            .with_reason(retry_reasons::AUDIO));
+        }
+        let hook = self
+            .retry
+            .get()
+            .ok_or_else(|| ControlError::failed("Voice is still starting."))?;
+        hook(id).map_err(|reason| {
+            ControlError::not_available(reason).with_reason(retry_reasons::SETTINGS)
+        })
     }
 
     /// A folder renamed out of the library is a durable deletion intent. Finish it after a
@@ -186,6 +238,10 @@ fn media_error(error: MediaError) -> ControlError {
 impl MeetingControl for Control {
     fn delete(&self, id: &str) -> Result<(), ControlError> {
         self.delete_meeting(id)
+    }
+
+    fn retry(&self, id: &str) -> Result<(), ControlError> {
+        self.retry_meeting(id)
     }
     fn start(&self, args: StartArgs) -> Result<String, ControlError> {
         self.controller.start(args, StartedBy::Rukoo)

@@ -39,6 +39,11 @@ pub const LABELLED_KEY: &str = "speakers.finished.call";
 /// it again. Set in the transaction that stores the microphone's turns and cuts and moves its
 /// passages.
 pub const SPLIT_KEY: &str = "speakers.split.mic";
+/// How many times a pipeline took up the meeting again after it had `failed`: the `n` in the keys
+/// of its later `processing` and `failed` events, which Rukoo must see once per try.
+pub const RETRIES_KEY: &str = "transcript.retries";
+/// The `reason` of the `processing` outcome and event of a meeting transcribed again.
+pub const RETRY_REASON: &str = "retry";
 /// The `reason` of a microphone split's epoch in `speaker_epochs`; its engine is `nemotron`.
 pub const SPLIT_REASON: &str = "split";
 

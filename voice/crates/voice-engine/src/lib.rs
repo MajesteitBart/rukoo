@@ -277,6 +277,16 @@ pub fn start_with(
     ));
     let _ = engine.set(Arc::downgrade(&core));
     core.set_this();
+    if let Some(control) = core.meetings.control() {
+        let weak = Arc::downgrade(&core);
+        control.set_retry(Box::new(move |id| {
+            let core = weak.upgrade().ok_or("Voice is quitting.")?;
+            crate::meetings::transcription_allowed(&core.config())?;
+            log::info!("meeting: {id}: transcribing again for Rukoo");
+            core.follow(id);
+            Ok(())
+        }));
+    }
     if let Some(e) = &sync_error {
         core.sync_rt.store_failed(e);
     }

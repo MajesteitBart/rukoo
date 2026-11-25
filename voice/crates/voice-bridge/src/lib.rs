@@ -28,8 +28,8 @@ pub use discovery::Discovery;
 pub use log::{EventLog, LogError, Stored, DB_FILE};
 pub use server::{BridgeServer, Client, Clients, Handle, Options, Refused};
 pub use voice_protocol::{
-    split_reasons, ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, SplitResult, StartArgs,
-    Status, Track,
+    retry_reasons, split_reasons, ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, SplitResult,
+    StartArgs, Status, Track,
 };
 
 /// What the bridge asks of the app when Rukoo sends a command.
@@ -49,6 +49,18 @@ pub trait MeetingControl: Send + Sync {
     fn delete(&self, _id: &str) -> Result<(), ControlError> {
         Err(ControlError::not_available(
             "This Voice cannot delete meetings.",
+        ))
+    }
+
+    /// `meeting.retry`: transcribes a `failed` meeting again. Must answer quickly; the pipeline
+    /// runs on its own thread and sends `meeting.state` `processing` with the reason `retry`.
+    /// `busy` while it records or pauses, `not_available` for a `done` meeting or with a
+    /// [`retry_reasons`] reason when it can't transcribe. A meeting that already transcribes
+    /// answers `{}`. A Voice that can't retry answers `unknown_command`.
+    fn retry(&self, _id: &str) -> Result<(), ControlError> {
+        Err(ControlError::new(
+            ErrorCode::UnknownCommand,
+            "This Voice cannot transcribe a meeting again.",
         ))
     }
 

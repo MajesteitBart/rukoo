@@ -350,6 +350,9 @@ fn command(f: &Fields) -> Checked<Command> {
         commands::MEETING_DELETE => CommandBody::MeetingDelete {
             meeting: a.meeting("meeting")?,
         },
+        commands::MEETING_RETRY => CommandBody::MeetingRetry {
+            meeting: a.meeting("meeting")?,
+        },
         commands::MEETING_PAUSE => CommandBody::MeetingPause {
             meeting: a.meeting("meeting")?,
         },

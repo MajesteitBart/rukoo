@@ -9484,6 +9484,10 @@
   "meeting.delete.body": { "message": "This permanently deletes the audio, screen recording, transcript, notes, speaker names and corrections from this computer. Synced copies are marked deleted when Voice next connects; encrypted bucket files follow the bucket's lifecycle rules. Chats about the meeting stay. This cannot be undone.", "description": "Explains local deletion, the queued bucket tombstone, retained encrypted bucket objects and retained chats. src/renderer/meeting.js" },
   "meeting.delete.done": { "message": "Meeting deleted", "description": "Toast after Voice and Rukoo accept a meeting deletion. src/renderer/meeting.js" },
   "meeting.delete.updateVoice": { "message": "Update Rukoo Voice to delete meetings.", "description": "Error when an older Voice does not implement meeting.delete. src/renderer/meeting.js" },
+  "meeting.actions.retry": { "message": "Transcribe again", "description": "Meeting view header button and sidebar menu item for a meeting whose transcript failed: Rukoo Voice transcribes the kept audio again. src/renderer/meeting.js (renderHead, meetingMenu)" },
+  "meeting.retry.updateVoice": { "message": "Update Rukoo Voice to transcribe a meeting again.", "description": "Toast when an older Voice does not implement meeting.retry. src/renderer/meeting.js (retryError)" },
+  "meeting.retry.noAudio": { "message": "The audio of this meeting is no longer on this computer, so Rukoo Voice can't transcribe it again.", "description": "Toast when Transcribe again fails because Voice removed the meeting's audio. src/renderer/meeting.js (retryError)" },
+  "meeting.retry.settings": { "message": "Rukoo Voice can't transcribe now. Check Meetings › Transcription in Rukoo Voice's Settings.", "description": "Toast when Transcribe again fails because Voice's settings (key, consent) don't allow transcription. src/renderer/meeting.js (retryError)" },
   "meeting.actions.stopConfirm": {
     "message": "Stop recording?",
     "description": "Meeting view header button after the first click on Stop; a second click within 3 seconds stops the recording. src/renderer/meeting.js (renderHead)"

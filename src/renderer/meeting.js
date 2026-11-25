@@ -54,6 +54,8 @@ const M = {
   renaming: null,
   renameBusy: false,
   deleting: new Set(),
+  // Meetings whose meeting.retry Voice hasn't answered yet.
+  retrying: new Set(),
   deleted: new Set(),
   // The passage whose text the user is correcting; changes to it wait until the editor closes.
   editing: null,
@@ -671,12 +673,16 @@ function renderHead() {
   // A Voice that can't switch monitors (Voice 0.1) answered unknown_command once; its meetings get no button.
   const canSwitch = M.voice.protocol >= 2 && M.noScreenSwitch !== voiceKey();
   const screenLabel = esc(t('meeting.actions.screen'));
+  const retrying = M.retrying.has(s.id);
+  const retry = canRetry(s)
+    ? `<button class="tbtn" data-mt="retry" ${connected ? (retrying ? 'disabled' : '') : disabled}>${icons.sync}<span>${esc(t('meeting.actions.retry'))}</span></button>`
+    : '';
   const actions = live(s)
     ? `${canSwitch ? `<button class="tbtn" data-mt="screen" aria-haspopup="menu" title="${screenLabel}" ${disabled}>${icons.monitor}<span>${screenLabel}</span></button>` : ''}
        <button class="tbtn" data-mt="mark" ${disabled}>${icons.flag}<span>${esc(t('meeting.actions.mark'))}</span></button>
        <button class="tbtn" data-mt="${s.state === 'paused' ? 'resume' : 'pause'}" ${disabled}>${s.state === 'paused' ? icons.play : icons.pause}<span>${esc(t(s.state === 'paused' ? 'meeting.actions.resume' : 'meeting.actions.pause'))}</span></button>
        <button class="tbtn primary ${confirming ? 'is-confirm' : ''}" data-mt="stop" ${disabled}>${icons.stop}<span>${esc(t(confirming ? 'meeting.actions.stopConfirm' : 'meeting.actions.stop'))}</span></button>`
-    : '';
+    : retry;
   const focused = head.contains(document.activeElement) ? document.activeElement.dataset.mt : null;
   const title = titleOf(s, d.event);
   const titleHtml = M.renaming === s.id
@@ -685,6 +691,11 @@ function renderHead() {
   head.innerHTML = `<div class="mt-titles"><div class="mt-title-row">${titleHtml}</div><div class="mt-meta">${meta}</div></div><div class="mt-actions">${actions}<button class="icon-btn sm" data-mt="more" aria-haspopup="menu" aria-label="${esc(t('meeting.actions.more'))}" title="${esc(t('meeting.actions.more'))}">${icons.more}</button></div>`;
   // A redraw keeps the keyboard where it was; Pause becomes Resume in the same place.
   if (focused) (head.querySelector(`[data-mt="${focused}"]`) || head.querySelector(`[data-mt="${focused === 'pause' ? 'resume' : focused === 'resume' ? 'pause' : ''}"]`))?.focus();
+}
+
+// A meeting whose transcript Voice couldn't finish: Voice can transcribe it again from the audio it kept.
+function canRetry(s) {
+  return Boolean(s) && s.state === 'failed' && !s.removed && s.id !== M.voice.recording;
 }
 
 function canDelete(s) {
@@ -696,6 +707,7 @@ function meetingMenu(anchor, id, opts = {}) {
   if (!s) return;
   showMenu(anchor, [
     !s.removed ? { label: t('meeting.actions.rename'), icon: 'edit', action: async () => { await open(id); beginRename(id); } } : null,
+    canRetry(s) ? { label: t('meeting.actions.retry'), icon: 'sync', disabled: M.retrying.has(id) || M.voice.status !== 'connected', action: () => retryMeeting(id) } : null,
     canDelete(s) ? { label: t('meeting.actions.delete'), icon: 'trash', danger: true, disabled: M.deleting.has(id), action: () => deleteMeeting(id) } : null
   ], opts);
 }
@@ -742,6 +754,28 @@ async function finishRename(save) {
   } finally {
     M.renameBusy = false;
   }
+}
+
+// Asks Voice to transcribe a failed meeting again. Its processing state comes back as an event and redraws the view.
+async function retryMeeting(id) {
+  if (!canRetry(summaryOf(id)) || M.retrying.has(id)) return;
+  M.retrying.add(id);
+  if (M.data?.meeting.id === id) renderHead();
+  try {
+    await api('meetingRetry', id);
+  } catch (err) {
+    toast(retryError(err), { ms: 6000 });
+  } finally {
+    M.retrying.delete(id);
+    if (M.data?.meeting.id === id) renderHead();
+  }
+}
+
+function retryError(err) {
+  if (err.voice === 'unknown_command') return t('meeting.retry.updateVoice');
+  if (err.voice === 'not_available' && err.voiceReason === 'audio') return t('meeting.retry.noAudio');
+  if (err.voice === 'not_available' && err.voiceReason === 'settings') return t('meeting.retry.settings');
+  return voiceError(err);
 }
 
 async function deleteMeeting(id) {
@@ -2170,6 +2204,8 @@ async function onClick(e) {
       return closeEditor(true);
     case 'edit-cancel':
       return closeEditor(false);
+    case 'retry':
+      return retryMeeting(id);
     case 'mark':
       return command(() => api('meetingMark', id, null), () => toast(t('meeting.actions.marked', { time: clock(elapsed(d.meeting) || 0) })));
     case 'pause':

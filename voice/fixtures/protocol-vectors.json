@@ -13,6 +13,21 @@
       "message": { "type": "command", "id": "delete-1", "command": "meeting.delete", "args": { "meeting": "m-20261030-090000-00ff" } }
     },
     {
+      "name": "transcribe a failed meeting again",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "retry-1", "command": "meeting.retry", "args": { "meeting": "m-20261030-090000-00ff" } }
+    },
+    {
+      "name": "a failed meeting transcribes again",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1054, "event": "meeting.state", "meeting": "m-20261030-090000-00ff", "createdAt": 1793100000000, "data": { "state": "processing", "at": 3605120, "endedAt": 1793003605120, "reason": "retry" } }
+    },
+    {
+      "name": "a retry without the meeting's audio",
+      "from": "voice",
+      "message": { "type": "reply", "id": "retry-1", "ok": false, "error": { "code": "not_available", "message": "The meeting's audio is no longer on this computer.", "reason": "audio" } }
+    },
+    {
       "name": "explicit user removal",
       "from": "voice",
       "message": { "type": "event", "seq": 1055, "event": "meeting.removed", "meeting": "m-20261030-090000-00ff", "createdAt": 1793100000000, "data": { "reason": "user" } }
@@ -479,6 +494,12 @@
       "from": "rukoo",
       "reason": "meeting",
       "message": { "type": "command", "id": "delete-bad", "command": "meeting.delete", "args": { "meeting": "../other" } }
+    },
+    {
+      "name": "a retry needs a valid meeting id",
+      "from": "rukoo",
+      "reason": "meeting",
+      "message": { "type": "command", "id": "retry-bad", "command": "meeting.retry", "args": { "meeting": "m-1" } }
     },
     {
       "name": "protection round id cannot be empty",

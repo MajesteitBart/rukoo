@@ -46,6 +46,7 @@ pub mod commands {
     pub const MEETING_START: &str = "meeting.start";
     pub const MEETING_STOP: &str = "meeting.stop";
     pub const MEETING_DELETE: &str = "meeting.delete";
+    pub const MEETING_RETRY: &str = "meeting.retry";
     pub const MEETING_PAUSE: &str = "meeting.pause";
     pub const MEETING_RESUME: &str = "meeting.resume";
     pub const MEETING_MARK: &str = "meeting.mark";
@@ -646,6 +647,10 @@ pub enum CommandBody {
     MeetingDelete {
         meeting: MeetingId,
     },
+    /// Transcribes a `failed` meeting again from what is recorded.
+    MeetingRetry {
+        meeting: MeetingId,
+    },
     MeetingPause {
         meeting: MeetingId,
     },
@@ -719,6 +724,7 @@ impl CommandBody {
             CommandBody::MeetingStart(_) => commands::MEETING_START,
             CommandBody::MeetingStop { .. } => commands::MEETING_STOP,
             CommandBody::MeetingDelete { .. } => commands::MEETING_DELETE,
+            CommandBody::MeetingRetry { .. } => commands::MEETING_RETRY,
             CommandBody::MeetingPause { .. } => commands::MEETING_PAUSE,
             CommandBody::MeetingResume { .. } => commands::MEETING_RESUME,
             CommandBody::MeetingMark { .. } => commands::MEETING_MARK,
@@ -747,6 +753,7 @@ impl CommandBody {
             }
             CommandBody::MeetingStop { meeting }
             | CommandBody::MeetingDelete { meeting }
+            | CommandBody::MeetingRetry { meeting }
             | CommandBody::MeetingPause { meeting }
             | CommandBody::MeetingResume { meeting }
             | CommandBody::MeetingGet { meeting }
@@ -948,6 +955,14 @@ pub mod split_reasons {
     pub const MODEL: &str = "model";
     /// The track's audio is gone from this computer.
     pub const AUDIO: &str = "audio";
+}
+
+/// The `reason` of a `meeting.retry` that answers `not_available`.
+pub mod retry_reasons {
+    /// The meeting's audio is gone from this computer.
+    pub const AUDIO: &str = "audio";
+    /// Voice's Settings don't let it transcribe now, such as a missing key or consent.
+    pub const SETTINGS: &str = "settings";
 }
 
 /// The result of `speakers.split`.
