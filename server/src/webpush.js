@@ -27,9 +27,9 @@ import { HttpError, invalid } from './input.js';
 // The longest endpoint UnifiedPush allows, in bytes.
 export const ENDPOINT_BYTES = 1000;
 // How long a push service keeps a wake for a phone it can't reach, in seconds. A wake that arrives later still makes
-// the phone catch up once. Topic makes a newer wake replace one still waiting, where the service supports it.
+// the phone catch up once. Wakes carry no Topic: a service that supports it would let a newer wake replace one still
+// waiting, and with it the workspaces the older one named. Coalescing keeps it to one wake per 15 s per endpoint.
 const TTL = 24 * 60 * 60;
-const TOPIC = 'rukoo-wake';
 const SEND_TIME = 10 * 1000;
 // The record size the encrypted body names: the plaintext fits in one record.
 const RECORD_SIZE = 4096;
@@ -256,8 +256,7 @@ export async function sendWake(env, target, workspaces = [], now = Date.now()) {
       'content-encoding': 'aes128gcm',
       'content-type': 'application/octet-stream',
       ttl: String(TTL),
-      urgency: 'high',
-      topic: TOPIC
+      urgency: 'high'
     },
     body,
     redirect: 'manual',

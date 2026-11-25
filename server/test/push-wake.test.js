@@ -358,7 +358,9 @@ describe('what sends a wake', () => {
     expect(sent.headers['content-type']).toBe('application/octet-stream');
     expect(sent.headers.ttl).toBe('86400');
     expect(sent.headers.urgency).toBe('high');
-    expect(sent.headers.topic).toBe('rukoo-wake');
+    // No Topic: a push service holding wakes for an offline phone must not let a later wake for another workspace
+    // replace this one and drop its workspace.
+    expect(sent.headers.topic).toBeUndefined();
     // It says only that there is something and in which workspace, encrypted for the phone: no room, name or text.
     expect(await push.open(sent)).toEqual({ text: JSON.stringify({ t: 'wake', w: [ws.id] }), rs: 4096 });
     // Padded, so its length says nothing about how many workspaces it names.
