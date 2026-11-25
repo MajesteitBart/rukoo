@@ -1,0 +1,8 @@
+/* Live-site accent: https://rukoo.io/styles.css, checked 2026-11-25.
+   --green: #16f0a3. Light controls use the darker #087e5b for contrast.
+   Wordmarks follow the tagged public artwork. */
+:root { --sl-color-accent-low: #123c35; --sl-color-accent: #16f0a3; --sl-color-accent-high: #b9ffe6; }
+:root[data-theme='light'] { --sl-color-accent-low: #dcfff2; --sl-color-accent: #087e5b; --sl-color-accent-high: #1c2340; }
+.site-title img { max-width: 7.5rem; height: 2.4rem; }
+.sl-markdown-content h2 { scroll-margin-top: 6rem; }
+.sl-markdown-content a { text-underline-offset: .18em; }
