@@ -108,9 +108,9 @@ test('a bare @ in a reply offers the thread; a pick of a recipient only inserts 
   // A colon right after the mention takes the place of the space after it; Ctrl+Z gives the space back.
   await win.keyboard.type(':');
   await expect(editor).toHaveText('Hi @Joris Bakker:');
-  await win.keyboard.press('Control+z');
+  await win.keyboard.press('ControlOrMeta+z');
   await expect(editor).toHaveText('Hi @Joris Bakker ');
-  await win.keyboard.press('Control+y');
+  await win.keyboard.press('ControlOrMeta+Shift+z');
   await win.keyboard.type(' can you join?');
   await expect(editor).toHaveText('Hi @Joris Bakker: can you join?');
   // A word goes after the space.
@@ -155,7 +155,7 @@ test('someone not on the email yet goes to Cc; Backspace takes the mention off a
   await win.keyboard.press('Backspace');
   await expect(mentions(win)).toHaveText(['@Vandebron']);
   await expect(chips(win, 'to')).toHaveText(['Joris Bakker']);
-  await win.keyboard.press('Control+z');
+  await win.keyboard.press('ControlOrMeta+z');
   await expect(mentions(win)).toHaveText(['@Vandebron', '@Joris Bakker']);
   await expect(mentions(win).last()).toHaveAttribute('contenteditable', 'false');
 });
