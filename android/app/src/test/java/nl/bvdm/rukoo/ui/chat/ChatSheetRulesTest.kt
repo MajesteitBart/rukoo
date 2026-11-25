@@ -462,6 +462,53 @@ class ChatSheetRulesTest {
     private val withAgents = people + agent(clark, "Clark", sponsor = me, answers = AgentRules.SPONSOR) + agent(revy, "Revy", sponsor = bo)
 
     @Test
+    fun `leaving a private channel names the agents you made that leave it with you`() {
+        val bee = id("u", "bee")
+        val old = id("u", "old")
+        val dir = (withAgents + agent(bee, "Bee", sponsor = me) + agent(old, "Old", sponsor = me, state = "former")).associateBy { it.id }
+        val room = channel("c1", "secret", visibility = "private").copy(agents = 3)
+        val inside = listOf(me, bo, ann, clark, revy, bee).map { RoomMember(it, "member") }
+
+        // As the server's #endGrant: a private channel takes your agents with you, archived or not and also as its
+        // last person; any channel takes them as its last person, since that archives it and every agent goes.
+        val open = room.copy(visibility = "workspace")
+        assertTrue(SheetRules.mayTakeAgents(room, dir, me))
+        assertFalse("an open channel with others in it keeps them", SheetRules.mayTakeAgents(open, dir, me))
+        assertTrue("the last person in a private channel", SheetRules.mayTakeAgents(room.copy(members = 1), dir, me))
+        assertTrue("the last person in an open channel archives it", SheetRules.mayTakeAgents(open.copy(members = 1), dir, me))
+        assertTrue("an archived private channel", SheetRules.mayTakeAgents(room.copy(archived = true), dir, me))
+        assertTrue(SheetRules.mayTakeAgents(room.copy(archived = true, members = 1), dir, me))
+        assertFalse("an archived open channel with others in it", SheetRules.mayTakeAgents(open.copy(archived = true), dir, me))
+        assertFalse("no agents in it", SheetRules.mayTakeAgents(room.copy(agents = 0), dir, me))
+        assertFalse("you made no agent", SheetRules.mayTakeAgents(room, people.associateBy { it.id }, me))
+        assertFalse(SheetRules.mayTakeAgents(room, dir, ann))
+        assertFalse(SheetRules.mayTakeAgents(room, dir, null))
+
+        // Yours, active and in the channel, by name; not someone else's, not a former one, not one outside the channel.
+        assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(room, inside, dir, me, byName)?.map { it.name })
+        assertEquals(listOf("Revy"), SheetRules.leavingAgents(room, inside, dir, bo, byName)?.map { it.name })
+        assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(room.copy(archived = true), inside, dir, me, byName)?.map { it.name })
+        val alone = listOf(me, clark, revy, bee).map { RoomMember(it, "member") }
+        assertEquals(listOf("Bee", "Clark"), SheetRules.leavingAgents(open.copy(members = 1), alone, dir, me, byName)?.map { it.name })
+        // The members just loaded outrank the room's count: someone who joined an open channel since keeps the agents in.
+        assertEquals("another person is in it by now", emptyList<Member>(), SheetRules.leavingAgents(open.copy(members = 1), inside, dir, me, byName))
+        assertEquals(
+            "a private channel takes them either way",
+            listOf("Bee", "Clark"),
+            SheetRules.leavingAgents(room.copy(members = 1), inside, dir, me, byName)?.map { it.name },
+        )
+        // A channel that needs a successor has someone else in it: an open one then says nothing, loaded or not.
+        assertEquals(emptyList<Member>(), SheetRules.leavingAgents(open.copy(members = 1), null, dir, me, byName, others = true))
+        assertEquals(emptyList<Member>(), SheetRules.leavingAgents(open.copy(members = 1), alone, dir, me, byName, others = true))
+        assertNull("a private one still does", SheetRules.leavingAgents(room, null, dir, me, byName, others = true))
+        assertNull("the last person, and the members didn't load", SheetRules.leavingAgents(open.copy(members = 1), null, dir, me, byName))
+        assertNull("the members didn't load", SheetRules.leavingAgents(room, null, dir, me, byName))
+        assertEquals(emptyList<Member>(), SheetRules.leavingAgents(open, inside, dir, me, byName))
+        assertEquals("nothing to say, loaded or not", emptyList<Member>(), SheetRules.leavingAgents(open, null, dir, me, byName))
+        assertEquals(3, SheetRules.LEAVING_AGENTS_NAMED)
+    }
+
+    @Test
     fun `agents are never in a DM, never successors, and don't make a workspace less empty`() {
         assertEquals(listOf("Ann", "Bo"), SheetRules.dmCandidates(withAgents, me, setOf(cy), byName).map { it.name })
         val picker = SheetRules.dmPicker(withAgents, me, emptySet(), "", byName)
@@ -645,6 +692,17 @@ class ChatSheetRulesTest {
         assertEquals(listOf(me, ann), AgentRules.answeredKnown(AgentSettings(me, AgentRules.MEMBERS, listOf(ann))) { it in known })
         assertNull(AgentRules.answeredKnown(AgentSettings(bo, AgentRules.EVERYONE)) { it in known })
         assertEquals("an unknown choice reads as its sponsor only", emptyList<String>(), AgentRules.answeredKnown(AgentSettings(bo, "later")) { it in known })
+    }
+
+    @Test
+    fun `a sponsor the server leaves out of a guest's directory names nobody and manages nothing`() {
+        val hidden = AgentSettings(null, AgentRules.MEMBERS, listOf(me))
+        assertEquals(listOf(me), AgentRules.answered(hidden))
+        assertEquals(emptyList<String>(), AgentRules.answered(AgentSettings(null, AgentRules.SPONSOR)))
+        assertTrue(AgentRules.answers(hidden, me))
+        assertFalse(AgentRules.answers(AgentSettings(null, AgentRules.SPONSOR), me))
+        assertNull("no form for an agent without a sponsor", AgentRules.agentOf(Member(clark, Member.KIND_AGENT, "Clark", "member", "active", agent = hidden)))
+        assertFalse(AgentRules.sponsors(listOf(Member(clark, Member.KIND_AGENT, "Clark", "member", "active", agent = hidden)), me))
     }
 
     @Test

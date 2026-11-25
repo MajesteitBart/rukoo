@@ -599,7 +599,11 @@ test('the open room catches up from the feed: inline events, then forward pages'
   await svc.sync(ws.id);
   room = await caughtUp(svc, ws.id, ws.general);
   assert.equal(room.hi, room.head);
-  assert.deepEqual(eventCalls(more, ws.general), [`after=${room.head - 10}&limit=100`]);
+  const asked = eventCalls(more, ws.general);
+  assert.deepEqual(asked.filter((q) => q.startsWith('after=')), [`after=${room.head - 10}&limit=100`]);
+  // The window has no focus here, and the cache was behind when the run ended, so the notifier looked at the open
+  // channel's newest page for a reply to the person (issue #376): one page, once.
+  assert.deepEqual(asked.filter((q) => !q.startsWith('after=')), [`before=${room.head + 1}&limit=20`]);
   const texts = pushes(svc, ws.general).flatMap((p) => p.events.map((e) => e.text)).filter((x) => x && x.startsWith('burst'));
   assert.equal(new Set(texts).size, 30);
 });
