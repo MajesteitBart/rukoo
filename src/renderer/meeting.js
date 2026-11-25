@@ -2029,6 +2029,8 @@ function renderNotesOther() {
       ? t('meeting.notes.otherMine', { time })
       : t('meeting.notes.otherTheirs', { device: o.device || t('meeting.notes.otherDevice'), time });
   const open = box.dataset.open === '1';
+  // Drawn again, the bar keeps the keyboard on the button it was on.
+  const focused = box.contains(document.activeElement) ? document.activeElement.dataset.mt : null;
   box.innerHTML = `<p class="mt-notes-other-text">${esc(text)}</p>
     <div class="mt-notes-other-actions">
       <button class="btn sm" data-mt="notes-other-show" aria-expanded="${open}">${esc(t(open ? 'meeting.notes.otherHide' : 'meeting.notes.otherShow'))}</button>
@@ -2036,6 +2038,7 @@ function renderNotesOther() {
       <button class="btn sm ghost" data-mt="notes-other-dismiss">${esc(t('meeting.notes.otherDismiss'))}</button>
     </div>
     ${open ? `<div class="mt-notes-other-preview editor">${markdownToNotes(o.text)}</div>` : ''}`;
+  if (focused) box.querySelector(`[data-mt="${focused}"]`)?.focus();
 }
 
 async function notesOther(action) {

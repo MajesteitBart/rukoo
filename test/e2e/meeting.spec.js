@@ -546,6 +546,8 @@ test('notes another computer changed at the same time wait beside these until th
       await setTheme(theme);
       await bar.locator('[data-mt="notes-other-show"]').click();
       await expect(bar.locator('.mt-notes-other-preview')).toContainText('Anna owns QA');
+      // Drawn again, the bar keeps the keyboard where it was.
+      await expect(bar.locator('[data-mt="notes-other-show"]')).toBeFocused();
       await shot(`notes-other-${theme}-${language}`);
       await bar.locator('[data-mt="notes-other-show"]').click();
       await expect(bar.locator('.mt-notes-other-preview')).toHaveCount(0);

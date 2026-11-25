@@ -17,7 +17,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { VoiceStore } = require('./store');
 const { VoiceBridge, VoiceError } = require('./bridge');
-const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS, MEDIA_READ_MAX } = require('./protocol');
+const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS, MEDIA_READ_MAX, RUKOO_MESSAGE_MAX } = require('./protocol');
 const { candidateEvents, suggest, compareSpeakers, WINDOW_MS } = require('./speakers');
 const { bridgePathHere } = require('./paths');
 
@@ -553,7 +553,8 @@ class VoiceService extends EventEmitter {
     if (!this.connected || this.dataRefused) return;
     let retry = false;
     for (const { id, rev } of this.store.unsentData()) {
-      const data = this.store.dataDoc(id);
+      // Room for the command around the document.
+      const data = this.store.dataDoc(id, RUKOO_MESSAGE_MAX - 1024);
       if (!data) {
         this.store.dataTaken(id, rev);
         continue;
@@ -566,8 +567,11 @@ class VoiceService extends EventEmitter {
           this.dataRefused = true;
           return;
         }
-        // Voice doesn't have the meeting: it stays on this computer.
-        if (err.code === 'not_found' || err.code === 'bad_request') this.store.dataTaken(id, rev);
+        // Voice doesn't have the meeting, or refused the document: it stays on this computer.
+        if (err.code === 'not_found' || err.code === 'bad_request') {
+          if (err.code === 'bad_request') this.log('voice', `meeting.data.set for ${id} refused: ${err.message}`);
+          this.store.dataTaken(id, rev);
+        }
         else retry = true;
         if (!this.connected) return;
       }
