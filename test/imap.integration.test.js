@@ -64,11 +64,6 @@ test('real IMAP/SMTP account: add, sync, preview, flags, send, append, delete', 
   assert.equal(msg.unread, true);
   assert.equal(msg.hasAttachments, true);
   assert.match(msg.preview, /Plain text with café/);
-  // The server finds a message by its Message-ID, the way the next start looks for a draft that was on its way
-  // (Engine.hasDraft), and finds nothing for one it doesn't have.
-  const cached = engine.caches.get(acc.id).boxes.INBOX.messages.find((m) => m.subject === 'Integration €');
-  assert.equal(await session.findMessageId('INBOX', cached.messageId), cached.uid);
-  assert.equal(await session.findMessageId('INBOX', '<not-there-309@example.com>'), null);
 
   const full = await engine.getMessage(msg.id);
   assert.match(full.html, /café/);

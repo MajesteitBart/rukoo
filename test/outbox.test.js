@@ -208,92 +208,23 @@ test('a refused email stays in the list until failed() is done with it, then lea
   assert.equal(box.size, 0);
 });
 
-// #309: held.json has an email from Send until the server took it. An email the list can't take isn't held: Send says
-// why and its editor stays open. One the list can't mark as on its way doesn't go, and comes back refused with that
-// error. The other changes go on without the list.
-test('an email the journal cannot take is not queued, and one it cannot list as on its way is refused unsent', async () => {
+test('a changed() that throws does not stop the outbox', async () => {
   const clock = fakeClock();
   const sent = [];
-  const refused = [];
-  let full = false;
   const box = new Outbox({
     send: async (payload) => sent.push(payload.subject),
-    failed: (entry, err) => refused.push([entry.payload.subject, err.message]),
     changed: () => {
-      if (full) throw new Error('ENOSPC: no space left on device');
+      throw new Error('disk full');
     },
     timers: clock.timers,
     now: clock.now
   });
-  full = true;
-  assert.throws(() => box.queue({ payload: { subject: 'A' }, restore: {}, ms: 5000 }), /ENOSPC/);
-  assert.equal(box.size, 0);
-  assert.equal(clock.pending(), 0, 'no clock left running for it');
-  full = false;
-  const { id } = box.queue({ payload: { subject: 'B' }, restore: {}, ms: 5000 });
-  box.queue({ payload: { subject: 'C' }, restore: {}, ms: 5000 });
-  full = true;
-  assert.ok(box.undo(id), 'Undo still takes it back');
-  await box.flush();
-  assert.deepEqual(sent, []);
-  assert.deepEqual(refused, [['C', 'ENOSPC: no space left on device']]);
-  assert.equal(box.size, 0);
-});
-
-// #309: once the server took an email nothing may bring it back, so the list leaves it out from that moment, before
-// its Sent copy and the removal of its draft. What fails after that doesn't make it refused.
-test('the journal leaves an email out the moment the server took it, and what fails after that does not refuse it', async () => {
-  const clock = fakeClock();
-  const lists = [];
-  const log = [];
-  let after = null;
-  const box = new Outbox({
-    send: async (payload, accepted) => {
-      accepted();
-      log.push(['accepted', lists.at(-1).length]);
-      if (after) throw new Error(after);
-    },
-    sent: (entry) => log.push(['sent', entry.payload.subject]),
-    failed: (entry) => log.push(['failed', entry.payload.subject]),
-    changed: (list) => lists.push(list.map((e) => e.state)),
-    timers: clock.timers,
-    now: clock.now
-  });
-  box.queue({ payload: { subject: 'A' }, restore: {}, ms: 5000 });
-  await box.flush();
-  assert.deepEqual(lists, [['waiting'], ['sending'], [], []]);
-  after = 'Sent copy failed';
+  const { id } = box.queue({ payload: { subject: 'A' }, restore: {}, ms: 5000 });
+  assert.ok(box.undo(id));
   box.queue({ payload: { subject: 'B' }, restore: {}, ms: 5000 });
   await box.flush();
-  assert.deepEqual(log, [['accepted', 0], ['sent', 'A'], ['accepted', 0], ['sent', 'B']]);
-});
-
-test('Engine.send says the server took the email before its Sent copy and the removal of its draft', async () => {
-  const engine = new Engine({ dataDir: tempDir('sem-undo-send-') }).init();
-  const acc = await engine.addAccount({ type: 'demo' });
-  await engine.syncAccount(acc.id);
-  const draftId = await engine.saveDraft({ accountId: acc.id, to: ['someone@example.com'], subject: 'Going', html: '<p>x</p>' });
-  const session = engine.session(engine.account(acc.id));
-  const steps = [];
-  const send = session.send.bind(session);
-  const append = session.append.bind(session);
-  const remove = session.deleteForever.bind(session);
-  session.send = async (...args) => {
-    const raw = await send(...args);
-    steps.push('server');
-    return raw;
-  };
-  session.append = async (...args) => {
-    steps.push('sent copy');
-    return append(...args);
-  };
-  session.deleteForever = async (...args) => {
-    steps.push('draft removed');
-    return remove(...args);
-  };
-  await engine.send({ accountId: acc.id, to: ['someone@example.com'], subject: 'Going', html: '<p>x</p>', draftId }, { accepted: () => steps.push('accepted') });
-  assert.deepEqual(steps, ['server', 'accepted', 'sent copy', 'draft removed']);
-  await engine.close();
+  assert.deepEqual(sent, ['B']);
+  assert.equal(box.size, 0);
 });
 
 test('a failing after-step does not break the outbox or reject flush', async () => {

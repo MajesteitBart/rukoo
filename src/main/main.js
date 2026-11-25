@@ -22,7 +22,6 @@ const {
 } = require('electron');
 const { Engine } = require('./engine');
 const { Outbox, Handoff, savedToDrafts, askBeforeQuit } = require('./outbox');
-const { HeldMail } = require('./heldmail');
 const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
@@ -51,6 +50,7 @@ const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
+const { LoginItem, loginTarget, electronLogin, memoryLogin, whenRenderedAndShown } = require('./loginitem');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
 const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
@@ -125,6 +125,13 @@ let updates = null;
 let installer = null;
 // The user chose Restart to update: the quit installs the new version and starts it.
 let restartForUpdate = false;
+// Settings > General > Open when you sign in (loginitem.js). startHidden: this start came from it, so the main window
+// stays hidden until someone opens it, and the tray icon is there to open it with.
+let loginItem = null;
+let startHidden = false;
+// After such a start: what opens the mail the last run left (recover in app.whenReady), once a main window has both
+// rendered and shown. A main window that closes unseen, as in a quit that is called off, leaves it to the next one.
+let recoverLater = null;
 let syncTimer = null;
 // The emails that came in since the main window last had focus, by id; badgeCount() counts the ones still new.
 let newSinceFocus = new Set();
@@ -285,9 +292,11 @@ function refreshBadge(count = badgeCount()) {
   refreshTray(count);
 }
 
-// The tray icon is there while closing or minimizing hides the main window, so the window can always come back.
+// The tray icon is there while closing or minimizing hides the main window, so the window can always come back. A start
+// from the login item hides the window too, so its icon stays for that run, also with both settings off; closing the
+// window then quits as those settings say. A Mac has the Dock for that.
 function updateTray() {
-  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray;
+  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray || (startHidden && process.platform !== 'darwin');
   if (wanted && !tray) {
     tray = new TrayIcon({
       icon: ICON,
@@ -525,26 +534,34 @@ async function serveChatFile(request) {
 // desktop notification whose click opens the conversation at the message.
 const chatNotices = new Map();
 
-// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
-function openChatNotice(open) {
+// Where a chat notification opens, checked: { kind: 'open', ws, conversation, seq }, ws or conversation null when not
+// valid.
+function chatNoticeTarget(open) {
   const o = plainObject(open);
   const id = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
-  const payload = {
+  return {
     kind: 'open',
     ws: id(o.ws, /^w_[A-Za-z0-9_-]{22}$/),
     conversation: id(o.conversation, /^c_[A-Za-z0-9_-]{22}$/),
     seq: Number.isSafeInteger(o.seq) && o.seq >= 0 ? o.seq : null
   };
+}
+
+// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
+function openChatNotice(open) {
+  const payload = chatNoticeTarget(open);
   showWindow();
   if (payload.ws && payload.conversation) send('chat', payload);
 }
 
 // A toast carries the alert's id, so taking the alert back (a read, a removal, an eviction, signing out) takes the toast
-// down too when it still shows.
+// down too when it still shows, and where the alert opens: the toast's Open goes there as a notification's click does
+// (app.js), such as a reply's thread.
 function showChatNotification({ id, title, body, open } = {}) {
   const key = String(id || '').slice(0, 200);
   if (win && !win.isDestroyed() && win.isFocused()) {
-    send('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
+    const target = chatNoticeTarget(open);
+    send('chat-toast', { id: key, body: String(body || '').slice(0, 200), open: target.ws && target.conversation ? target : null });
     return;
   }
   if (screenRecording()) {
@@ -634,6 +651,24 @@ function mailClient() {
 async function refreshMailClient() {
   const client = mailClient();
   if (client) await client.refresh({ portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE) });
+}
+
+// The login item (loginitem.js). Only an installed app on Windows or macOS gets the system's own; a run from a
+// checkout, a development or test profile, a portable or unpacked copy and Linux get none (loginTarget). Test mode
+// never touches the system: the login item lives in memory and a spec reads it through global.__semLoginItem. It plays
+// this platform, or the one SEM_LOGIN_ITEM names (win32, darwin), so a Linux test machine checks both; Linux itself has
+// no switch. SEM_LOGIN_OPENED=1 says the start came from the login item on a Mac.
+const TEST_LOGIN_EXE = { win32: 'C:\\Program Files\\Rukoo Mail\\Rukoo Mail.exe', darwin: '/Applications/Rukoo Mail.app/Contents/MacOS/Rukoo Mail' };
+function makeLoginItem() {
+  if (process.env.SEM_HIDDEN) {
+    const platform = TEST_LOGIN_EXE[process.env.SEM_LOGIN_ITEM] ? process.env.SEM_LOGIN_ITEM : process.platform;
+    const exe = TEST_LOGIN_EXE[platform];
+    const system = memoryLogin({ platform, execPath: exe, opened: process.env.SEM_LOGIN_OPENED === '1' });
+    return new LoginItem({ platform, target: exe ? { exe } : null, system });
+  }
+  const platform = process.platform;
+  const target = loginTarget({ platform, packaged: app.isPackaged, inApplications: () => app.isInApplicationsFolder() });
+  return new LoginItem({ platform, target, system: target ? electronLogin(app) : null });
 }
 
 // Links never navigate an app window; they open in the browser or, for mailto:, in a compose window.
@@ -769,10 +804,10 @@ function cancelQuit() {
   quitAsked = false;
   // before-quit stopped the sync; the background services kept running, since only will-quit closes them.
   if (engine) scheduleSync();
-  // The emails the quit left for the next start open now that Rukoo stays: held emails that failed while the quit
-  // waited and couldn't go to Drafts, and refused ones the main window hadn't opened when it closed. held.json keeps
-  // each until its editor answers for it.
-  for (const id of quitLeft.splice(0)) openKept(id);
+  // Held emails that failed while the quit waited, and couldn't go to Drafts, open now that Rukoo stays, and the list
+  // the quit wrote for the next start goes.
+  openKept(unsent.splice(0));
+  forgetUnsent();
 }
 
 // Stops the background services, each writing what it still had to: the Rukoo account, categories, mail
@@ -803,21 +838,26 @@ function endSession() {
   sessionEnded = true;
   quitting = true;
   quitAsks.clear();
-  // Refused emails the main window hasn't opened yet are left for the next start (quitting is set), so the window
-  // can't take one now, in a session about to end. held.json has them already.
+  // Refused emails the main window hasn't opened yet go to the list for the next start (quitting is set), so one the
+  // window opens now, in a session about to end, can't drop out of that list between the two writes below.
   refused.letGo();
   // Email that waits out its Undo notice goes now, as far as Windows leaves Rukoo the time. held.json follows each one
-  // (heldMail), refused ones included, so the next start opens what Windows cut off.
+  // (writeHeld), so the next start opens what Windows cut off. The refused ones are written down first, and again
+  // once the sends are done, with what those added.
+  keepUnsent();
   if (outbox && outbox.size) {
     outbox
       .flush()
       .then(() => {
+        keepUnsent();
         engine.flush();
-        heldMail.flush();
       })
       .catch(() => {});
   }
-  if (heldMail) heldMail.flush();
+  // Moves, deletes and Undos send no further email; once the one on its way settles, the cache is saved again with
+  // the rows of the rest.
+  const batches = engine.stopBatches();
+  if (batches) batches.then(() => engine.flush()).catch(() => {});
   engine.flush();
   if (calendars) calendars.flush();
   closeServices();
@@ -871,10 +911,10 @@ function composeOptions(input = {}) {
   };
 }
 
-// keptId: the kept email from held.json this window opens again (openKept). Its editor names it in every save, send
-// and close, and held.json keeps it until that editor has answered for it (heldmail.js).
-function openComposeWindow(input, { keptId = null } = {}) {
-  const opts = { ...composeOptions(input), ...(keptId ? { keptId } : {}) };
+// heldId: the email from held.json this window opens again (reopenHeld), which main keeps until the window has put it
+// somewhere else (heldSettled).
+function openComposeWindow(input, { heldId = null } = {}) {
+  const opts = composeOptions(input);
   // A draft that opens again after Undo send had its window closed; it can't be open in another one.
   const restoredDraft = opts.restore && opts.restore.state && typeof opts.restore.state.draftId === 'string' ? opts.restore.state.draftId : null;
   if (opts.mode === 'draft' && opts.id && !opts.restore) {
@@ -907,13 +947,8 @@ function openComposeWindow(input, { keptId = null } = {}) {
   // Before it first shows, so a meeting that records never captures it (protectWindows).
   if (captureHidden) w.setContentProtection(true);
   const id = w.webContents.id;
-  composeWindows.set(id, { win: w, opts, draftId: opts.restore ? restoredDraft : opts.mode === 'draft' ? opts.id : null });
-  if (keptId) heldMail.attach(id, keptId);
-  // A window that closes without an answer, as in a crash, leaves its kept email for the next start.
-  w.on('closed', () => {
-    composeWindows.delete(id);
-    heldMail.detach(id);
-  });
+  composeWindows.set(id, { win: w, opts, draftId: opts.restore ? restoredDraft : opts.mode === 'draft' ? opts.id : null, heldId });
+  w.on('closed', () => composeWindows.delete(id));
   harden(w);
   forwardEditMenu(w);
   watchZoom(w);
@@ -974,6 +1009,8 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The emails of a batch from the renderer (moveMany, removeMany, undoMany), as setFlagsMany takes them.
+const mailIds = (ids) => (Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000));
 // The list a call about older mail is for: scope, view, folder and search, as the renderer lists them. resume: the
 // server search goes on with the next folders (engine.searchServer()).
 const olderOpts = (o) => {
@@ -1017,135 +1054,226 @@ function mailSent(payload, id = null) {
   else send('toast', t('composer.status.sent'));
 }
 
-// What Rukoo still answers for after Send, in held.json in the profile (heldmail.js): the emails in the outbox, and
-// the kept emails that left it or an earlier run unsent, until their editors have answered for them. Nothing in it is
-// sent again by itself. Made at the start, once the profile is known.
-let heldMail = null;
-const heldFile = () => path.join(app.getPath('userData'), 'data', 'held.json');
-// Where Rukoo before #309 wrote what a quit left; read once at the start.
+// Emails a quit could neither send nor keep in Drafts, and refused emails the main window hadn't taken when the quit
+// closed it: { id, restore, error }, id being the email's in the outbox. They are written to unsent.json in the
+// profile, and the next start opens each in a compose window with its error (reopenUnsent). A quit that is called off
+// opens them right away (answered()).
+const unsent = [];
 const unsentFile = () => path.join(app.getPath('userData'), 'data', 'unsent.json');
-// The kept emails a quit left for the next start: refused ones the main window hadn't opened when it closed, and
-// held ones that failed while the quit waited and couldn't go to Drafts. A quit that is called off opens them right
-// away (cancelQuit()).
-const quitLeft = [];
+// Whether this run wrote the file, so a later write with nothing left removes only its own.
+let unsentWritten = false;
+// What unsent.json had at the start, until reopenUnsent() opens it: after a start from the login item, only when the
+// window first shows. Every write keeps it, so a quit before that loses none of it.
+let unsentBefore = [];
 
-// Only the main window's page opens held refused emails; a compose window asking gets none.
-const fromMainWindow = (sender) => Boolean(win && !win.isDestroyed() && sender === win.webContents);
-
-// The editor in a window, as held.json knows it (heldMail.attach): the main window's reading pane, or a compose window.
-const editorOf = (sender) => (fromMainWindow(sender) ? 'pane' : sender && sender.id);
-
-// The id of the kept email an editor names in a call (composer.js keptId), or null.
-const keptIdOf = (v) => (typeof v === 'string' && v ? v.slice(0, 100) : null);
-
-// Why a kept email is back, for its editor's dialog. One that was on its way may have gone: the server didn't answer in
-// time in this run, or Rukoo ended first. One whose draft was on its way to Drafts, which the start couldn't check, may
-// be there already. Otherwise its own error, or that Rukoo closed before it went.
-function keptNote(r) {
-  if (r.state === 'sending') return t(heldMail.unanswered.has(r.id) ? 'composer.errors.sendUnknown' : 'composer.undoSend.quitUnsure');
-  if (r.draft) return t('composer.undoSend.draftUnsure');
-  return r.error || t('composer.undoSend.crashWaiting');
+// unsent.json with own, this run's emails, and unsentBefore, merged by id. Written to a file beside it and moved over
+// it, as held.json is; no file when both are empty.
+function writeUnsent(own) {
+  const ids = new Set(own.map((u) => u.id));
+  const all = [...unsentBefore.filter((u) => !ids.has(u.id)), ...own];
+  const file = unsentFile();
+  if (!all.length) return fs.rmSync(file, { force: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(all));
+  fs.renameSync(`${file}.tmp`, file);
 }
 
-// What a compose window opens a kept email with (composeInit): its editor as held.json has it now, why it is back, its
-// id, and unsure for one that may have gone, whose Send asks before it goes again.
-function keptOptions(r) {
-  const opts = composeOptions({ ...(r.restore.opts || {}), restore: r.restore, sendError: keptNote(r) });
-  return { ...opts, keptId: r.id, ...(r.state === 'sending' ? { unsure: true } : {}) };
+function readUnsent() {
+  try {
+    const list = JSON.parse(fs.readFileSync(unsentFile(), 'utf8'));
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
 }
 
-// Opens a kept email in a compose window, unless an editor holds it already or a send or save of it waits for the
-// server.
-function openKept(id) {
-  const r = heldMail.get(id);
-  if (!r || heldMail.attached(id) || heldMail.isBusy(id)) return;
-  openComposeWindow({ ...(r.restore.opts || {}), restore: r.restore, sendError: keptNote(r) }, { keptId: id });
-}
-
-// A kept email nobody holds any more while Rukoo runs: it opens in a compose window, or at the next start during a quit.
-function keptUnheld(id) {
-  if (quitting) quitLeft.push(id);
-  else openKept(id);
-}
-
-// What an editor hears when held.json couldn't take the email it sends, when the email is on its way already or done
-// with, or when it may have gone already. kept tells the editor which (windowError): 'done', and it can send or save that
-// email no more; 'unsure', and its Send asks first from now on; 'moved', and it goes on with the draft a late save left
-// the email in (draftId) before it tries again.
-function keptError(err) {
-  const code = err && err.code;
-  if (code === 'EJOURNAL') return new Error(t('composer.errors.journal', { error: err.message }));
-  if (code === 'EKEPTBUSY') return new Error(t('composer.errors.alreadySending'));
-  if (code === 'EKEPTDONE') return Object.assign(new Error(t('composer.errors.alreadyDone')), { kept: 'done' });
-  if (code === 'EKEPTUNSURE') return Object.assign(new Error(t('composer.errors.sendUnknown')), { kept: 'unsure', ...(typeof err.keptId === 'string' ? { keptId: err.keptId } : {}) });
-  if (code === 'EKEPTMOVED') return Object.assign(new Error(t('composer.errors.alreadySending')), { kept: 'moved', draftId: err.draftId });
-  return err;
-}
-
-// Refused emails that wait for the main window's reading pane: { id, restore, error }, each kept in held.json first.
-// 'send-failed' only says that one is here; the window asks for them (sendFailures) once it listens and has drawn its
-// first state, so a main window that is still loading when the server refuses an email, as after a quit called off in
-// a compose window, gets it all the same. The hand-off holds each one until the window says its editor is open with it
-// (refusedOpened), and held.json until that editor answers for it. A main window that closes or crashes before that,
-// or hasn't claimed one within 15 seconds, leaves it to a compose window, and during a quit to the next start.
-// outbox.js Handoff has the rules.
+// Refused emails that wait for the main window's reading pane: { id, restore, error }. 'send-failed' only says that
+// one is here; the window asks for them (sendFailures) once it listens and has drawn its first state, so a main
+// window that is still loading when the server refuses an email, as after a quit called off in a compose window,
+// gets it all the same. Main keeps each one until the window says its editor is open with it (refusedOpened). A main
+// window that closes or crashes before that, or hasn't claimed one within 15 seconds, leaves it to a compose window,
+// and during a quit to the next start. outbox.js Handoff has the rules.
 const refused = new Handoff({
   ms: 15000,
   elsewhere: (list) => {
-    for (const { id } of list) keptUnheld(id);
+    if (!quitting) return openKept(list);
+    for (const { id, restore, error } of list) unsent.push({ id, restore, error });
+    keepUnsent();
   }
 });
 
 // Test mode only: lets end-to-end tests see what is held, and shorten the 15 seconds.
 if (process.env.SEM_HIDDEN) global.__semRefused = refused;
 
+// Written to held.json too, before the outbox lets the email go, until the page's editor is open with it.
 function holdRefused(item) {
+  keepHeld([item]);
   refused.hold(item);
   send('send-failed', { id: item.id });
 }
 
-// The main window's page went while the window stays, by a crash or a reload, and with it the editor its reading pane
-// had open. A kept email that editor held and hadn't answered for opens in a compose window, or at the next start
-// during a quit. One whose send or Drafts save is still on its way waits for it: once the server took it, it is done
-// with; refused, or without an answer within a minute, heldmail.js hands it back (keptUnheld). One the hand-off still
-// holds isn't open in the pane yet; the hand-off sees to that one itself.
-function paneGone() {
-  const r = heldMail && heldMail.detach('pane');
-  if (r && !heldMail.isBusy(r.id)) keptUnheld(r.id);
+// Only the main window's page opens held refused emails; a compose window asking gets none.
+const fromMainWindow = (sender) => Boolean(win && !win.isDestroyed() && sender === win.webContents);
+
+// Writes down what the quit leaves of the emails that left the outbox: those refused and not saved, or not yet opened.
+// Emails still in the outbox, such as one on its way whose fate nobody can know now, are in held.json already
+// (writeHeld). A refused one can be in both files, since held.json keeps it until an editor has it (keepHeld): the
+// next start merges them by id and opens it once. None of them is sent again by itself.
+function keepUnsent() {
+  const waiting = refused.list().map(({ id, restore, error }) => ({ id, restore, error }));
+  const list = [...unsent, ...waiting].filter((u) => u.restore);
+  try {
+    if (list.length || unsentWritten) {
+      writeUnsent(list);
+      unsentWritten = list.length > 0;
+    }
+  } catch (_) {
+    // A profile that can't be written to keeps nothing.
+  }
+}
+
+// A quit that wrote unsent.json was called off, and what it listed is open again: those go from the file, so the next
+// start doesn't open them a second time.
+function forgetUnsent() {
+  if (!unsentWritten) return;
+  try {
+    writeUnsent([]);
+    unsentWritten = false;
+  } catch (_) {
+    // Left for the next start, which opens what it lists.
+  }
+}
+
+// Emails { id, restore, error } that open in compose windows with their errors, each kept in held.json until its window
+// has settled it (heldSettled), as one reopened after a crash is. Replaces a kept one with the same id.
+function keepHeld(list) {
+  const kept = list.filter((u) => u && typeof u.id === 'string' && u.restore && typeof u.restore === 'object' && !Array.isArray(u.restore));
+  const ids = new Set(kept.map((u) => u.id));
+  heldBefore = [...heldBefore.filter((e) => !ids.has(e.id)), ...kept.map(({ id, restore, error }) => ({ id, restore, error: String(error || '') }))];
+  return { kept, written: writeHeld(outbox ? outbox.journal() : []) };
+}
+
+function openKept(list) {
+  for (const e of keepHeld(list).kept) {
+    openComposeWindow({ ...(e.restore.opts || {}), restore: e.restore, sendError: String(e.error || '') }, { heldId: e.id });
+  }
+}
+
+// What unsent.json listed goes to held.json first, for reopenHeld() to open, and only then from unsent.json: a kill
+// in between finds each email in both files, and the next start opens it once.
+function reopenUnsent() {
+  if (!unsentBefore.length || !keepHeld(unsentBefore.splice(0)).written) return;
+  try {
+    // A quit that is on keeps what it wrote there for the next start.
+    if (unsentWritten) keepUnsent();
+    else fs.rmSync(unsentFile(), { force: true });
+  } catch (_) {
+    // Left for the next start, which opens each email once, merged by id with held.json.
+  }
+}
+
+// The emails in the outbox, written to held.json in the profile at every change (the outbox's changed()), so a crash
+// or a killed process during the wait loses none (#256): [{ id, restore, origin, state }]. Written to a file beside it
+// first and then moved over it, so a crash halfway leaves the last whole list; synchronous, so a kill straight after
+// Send finds it. No file while the outbox is empty, as after a quit that sent everything.
+const heldFile = () => path.join(app.getPath('userData'), 'data', 'held.json');
+// What held.json had at the start, from a run that ended while emails waited, until the compose window that reopenHeld()
+// opens for each has put it somewhere else (heldSettled): a saved draft, the outbox or Sent, or an answer that closes
+// the editor. Written with this run's own emails meanwhile, so another crash before that brings them back once more.
+// An editor that is merely open holds its email in that window's memory only. It also keeps (keepHeld) what unsent.json
+// had at the start, and refused emails until the reading pane is open with one (refusedOpened) or a compose window
+// settled it: { id, restore, error }.
+let heldBefore = [];
+
+// A refused email is kept (keepHeld) while the outbox still lists it, so the kept one stands for both. false when the
+// profile couldn't be written to.
+function writeHeld(list) {
+  const ids = new Set(heldBefore.map((e) => e.id));
+  const all = [...heldBefore, ...list.filter((e) => !ids.has(e.id))];
+  const file = heldFile();
+  try {
+    if (!all.length) fs.rmSync(file, { force: true });
+    else {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(all));
+      fs.renameSync(`${file}.tmp`, file);
+    }
+    return true;
+  } catch (_) {
+    // A profile that can't be written to keeps nothing, as with unsent.json.
+    return false;
+  }
+}
+
+function readHeld() {
+  try {
+    const list = JSON.parse(fs.readFileSync(heldFile(), 'utf8'));
+    return Array.isArray(list) ? list.filter((e) => e && e.restore && typeof e.restore === 'object' && !Array.isArray(e.restore)) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+// At the start: what the last run still held opens in compose windows, never sent by itself. One that waited out its
+// notice gets a note that Rukoo closed first; one that was on its way may have gone, so its note says to check Sent.
+// One from unsent.json, or refused, has its own error (keepHeld). Those this run kept and opened already, after a start
+// from the login item, are left alone.
+function reopenHeld() {
+  writeHeld(outbox ? outbox.journal() : []);
+  const open = new Set([...refused.list().map((i) => i.id), ...[...composeWindows.values()].map((c) => c.heldId)]);
+  for (const e of heldBefore) {
+    if (open.has(e.id)) continue;
+    const error = typeof e.error === 'string' ? e.error : t(e.state === 'sending' ? 'composer.undoSend.quitUnsure' : 'composer.undoSend.crashWaiting');
+    openComposeWindow({ ...(e.restore.opts || {}), restore: e.restore, sendError: error }, { heldId: e.id });
+  }
+}
+
+function letHeldGo(id) {
+  heldBefore = heldBefore.filter((e) => e.id !== id);
+  writeHeld(outbox ? outbox.journal() : []);
+}
+
+// The compose window sender, when it opened a kept email (reopenHeld, openKept), has saved it as a draft, sent or
+// queued it, or closed with an answer, so held.json lets that email go. write false: the caller's next step writes
+// held.json itself.
+function heldSettled(sender, write = true) {
+  const c = sender && composeWindows.get(sender.id);
+  if (!c || !c.heldId) return;
+  const id = c.heldId;
+  c.heldId = null;
+  if (write) letHeldGo(id);
+  else heldBefore = heldBefore.filter((e) => e.id !== id);
 }
 
 // The server refused an email that waited. Its editor closed after Send, so it opens again with the email and the
 // error: in the main window's reading pane when it was written there, otherwise in a compose window. The main
 // window comes forward from the tray for it. During a quit nobody would see that, so the email goes to Drafts, and
-// when that fails too, to the next start. held.json keeps it from the moment it is refused, under its id in the
-// outbox, before the outbox lets it go: a crash at any point after that brings it back once, at the next start. When
-// held.json can't take that, memory keeps it all the same, and the file keeps the outbox's record of it until a write
-// can be made. An email that held.json couldn't list as on its way was never sent, and comes back with that error.
+// when that fails too, to the next start.
 async function waitedMailFailed(entry, err) {
-  const error = err && err.code === 'EJOURNAL' ? t('composer.errors.journal', { error: err.message }) : (err && err.message) || String(err);
+  const error = (err && err.message) || String(err);
   let restore = entry.restore || {};
   if (quitting) {
     let saved = null;
     try {
-      saved = { id: await storeDraft(entry.payload) };
+      saved = { id: await api.saveDraft(entry.payload) };
     } catch (_) {
       // Kept below for the next start, or opened now when the quit was called off meanwhile.
     }
     if (quitting) {
-      // Kept at once: the quit may still wait up to 30 seconds for other emails, and Windows may end Rukoo meanwhile.
-      // A quit that is called off opens it (cancelQuit()); otherwise the next start does.
-      if (!saved && keepRefused({ id: entry.id, restore: entry.restore, error: t('composer.undoSend.quitFailed', { error }) })) quitLeft.push(entry.id);
+      // Written down at once, before the outbox lets it go from held.json: the quit may still wait up to 30 seconds
+      // for other emails, and Windows may end Rukoo meanwhile. Both files then list it, and the next start opens it
+      // once (reopenHeld).
+      if (!saved) {
+        unsent.push({ id: entry.id, restore: entry.restore, error: t('composer.undoSend.quitFailed', { error }) });
+        keepUnsent();
+      }
       return;
     }
-    // The quit was called off while the email went to Drafts, and cancelQuit() has already opened what the quit kept.
+    // The quit was called off while the email went to Drafts, and answered() has already opened what the quit kept.
     // Rukoo stays, so this one opens like any refused email; when the save stored a draft, its editor goes on with it,
-    // attachments included.
+    // attachments included. The restore travels as it is from here: to the main window, a compose window, or
+    // unsent.json when a later quit comes first.
     if (saved) restore = savedToDrafts(restore, saved.id);
-  }
-  if (!keepRefused({ id: entry.id, restore, error })) {
-    // Nothing to open its editor from, as for a send that never had one: the editor opens straight away.
-    openComposeWindow({ ...(restore.opts || {}), restore, sendError: error });
-    return;
   }
   if (entry.origin === 'main' && win && !win.isDestroyed()) {
     if (!win.isVisible() || win.isMinimized()) showWindow();
@@ -1153,19 +1281,7 @@ async function waitedMailFailed(entry, err) {
     holdRefused({ id: entry.id, restore, error });
     return;
   }
-  openKept(entry.id);
-}
-
-// heldMail.keep() for a refused email: its record, or null when nobody could open it again. A write that fails is in
-// the log in the profile, and memory keeps the email.
-const keepRefused = (item) => heldMail.keep(item);
-
-// A Drafts save; an agent's draft cards follow it to the draft it stored. hooks: what engine.saveDraft tells a caller
-// that keeps the email for a crash (heldmail.js save()).
-async function storeDraft(payload, hooks) {
-  const id = await engine.saveDraft(payload, hooks);
-  if (hub && payload && payload.draftId && id) hub.draftMoved(String(payload.draftId), id);
-  return id;
+  openKept([{ id: entry.id, restore, error }]);
 }
 // ---- /undo send ----
 
@@ -1194,6 +1310,11 @@ const api = {
   setFlagsMany: (ids, flags) => engine.setFlagsMany((Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000)), plainObject(flags)),
   move: (id, dest) => engine.move(id, dest),
   remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
+  // Many emails at once: one batch to the server per folder. Each answers per id, in the order given (engine.js
+  // moveMany, removeMany, undoMany).
+  moveMany: (ids, dest) => engine.moveMany(mailIds(ids), accountText(dest, 1000)),
+  removeMany: (ids, opts) => engine.removeMany(mailIds(ids), { force: Boolean(opts && opts.force === true) }),
+  undoMany: (ids) => engine.undoMany(mailIds(ids)),
   emptyFolder: (accountId, folder) => engine.emptyFolder(accountId, folder),
   toggleVip: (address) => engine.toggleVip(address),
   markSpam: (id) => engine.markSpam(id),
@@ -1218,6 +1339,12 @@ const api = {
       { title: t('native.notifications.testTitle'), body: t('native.notifications.testBody'), icon: nativeImage.createFromPath(ICON), silent: false },
       { keep: liveNotices, onClick: showWindow }
     ),
+  // A save replaces the stored draft; an agent's draft cards follow it, also from a compose window.
+  saveDraft: async (payload) => {
+    const id = await engine.saveDraft(payload);
+    if (hub && payload && payload.draftId && id) hub.draftMoved(String(payload.draftId), id);
+    return id;
+  },
   discardDraft: async (id) => {
     const result = await engine.discardDraft(id);
     if (hub && id) hub.draftMoved(String(id), null);
@@ -1468,6 +1595,16 @@ const api = {
     await shell.openExternal(SETTINGS_URL);
     return true;
   },
+  // Settings > General > Open when you sign in: what the system has now (loginitem.js status()), and the switch.
+  openAtLoginState: () => loginItem.status(),
+  setOpenAtLogin: (on) => {
+    if (!loginItem.status().available) throw new Error(t('settings.general.openAtLoginUnavailable'));
+    try {
+      return loginItem.set(on === true);
+    } catch (_) {
+      throw new Error(t('settings.general.openAtLoginFailed'));
+    }
+  },
   print: (html) => printHtml(html),
   setBadge: (dataUrl, count) => {
     if (!win || process.platform !== 'win32') return;
@@ -1687,6 +1824,9 @@ const api = {
 // ---- agents ----
 // The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
 const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The longest message text a chat takes; anything longer is cut. The chat panel refuses longer text before Send clears
+// the input (TEXT_MAX in src/renderer/agent/pick.js, the same number).
+const AGENT_TEXT_MAX = 20000;
 const agentId = (v) => {
   if (typeof v !== 'string' || !v || v.length > 200) throw new Error('invalid');
   return v;
@@ -1788,9 +1928,9 @@ Object.assign(api, {
   agentSend: (id, input) => {
     const i = agentPlain(input);
     return agentHub().send(agentId(id), {
-      text: agentText(i.text, 20000),
+      text: agentText(i.text, AGENT_TEXT_MAX),
       action: agentText(i.action, 40) || null,
-      display: agentText(i.display, 20000) || null,
+      display: agentText(i.display, AGENT_TEXT_MAX) || null,
       skill: agentText(i.skill, 64) || null,
       // Tokens of staged files (agentPickFiles, agentAddFile) and Rukoo ids of emails.
       files: agentList(i.files).map(agentId),
@@ -1965,48 +2105,23 @@ const windowApi = {
   },
   // Send in an editor. With Undo send on, the email waits in the outbox while the main window shows the notice, and
   // the answer is { queued, ms }; otherwise it goes now and the answer is true. restore: what opens the editor again
-  // (composer.js undoState). A send without one, or without a main window for the notice, goes at once. keptId: the
-  // kept email the editor holds (heldmail.js). Either way held.json has the email as the editor holds it before it
-  // goes, and lets the kept one go in that same write (queue()) or once the server took it (send()). An email refused
-  // straight away stays kept for its editor, which hears its id with the error. confirmed: the person said yes to
-  // sending an email that may have gone already (composer.js unsure); without it such an email doesn't go.
-  send: async (sender, payload, restore, keptId, confirmed) => {
-    const editor = editorOf(sender);
+  // (composer.js undoState). A send without one, or without a main window for the notice, goes at once.
+  send: async (sender, payload, restore) => {
     const ms = undoSendDelay();
-    const sure = { confirmed: confirmed === true };
-    try {
-      // Refused now, before anything is written down, while the editor is still open to show why.
+    if (ms > 0 && restore && typeof restore === 'object' && win && !win.isDestroyed()) {
+      // Refused now, while the editor is still open to show why.
       engine.checkSend(payload);
-      if (ms > 0 && restore && typeof restore === 'object' && win && !win.isDestroyed()) {
-        const origin = sender === win.webContents ? 'main' : 'window';
-        const { id } = heldMail.queue(editor, keptIdOf(keptId), () => outbox.queue({ payload, restore, origin, ms }), { ...sure, restore });
-        send('send-queued', { id, ms });
-        return { queued: id, ms };
-      }
-      await heldMail.send(editor, keptIdOf(keptId), restore, (accepted) => engine.send(payload, { accepted }), sure);
-    } catch (err) {
-      throw keptError(err);
+      // A kept email leaves held.json in the write that lists its queued copy (the outbox's changed()), so held.json
+      // never lists it twice, as itself and as queued, and a kill in between can't open it twice.
+      heldSettled(sender, false);
+      const { id } = outbox.queue({ payload, restore, origin: sender === win.webContents ? 'main' : 'window', ms });
+      send('send-queued', { id, ms });
+      return { queued: id, ms };
     }
+    await engine.send(payload);
+    heldSettled(sender);
     mailSent(payload);
     return true;
-  },
-  // A Drafts save from an editor; an agent's draft cards follow it, also from a compose window. keptId and restore:
-  // the kept email the editor holds and what it holds now, which held.json has before the server gets the draft, and
-  // lets go the moment the server has it (heldmail.js save()). A save held.json couldn't note fails with the system's
-  // error, as any save that fails. A compose window claims the stored draft before the save counts as ended, so a page
-  // that loads again meanwhile opens that draft (composeInit), not the one it replaced.
-  saveDraft: async (sender, payload, keptId, restore) => {
-    const store = async (hooks) => {
-      const id = await storeDraft(payload, hooks);
-      const c = composeWindows.get(sender.id);
-      if (c && id) c.draftId = String(id);
-      return id;
-    };
-    try {
-      return await heldMail.save(editorOf(sender), keptIdOf(keptId), restore, store);
-    } catch (err) {
-      throw err && err.code === 'EJOURNAL' ? err : keptError(err);
-    }
   },
   // Undo in the notice after Send. The email stops waiting and its editor opens again: the answer carries it for the
   // main window's reading pane, or a compose window opens for an email written in one. { late: true } once the
@@ -2029,16 +2144,15 @@ const windowApi = {
   // The reading pane is free and takes this refused email now. false when it opened elsewhere meanwhile, or another
   // call of the window claimed it: the window then leaves it alone.
   claimRefused: (sender, id) => fromMainWindow(sender) && refused.claim(String(id || '')),
-  // Its editor is open with it, so the hand-off lets it go; held.json keeps it until that editor answers for it.
-  // Nothing happens for one that is no longer held.
+  // Its editor is open with it, so main lets it go. Nothing happens for one that is no longer held.
   refusedOpened: (sender, id) => {
     if (!fromMainWindow(sender) || !refused.ack(String(id || ''))) return false;
-    heldMail.attach('pane', String(id));
+    letHeldGo(String(id));
     return true;
   },
   // The reading pane couldn't take it after all: it opens in a compose window, unless it opened elsewhere already.
   openRefused: (sender, id) => fromMainWindow(sender) && refused.release(String(id || '')),
-  composeInit: async (sender) => {
+  composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
     // Test mode only: SEM_COMPOSE_HOLD=1 keeps every compose window from getting its editor, so a test can end Rukoo
     // while the window is there and its editor isn't (global.__semComposeHeld counts the windows that wait).
@@ -2046,20 +2160,15 @@ const windowApi = {
       global.__semComposeHeld = (global.__semComposeHeld || 0) + 1;
       return new Promise(() => {});
     }
-    if (!c) return null;
-    // A window with a kept email opens it as held.json has it now, never as it was opened, also when its page loads
-    // again after a crash: once a send or save of it has ended or ran past its time. One that went or waits in the
-    // outbox shows that, without an editor to send it again; one this window saved opens on its draft.
-    const now = await heldMail.opening(sender.id);
-    if (!now) return c.opts;
-    if (now.record) return keptOptions(now.record);
-    if (now.settled.as === 'saved' && c.draftId) return composeOptions({ mode: 'draft', id: c.draftId });
-    return { ...composeOptions({ subject: now.settled.subject }), settled: now.settled.as };
+    return c ? c.opts : null;
   },
-  // A compose window's editor saved a draft: the window claims it, so the draft cannot open twice.
+  // The window's editor is up with its email. One reopened from held.json (reopenHeld) is no longer kept there.
+  // Lets a compose window claim its draft once autosave created one, so the draft cannot open twice. A saved draft
+  // also keeps an email reopened from held.json, which the profile then no longer needs to.
   composeDraft: (sender, draftId) => {
     const c = composeWindows.get(sender.id);
     if (c) c.draftId = draftId ? String(draftId) : null;
+    if (draftId) heldSettled(sender);
   },
   // What went wrong in a window, for the log in the profile: an error nothing caught, or what app.js reports itself,
   // such as a refresh of the list that failed (src/renderer/diag.js). diag.fromWindow() takes only known fields, capped.
@@ -2067,27 +2176,23 @@ const windowApi = {
   // What the question about unsaved changes after a close or quit came to: true once the editor has closed.
   unloadAnswer: (sender, closed) => answered(sender.id, closed === true),
   // Closes without asking again; the compose window has already handled unsaved changes. answered: its editor closes
-  // after Send, a save, Delete or Don't save, so the kept email it names (keptId) is done with. Not for a window that
-  // never showed an editor (no account, or an email that couldn't be read). The editor in the main window's reading
-  // pane says the same when it closes, and only the first part applies to it. When held.json can't note the answer,
-  // the window stays and the answer is { error }: the editor says so, then closes without an answer, and the email
-  // opens again at the next start.
-  composeClose: (sender, answered, keptId) => {
-    if (answered === true && heldMail && keptIdOf(keptId)) {
-      const failed = heldMail.answer(editorOf(sender), keptIdOf(keptId));
-      if (failed) return { error: t('composer.errors.notForgotten', { error: failed.message }) };
-    }
+  // after Send, a save, Delete or Don't save, so an email it reopened from held.json is done with. Not for a window
+  // that never showed an editor (no account, or an email that couldn't be read).
+  composeClose: (sender, answered) => {
+    if (answered === true) heldSettled(sender);
     const w = BrowserWindow.fromWebContents(sender);
     if (w && w !== win) w.destroy();
-    return null;
   }
 };
 
 // Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
 // setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
-// page. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
-// reads a code as one of the agent's own.
-const WINDOW_CODES = new Set(['auth']);
+// page. 'uncertain': nobody knows what the server did with a move or delete until the folders sync (engine.js
+// notMoved), which the message list counts apart from an email that stayed. 'rebuilt': an Undo whose folder was
+// rebuilt on the server, which it counts as not confirmed with this reason (engine.js undoAll). Other codes stay here:
+// Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which reads a code as one of the
+// agent's own.
+const WINDOW_CODES = new Set(['auth', 'uncertain', 'rebuilt']);
 
 // What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
 // Booking errors (booking/rules.js bookingError) pass their code, and for a refused field its name (contracts f).
@@ -2122,14 +2227,9 @@ function windowError(err) {
     if (Number.isSafeInteger(d.waitSeconds)) out.waitSeconds = Math.min(Math.max(d.waitSeconds, 0), 86400);
     return out;
   }
-  // A send the server refused straight away: held.json keeps the email for its editor from now on, under this id, which
-  // the editor names from then on (heldmail.js send()). kept: what the editor does about it (keptError).
-  const kept = err && typeof err.keptId === 'string' ? { keptId: err.keptId.slice(0, 100) } : {};
-  if (err && (err.kept === 'done' || err.kept === 'unsure')) kept.kept = err.kept;
-  if (err && err.kept === 'moved' && typeof err.draftId === 'string') Object.assign(kept, { kept: 'moved', draftId: err.draftId.slice(0, 2000) });
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
-  if (!code) return kept;
-  return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { ...kept, code, appPasswordProvider: err.appPasswordProvider } : { ...kept, code };
+  if (!code) return {};
+  return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
 }
 
 ipcMain.handle('mail:call', async (event, method, args) => {
@@ -2221,22 +2321,12 @@ function createWindow({ hidden = false } = {}) {
   win.on('closed', () => {
     win = null;
     if (agentGate) agentGate.close();
-    // Refused emails this window never took open elsewhere (holdRefused). Its page asked about an editor with changes
-    // before the window could close, so an email the reading pane still held unanswered went with a window that was
-    // destroyed, as in a crash: it stays kept for the next start, like one in a compose window.
-    if (heldMail) heldMail.detach('pane');
+    // Refused emails this window never took open elsewhere (holdRefused).
     refused.letGo();
   });
-  win.webContents.on('render-process-gone', () => {
-    paneGone();
-    refused.letGo();
-  });
-  // A new page asks again for the refused emails the old one had claimed but not opened; one it had open opens in a
-  // compose window.
-  win.webContents.on('did-navigate', () => {
-    paneGone();
-    refused.unclaim();
-  });
+  win.webContents.on('render-process-gone', () => refused.letGo());
+  // A new page asks again for the refused emails the old one had claimed but not opened.
+  win.webContents.on('did-navigate', () => refused.unclaim());
   // A reload starts a new panel, which says again when it listens. Only the page itself counts: an email's frame
   // loads too, and the panel that opened it keeps listening.
   win.webContents.on('did-start-navigation', (details) => {
@@ -2244,6 +2334,14 @@ function createWindow({ hidden = false } = {}) {
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
   reveal(win, b.maximized, hidden);
+  // Before anything can show it: a second start, the tray, an .ics file.
+  if (recoverLater) {
+    whenRenderedAndShown(win, () => {
+      const run = recoverLater;
+      recoverLater = null;
+      if (run) run();
+    });
+  }
   win.loadFile(path.join(RENDERER, 'index.html'));
 }
 
@@ -2290,13 +2388,14 @@ app.on('activate', () => {
 });
 
 // Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
-// the main window stays where it was, in the tray too.
+// the main window stays where it was, in the tray too. The login item starting a Rukoo that already runs changes
+// nothing.
 app.on('second-instance', (e, argv, workingDirectory) => {
   const link = mailto.fromArgs(argv);
   const file = link ? null : icsFromArgs(argv, workingDirectory);
   if (link) mailtoQueue.accept(link);
   else if (file) icsQueue.accept(file);
-  else if (engine && windowState) showWindow();
+  else if (engine && windowState && !(loginItem && loginItem.fromLogin(argv))) showWindow();
 });
 
 app.whenReady().then(() => {
@@ -2313,34 +2412,16 @@ app.whenReady().then(() => {
   engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets, google, log: (level, target, message) => diag.write(level, target, message) }).init();
   // Test mode only: lets end-to-end tests simulate server conditions.
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
-  // What the last run still held, kept now, read before anything can be queued and write held.json anew.
-  heldMail = new HeldMail({
-    file: heldFile(),
-    legacy: unsentFile(),
-    outbox: () => (outbox ? outbox.journal() : []),
-    orphaned: keptUnheld,
-    log: (message) => diag.warn('heldmail', message)
-  });
-  heldMail.load();
-  // The outbox's list goes into held.json at every change; queue() and a send that starts hear when it can't
-  // (heldmail.js commit()), and the log in the profile has every time it couldn't.
+  // What the last run still held, read before anything can be queued and write held.json anew.
+  heldBefore = readHeld();
+  unsentBefore = readUnsent();
   outbox = new Outbox({
-    send: (payload, accepted) => engine.send(payload, { accepted }),
+    send: (payload) => engine.send(payload),
     sent: (entry) => mailSent(entry.payload, entry.id),
     failed: waitedMailFailed,
-    changed: () => {
-      try {
-        heldMail.commit();
-      } catch (err) {
-        diag.warn('heldmail', `held.json can't follow the outbox: ${err.message}`);
-        throw err;
-      }
-    }
+    changed: writeHeld
   });
-  if (process.env.SEM_HIDDEN) {
-    global.__semOutbox = outbox;
-    global.__semHeldMail = heldMail;
-  }
+  if (process.env.SEM_HIDDEN) global.__semOutbox = outbox;
   engine.on('updated', () => {
     // The Mac menu follows the language; elsewhere the menu stays off and needs no update.
     if (process.platform === 'darwin') updateApplicationMenu();
@@ -2428,6 +2509,11 @@ app.whenReady().then(() => {
   // After every check, so a download that failed tries again with the next one.
   updates.on('checked', (state) => installer.download(state.available).catch(() => {}));
   installer.on('changed', () => broadcast('updates', updatesState()));
+  loginItem = makeLoginItem();
+  if (process.env.SEM_HIDDEN) global.__semLoginItem = loginItem;
+  // A start from the login item stays hidden, unless the profile has neither a mail account nor a signed-in Rukoo
+  // account: nothing would notify then, and the person needs the setup page.
+  startHidden = loginItem.fromLogin(process.argv, { first: true }) && (engine.accounts.length > 0 || account.signedIn);
   // ---- voice ----
   // Before the hub, whose meeting tools use it, and before the first window, which it may have to hide. A development
   // or test profile (SEM_DATA_DIR) only finds a Voice paired through RUKOO_VOICE_BRIDGE, never the installed one.
@@ -2484,22 +2570,20 @@ app.whenReady().then(() => {
     broadcast('theme');
   });
   applyTheme();
-  createWindow();
+  // From the login item the window starts in the tray, without taking the focus; opening Rukoo shows it.
+  // Emails the last quit couldn't send (keepUnsent), then those the last run still held (held.json). After a start
+  // from the login item they stay on disk until the person first shows the window, so no editor takes the focus.
+  const recover = () => {
+    reopenUnsent();
+    reopenHeld();
+  };
+  if (startHidden) recoverLater = recover;
+  createWindow({ hidden: startHidden });
   // After the main window shows, so the compose window comes up in front of it.
   win.once('ready-to-show', () => {
     mailtoQueue.start();
     icsQueue.start();
-    // What the last run left in held.json opens in compose windows, never sent by itself, and stays there until each
-    // editor has answered for its email. One whose Drafts save was on its way when Rukoo ended opens unless the server
-    // says Drafts has that save, and says it may be there when the server can't be asked (heldmail.js recover()).
-    for (const r of heldMail.list()) {
-      if (!r.draft) openKept(r.id);
-      else
-        heldMail
-          .recover(r.id, (d) => engine.hasDraft(d.accountId, d.messageId))
-          .then((how) => how !== 'gone' && openKept(r.id))
-          .catch(() => {});
-    }
+    if (!startHidden) recover();
   });
   refreshMailClient().catch(() => {});
   updateTray();
@@ -2597,8 +2681,8 @@ function closeAgents() {
 }
 // Email that still waits out its Undo notice goes before Rukoo exits, once before-quit asked (askQuitWithHeldMail):
 // the windows that could take it back have closed. The sends get SEND_QUIT_WAIT, so a server that stops answering can't hold the quit for ever;
-// what is still on its way then, or was refused and couldn't go to Drafts, stays in held.json and opens again at the
-// next start.
+// what is still on its way then (held.json), or was refused and couldn't go to Drafts (unsent.json), opens again at
+// the next start.
 const SEND_QUIT_WAIT = 30000;
 let quitWaited = false;
 // While those sends run, a second quit (Quit again in the tray, or the last window closing after a quit from a test)
@@ -2606,26 +2690,30 @@ let quitWaited = false;
 let quitSending = false;
 app.on('will-quit', (event) => {
   if (quitSending) return event.preventDefault();
-  if (quitWaited || (!hub && !(outbox && outbox.size))) return;
+  // Moves, deletes and Undos send no further email; the one on its way settles within the wait below.
+  const batches = engine ? engine.stopBatches() : null;
+  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length && !batches)) return;
   quitWaited = true;
   event.preventDefault();
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  // The sends change the mail cache after before-quit saved it, so it is saved again. held.json has what they leave.
+  // The sends change the mail cache after before-quit saved it, so it is saved again. What they leave is written
+  // down, also when they failed earlier in the quit, while a window still asked about its changes.
   const sending = Boolean(outbox && outbox.size);
   quitSending = sending;
   const mail = (sending ? Promise.race([outbox.flush(), wait(SEND_QUIT_WAIT)]) : Promise.resolve()).then(() => {
+    keepUnsent();
     if (sending) engine.flush();
     quitSending = false;
   });
   const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
+  // The rows of the emails a stopped batch didn't send are back in the cache once it settles, and saved with it.
+  const moves = batches ? Promise.race([batches, wait(QUIT_WAIT)]).then(() => engine.flush()) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
   // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
   // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
   // installs, since Check now can still download one.
-  Promise.all([mail, agents]).finally(() => {
-    // A write of held.json that waits to be tried again goes now.
-    if (heldMail) heldMail.flush();
+  Promise.all([mail, agents, moves]).finally(() => {
     const offered = updates && updates.available;
     if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
       installer.install({ restart: restartForUpdate });

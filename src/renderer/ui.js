@@ -534,10 +534,11 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
   });
 }
 
+// message: one paragraph, or a list of them.
 export function confirmDialog(title, message, okLabel = t('common.actions.ok'), danger = false) {
   return dialog({
     title,
-    body: `<p>${esc(message)}</p>`,
+    body: [].concat(message).map((p) => `<p>${esc(p)}</p>`).join(''),
     buttons: [
       { get label() { return t('common.actions.cancel'); }, value: false },
       { label: okLabel, value: true, danger, primary: !danger }
