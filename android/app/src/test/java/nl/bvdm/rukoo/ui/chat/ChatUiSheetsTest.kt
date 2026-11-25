@@ -223,11 +223,15 @@ class ChatUiSheetsTest {
         val w = FakeWorkspaces(members + clark)
         w.inside = listOf(RoomMember(ME, "manager"), RoomMember(CLARK, "member"))
         val ui = ui(w)
-        // The feed counts people only: the person is the channel's last.
+        // The feed counts people only: the person is the channel's last. Archiving it takes their agent out too, also
+        // from a channel the whole workspace sees, so the confirmation names it.
         ui.askLeaveChannel("w1", channel.copy(members = 1, agents = 1), directory, ME)
         advanceUntilIdle()
         assertNull(ui.prompt)
-        assertEquals(Strings.get(R.string.chat_channel_leave_body_last, "plans"), ui.dialog!!.message)
+        assertEquals(
+            Strings.get(R.string.chat_channel_leave_body_last, "plans") + "\n\n" + Strings.get(R.string.chat_channel_leave_agent, "Clark"),
+            ui.dialog!!.message,
+        )
         ui.dialog!!.answer(DialogChoice.CONFIRM)
         advanceUntilIdle()
         assertEquals(listOf<String?>(null), w.leaves)
@@ -237,6 +241,35 @@ class ChatUiSheetsTest {
         ui.askLeaveChannel("w1", channel.copy(members = 2, agents = 1), directory, ME)
         advanceUntilIdle()
         assertEquals(listOf("Mila Bakker"), (ui.prompt as ChatPrompt.Successor).people!!.map { it.name })
+    }
+
+    @Test
+    fun `leaving a private channel whose members don't load still says your agents leave with you`() = runTest {
+        val clark = Member(CLARK, Member.KIND_AGENT, "Clark", "member", "active", agent = AgentSettings(ME, "sponsor"))
+        val directory = (members + clark).associateBy { it.id }
+        val w = FakeWorkspaces(members + clark)
+        w.inside = null
+        val ui = ui(w)
+        val secret = channel.copy(visibility = "private", role = "member", agents = 1)
+        ui.askLeaveChannel("w1", secret, directory, ME)
+        advanceUntilIdle()
+        // No error and no retry in the way: the confirmation says what holds without the names.
+        assertEquals(
+            Strings.get(R.string.chat_channel_leave_body_private) + "\n\n" + Strings.get(R.string.chat_channel_leave_agents_unknown),
+            ui.dialog!!.message,
+        )
+        // The server then asks for a successor after all, and the members still don't load: the prompt says it too.
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        val prompt = ui.prompt as ChatPrompt.Successor
+        assertEquals(Strings.get(R.string.chat_channel_leave_agents_unknown), prompt.agents)
+        // A channel the whole workspace sees keeps them while others are in it: nothing to say there, loaded or not.
+        ui.dismissPrompt()
+        ui.askLeaveChannel("w1", secret.copy(id = "c2", visibility = "workspace"), directory, ME)
+        advanceUntilIdle()
+        assertEquals(Strings.get(R.string.chat_channel_leave_body_public), ui.dialog!!.message)
+        ui.dialog!!.answer(DialogChoice.CANCEL)
+        advanceUntilIdle()
     }
 
     @Test

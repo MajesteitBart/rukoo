@@ -110,10 +110,11 @@ data class Member(
 /**
  * An agent's reply settings in the directory (`agent` on a member): its [sponsor], whom it [answers] (`everyone`,
  * `sponsor`, or `members`: the sponsor and [members]), and whether a mention by another agent counts ([agents]).
+ * [sponsor] is null for a guest or an agent who shares no channel with the sponsor: the server leaves it out then.
  */
 @Serializable
 data class AgentSettings(
-    val sponsor: String,
+    val sponsor: String? = null,
     /** everyone | sponsor | members */
     val answers: String,
     val members: List<String> = emptyList(),

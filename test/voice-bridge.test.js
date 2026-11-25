@@ -482,28 +482,48 @@ test('without a connection, meeting commands fail with offline', async (t) => {
   assert.deepEqual(s.state(), { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null });
 });
 
-test('a meeting Voice starts gets the one calendar event that fits, and a 1:1 gets the guest\'s name', async (t) => {
+test('a meeting Voice starts stays without a calendar event, even when exactly one fits; linking it by hand gives a 1:1 the guest\'s name', async (t) => {
   const dir = tempDir('rukoo-voice-link-');
   const now = Date.now();
   const event = { id: 'acc:cal:e1', title: 'Sanne / Demo', start: now - 60000, end: now + 1740000, meeting: 'https://meet.example.com/x', attendees: [{ name: 'Demo User', address: 'demo@example.com', response: 'accepted', self: true }, { name: 'Sanne', address: 'sanne@example.com', response: 'accepted' }] };
-  const calendars = { read: async () => ({ events: [event], failed: [] }), event: (id) => (id === event.id ? event : null) };
+  let reads = 0;
+  const calendars = {
+    read: async () => {
+      reads += 1;
+      return { events: [event], failed: [] };
+    },
+    event: (id) => (id === event.id ? event : null)
+  };
   const s = service(t, dir, null, { calendars }).init();
   s.onEvent({ type: 'event', seq: 1, event: 'meeting.started', meeting: M1, createdAt: now, data: started('', now) });
-  await until(() => s.get(M1).meeting.eventId === event.id, 'the link');
-  assert.deepEqual(s.get(M1).event, { id: event.id, title: 'Sanne / Demo', start: event.start, end: event.end, video: true });
   s.onEvent({ type: 'event', seq: 2, event: 'speaker', meeting: M1, createdAt: now, data: { id: 'call-1', track: 'call', label: 'Speaker 1' } });
-  const speakers = s.speakers(M1);
+  // No guess from the time (#362): Rukoo doesn't even look at the calendar, and the voice keeps Voice's label.
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(reads, 0, 'no calendar read for a meeting nobody linked');
+  assert.equal(s.get(M1).meeting.eventId, null);
+  assert.equal(s.get(M1).event, null);
+  assert.deepEqual([s.speakers(M1)[0].name, s.speakers(M1)[0].suggestions], [null, []]);
+  // The Link menu offers the event around the start; the person picks it.
+  assert.deepEqual((await s.events(M1)).events.map((e) => e.id), [event.id]);
+  const speakers = s.setEvent(M1, event.id);
+  assert.deepEqual(s.get(M1).event, { id: event.id, title: 'Sanne / Demo', start: event.start, end: event.end, video: true });
   assert.equal(speakers[0].name, 'Sanne');
   assert.equal(speakers[0].from, 'auto');
   assert.deepEqual(speakers[0].suggestions.map((x) => x.address), ['sanne@example.com']);
-  assert.deepEqual((await s.events(M1)).events.map((e) => e.id), [event.id]);
   // The user's own pick replaces it; unlinking keeps the name they gave.
   s.setSpeaker(M1, 'call-1', { name: 'Sanne de Vries', address: 'sanne@example.com' });
   assert.equal(s.setEvent(M1, null)[0].name, 'Sanne de Vries');
-  // An old meeting from the first replay isn't worth a calendar read.
-  s.onEvent({ type: 'event', seq: 3, event: 'meeting.started', meeting: M2, createdAt: now, data: started('Old', now - 2 * 86400000) });
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(s.get(M2).meeting.eventId, null);
+  assert.equal(s.get(M1).meeting.eventId, null);
+});
+
+test('a meeting started from an event card keeps that event', (t) => {
+  const dir = tempDir('rukoo-voice-keep-');
+  const now = Date.now();
+  const s = service(t, dir, null).init();
+  // Voice hands back the event Rukoo started it from (voice/PROTOCOL.md, context.calendarEvent).
+  s.onEvent({ type: 'event', seq: 1, event: 'meeting.started', meeting: M1, createdAt: now, data: { ...started('Stand-up', now), startedBy: 'rukoo', context: { calendarEvent: 'acc:cal:standup' } } });
+  assert.equal(s.get(M1).meeting.eventId, 'acc:cal:standup');
+  assert.deepEqual(s.get(M1).event, { id: 'acc:cal:standup', missing: true }, 'no calendar here, so the link stays and says the event is out of reach');
 });
 
 // ---------- the screen (RUK-108) ----------
@@ -1031,7 +1051,8 @@ test("a 1:1's name Rukoo filled in stays when a second voice turns up, gets no s
   const deltas = [];
   s.on('meeting', (p) => p.kind === 'meeting' && p.speakers && deltas.push(p.speakers));
   s.onEvent({ type: 'event', seq: 1, event: 'meeting.started', meeting: M1, createdAt: now, data: started('', now) });
-  await until(() => s.get(M1).meeting.eventId === event.id, 'the link');
+  // The person links the event before the call's voice turns up; its arrival fills in the name.
+  s.setEvent(M1, event.id);
   s.onEvent({ type: 'event', seq: 2, event: 'speaker', meeting: M1, createdAt: now, data: { id: 'call-1', track: 'call', label: 'Speaker 1' } });
   const one = s.speakers(M1)[0];
   assert.deepEqual([one.name, one.from, one.autoCheck], ['Sanne', 'auto', false], 'one voice: no doubt yet');

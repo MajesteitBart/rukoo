@@ -1,11 +1,5 @@
 package nl.bvdm.rukoo.ui.settings
 
-import android.annotation.SuppressLint
-import android.content.Context
-import android.content.Intent
-import android.os.Build
-import android.os.PowerManager
-import android.provider.Settings
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,7 +17,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -69,11 +62,9 @@ fun PhoneToolsPage(app: AppViewModel) {
     val status by s.mcp.status.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var tailnet by remember { mutableStateOf<String?>(null) }
-    var unrestricted by remember { mutableStateOf(true) }
     var portDialog by remember { mutableStateOf(false) }
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            unrestricted = isUnrestricted(context)
             // Tailscale can connect while this page is open.
             while (true) {
                 tailnet = withContext(Dispatchers.IO) { Tailnet.ownAddress()?.hostAddress }
@@ -198,15 +189,7 @@ fun PhoneToolsPage(app: AppViewModel) {
         }
 
         SectionTitle(stringResource(R.string.settings_phone_tools_battery))
-        SettingsCard {
-            SettingsRow(
-                title = stringResource(R.string.settings_phone_tools_battery_row),
-                description = stringResource(if (isSamsung()) R.string.settings_phone_tools_battery_help else R.string.settings_phone_tools_battery_help_other),
-                value = stringResource(if (unrestricted) R.string.settings_phone_tools_battery_unrestricted else R.string.settings_phone_tools_battery_optimized),
-                leading = { RowIcon(PanelIcons.Bolt) },
-                onClick = { openBatterySettings(context) },
-            )
-        }
+        SettingsCard { BatteryRow(BatteryPlace.PhoneTools) }
 
         if (BuildConfig.DEBUG) DebugAddress(app, status)
     }
@@ -320,25 +303,4 @@ object PhoneToolsTexts {
 
     /** The address in OpenClaw's setup command, for the toast that says where it points. */
     fun setupUrl(command: String): String? = URL.find(command)?.groupValues?.get(1)
-}
-
-private fun isUnrestricted(context: Context): Boolean =
-    context.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(context.packageName) == true
-
-private fun isSamsung(): Boolean = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
-
-/**
- * The app's battery page, where Samsung offers Unrestricted. Android has no public intent for it, so this
- * tries the page Settings itself opens, then the app's info page that links to it.
- */
-@SuppressLint("BatteryLife")
-private fun openBatterySettings(context: Context) {
-    val uri = "package:${context.packageName}".toUri()
-    val tries = listOf(
-        Intent("android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL", uri),
-        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, uri),
-    )
-    for (intent in tries) {
-        if (runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess) return
-    }
 }

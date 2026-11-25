@@ -262,6 +262,26 @@ function decodeId(id) {
   return { accountId, folder, uid: Number(uid) };
 }
 
+// What a move or delete that didn't go left behind (ImapAccount.moveMany()). Settled: the server turned it down and
+// Rukoo read back that nothing changed (err.refused), or Rukoo never sent the command (err.unsent). Anything else may
+// have changed part or all of it: an answer that never came, one that proves nothing, or a copy left in the destination.
+const settled = (err) => Boolean(err && (err.refused || err.unsent));
+const unsure = (err) => !settled(err);
+// The folder was rebuilt on the server since the cache read it: its uids may name other emails now.
+const rebuiltFolder = (err) => Boolean(err && err.code === 'UIDVALIDITY');
+
+// The error a window gets for a move or delete that didn't go: the server's reason, with code 'uncertain' when
+// nobody knows where the email is until the folders have synced. Anything else left the email where it was.
+function notMoved(err) {
+  const out = new Error(friendlyError(err));
+  if (unsure(err)) out.code = 'uncertain';
+  return out;
+}
+
+// An error as a batch's answer to the window has it, for one email: its text, and its code when it has one
+// (notMoved(), undoMany()).
+const answer = (err) => (err ? { error: err.message, ...(err.code ? { code: err.code } : {}) } : {});
+
 function sha(text) {
   return crypto.createHash('sha1').update(text).digest('hex');
 }
@@ -326,6 +346,10 @@ class Engine extends EventEmitter {
     // search by account. See searchServer().
     this.searching = null;
     this.closed = false;
+    // The moves, deletes and Undos on their way to the server (tracked()), and whether a quit stopped them
+    // (stopBatches()).
+    this.batches = new Set();
+    this.stopping = false;
   }
 
   file(...parts) {
@@ -2043,26 +2067,190 @@ class Engine extends EventEmitter {
     return putBack;
   }
 
-  async move(id, destination) {
-    const { acc, msg, folder, uid } = this.locate(id);
-    if (destination === folder) return;
-    const putBack = this.removeFromCache(acc, folder, uid);
-    this.changed(acc.id);
-    let moved;
+  // Like withPending() for several emails of one folder at once: op runs once the earlier changes to each have reached
+  // the server. items: [{ uid, putBack }], putBack from removeFromCache().
+  async withPendingMany(acc, folder, items, op) {
+    const holds = items.map(({ uid, putBack }) => {
+      const hold = this.holdPending(acc.id, folder, uid, { removed: true });
+      if (putBack.recount) this.recounts.set(putBack.recount.key, putBack.recount);
+      return hold;
+    });
     try {
-      moved = await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).move(folder, uid, destination), putBack.recount);
+      await Promise.all(holds.map((h) => h.before));
+      return await op();
+    } finally {
+      for (const h of holds) h.release();
+    }
+  }
+
+  // The emails of ids as the cache has them now, each looked up once: [{ id, acc, folder, uid, msg, uidValidity }],
+  // uidValidity being the generation of the folder its uid belongs to. What a move or delete does later goes by these,
+  // never by the id again: by then a sync may have given the uid to another email. An id the cache can't find gets its
+  // error in out. An email named twice is in the list once: same gets the later id → the first, whose answer it shares
+  // (shareAnswers()). Twice in one batch, its second hold would wait for the first, which waits for the batch.
+  resolve(ids, out, same = new Map()) {
+    const entries = [];
+    const first = new Map();
+    for (const id of ids) {
+      let at;
+      try {
+        at = this.locate(id);
+      } catch (err) {
+        out.set(id, new Error(friendlyError(err)));
+        continue;
+      }
+      const key = this.pendingKey(at.acc.id, at.folder, at.uid);
+      if (first.has(key)) {
+        if (first.get(key) !== id) same.set(id, first.get(key));
+        continue;
+      }
+      first.set(key, id);
+      entries.push({ id, acc: at.acc, folder: at.folder, uid: at.uid, msg: at.msg, uidValidity: at.box ? at.box.uidValidity : null });
+    }
+    return entries;
+  }
+
+  // Gives each id resolve() found named twice the answer of the first.
+  shareAnswers(out, same) {
+    for (const [id, first] of same) out.set(id, out.get(first));
+  }
+
+  // Entries of resolve() by account, folder and generation, as [{ acc, folder, uidValidity, items }].
+  groupByFolder(entries) {
+    const groups = new Map();
+    for (const e of entries) {
+      const key = [e.acc.id, e.folder, e.uidValidity].join('\n');
+      if (!groups.has(key)) groups.set(key, { acc: e.acc, folder: e.folder, uidValidity: e.uidValidity, items: [] });
+      groups.get(key).items.push(e);
+    }
+    return [...groups.values()];
+  }
+
+  // Takes the emails of a group out of the cache and runs send(uids, expectUidValidity) for them on the account's
+  // session, which answers a Map uid → result (ImapAccount.moveMany()). Each item gets putBack and result. A session
+  // that throws gives every email that error, which counts as unsure.
+  // send gets a third argument, stopped(), for the session (ImapAccount.inTurns()); a group with stoppable false, the
+  // discard of a draft whose email went out, still goes during a quit, and its session isn't stopped.
+  async sendGroup(group, send) {
+    const { acc, folder, items } = group;
+    const stoppable = group.stoppable !== false;
+    if (this.stopping && stoppable) {
+      // After stopBatches(): nothing goes, and the rows stay where they are.
+      const stopped = Object.assign(new Error(t('errors.connection.closed')), { unsent: true });
+      for (const it of items) Object.assign(it, { putBack: () => {}, result: { error: stopped } });
+      return items;
+    }
+    // The cache's rows of the folder are of another generation now: their uids name other emails, which stay.
+    const box = this.caches.get(acc.id).boxes[folder];
+    const same = !box || String(box.uidValidity) === String(group.uidValidity);
+    for (const it of items) it.putBack = same ? this.removeFromCache(acc, folder, it.uid) : () => {};
+    this.changed(acc.id);
+    let results;
+    try {
+      // The uids are the ones of the generation of the folder they were looked up in: on a folder rebuilt since, they
+      // would name other emails, and the session sends nothing.
+      const stopped = stoppable ? () => this.stopping : null;
+      results = await this.withPendingMany(acc, folder, items, () => send(items.map((it) => it.uid), group.uidValidity, stopped));
     } catch (err) {
-      putBack();
+      results = new Map();
+      for (const it of items) results.set(it.uid, { error: err });
+    }
+    for (const it of items) it.result = results.get(it.uid) || { error: new Error(t('errors.move.unknown')) };
+    return items;
+  }
+
+  // What a move or delete of a group that didn't go does to the list: an email the server left as it was comes back
+  // in its folder. One whose result nobody knows comes back too, and the folders involved sync, which shows where it
+  // is. Nothing comes back from a folder rebuilt since: its rows are stale, and it syncs. Returns the window's error.
+  failed(group, it, err, folders) {
+    if (!rebuiltFolder(err)) it.putBack();
+    if (rebuiltFolder(err)) group.resync.add(group.folder);
+    else if (unsure(err)) for (const p of folders) group.resync.add(p);
+    return notMoved(err);
+  }
+
+  // Moves the emails of ids to destination, a folder of their account: per folder one batch to the server
+  // (ImapAccount.moveMany()), whose checks cost a round trip per batch, not per email. Returns a Map id → the window's
+  // error (notMoved()), or null for an email that moved or was already there.
+  async moveAll(ids, destination) {
+    const out = new Map();
+    const same = new Map();
+    await this.moveEntries(this.resolve(ids, out, same), destination, out);
+    this.shareAnswers(out, same);
+    return out;
+  }
+
+  // moveAll() for entries of resolve(), putting each one's answer in out.
+  moveEntries(entries, destination, out) {
+    return this.tracked(this.sendMoves(entries, destination, out));
+  }
+
+  // Keeps p in this.batches until it settles, so a quit can wait for it (stopBatches()). Returns p.
+  tracked(p) {
+    this.batches.add(p);
+    const done = () => this.batches.delete(p);
+    p.then(done, done);
+    return p;
+  }
+
+  // Once a quit can't be called off (main.js): no further email of a move, delete or Undo goes to the server. The
+  // sessions finish the email they are on and give the rest as unsent (sendGroup()'s stopped()), whose rows come back
+  // in the cache. Settles once every batch on its way has, so the cache saved after it has those rows; null when no
+  // batch is on its way.
+  stopBatches() {
+    this.stopping = true;
+    if (!this.batches.size) return null;
+    return (async () => {
+      while (this.batches.size) await Promise.allSettled([...this.batches]);
+    })();
+  }
+
+  async sendMoves(entries, destination, out) {
+    for (const group of this.groupByFolder(entries)) {
+      if (group.folder === destination) {
+        for (const it of group.items) out.set(it.id, null);
+        continue;
+      }
+      const { acc, folder } = group;
+      group.resync = new Set();
+      let moved = 0;
+      for (const it of await this.sendGroup(group, (uids, expectUidValidity, stopped) => this.session(acc).moveMany(folder, uids, destination, { expectUidValidity, stopped }))) {
+        const r = it.result;
+        if (r.error) {
+          out.set(it.id, this.failed(group, it, r.error, [folder, destination]));
+          continue;
+        }
+        moved++;
+        // Servers without UIDPLUS do not report the new uid; such a move cannot be undone.
+        if (r.uid && r.uidValidity) this.rememberMove(it.id, { accountId: acc.id, folder, destination, uid: r.uid, uidValidity: r.uidValidity, msg: it.msg });
+        this.noteMove(acc.id, it.msg.messageId, destination, folder);
+        out.set(it.id, null);
+      }
       this.changed(acc.id);
-      throw new Error(friendlyError(err));
+      if (moved && this.caches.get(acc.id).boxes[destination]) group.resync.add(destination);
+      this.resync(acc, group.resync);
     }
-    // Servers without UIDPLUS do not report the new uid; such a move cannot be undone.
-    if (moved && moved.uid && moved.uidValidity) {
-      this.rememberMove(id, { accountId: acc.id, folder, destination, uid: moved.uid, uidValidity: moved.uidValidity, msg });
-    }
-    this.noteMove(acc.id, msg.messageId, destination, folder);
-    if (this.caches.get(acc.id).boxes[destination]) {
-      this.syncFolderAndNotify(acc, destination).catch(() => {});
+  }
+
+  async move(id, destination) {
+    const err = (await this.moveAll([id], destination)).get(id);
+    if (err) throw err;
+  }
+
+  // moveAll() for the window: an answer per id, in the order of ids, { error, code } for one that didn't move.
+  async moveMany(ids, destination) {
+    const out = await this.moveAll(ids, destination);
+    return ids.map((id) => ({ id, ...answer(out.get(id)) }));
+  }
+
+  // Syncs the folders of acc at these paths, so the list shows where an email is after a move or delete whose result
+  // nobody knows: also a folder the cache doesn't hold yet, such as a destination never opened.
+  resync(acc, folders) {
+    const cache = this.caches.get(acc.id);
+    // A quit stopped the batches: the next start syncs.
+    if (!cache || this.stopping) return;
+    for (const p of new Set(folders)) {
+      if (cache.boxes[p] || cache.folders.some((f) => f.path === p)) this.syncFolderAndNotify(acc, p).catch(() => {});
     }
   }
 
@@ -2112,33 +2300,97 @@ class Engine extends EventEmitter {
     return uid ? encodeId(accountId, last.folder, uid) : null;
   }
 
-  // Moves a message back to where it was before move(), remove() or archive().
-  // Returns the id it gets in its old folder.
-  async undoMove(id) {
-    const rec = this.undoable.get(id);
-    this.undoable.delete(id);
-    if (!rec || Date.now() - rec.at > UNDO_MS) throw new Error(t('errors.undo.expired'));
-    const acc = this.account(rec.accountId);
-    this.removeFromCache(acc, rec.destination, rec.uid);
-    this.changed(acc.id);
-    let uid;
-    try {
-      const back = await this.withPending(acc, rec.destination, rec.uid, { removed: true }, () =>
-        this.session(acc).move(rec.destination, rec.uid, rec.folder, { expectUidValidity: rec.uidValidity })
-      );
-      uid = back && back.uid;
-    } catch (err) {
-      if (this.caches.get(acc.id).boxes[rec.destination]) this.syncFolderAndNotify(acc, rec.destination).catch(() => {});
-      if (err && err.code === 'UIDVALIDITY') throw new Error(t('errors.undo.rebuilt'));
-      throw new Error(friendlyError(err));
+  // Moves messages back to where they were before move(), remove() or archive(), per folder in one batch to the
+  // server. Returns a Map id → the id the email gets in its old folder (null when the server doesn't say), or an
+  // Error. When the server turns a move back down and Rukoo read back that the email is still where it was moved, by
+  // its uid in the UIDVALIDITY the move reported (refused), its row there comes back and Undo can be tried again while
+  // the notice lasts. Anything else offers no Undo again and syncs the folders: an Undo that wasn't sent at all, one
+  // whose result is unknown, and one whose folder was rebuilt since, which counts as unknown (code 'rebuilt'), since
+  // the old uid no longer says where the email is.
+  undoAll(ids) {
+    return this.tracked(this.sendUndos(ids));
+  }
+
+  async sendUndos(ids) {
+    const out = new Map();
+    const groups = new Map();
+    // An id given twice goes once, and both get its answer.
+    for (const id of new Set(ids)) {
+      const rec = this.undoable.get(id);
+      this.undoable.delete(id);
+      if (!rec || Date.now() - rec.at > UNDO_MS) {
+        out.set(id, new Error(t('errors.undo.expired')));
+        continue;
+      }
+      const key = [rec.accountId, rec.destination, rec.uidValidity, rec.folder].join('\n');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ id, rec, uid: rec.uid });
     }
-    // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
-    const box = this.caches.get(acc.id).boxes[rec.folder];
-    if (box && uid && !box.messages.some((m) => m.uid === uid)) box.messages.push({ ...rec.msg, uid });
-    this.noteMove(acc.id, rec.msg.messageId, rec.folder, rec.destination);
-    this.changed(acc.id);
-    if (box) this.syncFolderAndNotify(acc, rec.folder).catch(() => {});
-    return uid ? encodeId(acc.id, rec.folder, uid) : null;
+    for (const items of groups.values()) {
+      const { accountId, destination, folder, uidValidity } = items[0].rec;
+      const acc = this.account(accountId);
+      const group = { acc, folder: destination, uidValidity, items, resync: new Set() };
+      for (const it of await this.sendGroup(group, (uids, v, stopped) => this.session(acc).moveMany(destination, uids, folder, { expectUidValidity: uidValidity, stopped }))) {
+        const { rec, result: r } = it;
+        if (!r.error) {
+          // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
+          const box = this.caches.get(acc.id).boxes[folder];
+          if (box && r.uid && !box.messages.some((m) => m.uid === r.uid)) box.messages.push({ ...rec.msg, uid: r.uid });
+          this.noteMove(acc.id, rec.msg.messageId, folder, destination);
+          if (box) group.resync.add(folder);
+          out.set(it.id, r.uid ? encodeId(acc.id, folder, r.uid) : null);
+          continue;
+        }
+        const err = r.error;
+        if (err.refused === true) {
+          it.putBack();
+          this.keepMovedRow(acc, rec, group.resync);
+          if (!this.undoable.has(it.id)) this.undoable.set(it.id, rec);
+          out.set(it.id, notMoved(err));
+        } else if (rebuiltFolder(err)) {
+          group.resync.add(destination);
+          out.set(it.id, Object.assign(new Error(t('errors.undo.rebuilt')), { code: 'rebuilt' }));
+        } else {
+          // Not sent, or nobody knows what it did: the rows come from a sync of both folders. An Undo not sent left the
+          // email where the cache had it, so a row the cache had comes back; none is made up.
+          if (!unsure(err)) it.putBack();
+          group.resync.add(destination);
+          if (unsure(err)) group.resync.add(folder);
+          out.set(it.id, notMoved(err));
+        }
+      }
+      this.changed(acc.id);
+      this.resync(acc, group.resync);
+    }
+    return out;
+  }
+
+  // Returns the id the message gets in its old folder.
+  async undoMove(id) {
+    const r = (await this.undoAll([id])).get(id);
+    if (r instanceof Error) throw r;
+    return r;
+  }
+
+  // undoAll() for the window: per id, in the order of ids, { id, restored } with the id in the old folder (or null),
+  // or { id, error, code }.
+  async undoMany(ids) {
+    const out = await this.undoAll(ids);
+    return ids.map((id) => {
+      const r = out.get(id);
+      return r instanceof Error ? { id, ...answer(r) } : { id, restored: r || null };
+    });
+  }
+
+  // After a refused Undo: the row of the email in the folder it was moved to (rec.destination, as rec.uid). The server
+  // showed it there by that uid, in the UIDVALIDITY the move reported (rec.uidValidity). The cache may not have the row,
+  // when Undo came before the sync that follows a move and that sync left it out while Undo ran. The row comes from
+  // the move's record while the cache's folder has that UIDVALIDITY too; otherwise a sync puts the rows right.
+  keepMovedRow(acc, rec, resync) {
+    const box = this.caches.get(acc.id).boxes[rec.destination];
+    if (!box || box.messages.some((m) => m.uid === rec.uid)) return;
+    if (rec.msg && String(box.uidValidity) === String(rec.uidValidity)) box.messages.push({ ...rec.msg, uid: rec.uid });
+    else resync.add(rec.destination);
   }
 
   // The account a message (or a saved copy) belongs to.
@@ -2172,27 +2424,99 @@ class Engine extends EventEmitter {
 
   // Moves to Prullenbak, or deletes for good when the message is already there.
   // Without a Prullenbak it returns 'confirm' and changes nothing until called with force.
-  async remove(id, { force = false } = {}) {
-    const { acc, folder, uid } = this.locate(id);
-    const trash = this.folderByRole(acc.id, 'trash');
-    if (trash && trash.path !== folder) return this.move(id, trash.path).then(() => 'trash');
-    if (!trash && !force) return 'confirm';
-    const putBack = this.removeFromCache(acc, folder, uid);
-    this.changed(acc.id);
-    try {
-      await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).deleteForever(folder, uid), putBack.recount);
-    } catch (err) {
-      putBack();
-      this.changed(acc.id);
-      throw new Error(friendlyError(err));
-    }
-    return 'deleted';
+  async remove(id, opts = {}) {
+    const r = (await this.removeAll([id], opts)).get(id);
+    if (r instanceof Error) throw r;
+    return r;
   }
 
+  // remove() for many emails: those that go to Trash in one batch per folder (moveAll()), and those deleted for good in
+  // one per folder too (ImapAccount.deleteMany()). Saved emails are deleted from the device. Returns a Map id → 'trash',
+  // 'deleted', 'confirm' or the window's error. Each email is looked up once, before anything goes to the server: the
+  // deletes for good wait for the moves to Trash, and a sync meanwhile can give a selected email's uid to another.
+  async removeAll(ids, { force = false } = {}) {
+    const out = new Map();
+    const toTrash = new Map();
+    const forGood = [];
+    const mail = [];
+    for (const id of ids) {
+      if (!String(id).startsWith('saved:')) mail.push(id);
+      else {
+        this.deleteSaved(id);
+        out.set(id, 'deleted');
+      }
+    }
+    const same = new Map();
+    for (const e of this.resolve(mail, out, same)) {
+      const trash = this.folderByRole(e.acc.id, 'trash');
+      if (trash && trash.path !== e.folder) {
+        const key = `${e.acc.id}\n${trash.path}`;
+        if (!toTrash.has(key)) toTrash.set(key, { path: trash.path, entries: [] });
+        toTrash.get(key).entries.push(e);
+      } else if (!trash && !force) out.set(e.id, 'confirm');
+      else forGood.push(e);
+    }
+    for (const { path, entries } of toTrash.values()) {
+      const moved = new Map();
+      await this.moveEntries(entries, path, moved);
+      for (const [id, err] of moved) out.set(id, err || 'trash');
+    }
+    await this.deleteEntries(forGood, out);
+    this.shareAnswers(out, same);
+    return out;
+  }
+
+  // Deletes the emails of ids for good, in one batch per folder (ImapAccount.deleteMany()), and puts 'deleted' or the
+  // window's error in out for each.
+  async deleteForGood(ids, out, opts = {}) {
+    const same = new Map();
+    await this.deleteEntries(this.resolve(ids, out, same), out, opts);
+    this.shareAnswers(out, same);
+  }
+
+  // deleteForGood() for entries of resolve(). stoppable false: a quit doesn't stop it (sendGroup()).
+  deleteEntries(entries, out, { stoppable = true } = {}) {
+    return this.tracked(this.sendDeletes(entries, out, stoppable));
+  }
+
+  async sendDeletes(entries, out, stoppable) {
+    for (const group of this.groupByFolder(entries)) {
+      const { acc, folder } = group;
+      group.stoppable = stoppable;
+      group.resync = new Set();
+      for (const it of await this.sendGroup(group, (uids, expectUidValidity, stopped) => this.session(acc).deleteMany(folder, uids, { expectUidValidity, stopped }))) {
+        out.set(it.id, it.result.error ? this.failed(group, it, it.result.error, [folder]) : 'deleted');
+      }
+      this.changed(acc.id);
+      this.resync(acc, group.resync);
+    }
+  }
+
+  // removeAll() for the window: per id, in the order of ids, { id, where } or { id, error, code }.
+  async removeMany(ids, opts = {}) {
+    const out = await this.removeAll(ids, opts);
+    return ids.map((id) => {
+      const r = out.get(id);
+      return r instanceof Error ? { id, ...answer(r) } : { id, where: r };
+    });
+  }
+
+  // Empty Trash, or Empty Spam, which moves to Trash when there is one. What happened to the emails, counted apart:
+  // trashed (moved to Trash), deleted (for good), stayed (the server turned it down), unsure (nobody knows yet; the
+  // folders sync), and the first reason for each of the last two.
   async emptyFolder(accountId, folderPath) {
     const ids = this.listMessages({ scope: accountId, view: 'folder', folder: folderPath }).map((m) => m.id);
-    for (const id of ids) await this.remove(id, { force: true }).catch(() => {});
-    return ids.length;
+    const out = { total: ids.length, trashed: 0, deleted: 0, stayed: 0, unsure: 0, reasons: { stayed: null, unsure: null } };
+    for (const r of (await this.removeAll(ids, { force: true })).values()) {
+      if (r === 'trash') out.trashed++;
+      else if (!(r instanceof Error)) out.deleted++;
+      else {
+        const kind = r.code === 'uncertain' ? 'unsure' : 'stayed';
+        out[kind]++;
+        out.reasons[kind] ||= r.message;
+      }
+    }
+    return out;
   }
 
   toggleVip(address) {
@@ -2400,6 +2724,8 @@ class Engine extends EventEmitter {
   // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics.
   async send(payload, { icalEvent = null } = {}) {
     const acc = this.checkSend(payload);
+    // Looked up before the send, which takes a while; see discardDraft().
+    const draft = this.draftEntry(payload.draftId);
     const mail = await this.buildMail(acc, payload);
     if (icalEvent) mail.icalEvent = { method: icalEvent.method, content: icalEvent.content, filename: 'invite.ics' };
     const raw = await this.session(acc).send(mail);
@@ -2410,7 +2736,7 @@ class Engine extends EventEmitter {
       const sent = this.folderByRole(acc.id, 'sent');
       if (sent && !session.savesSentCopy()) await session.append(sent.path, raw, ['\\Seen']).catch(() => {});
     }
-    if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
+    if (draft) await this.discardDraft(draft.id, draft).catch(() => {});
     if (payload.replyToId) {
       // The original may have been moved in the meantime; that is fine.
       await this.setFlags(payload.replyToId, { answered: true }).catch(() => {});
@@ -2423,6 +2749,7 @@ class Engine extends EventEmitter {
     const acc = this.account(payload.accountId);
     const drafts = this.folderByRole(acc.id, 'drafts');
     if (!drafts) throw new Error(t('errors.folder.noDrafts'));
+    const draft = this.draftEntry(payload.draftId);
     const mail = await this.buildMail(acc, payload);
     // A Message-ID of our own finds the stored draft again on servers that do not report its uid.
     mail.messageId = `<${crypto.randomUUID()}@${mail.from.address.split('@')[1] || 'rukoo.invalid'}>`;
@@ -2430,7 +2757,7 @@ class Engine extends EventEmitter {
     const raw = await ImapAccount.compose({ ...mail, keepBcc: true });
     const session = this.session(acc);
     const uid = await session.append(drafts.path, raw, ['\\Seen', '\\Draft']);
-    if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
+    if (draft) await this.discardDraft(draft.id, draft).catch(() => {});
     await this.syncFolderInto(acc, drafts.path);
     this.changed(acc.id);
     const stored = uid || this.uidByMessageId(acc.id, drafts.path, mail.messageId);
@@ -2480,11 +2807,19 @@ class Engine extends EventEmitter {
     return uid ? encodeId(ident.accountId, ident.folder, uid) : null;
   }
 
-  async discardDraft(id) {
-    const { acc, folder, uid } = this.locate(id);
-    this.removeFromCache(acc, folder, uid);
-    this.changed(acc.id);
-    await this.session(acc).deleteForever(folder, uid);
+  // A draft the server refuses to delete stays in Drafts, so its row comes back. found: the draft as resolve() looked it
+  // up when the send or save began (draftEntry()); a sync since may have given its uid to another draft.
+  async discardDraft(id, found = null) {
+    const out = new Map();
+    // Email held for its Undo notice goes out during a quit (main.js), and its draft goes with it.
+    await (found ? this.deleteEntries([found], out, { stoppable: false }) : this.deleteForGood([id], out, { stoppable: false }));
+    const r = out.get(id);
+    if (r instanceof Error) throw r;
+  }
+
+  // The draft of draftId as resolve() looks it up, or null when there is none or the cache doesn't have it.
+  draftEntry(draftId) {
+    return draftId ? this.resolve([draftId], new Map())[0] || null : null;
   }
 
   async close() {

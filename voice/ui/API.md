@@ -256,7 +256,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 
 | Key | Values | Default | From Ownkey's |
 |---|---|---|---|
-| `dictation.hotkey` | `right alt`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock`, and on macOS `right command` | `right alt` on Windows; Right Option (stored as `right alt`) on macOS; `f13` in dev mode | `hotkey` |
+| `dictation.hotkey` | `right alt`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` on Windows; `right alt`, `right command`, `right shift` on macOS | `right alt` on Windows; Right Option (stored as `right alt`) on macOS; `f13` in dev mode | `hotkey` |
 | `dictation.rewriteHotkey` | `off` or a key above | `right ctrl` on Windows; `right command` on macOS; `f14` in dev mode | `rewrite_hotkey` |
 | `dictation.pasteMode` | bool | `true` | `paste_mode` |
 | `dictation.readyChime` | bool | `false` | `ready_chime` |
@@ -285,7 +285,9 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
 
-A Mac keyboard has no Pause or Scroll Lock, so Voice's macOS key picker leaves them out; Windows has no Right Command. The macOS picker shows the keys as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`), Right Control (`right ctrl`), Right Shift, and F13 to F15. An existing `config.json` is never rewritten: on a Mac, a key stored on Windows still parses and is shown by its own name. Windows loads only its own keys, as before.
+The three key settings take the same keys, and `settings_set` refuses a key the platform doesn't offer with `invalid_value`. On a Mac those are the keys every Mac keyboard has, a MacBook's included, named as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`) and Right Shift. Right Control and F13 to F15 exist only on extended and PC keyboards, and Pause and Scroll Lock not at all, so the macOS picker leaves them out; Windows has no Right Command. An existing `config.json` is never rewritten: on a Mac, a stored key the picker leaves out, from Windows or from an earlier Voice, still loads and shows in the picker as the current choice under its own name until another key is chosen. Right Control and F13 to F15 keep working on a keyboard that has them. Windows loads only its own keys, as before.
+
+Settings shows the rewrite key twice, as one setting: under Dictation, next to the dictation key, and on the Rewriting page under Voice edits. Both rows show `dictation.rewriteHotkey` and open the same picker.
 
 Bucket sync, saved in `config.json` under `storage_sync`:
 

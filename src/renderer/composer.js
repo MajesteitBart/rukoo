@@ -1402,6 +1402,16 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     return saving;
   }
 
+  // Deletes the saved draft and returns the notice for it. A draft the server refuses to delete stays in Drafts, and
+  // the notice says why.
+  function dropDraft() {
+    if (!st.draftId) return null;
+    return api('discardDraft', st.draftId).then(
+      () => t('composer.status.deleted'),
+      (err) => err.message
+    );
+  }
+
   let closed = false;
   let closing = false;
   function finish(message) {
@@ -1519,8 +1529,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     closed = true;
     gone = true;
     await saving;
-    if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
-    finish(st.draftId ? t('composer.status.deleted') : null);
+    finish(await dropDraft());
   }
 
   let asking = false;
@@ -1565,8 +1574,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       closed = true;
       gone = true;
       await saving;
-      if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
-      finish(st.draftId ? t('composer.status.deleted') : null);
+      finish(await dropDraft());
       return true;
     }
     return false;

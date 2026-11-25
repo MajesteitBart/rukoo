@@ -336,7 +336,7 @@ test("joining Olga's workspace with a link from the Join dialog opens its first 
   await expect(dialog.locator('[data-other]')).toBeHidden();
   await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), `Join Acme here: ${link}.`);
   await dialog.locator('[name="link"]').focus();
-  await win.keyboard.press('Control+V');
+  await win.keyboard.press('ControlOrMeta+v');
   const card = dialog.locator('[data-preview]');
   await expect(card.locator('.ch-join-ws')).toHaveText('Acme', { timeout: 15000 });
   await expect(dialog.locator('[name="link"]')).toHaveValue(link);

@@ -25,11 +25,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -150,6 +152,19 @@ private fun ThreadContent(app: AppViewModel, ws: String, room: String, root: Str
             writable = !upgrade,
         )
         val listState = rememberLazyListState()
+        // Opened at a reply (the pill, a notification), the thread first lays out at its newest replies and then moves to
+        // that reply: until it is there, nothing in view counts as seen.
+        var settled by remember(ws, room, root) { mutableStateOf(at == null) }
+        // The replies it shows in view are no longer new on this opening of the room (issue #376): the dot under the
+        // first message and the room's pill for them go. Those below or above the view stay new until scrolled to, also
+        // one that comes in while the thread is scrolled up. View state only: the thread still reports no reads.
+        LaunchedEffect(listState, rows, settled) {
+            snapshotFlow {
+                val info = listState.layoutInfo
+                val items = info.visibleItemsInfo.mapNotNull { i -> (i.key as? String)?.let { ChatTimeline.InView(it, i.offset, i.size) } }
+                ChatTimeline.seenInThread(rows, root, items, info.viewportStartOffset, info.viewportEndOffset, settled)
+            }.collect { seqs -> app.threadShown(ws, room, root, seqs) }
+        }
         LazyColumn(
             state = listState,
             reverseLayout = true,
@@ -194,18 +209,32 @@ private fun ThreadContent(app: AppViewModel, ws: String, room: String, root: Str
                 }
             }
         }
-        // Opened from a notification for a reply: that reply comes to the middle once it is loaded (§7.5), then the
-        // thread behaves as usual.
+        // Opened at a reply, from the pill (the oldest new reply) or a notification (§7.5): once it is loaded, that
+        // reply's top comes to the top of the view, so its first line shows and the replies after it follow below. Then
+        // the thread has settled and behaves as usual.
+        val margin = with(LocalDensity.current) { 8.dp.roundToPx() }
         if (at != null) {
             LaunchedEffect(items, at, t.loading) {
                 if (t.loading) return@LaunchedEffect
-                val target = ChatTimeline.openingTarget(items, at, complete = true) ?: return@LaunchedEffect
-                val viewport = snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
-                listState.scrollToItem(target)
-                // Bottom up, scrolling back moves towards newer rows: the reply goes from the bottom edge to the middle.
-                if (target > 0) listState.scrollBy(-(viewport * 0.5f))
+                val target = ChatTimeline.openingTarget(items, at, complete = true)
+                if (target != null) {
+                    try {
+                        snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
+                        listState.scrollToItem(target)
+                        val item = snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target } }.first { it != null }!!
+                        listState.scrollBy(ChatTimeline.openingScroll(item.offset, item.size, listState.layoutInfo.viewportEndOffset, margin))
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                        // A drag took the scroll over: the thread is where the person put it, and has settled there.
+                        // When the effect itself was cancelled, this throws again.
+                        ensureActive()
+                    }
+                }
+                settled = true
                 app.threadTargetShown(root)
             }
+        } else {
+            // No reply to go to (any more): what shows counts.
+            LaunchedEffect(Unit) { settled = true }
         }
         // Your own reply goes to the bottom, as in the room.
         val bottom = items.firstOrNull()

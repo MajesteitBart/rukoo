@@ -2,6 +2,7 @@ import { t, languages, setLanguage, localize, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm, KEEP_OPEN } from './ui.js';
 import { icon as panelIcon } from './agent/bui.js';
+import { setupTarget } from './agent/pick.js';
 import {
   ACTIONS,
   shortcutList,
@@ -244,12 +245,16 @@ export function promptDialog(title, value = '', { multiline = false, placeholder
 
 // view: open straight on one page (the chat panel opens 'agents'); Back still leads to the overview. An account's
 // 'server' page needs the account's id, and Back from it leads to that account.
-export function openSettings(ctx, { view: start, id = null } = {}) {
+// state: with view 'agents' and an agent's id, the state the chat panel showed for that agent, so Set up can put the
+// keyboard in the right place before this page's own status check answers.
+export function openSettings(ctx, { view: start, id = null, state = null } = {}) {
   const page = document.createElement('div');
   page.className = 'page settings';
   document.getElementById('overlays').appendChild(page);
   const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : start === 'shortcuts' ? ['main', 'agents', 'shortcuts'] : ['main', start];
   let params = id ? { id } : {};
+  // Set up {name} in the chat panel opens the agents page on that agent's card, once (revealAgent()).
+  let revealing = start === 'agents' && id ? { id, state } : null;
   // What the update check found (main's updates.js), and how far its download got (installer.js; null where this
   // install can't update itself), for the Check now row.
   let updates = null;
@@ -326,6 +331,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     page.remove();
     document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('focus', showMailto);
+    window.removeEventListener('focus', showLogin);
     // Team chat holds the Join dialog of a sign-up with an invitation link until Settings is gone (chat.js).
     document.dispatchEvent(new Event('rukoo:settings-closed'));
   };
@@ -490,6 +496,47 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   // Coming back from desktop settings shows the current default handler.
   window.addEventListener('focus', showMailto);
 
+  // Open when you sign in: { available, on, approval, platform } from main, which reads it from the system each time,
+  // so a login item someone turned off in the system's own settings shows off here. null until main has answered.
+  let loginState = null;
+  const loadLogin = () =>
+    api('openAtLoginState')
+      .then((next) => (loginState = next))
+      .catch(() => null);
+  // The wording follows the system main plays (loginState.platform), which a test can set.
+  const loginPlatform = () => (loginState && loginState.platform) || window.mail.platform;
+  const loginKey = (kind) => `settings.general.openAtLogin${loginPlatform() === 'darwin' ? 'Mac' : ''}${kind}`;
+  // A switch where this copy of Rukoo may register itself; elsewhere a static row that says why it can't. Linux has
+  // no switch: the desktop's own startup settings start Rukoo there.
+  const loginRow = () => {
+    const title = esc(t(loginKey('')));
+    const help = esc(t(loginKey('Help')));
+    if (loginState && !loginState.available) {
+      const linux = loginPlatform() === 'linux';
+      return `<div class="row static" data-login>
+        <div class="text"><div class="title">${title}</div>${linux ? '' : `<div class="desc">${help}</div>`}
+        <div class="value">${esc(t(linux ? 'settings.general.openAtLoginLinux' : loginKey('Unavailable')))}</div></div>
+      </div>`;
+    }
+    // macOS keeps a login item waiting until the person allows it under Login Items, also after they turned it off
+    // there. It is registered, so the switch is on and turning it off removes it. The way to allow it takes the place
+    // of the help line, which wraps where a value line would be cut off.
+    const waiting = Boolean(loginState && loginState.approval);
+    const desc = waiting ? esc(t('settings.general.openAtLoginMacApproval')) : help;
+    return row({ title, desc, action: 'open-at-login', toggle: Boolean(loginState && (loginState.on || waiting)) });
+  };
+  // Draws the row again with what the system has now, keeping the keyboard on it. focus: the switch was just used, and
+  // was disabled meanwhile, which took the focus away.
+  const showLogin = async (opts) => {
+    if (!(await loadLogin())) return;
+    const old = page.querySelector('[data-a="open-at-login"], [data-login]');
+    if (!old) return;
+    const focused = (opts && opts.focus === true) || old === document.activeElement;
+    old.outerHTML = loginRow();
+    if (focused) page.querySelector('[data-a="open-at-login"]')?.focus({ preventScroll: true });
+  };
+  window.addEventListener('focus', showLogin);
+
   // ----- agents -----
 
   // { config, status } as shown on the agents page; config never holds secrets.
@@ -538,6 +585,45 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     el.querySelector('.title').textContent = state === 'testing' ? t('settings.agents.testing') : t(`agent.status.${state}`);
     el.querySelector('.agent-detail').textContent = state === 'testing' ? '' : String(s.detail || '');
     el.querySelector('button').disabled = state === 'testing';
+    if (id === agentState.config.defaultAgent) showDefaultAgent();
+  }
+
+  // The Default agent row: the agent and its status ("Hermes · Not set up"), so a person sees why a new chat starts on
+  // another agent while it can't take a message (agent/pick.js). Until the status is in, the name alone.
+  const defaultAgentText = () => {
+    const c = agentState.config;
+    const state = agentStateOf(agentState.status, c.defaultAgent);
+    if (state === 'starting') return agentName(c, c.defaultAgent);
+    return t('settings.agents.defaultValue', { name: agentName(c, c.defaultAgent), status: t(`agent.status.${state}`) });
+  };
+  function showDefaultAgent() {
+    const el = page.querySelector('[data-agent-default]');
+    if (el && agentState) el.textContent = defaultAgentText();
+  }
+
+  // Scrolls the agents page to an agent's card and puts the keyboard in what its state needs (agent/pick.js
+  // setupTarget()): the Use switch of an agent that is turned off, Replace for a saved key it refused, the program path
+  // of one that isn't installed, else its first empty field. The state is this page's own once its status check
+  // answered, else the one the panel showed (shown): the reveal runs on the first draw, before that check is back.
+  function revealAgent(id, shown) {
+    const status = page.querySelector(`[data-agent-status="${CSS.escape(id)}"]`);
+    const card = status && status.closest('.agent-card');
+    if (!card) return;
+    const title = card.previousElementSibling;
+    (title && title.classList.contains('settings-group-title') ? title : card).scrollIntoView({ block: 'start' });
+    const known = agentStateOf(agentState.status, id);
+    const state = known === 'starting' && shown ? shown : known;
+    const controls = {
+      url: card.querySelector(`[data-agent-field="${CSS.escape(`${id}.url`)}"]`),
+      key: card.querySelector(`[data-agent-key="${CSS.escape(id)}"]`),
+      exe: card.querySelector(`[data-agent-field="${CSS.escape(`${id}.exe`)}"]`),
+      replace: card.querySelector(`[data-a="${CSS.escape(`agent-key-replace:${id}`)}"]`),
+      enabled: card.querySelector(`[data-a="${CSS.escape(`agent-enabled:${id}`)}"]`)
+    };
+    const fields = { replace: Boolean(controls.replace) };
+    for (const k of ['url', 'key', 'exe']) if (controls[k]) fields[k] = { empty: !controls[k].value };
+    const target = controls[setupTarget({ state, enabled: agentConf(agentState.config, id).enabled !== false, fields })];
+    if (target) target.focus({ preventScroll: true });
   }
 
   const agentField = (id, key, label, value, placeholder) =>
@@ -776,7 +862,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     return `
       <p class="settings-intro" data-i18n="settings.agents.help">${esc(t('settings.agents.help'))}</p>
       <div class="card">
-        ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(agentName(c, c.defaultAgent))}</span>`, action: 'agent-default' })}
+        ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(defaultAgentText())}</span>`, action: 'agent-default' })}
         ${row({ title: t('settings.agents.shortcuts'), desc: t('settings.agents.shortcutsHelp'), action: 'agent-shortcuts' })}
         ${row({ title: t('settings.agents.permission'), desc: t('settings.agents.permissionHelp'), value: `<span data-agent-permission>${esc(labelOf(PERMISSION, c.permission))}</span>`, action: 'agent-permission' })}
       </div>
@@ -964,7 +1050,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         return go('shortcuts');
       case 'agent-default': {
         const v = await choiceDialog(t('settings.agents.default'), allAgentIds(c).map((x) => ({ value: x, label: agentName(c, x), hint: productOf(c, x) })), c.defaultAgent);
-        if (v && (await updateAgents({ defaultAgent: v }))) b.querySelector('[data-agent-default]').textContent = agentName(agentState.config, v);
+        if (v && (await updateAgents({ defaultAgent: v }))) showDefaultAgent();
         return;
       }
       case 'agent-permission': {
@@ -1120,8 +1206,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (isCustom(id) && key === 'name') return render();
     if ((id === 'clark' || isCustom(id)) && key === 'name') {
       page.querySelectorAll(`[data-agent-name="${id}"]`).forEach((el) => (el.textContent = agentName(agentState.config, id)));
-      const def = page.querySelector('[data-agent-default]');
-      if (def) def.textContent = agentName(agentState.config, agentState.config.defaultAgent);
+      showDefaultAgent();
     }
     if (key === 'url' || key === 'exe' || (id === 'openclaw' && key === 'agent')) testAgent(id);
   }
@@ -1149,6 +1234,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const [agents, updatesState] = await Promise.all([
       view === 'main' || view === 'agents' || view === 'shortcuts' ? loadAgents() : agentState,
       view === 'main' ? api('updatesState').catch(() => updates) : updates,
+      view === 'main' ? loadLogin() : null,
       view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
       view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
       view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
@@ -1232,6 +1318,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
+          ${loginRow()}
           ${mailtoRow()}
           ${row({ title: t('settings.general.undoSend'), desc: t('settings.general.undoSendHelp'), value: labelOf(UNDO_SEND, Number(s.undoSend)), action: 'undo-send' })}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
@@ -1494,6 +1581,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (focused) page.querySelector(`[data-a="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
     if (view === 'agents' && agentState) allAgentIds(agentState.config).forEach((id) => showAgentStatus(id));
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
+    if (view === 'agents' && agentState && revealing) {
+      revealAgent(revealing.id, revealing.state);
+      revealing = null;
+    }
     if (view === 'main') showMailto();
     if (view === 'main' || ACCOUNT_VIEWS.includes(view)) account.fill(view);
     calendarPage.fill(view, page);
@@ -1561,6 +1652,19 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       notices.test = await api('testNotification').catch((err) => ({ result: 'failed', error: err.message }));
       notices.testing = false;
       return render();
+    }
+    if (a === 'open-at-login') {
+      const want = !(loginState && (loginState.on || loginState.approval));
+      b.disabled = true;
+      try {
+        loginState = await api('setOpenAtLogin', want);
+        // The row shows the switch on while macOS waits for approval, so that counts as on: a Mac that still waits
+        // after the switch turned it off kept it as it was.
+        if (Boolean(loginState.on || loginState.approval) !== want) toast(t('settings.general.openAtLoginFailed'), 5000);
+      } catch (err) {
+        toast(err.message, 5000);
+      }
+      return showLogin({ focus: true });
     }
     if (a === 'mailto-use') {
       b.disabled = true;

@@ -120,6 +120,51 @@ fn defaults_follow_the_platform_and_a_development_copy() {
     assert!(!voice_core::config::MACOS_HOTKEYS.contains(&"scroll lock"));
 }
 
+/// A Mac's key lists hold only the keys every Mac keyboard has: a MacBook has no Right Control and
+/// no F13 to F15 (#360). Windows keeps Ownkey's eight.
+#[test]
+fn each_platform_offers_the_keys_its_keyboards_have() {
+    use voice_core::config::{offered_hotkeys, MACOS_HOTKEYS};
+    assert_eq!(MACOS_HOTKEYS, ["right alt", "right command", "right shift"]);
+    if cfg!(target_os = "macos") {
+        assert_eq!(offered_hotkeys(), MACOS_HOTKEYS);
+    } else {
+        assert_eq!(
+            offered_hotkeys(),
+            [
+                "right alt",
+                "right ctrl",
+                "right shift",
+                "f13",
+                "f14",
+                "f15",
+                "pause",
+                "scroll lock"
+            ]
+        );
+    }
+}
+
+/// A key a Mac no longer offers stays when it is already stored, from an extended keyboard or an
+/// earlier Voice: the load never takes a working key away.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_mac_keeps_a_stored_key_it_no_longer_offers() {
+    let cfg = load(json!({
+        "hotkey": "f13",
+        "rewrite_hotkey": "right ctrl",
+        "meetings_stop_key": "f15"
+    }));
+    assert_eq!(
+        (
+            cfg.hotkey.as_str(),
+            cfg.rewrite_hotkey.as_str(),
+            cfg.meetings_stop_key.as_str()
+        ),
+        ("f13", "right ctrl", "f15")
+    );
+}
+
 #[test]
 fn missing_file_gives_defaults_and_first_run() {
     let dir = TempDir::new("config-missing");

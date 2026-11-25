@@ -827,18 +827,28 @@ async function settingsChanged() {
 
 // ---------- events and keys ----------
 
+// A click on a notification, or Open on its toast: that conversation, at that message, and a reply's thread at it.
+function openChatNotice(target) {
+  if (!chat.available()) return;
+  panel?.close();
+  chat.openConversation(target.ws, target.conversation, Number.isSafeInteger(target.seq) ? target.seq : null);
+  pane.gesture = Date.now();
+  showMain();
+}
+
+// The Open button of a chat alert's toast (host.js showChatNotification), for an alert that says where it opens.
+function chatToastAction(target) {
+  if (!target || typeof target.ws !== 'string' || typeof target.conversation !== 'string') return undefined;
+  return { label: t('chat.notify.open'), run: () => openChatNotice(target), shortcut: false };
+}
+
 window.mail.on(({ type, payload }) => {
   // Team chat (contract 4.5). A click on a notification comes as kind 'open': that conversation, at that message.
   if (type === 'chat' && payload && typeof payload === 'object') {
-    if (payload.kind === 'open') {
-      if (!chat.available()) return;
-      panel?.close();
-      chat.openConversation(payload.ws, payload.conversation, Number.isSafeInteger(payload.seq) ? payload.seq : null);
-      pane.gesture = Date.now();
-      showMain();
-    } else chat.onEvent(payload);
+    if (payload.kind === 'open') openChatNotice(payload);
+    else chat.onEvent(payload);
   }
-  if (type === 'chat-toast' && payload) toast(payload.body, { tag: payload.id });
+  if (type === 'chat-toast' && payload) toast(payload.body, { tag: payload.id, action: chatToastAction(payload.open) });
   if (type === 'chat-toast-hide') dropTaggedToast(payload);
   if (type === 'toast') toast(payload);
   if (type === 'language' || type === 'theme') settingsChanged();
