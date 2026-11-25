@@ -207,7 +207,25 @@ function tokens(s) {
 // enough of IMAP for a sync, opening an email, flags, moves, a search of unread mail and IDLE. put() files an email
 // in a folder, also while the app runs, and the next sync finds it. An email: { subject, from: [name, address], date
 // (ms, also its INTERNALDATE), dateHeader (the Date header as sent, which may be text no parser reads), flags, text }.
-function imapMailbox({ email }) {
+// capabilities: what it offers besides its version, rev ('IMAP4rev1', or 'IMAP4rev2' for a server of RFC 9051 only).
+// refuse(fn) turns down with NO each command for which fn(command, selected folder's path) is true, until
+// refuse(null). For a MOVE, fn can also answer 'copied': the server copies the email, says so in an untagged COPYUID
+// and then answers NO, keeping the original; or 'drop': it moves the email and closes the connection before answering.
+// For any other command 'drop' closes the connection before the command does anything.
+// With CONDSTORE among the capabilities (ENABLE comes with it), every email has a MODSEQ that each change of its flags
+// moves on, a client that enables it gets MODSEQ in FETCH answers, and a STORE takes UNCHANGEDSINCE, answering
+// [MODIFIED] for the emails it left alone. Without UIDPLUS, COPY and MOVE give no COPYUID. UID EXPUNGE removes only
+// the uids it names. before(fn) runs fn(command, selected folder, write, later) ahead of each command: another app's
+// change (touch()), or write() for a line the server sends of its own accord, such as a FETCH of another email.
+// later(fn) runs fn(write) after the command's own untagged lines, just before its tagged answer: another session's
+// change while the command runs, such as an EXPUNGE during a FETCH.
+function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'], rev = 'IMAP4rev1' }) {
+  const condstore = capabilities.includes('CONDSTORE');
+  const uidplus = capabilities.includes('UIDPLUS');
+  const caps = [rev, ...capabilities, ...(condstore && !capabilities.includes('ENABLE') ? ['ENABLE'] : [])].join(' ');
+  let refusing = null;
+  let beforeEach = null;
+  let modseq = 100;
   const folders = new Map();
   for (const [p, use] of [['INBOX', null], ['Archive', '\\Archive'], ['Trash', '\\Trash'], ['Sent', '\\Sent'], ['Drafts', '\\Drafts']]) {
     folders.set(p, { path: p, specialUse: use, uidValidity: 7, nextUid: 1, messages: [] });
@@ -218,6 +236,7 @@ function imapMailbox({ email }) {
     const f = folders.get(folder);
     const msg = {
       uid: f.nextUid++,
+      modseq: ++modseq,
       flags: new Set(m.flags || []),
       subject: m.subject,
       from: m.from || ['Sender', 'sender@example.test'],
@@ -233,12 +252,22 @@ function imapMailbox({ email }) {
     const head = [`From: ${m.from[0]} <${m.from[1]}>`, `To: ${email}`, `Subject: ${m.subject}`, `Date: ${m.dateHeader}`, `Message-ID: ${m.messageId}`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: 7bit'].join('\r\n');
     return { head: `${head}\r\n\r\n`, raw: `${head}\r\n\r\n${m.text}` };
   };
-  const items = (m, list) => {
+  // Another app changes an email: fn(message), and its MODSEQ moves on.
+  const touch = (folder, uid, fn) => {
+    const m = folders.get(folder).messages.find((x) => x.uid === uid);
+    fn(m);
+    m.modseq = ++modseq;
+    return m;
+  };
+  const items = (m, list, modseqs = false) => {
     const { head, raw } = source(m);
     const out = [];
     for (const item of list) {
       const upper = item.toUpperCase();
       if (upper === 'UID') out.push(`UID ${m.uid}`);
+      else if (upper === 'MODSEQ') {
+        if (modseqs) out.push(`MODSEQ (${m.modseq})`);
+      }
       else if (upper === 'FLAGS') out.push(`FLAGS (${[...m.flags].join(' ')})`);
       else if (upper === 'INTERNALDATE') out.push(`INTERNALDATE "${imapDate(m.date)}"`);
       else if (upper === 'RFC822.SIZE') out.push(`RFC822.SIZE ${Buffer.byteLength(raw)}`);
@@ -262,11 +291,12 @@ function imapMailbox({ email }) {
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
     socket.setEncoding('utf8');
-    socket.write('* OK [CAPABILITY IMAP4rev1 MOVE UIDPLUS] Test mailbox ready\r\n');
+    socket.write(`* OK [CAPABILITY ${caps}] Test mailbox ready\r\n`);
     let buffer = '';
     let selected = null;
     let idleTag = null;
-    const w = (s) => socket.write(s);
+    let modseqs = false;
+    const send = (s) => socket.write(s);
     const pick = (byUid, set) => {
       const msgs = selected ? selected.messages : [];
       const ids = inSet(set, byUid ? msgs.map((m) => m.uid) : msgs.map((_, i) => i + 1));
@@ -275,7 +305,7 @@ function imapMailbox({ email }) {
     const handle = (line) => {
       if (idleTag) {
         if (line.trim().toUpperCase() === 'DONE') {
-          w(`${idleTag} OK IDLE terminated\r\n`);
+          send(`${idleTag} OK IDLE terminated\r\n`);
           idleTag = null;
         }
         return;
@@ -283,6 +313,16 @@ function imapMailbox({ email }) {
       const sp = line.indexOf(' ');
       if (sp < 0) return;
       const tag = line.slice(0, sp);
+      // What before()'s later(fn) queued runs just ahead of this command's tagged answer, after its own untagged lines.
+      const late = [];
+      const w = (s) => {
+        let at = s.startsWith(`${tag} `) ? 0 : s.indexOf(`\r\n${tag} `);
+        if (at > 0) at += 2;
+        if (at < 0 || !late.length) return send(s);
+        send(s.slice(0, at));
+        for (const fn of late.splice(0)) fn(send);
+        return send(s.slice(at));
+      };
       const all = line.slice(sp + 1);
       let [cmd, ...rest] = all.split(' ');
       let args = rest.join(' ');
@@ -293,9 +333,21 @@ function imapMailbox({ email }) {
       }
       const C = cmd.toUpperCase();
       if (C !== 'LOGIN') commands.push(all);
+      if (beforeEach) beforeEach(all, selected && selected.path, send, (fn) => late.push(fn));
+      const refusal = refusing && refusing(all, selected && selected.path);
+      if (refusal === 'drop' && C !== 'MOVE') return socket.destroy();
+      if (refusal && !(C === 'MOVE' && (refusal === 'copied' || refusal === 'drop'))) return w(`${tag} NO Not allowed\r\n`);
       switch (C) {
+        case 'ENABLE': {
+          const on = tokens(args).filter((x) => condstore && x.toUpperCase() === 'CONDSTORE');
+          if (on.length) modseqs = true;
+          return w(`* ENABLED${on.length ? ' CONDSTORE' : ''}\r\n${tag} OK ENABLE completed\r\n`);
+        }
         case 'CAPABILITY':
-          return w(`* CAPABILITY IMAP4rev1 MOVE UIDPLUS\r\n${tag} OK CAPABILITY completed\r\n`);
+          return w(`* CAPABILITY ${caps}\r\n${tag} OK CAPABILITY completed\r\n`);
+        // Part of IMAP4rev2, so imapflow asks a server of that version.
+        case 'NAMESPACE':
+          return w(`* NAMESPACE (("" "/")) NIL NIL\r\n${tag} OK NAMESPACE completed\r\n`);
         case 'LOGOUT':
           return socket.end(`* BYE Logging out\r\n${tag} OK LOGOUT completed\r\n`);
         case 'LIST':
@@ -314,6 +366,7 @@ function imapMailbox({ email }) {
           return w(
             `* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)] Flags permitted\r\n` +
               `* ${f.messages.length} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY ${f.uidValidity}] UIDs valid\r\n* OK [UIDNEXT ${f.nextUid}] Predicted next UID\r\n` +
+              (modseqs ? `* OK [HIGHESTMODSEQ ${modseq}] Highest\r\n` : '') +
               `${tag} OK [${C === 'EXAMINE' ? 'READ-ONLY' : 'READ-WRITE'}] ${C} completed\r\n`
           );
         }
@@ -327,21 +380,32 @@ function imapMailbox({ email }) {
           const at = args.indexOf(' ');
           const asked = args.slice(at + 1).replace(/^\(|\)$/g, '').match(/BODY(?:\.PEEK)?\[[^\]]*\](?:<[\d.]+>)?|[^\s()]+/gi) || [];
           for (const m of pick(byUid, args.slice(0, at))) {
-            w(`* ${selected.messages.indexOf(m) + 1} FETCH (${items(m, byUid ? ['UID', ...asked.filter((x) => x.toUpperCase() !== 'UID')] : asked)})\r\n`);
+            w(`* ${selected.messages.indexOf(m) + 1} FETCH (${items(m, byUid ? ['UID', ...asked.filter((x) => x.toUpperCase() !== 'UID')] : asked, modseqs)})\r\n`);
           }
           return w(`${tag} OK ${byUid ? 'UID FETCH' : 'FETCH'} completed\r\n`);
         }
         case 'STORE': {
-          const s = /^(\S+)\s+([+-]?)FLAGS(\.SILENT)?\s+\(?([^)]*)\)?/i.exec(args);
-          if (!s) return w(`${tag} BAD\r\n`);
-          const flags = s[4].split(/\s+/).filter(Boolean);
+          const s = /^(\S+)\s+(?:\(UNCHANGEDSINCE\s+(\d+)\)\s+)?([+-]?)FLAGS(\.SILENT)?\s+\(?([^)]*)\)?$/i.exec(args);
+          if (!s || (s[2] && !modseqs)) return w(`${tag} BAD\r\n`);
+          const flags = s[5].split(/\s+/).filter(Boolean);
+          const modified = [];
           for (const m of pick(byUid, s[1])) {
-            if (s[2] === '+') flags.forEach((f) => m.flags.add(f));
-            else if (s[2] === '-') flags.forEach((f) => m.flags.delete(f));
+            if (s[2] && m.modseq > Number(s[2])) {
+              modified.push(byUid ? m.uid : selected.messages.indexOf(m) + 1);
+              continue;
+            }
+            const was = [...m.flags].sort().join(' ');
+            if (s[3] === '+') flags.forEach((f) => m.flags.add(f));
+            else if (s[3] === '-') flags.forEach((f) => m.flags.delete(f));
             else m.flags = new Set(flags);
-            if (!s[3]) w(`* ${selected.messages.indexOf(m) + 1} FETCH (UID ${m.uid} FLAGS (${[...m.flags].join(' ')}))\r\n`);
+            if ([...m.flags].sort().join(' ') !== was) m.modseq = ++modseq;
+            // With CONDSTORE the new MODSEQ comes even for .SILENT (RFC 7162 section 3.1.3).
+            if (!s[4] || modseqs) {
+              const parts = [`UID ${m.uid}`, ...(s[4] ? [] : [`FLAGS (${[...m.flags].join(' ')})`]), ...(modseqs ? [`MODSEQ (${m.modseq})`] : [])];
+              w(`* ${selected.messages.indexOf(m) + 1} FETCH (${parts.join(' ')})\r\n`);
+            }
           }
-          return w(`${tag} OK STORE completed\r\n`);
+          return w(`${tag} OK ${modified.length ? `[MODIFIED ${modified.join(',')}] Conditional STORE failed` : 'STORE completed'}\r\n`);
         }
         case 'MOVE':
         case 'COPY': {
@@ -352,24 +416,27 @@ function imapMailbox({ email }) {
           const src = [];
           const dst = [];
           for (const m of msgs) {
-            const copy = { ...m, flags: new Set(m.flags), uid: dest.nextUid++ };
+            const copy = { ...m, flags: new Set(m.flags), uid: dest.nextUid++, modseq: ++modseq };
             dest.messages.push(copy);
             src.push(m.uid);
             dst.push(copy.uid);
           }
-          const code = `COPYUID ${dest.uidValidity} ${src.join(',')} ${dst.join(',')}`;
-          if (C === 'COPY') return w(`${tag} OK [${code}] COPY completed\r\n`);
-          w(`* OK [${code}] Moved\r\n`);
+          const code = uidplus ? `[COPYUID ${dest.uidValidity} ${src.join(',')} ${dst.join(',')}] ` : '';
+          if (C === 'COPY') return w(`${tag} OK ${code}COPY completed\r\n`);
+          if (code) w(`* OK ${code}Moved\r\n`);
+          if (refusal === 'copied') return w(`${tag} NO Couldn't remove the original\r\n`);
           for (const seq of msgs.map((m) => selected.messages.indexOf(m) + 1).sort((a, b) => b - a)) {
             selected.messages.splice(seq - 1, 1);
             w(`* ${seq} EXPUNGE\r\n`);
           }
+          if (refusal === 'drop') return socket.destroy();
           return w(`${tag} OK MOVE completed\r\n`);
         }
         case 'EXPUNGE': {
           if (!selected) return w(`${tag} OK\r\n`);
+          const only = byUid ? inSet(args.trim(), selected.messages.map((m) => m.uid)) : null;
           for (let i = selected.messages.length - 1; i >= 0; i--) {
-            if (selected.messages[i].flags.has('\\Deleted')) {
+            if (selected.messages[i].flags.has('\\Deleted') && (!only || only.has(selected.messages[i].uid))) {
               selected.messages.splice(i, 1);
               w(`* ${i + 1} EXPUNGE\r\n`);
             }
@@ -425,6 +492,13 @@ function imapMailbox({ email }) {
         folders,
         commands,
         put,
+        touch,
+        refuse: (fn) => {
+          refusing = fn;
+        },
+        before: (fn) => {
+          beforeEach = fn;
+        },
         close: () =>
           new Promise((done) => {
             for (const s of sockets) s.destroy();

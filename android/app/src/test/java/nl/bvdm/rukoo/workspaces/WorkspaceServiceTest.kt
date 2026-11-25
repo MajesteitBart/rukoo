@@ -474,6 +474,9 @@ class WorkspaceServiceTest {
             feedGate.await()
             ok(FeedPage.serializer(), feed(room(head = 5, unread = 3), next = "c1"))
         }
+        // The channel's unread messages get the one page an alert may load for replies to the person (issue #376).
+        val events = EventsRoute((1L..5L).map { msg(it) })
+        h.http.on("GET", h.route(ws, "/conversations/${Ids.GENERAL}/events")) { events.answer(it) }
         h.account.signIn("mine")
         val s = h.start()
         val cached = s.state.until("the cached workspace") { it.workspaces.isNotEmpty() }

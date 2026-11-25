@@ -534,26 +534,34 @@ async function serveChatFile(request) {
 // desktop notification whose click opens the conversation at the message.
 const chatNotices = new Map();
 
-// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
-function openChatNotice(open) {
+// Where a chat notification opens, checked: { kind: 'open', ws, conversation, seq }, ws or conversation null when not
+// valid.
+function chatNoticeTarget(open) {
   const o = plainObject(open);
   const id = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
-  const payload = {
+  return {
     kind: 'open',
     ws: id(o.ws, /^w_[A-Za-z0-9_-]{22}$/),
     conversation: id(o.conversation, /^c_[A-Za-z0-9_-]{22}$/),
     seq: Number.isSafeInteger(o.seq) && o.seq >= 0 ? o.seq : null
   };
+}
+
+// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
+function openChatNotice(open) {
+  const payload = chatNoticeTarget(open);
   showWindow();
   if (payload.ws && payload.conversation) send('chat', payload);
 }
 
 // A toast carries the alert's id, so taking the alert back (a read, a removal, an eviction, signing out) takes the toast
-// down too when it still shows.
+// down too when it still shows, and where the alert opens: the toast's Open goes there as a notification's click does
+// (app.js), such as a reply's thread.
 function showChatNotification({ id, title, body, open } = {}) {
   const key = String(id || '').slice(0, 200);
   if (win && !win.isDestroyed() && win.isFocused()) {
-    send('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
+    const target = chatNoticeTarget(open);
+    send('chat-toast', { id: key, body: String(body || '').slice(0, 200), open: target.ws && target.conversation ? target : null });
     return;
   }
   if (screenRecording()) {
@@ -846,6 +854,10 @@ function endSession() {
       })
       .catch(() => {});
   }
+  // Moves, deletes and Undos send no further email; once the one on its way settles, the cache is saved again with
+  // the rows of the rest.
+  const batches = engine.stopBatches();
+  if (batches) batches.then(() => engine.flush()).catch(() => {});
   engine.flush();
   if (calendars) calendars.flush();
   closeServices();
@@ -997,6 +1009,8 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The emails of a batch from the renderer (moveMany, removeMany, undoMany), as setFlagsMany takes them.
+const mailIds = (ids) => (Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000));
 // The list a call about older mail is for: scope, view, folder and search, as the renderer lists them. resume: the
 // server search goes on with the next folders (engine.searchServer()).
 const olderOpts = (o) => {
@@ -1276,6 +1290,11 @@ const api = {
   setFlagsMany: (ids, flags) => engine.setFlagsMany((Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000)), plainObject(flags)),
   move: (id, dest) => engine.move(id, dest),
   remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
+  // Many emails at once: one batch to the server per folder. Each answers per id, in the order given (engine.js
+  // moveMany, removeMany, undoMany).
+  moveMany: (ids, dest) => engine.moveMany(mailIds(ids), accountText(dest, 1000)),
+  removeMany: (ids, opts) => engine.removeMany(mailIds(ids), { force: Boolean(opts && opts.force === true) }),
+  undoMany: (ids) => engine.undoMany(mailIds(ids)),
   emptyFolder: (accountId, folder) => engine.emptyFolder(accountId, folder),
   toggleVip: (address) => engine.toggleVip(address),
   markSpam: (id) => engine.markSpam(id),
@@ -1785,6 +1804,9 @@ const api = {
 // ---- agents ----
 // The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
 const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The longest message text a chat takes; anything longer is cut. The chat panel refuses longer text before Send clears
+// the input (TEXT_MAX in src/renderer/agent/pick.js, the same number).
+const AGENT_TEXT_MAX = 20000;
 const agentId = (v) => {
   if (typeof v !== 'string' || !v || v.length > 200) throw new Error('invalid');
   return v;
@@ -1886,9 +1908,9 @@ Object.assign(api, {
   agentSend: (id, input) => {
     const i = agentPlain(input);
     return agentHub().send(agentId(id), {
-      text: agentText(i.text, 20000),
+      text: agentText(i.text, AGENT_TEXT_MAX),
       action: agentText(i.action, 40) || null,
-      display: agentText(i.display, 20000) || null,
+      display: agentText(i.display, AGENT_TEXT_MAX) || null,
       skill: agentText(i.skill, 64) || null,
       // Tokens of staged files (agentPickFiles, agentAddFile) and Rukoo ids of emails.
       files: agentList(i.files).map(agentId),
@@ -2134,9 +2156,12 @@ const windowApi = {
 
 // Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
 // setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
-// page. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
-// reads a code as one of the agent's own.
-const WINDOW_CODES = new Set(['auth']);
+// page. 'uncertain': nobody knows what the server did with a move or delete until the folders sync (engine.js
+// notMoved), which the message list counts apart from an email that stayed. 'rebuilt': an Undo whose folder was
+// rebuilt on the server, which it counts as not confirmed with this reason (engine.js undoAll). Other codes stay here:
+// Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which reads a code as one of the
+// agent's own.
+const WINDOW_CODES = new Set(['auth', 'uncertain', 'rebuilt']);
 
 // What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
 // Booking errors (booking/rules.js bookingError) pass their code, and for a refused field its name (contracts f).
@@ -2631,7 +2656,9 @@ let quitWaited = false;
 let quitSending = false;
 app.on('will-quit', (event) => {
   if (quitSending) return event.preventDefault();
-  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length)) return;
+  // Moves, deletes and Undos send no further email; the one on its way settles within the wait below.
+  const batches = engine ? engine.stopBatches() : null;
+  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length && !batches)) return;
   quitWaited = true;
   event.preventDefault();
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2645,12 +2672,14 @@ app.on('will-quit', (event) => {
     quitSending = false;
   });
   const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
+  // The rows of the emails a stopped batch didn't send are back in the cache once it settles, and saved with it.
+  const moves = batches ? Promise.race([batches, wait(QUIT_WAIT)]).then(() => engine.flush()) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
   // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
   // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
   // installs, since Check now can still download one.
-  Promise.all([mail, agents]).finally(() => {
+  Promise.all([mail, agents, moves]).finally(() => {
     const offered = updates && updates.available;
     if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
       installer.install({ restart: restartForUpdate });
