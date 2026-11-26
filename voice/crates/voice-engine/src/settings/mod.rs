@@ -678,6 +678,9 @@ fn change_secret(
 ) -> Result<(), ApiError> {
     let sync = bucket_sync(core)?;
     let result = {
+        // After an apply of another computer's settings, never in the middle of one: its commit
+        // would turn sync on with this secret and the test it ran for its own.
+        let _apply = lock(&core.sync_rt.apply);
         let _secret = lock(&core.sync_rt.secret);
         core.commit(|cfg| {
             keys::untest_sync(cfg);
@@ -727,6 +730,8 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
             }
             let sync = bucket_sync(core)?;
             let imported = {
+                // After an apply of another computer's settings, as for the secret.
+                let _apply = lock(&core.sync_rt.apply);
                 let _key = lock(&core.sync_rt.key);
                 sync.import_key(code)
             };

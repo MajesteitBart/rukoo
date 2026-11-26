@@ -157,7 +157,8 @@ pub(crate) struct SyncRuntime {
     /// connection to changing the secret, and while a passed test commits.
     pub secret: Mutex<()>,
     /// Held while settings from another computer are applied (`sync.settings.set`): one at a
-    /// time, as each keeps a journal of what it replaces.
+    /// time, as each keeps a journal of what it replaces. Settings' own key import and secret
+    /// changes take it too, before `key` or `secret`, so they never land in the middle of one.
     pub apply: Mutex<()>,
 }
 

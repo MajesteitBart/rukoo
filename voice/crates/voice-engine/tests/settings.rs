@@ -1576,6 +1576,70 @@ fn read_while_paused(
     })
 }
 
+/// The user imports a key or saves a secret in Voice's Settings while another computer's
+/// settings are applied, after the apply took its key: the change waits until the apply is whole,
+/// so the apply never turns sync on with a key or a secret it didn't test.
+#[test]
+fn voice_s_own_key_and_secret_wait_for_another_computer_s_settings() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    for change in ["import", "secret"] {
+        let (second, _flaky) = flaky_harness(&format!("sync-share-native-{change}"));
+        let b = second.start();
+        own_bucket(&b, &fake);
+        let own = support::shared_sync_settings(&b);
+        let control = b.meeting_control().unwrap();
+        let (reached_tx, reached) = std::sync::mpsc::channel();
+        let (go, go_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let (applied, early, answer) = std::thread::scope(|scope| {
+            let control = &*control;
+            let shared = &shared;
+            let applying = scope.spawn(move || {
+                voice_sync::stops::pause_after("apply:key", reached_tx, go_rx);
+                control.use_sync_settings(shared)
+            });
+            let paused = reached.recv_timeout(Duration::from_secs(60));
+            let b = &b;
+            let own_key = own.key.clone();
+            scope.spawn(move || {
+                let answer = match change {
+                    "import" => b.settings_sync_key("import", Some(own_key)).map(|_| ()),
+                    _ => b.settings_sync_save_secret("a-secret-typed-meanwhile".into()),
+                };
+                let _ = done_tx.send(answer);
+            });
+            let early = done.recv_timeout(Duration::from_millis(500)).is_ok();
+            drop(go);
+            let applied = applying.join().unwrap();
+            paused.expect("the apply never reached apply:key");
+            let answer = done.recv_timeout(Duration::from_secs(60));
+            (applied, early, answer)
+        });
+        assert!(!early, "{change} went ahead in the middle of the apply");
+        applied.expect("the apply");
+        answer
+            .expect("the change after the apply")
+            .unwrap_or_else(|e| panic!("{change}: {}", e.message));
+        if change == "import" {
+            let now = support::shared_sync_settings(&b);
+            assert_eq!(now.key, own.key, "the key imported after the apply");
+        } else {
+            // The secret came after the apply's passed test, so it waits for a test of its own.
+            assert!(
+                saved_sync(&second)["tested"].is_null(),
+                "{}",
+                saved_sync(&second)
+            );
+            assert_eq!(control.sync_settings().unwrap(), None);
+        }
+        drop(control);
+        b.shutdown();
+    }
+    a.shutdown();
+    fake.stop();
+}
+
 /// Rukoo reads Voice's settings while `sync.settings.set` runs beside the bridge's queue (after
 /// its own wait timed out, say): halfway through the apply, the secret or the key is new while
 /// the bucket is still the old one. Voice refuses until the settings are whole again, new or put
