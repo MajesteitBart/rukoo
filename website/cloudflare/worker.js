@@ -5,7 +5,9 @@
 // The account API under /v1 has no site file, so it goes to the account server without looking for one: a sync or
 // chat request then costs one hop less, and a WebSocket upgrade reaches the server that answers it.
 // Rukoo in the browser lives under /app, and a workspace invitation link at /join leads there (web-app.js).
+// The help center lives under /help (help-center.js).
 import { PATH as EARLY_ACCESS, earlyAccess } from './early-access.js';
+import { helpResponse, isHelpPath } from './help-center.js';
 import { appResponse, isAppPath, joinResponse } from './web-app.js';
 
 export default {
@@ -21,6 +23,7 @@ export default {
     }
     if (url.pathname === '/v1' || url.pathname.startsWith('/v1/')) return env.ACCOUNT.fetch(request);
     if (isAppPath(url.pathname)) return appResponse(request, env, url);
+    if (isHelpPath(url.pathname)) return helpResponse(request, env, url);
     const reading = request.method === 'GET' || request.method === 'HEAD';
     if (url.pathname === '/join' && reading) return joinResponse(request, env);
     if (reading) {
