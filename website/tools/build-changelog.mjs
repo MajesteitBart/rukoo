@@ -190,7 +190,7 @@ const pageHtml = (entries, bodies) => `<!doctype html>
         <li class="nav-wide"><a href="/#booking">Booking</a></li>
         <li><a href="/pricing">Pricing</a></li>
         <li><a href="/#faq">FAQ</a></li>
-        <li><a href="/help/">Help</a></li>
+        <li><a href="https://help.rukoo.io/">Help</a></li>
         <li><a href="/changelog/" aria-current="page">Changelog</a></li>
       </ul>
       <div class="nav-end">
@@ -240,7 +240,7 @@ ${entries.map((e, i) => entryHtml(e, bodies[i])).join('\n\n')}
       <nav aria-label="Footer">
         <a href="https://github.com/MajesteitBart/rukoo">GitHub</a>
         <a href="https://github.com/MajesteitBart/rukoo/issues">Issues</a>
-        <a href="/help/">Help</a>
+        <a href="https://help.rukoo.io/">Help</a>
         <a href="/changelog/">Changelog</a>
         <a href="/pricing">Pricing</a>
         <a href="/privacy">Privacy statement</a>

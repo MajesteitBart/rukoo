@@ -12,7 +12,7 @@
     "preview": "node scripts/astro.mjs preview --host 127.0.0.1",
     "validate": "node scripts/validate.mjs && node scripts/check-source-map.mjs",
     "check:output": "node scripts/check-output.mjs",
-    "test": "node scripts/test-validators.mjs && node scripts/test-source-map.mjs && node --test scripts/markdown-base.test.mjs scripts/markdown-keys.test.mjs scripts/publish.test.mjs"
+    "test": "node scripts/test-validators.mjs && node scripts/test-source-map.mjs && node --test scripts/markdown-keys.test.mjs scripts/publish.test.mjs"
   },
   "dependencies": {
     "@astrojs/markdown-satteri": "0.4.10",

@@ -6,7 +6,7 @@ import { inlineScripts, pagePolicies, pagePolicy, scriptHash, withPolicy } from 
 
 const sha = (s) => `'sha256-${crypto.createHash('sha256').update(s).digest('base64')}'`;
 const page = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>T</title><script>a()</script>'
-  + '<script type="module" src="/help/_astro/x.js"></script><script type="module">b()</script><script> </script></head>'
+  + '<script type="module" src="/_astro/x.js"></script><script type="module">b()</script><script> </script></head>'
   + '<body><script aria-hidden="true">a()</script></body></html>';
 
 test('inline scripts are the ones with a body and without src', () => {
@@ -31,9 +31,9 @@ test('the policy goes right after <meta charset>, before every script, and a reb
 
 test("Astro's redirect pages, which have no <head> tag, get the policy right after the doctype", () => {
   // The shape of redirectTemplate() in astro/dist/core/routing/3xx.js, which a `redirects` entry in astro.config.mjs uses.
-  const redirect = '<!doctype html>\n<title>Redirecting to: /help/mail/write/</title>\n'
-    + '<meta http-equiv="refresh" content="0;url=/help/mail/write/">\n<link rel="canonical" href="https://rukoo.io/help/mail/write/">\n'
-    + '<body>\n\t<a href="/help/mail/write/">Redirecting to <code>/help/mail/write/</code></a>\n</body>';
+  const redirect = '<!doctype html>\n<title>Redirecting to: /mail/write/</title>\n'
+    + '<meta http-equiv="refresh" content="0;url=/mail/write/">\n<link rel="canonical" href="https://help.rukoo.io/mail/write/">\n'
+    + '<body>\n\t<a href="/mail/write/">Redirecting to <code>/mail/write/</code></a>\n</body>';
   const out = withPolicy(redirect);
   assert.ok(out.startsWith(`<!doctype html><meta http-equiv="Content-Security-Policy" content="script-src 'self' 'wasm-unsafe-eval'">\n<title>`));
   assert.equal(withPolicy(out), out);

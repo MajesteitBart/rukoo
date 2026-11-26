@@ -1,5 +1,5 @@
-/* The help center uses the type and dark colors of rukoo.io (site/styles.css). The Inter files are the main site's,
-   served from /assets/fonts/ on the same origin. Like the main site it is one dark canvas, with hairlines between
+/* The help center uses the type and dark colors of rukoo.io (site/styles.css). The Inter files are the main site's;
+   scripts/publish.mjs copies them into the build, so help.rukoo.io serves them from /assets/fonts/ itself. Like the main site it is one dark canvas, with hairlines between
    the header, the sidebar and the page. Light mode follows the same rules with Starlight's light grays.
    Accent: --green #16f0a3 from the site. Light controls use the darker #087e5b for contrast.
    Wordmarks follow the tagged public artwork. */
@@ -154,7 +154,7 @@ h1#_top { font-weight: 650; letter-spacing: -0.02em; text-wrap: balance; }
   transition: text-decoration-color 120ms ease, color 120ms ease;
 }
 .sl-markdown-content a:hover { color: var(--rk-link-hover); text-decoration-color: currentColor; }
-/* A link that leaves rukoo.io says so. */
+/* A link that leaves the help center says so. */
 .sl-markdown-content a[href^='http']::after { content: '↗'; content: '↗' / ''; display: inline-block; margin-inline-start: 0.15em; font-size: 0.8em; text-decoration: none; }
 
 /* ---------- lists ---------- */
