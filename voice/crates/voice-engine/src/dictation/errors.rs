@@ -91,7 +91,14 @@ mod tests {
             (
                 error(
                     ErrorKind::Auth,
-                    "No audio API key set. Open Settings > Transcription and add a key.",
+                    "No Mistral API key set. Add it in Settings > API keys.",
+                ),
+                NO_KEY,
+            ),
+            (
+                error(
+                    ErrorKind::Config,
+                    "No Mistral API key set for meeting transcription. Add it in Settings > API keys.",
                 ),
                 NO_KEY,
             ),

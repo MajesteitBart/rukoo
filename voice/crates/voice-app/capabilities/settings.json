@@ -8,6 +8,7 @@
     "allow-settings-state",
     "allow-settings-set",
     "allow-settings-save-provider",
+    "allow-settings-save-key",
     "allow-settings-remove-key",
     "allow-settings-list-models",
     "allow-settings-model",

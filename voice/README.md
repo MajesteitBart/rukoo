@@ -93,7 +93,7 @@ An agent never reads the bucket. It asks Rukoo for a link, and the link points a
 
 ## Coming from Ownkey for Windows
 
-On its first start, Voice imports Ownkey's settings and uses the speech models Ownkey already downloaded, so you don't download them again. Ownkey for Windows has no update check, so Voice has an opt-in update check from its first release. Ownkey Keyboard for Android keeps its name and works on its own.
+On its first start, Voice imports Ownkey's settings, its API keys included, one per provider, and uses the speech models Ownkey already downloaded, so you don't download them again. Ownkey for Windows has no update check, so Voice has an opt-in update check from its first release. Ownkey Keyboard for Android keeps its name and works on its own.
 
 ## Installing a Mac build
 
@@ -112,6 +112,8 @@ Voice is a Rust workspace with five processes. The recorder, `rukoo-voice-record
 The bridge between Voice and Rukoo is specified in [PROTOCOL.md](PROTOCOL.md), with examples both apps test against in `fixtures/`.
 
 Meeting transcription runs on this computer with Orukeet unless you pick a cloud provider in Settings. A cloud provider gets meeting audio only after you agree to it for that provider and server. Without that agreement, a meeting still records and its transcription waits.
+
+You enter a provider's API key once, in Settings › API keys, and dictation, rewriting and meeting transcription use it whenever they use that provider. Each feature still picks its own provider and model. A key never picks a provider, so a Mistral key doesn't send meetings to Mistral: meeting audio still waits for its own agreement, as above. Only on a first setup, before any key is saved and while dictation is still on Orukeet without its model, does saving a key offer, ticked, to use that provider for dictation in the same step. A provider's key goes only to that provider's own HTTPS servers, such as `api.mistral.ai`, and Voice never follows a redirect on a request that carries a key. A feature pointed at any other server, such as Ollama on this computer, a proxy or a custom server, keeps a key of its own for that server, entered in its form. Settings from before keys were shared are migrated once and keep every key. The first feature's key for a provider becomes that provider's key, in the order dictation, rewriting, meetings. A feature that had a different key for the same provider keeps sending it, also when you later save or remove that provider's key, until you switch the feature to it. `config.json` still holds the key each feature sends where older versions of Voice read it, so going back to an older Voice keeps everything working, and a key removed there stays removed after the upgrade.
 
 ## What 0.1 leaves out
 

@@ -94,7 +94,7 @@ What the page shows:
 | `meeting`, `processing` | | spinner, "Saving" |
 | `meeting`, `failed` | `pill.meetingFailed` | red x on a red tint, "Couldn't save the meeting" |
 
-`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. Decision 7's `SendInput` shortfall → `pill.error.blocked`, and macOS's missing Accessibility grant, which stops both typing and reading the selection, → `pill.error.accessibility`.
+`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. A missing key's notification names the provider and the one place to add it, such as "No Mistral API key set. Add it in Settings > API keys.". For an endpoint outside the provider's own hosts (`providers.keyHosts`), such as a proxy, it names that server and the feature's form instead: "No API key set for proxy.example.com. Add it in Settings > Transcription.". The next time Settings opens or comes forward without a page of its own, from the tray or by opening Voice again, it goes to that page, `keys` or the feature's form; an open window gets `settings://page`. A provider that answers with a redirect gets an error, `provider`, that names where it pointed: Voice never follows a redirect on a provider request, because the request carries the key. The notification itself has no click action: a click on a Windows balloon goes to the tray icon's own window, and a macOS notification needs a notification center delegate, which Voice doesn't have. Decision 7's `SendInput` shortfall → `pill.error.blocked`, and macOS's missing Accessibility grant, which stops both typing and reading the selection, → `pill.error.accessibility`.
 
 ### Event `pill://level`
 
@@ -149,7 +149,11 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 
 Window `settings`, `settings.html`, 760 × 680, minimum 480 × 480, native decorations. The app sets the window's background to the theme's `--bg` (`#141519` dark, `#f3f4f6` light) before the page loads, so it doesn't flash white.
 
-The page can open at a page or a group: `settings.html?page=<page>`, where `<page>` is `transcription`, `dictionary`, `fillers`, `rewriting`, `meetingTranscription`, `speakers`, `storage`, `rukoo` or `import`, or one of the top page's groups `status`, `dictation`, `meetings`, `general`, `permissions`, `about`. The app can use it to open Settings at the import after the first start.
+The page can open at a page or a group: `settings.html?page=<page>`, where `<page>` is `keys`, `transcription`, `dictionary`, `fillers`, `rewriting`, `meetingTranscription`, `speakers`, `storage`, `rukoo` or `import`, or one of the top page's groups `status`, `dictation`, `meetings`, `general`, `permissions`, `about`. The app can use it to open Settings at the import after the first start.
+
+### Event `settings://page`
+
+`{ "page": "keys" }`, a page or group from the list above. The app sends it to an open Settings window that it brings forward for a page, such as API keys after a dictation without a key. The page goes there as if the user opened it, so Back returns to where they were; an unknown page changes nothing.
 
 ### Command `settings_state`
 
@@ -172,24 +176,27 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "locale": "en",
   "config": {
     "dictation": { "hotkey": "right alt", "rewriteHotkey": "right ctrl", "pasteMode": true, "readyChime": false, "startAtLogin": true },
-    "transcription": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "language": "auto", "keySaved": false },
+    "transcription": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "language": "auto", "keySaved": false, "ownKey": false },
     "local": { "modelFolder": "", "idleMinutes": 20 },
     "dictionary": { "vocabulary": ["Rukoo"], "corrections": [{ "from": "rocco", "to": "Rukoo" }] },
     "fillers": { "enabled": true, "languages": ["en", "nl"], "custom": "" },
-    "rewriting": { "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "model": "mistral-small-latest", "keySaved": true, "auto": false, "tone": "auto", "formatting": true, "instructions": "" },
-    "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "frames", "liveSpeakers": true },
+    "rewriting": { "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "model": "mistral-small-latest", "keySaved": true, "ownKey": false, "auto": false, "tone": "auto", "formatting": true, "instructions": "" },
+    "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "ownKey": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "frames", "liveSpeakers": true },
     "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
     "updates": { "check": false },
+    "apiKeys": { "openai": { "saved": false }, "anthropic": { "saved": false }, "google": { "saved": false }, "mistral": { "saved": true }, "ollama": { "saved": false }, "openrouter": { "saved": false } },
     "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "retention": "keep", "secretSaved": false, "tested": false, "secret": "" } }
   },
   "providers": {
     "audio": [
-      { "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"], "streamingPrefix": null },
-      { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/audio/transcriptions"], "streamingPrefix": "voxtral-mini-transcribe-realtime" }
+      { "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"], "streamingPrefix": null, "defaultModel": null },
+      { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/audio/transcriptions"], "streamingPrefix": "voxtral-mini-transcribe-realtime", "defaultModel": "voxtral-mini-latest" }
     ],
-    "rewrite": [{ "id": "openai", "endpoints": ["https://api.openai.com/v1/responses", "https://api.openai.com/v1/chat/completions"] }]
+    "rewrite": [{ "id": "openai", "endpoints": ["https://api.openai.com/v1/responses", "https://api.openai.com/v1/chat/completions"], "defaultModel": null }],
+    "keys": ["openai", "anthropic", "google", "mistral", "ollama", "openrouter"],
+    "keyHosts": { "openai": ["api.openai.com"], "anthropic": ["api.anthropic.com"], "google": ["generativelanguage.googleapis.com"], "mistral": ["api.mistral.ai"], "ollama": ["ollama.com"], "openrouter": ["openrouter.ai"] }
   },
-  "dictation": { "status": "ready" },
+  "dictation": { "status": "ready", "firstSetup": false },
   "rukoo": { "state": "connected", "clientVersion": "2.2.0", "protocol": 1, "port": 49821, "discoveryPath": "C:\\Users\\…\\Rukoo Voice\\bridge.json", "behind": 0 },
   "models": { "orukeet": "ModelState", "nemotron": "ModelState" },
   "speakers": "SpeakersState",
@@ -226,10 +233,14 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `callSound` | macOS only, like `permissions`. What the last meeting's call track showed while Voice runs: `heard` once it recorded sound, `silent` when it held only exact silence for a minute while another app had its audio output open (a hint: the permission may be off, or nobody talked), `null` before either. In every macOS state, also one built while Settings is closed. The System Audio Recording row then says to check the switch. |
 | `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
 | `theme`, `locale` | `ui.theme` and `ui.language` resolved: `light` or `dark`, `en` or `nl`. The page follows these, never the raw setting. |
-| `config` | Every setting, see below. API keys appear only as `keySaved` flags and the bucket secret only as `storage.sync.secretSaved`; `storage.sync.secret` is always `""`. |
+| `config` | Every setting, see below. API keys appear only as `keySaved`, `ownKey` and `apiKeys.<provider>.saved` flags, and the bucket secret only as `storage.sync.secretSaved`; `storage.sync.secret` is always `""`. |
 | `providers` | Voice-core's provider registry in Ownkey's order (ownkey-providers.md 2): `audio` is OpenAI, Google, Mistral, Custom, Orukeet; `rewrite` is OpenAI, Anthropic, Google, Mistral, Ollama, OpenRouter, Custom. `endpoints` are the presets, the first is the default. The page translates the labels of `custom` and `orukeet` and shows the brand names for the rest. |
+| `providers.keys` | The providers whose API key is entered once, on the API keys page (`settings.html?page=keys`), and sent by every feature that uses the provider at one of its own hosts: OpenAI, Anthropic, Google, Mistral, Ollama and OpenRouter. A custom server isn't one provider, so its key stays in each form; Orukeet needs none. |
+| `providers.keyHosts` | Per provider in `providers.keys`, the hosts its key may go to: the HTTPS hosts of its preset endpoints, such as `api.mistral.ai`, and for Ollama only `ollama.com`. A request carries the provider's key only over HTTPS to one of these, on the default port and without user info in the URL. A form pointed at any other server, such as Ollama on this computer or a proxy in front of OpenAI, keeps a key of its own for that server, entered in the form. |
+| `providers.audio[].defaultModel`, `providers.rewrite[].defaultModel` | The model a form fills in when the user picks the provider, and the model the API keys page's one-click fix saves: Mistral's `voxtral-mini-latest` and `mistral-small-latest`, Voice's own defaults. `null` for the other providers, whose model the user picks. |
 | `providers.audio[].streamingPrefix` | For Mistral, `voxtral-mini-transcribe-realtime`: a meeting model whose name starts with it streams the meeting instead of sending recorded windows, so its consent is a `stream` agreement. `null` for the other providers, which never stream. The name still marks a realtime model for every provider: `settings_save_provider` refuses it for dictation and rewriting whichever provider lists it, as an OpenAI-compatible proxy in front of Mistral can, and those two forms don't offer it. |
-| `dictation.status` | `ready`, `loadingModel`, `modelMissing`, `noKey` or `noMic`: the status on the top page. |
+| `dictation.status` | `ready`, `loadingModel`, `modelMissing`, `noKey` or `noMic`: the status on the top page. With `noKey` the row opens API keys, or the Transcription form when the key belongs to a proxy or another server. |
+| `dictation.firstSetup` | A first setup: dictation is still on its first-run default, Orukeet, nobody chose its provider (`audio_provider_chosen` in `config.json`, set by saving the Transcription form or by the Ownkey import), and no API key is saved for any provider or form. Only then does the API keys page offer, ticked, to use a provider for dictation with its first key. |
 | `rukoo.state` | `connected`, `notRunning`, `rukooOutdated` or `voiceOutdated` (from `unsupported_protocol`, PROTOCOL.md Versioning), `refused` (a client sent a wrong token). A refusal shows until a client connects again. |
 | `rukoo.clientVersion`, `rukoo.protocol` | From the connected client's `hello`, or `null`. |
 | `rukoo.port` | The bridge's port on 127.0.0.1, or `null` before it listens. |
@@ -273,12 +284,12 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `fillers.enabled` | bool | `true` | `remove_fillers` |
 | `fillers.languages` | subset of `en`, `nl`, `de`, `fr`, `es`; an empty list stays empty | `["en", "nl"]` | `filler_languages` |
 | `fillers.custom` | comma-separated words | `""` | `custom_fillers` |
-| `rewriting.provider`, `endpoint`, `model`, `keySaved` | read-only here; saved with `settings_save_provider` | Mistral | `rewrite_*` |
+| `rewriting.provider`, `endpoint`, `model`, `keySaved`, `ownKey` | read-only here; saved with `settings_save_provider` | Mistral | `rewrite_*` |
 | `rewriting.auto` | bool | `false` | `auto_rewrite` |
 | `rewriting.tone` | `auto`, `professional`, `casual`, `friendly`, `concise` | `auto` | `rewrite_tone` |
 | `rewriting.formatting` | bool | `true` | `rewrite_formatting` |
 | `rewriting.instructions` | string | `""` | `rewrite_custom_instructions` |
-| `meetings.provider`, `endpoint`, `model`, `keySaved`, `consent` | read-only here; saved with `settings_save_provider` | Orukeet | `meetings_audio_*` |
+| `meetings.provider`, `endpoint`, `model`, `keySaved`, `ownKey`, `consent` | read-only here; saved with `settings_save_provider` | Orukeet | `meetings_audio_*` |
 | `meetings.retention` | `days7`, `keep`, `after_transcription` | `days7` | `meetings_retention` |
 | `meetings.stopKey` | `off` or a key | `off` | new |
 | `meetings.screen` | `off`, `frames`, `video`: what a new meeting records of the screen when Rukoo doesn't choose for it. Voice tells Rukoo in `status.screenDefault` (PROTOCOL.md). | `off` | new |
@@ -286,6 +297,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.language` | `system`, `en`, `nl` | `system` | new |
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
+| `apiKeys.<provider>.saved` | read-only here; saved with `settings_save_key`, removed with `settings_remove_key` | `false` | new, `api_keys` |
 
 The three key settings take the same keys, and `settings_set` refuses a key the platform doesn't offer with `invalid_value`. On a Mac those are the keys every Mac keyboard has, a MacBook's included, named as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`) and Right Shift. Right Control and F13 to F15 exist only on extended and PC keyboards, and Pause and Scroll Lock not at all, so the macOS picker leaves them out; Windows has no Right Command. An existing `config.json` is never rewritten: on a Mac, a stored key the picker leaves out, from Windows or from an earlier Voice, still loads and shows in the picker as the current choice under its own name until another key is chosen. Right Control and F13 to F15 keep working on a keyboard that has them. Windows loads only its own keys, as before.
 
@@ -306,9 +318,11 @@ Changing `service`, `endpoint`, `region`, `bucket`, `prefix` or `accessKeyId`, o
 
 `meetings.retention` applies to meetings started from then on, as in Ownkey: each meeting keeps the choice it started with in its `meeting.json`, so changing it, or importing Ownkey's, never removes older meetings' audio. Meetings from before Voice stored it follow the current choice.
 
-The provider objects carry `provider`, `endpoint`, `model` and `keySaved`. `transcription` adds `language` (`auto`, `en`, `nl`, `de`, `fr`, `es`, `it`, `pt`, `pl`, `ja`, `zh`). `meetings` adds `consent`: `{ "provider": "mistral", "host": "api.mistral.ai", "mode": "windows" }` or `null`. `mode` is `windows` for a model that gets recorded windows and `stream` for a realtime model (`providers.audio[].streamingPrefix`); one doesn't cover the other, so changing between them asks again. An agreement without `mode`, saved before streaming existed, is `windows`.
+The provider objects carry `provider`, `endpoint`, `model`, `keySaved` and `ownKey`. `keySaved` says the feature has a key to send. `ownKey` says it sends a different key for its provider than the one on the API keys page, at one of the provider's own hosts: a key it had before keys were shared, or one an older Voice changed later. It keeps that key until the user switches it with "Use the key above" (`settings_remove_key` with the feature); saving or removing the provider's key doesn't touch it. A feature at the provider's own host with no key while the provider has one, which an older Voice left, stays without one until switched the same way. `transcription` adds `language` (`auto`, `en`, `nl`, `de`, `fr`, `es`, `it`, `pt`, `pl`, `ja`, `zh`). `meetings` adds `consent`: `{ "provider": "mistral", "host": "api.mistral.ai", "mode": "windows" }` or `null`. `mode` is `windows` for a model that gets recorded windows and `stream` for a realtime model (`providers.audio[].streamingPrefix`); one doesn't cover the other, so changing between them asks again. An agreement without `mode`, saved before streaming existed, is `windows`.
 
 Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Orukeet (the default) or a cloud provider with consent per provider and host, and a "same" choice would move meeting audio to the cloud whenever someone changed the dictation provider. The import resolves Ownkey's `same` to the provider it pointed at.
+
+API keys are one per provider (see `voice/README.md`). `config.json` keeps them in `api_keys`, `{ "<provider>": "<key>" }`, and keeps writing the key each feature sends into Ownkey's `audio_api_key`, `rewrite_api_key` and `meetings_audio_api_key`, so a Voice from before `api_keys` reads a working config and keeps `api_keys` as an unknown key. A config without `api_keys` is migrated once, when it loads: a provider takes the first feature's key for it, in the order dictation, rewriting, meetings, and a feature on that provider without a key gets it. Only features at one of the provider's own hosts (`providers.keyHosts`) take part; a key for another server stays that form's. A feature that held a different key keeps it as its own key (`ownKey`), so the migration never loses a key and every feature keeps working. Once `api_keys` is in the file, loading fills in nothing, so a key an older Voice removed stays removed. Saving or removing a provider's key on the API keys page changes the features that send that key, or have none while the provider has none; own keys stay. A key never picks a provider: each feature keeps the provider it has, and meeting audio still needs its consent.
 
 `ModelState`:
 
@@ -375,7 +389,7 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
 |---|---|
 | `engine` | Who labels new meetings: `mistral` when the meeting model is a realtime model (it labels in the same stream it transcribes), else `nemotron` on this computer. Nemotron never stands in for Mistral or the other way round. |
 | `ready` | New meetings get speaker labels. Otherwise the whole call is one speaker, `call-1`. |
-| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x86-64 or macOS on Apple Silicon), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2 on Windows, NEON, dot-product or FP16 arithmetic on macOS), `runtime` (no NeMo runtime verifies for this platform), `notPublished` (this platform's runtime isn't published yet, so there is nothing to install), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
+| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x86-64 or macOS on Apple Silicon), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2 on Windows, NEON, dot-product or FP16 arithmetic on macOS), `runtime` (no NeMo runtime verifies for this platform), `notPublished` (this platform's runtime isn't published yet, so there is nothing to install), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a Mistral API key: the stream can't start, and the page points to API keys; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
 | `detail` | The English error behind `runtimeFailed` and `modelDamaged`, for Error details; else `null`. |
 | `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]` or `["dotprod"]`; else `[]`. |
 | `cpu` | This processor's features. Windows reports the x86-64 build's four (`avx2`, `fma`, `f16c`, `bmi2`) and macOS the arm64 build's three (`neon`, `dotprod`, `fp16`); the features of the other platform are `false`. |
@@ -403,7 +417,7 @@ Errors: `same_key` when the key is already the dictation, rewrite or stop key (t
 | `target` | `transcription`, `rewriting` or `meetings` |
 | `provider` | An id from `providers.audio` (transcription, meetings) or `providers.rewrite` (rewriting) |
 | `endpoint`, `model` | Trimmed. For `orukeet`: `""` and `orukeet-onnx-int8`. |
-| `apiKey` | `null` keeps the saved key, `""` saves none, a string replaces it. A key is never carried to another provider: when `provider` differs from the saved one, `null` means no key. |
+| `apiKey` | At one of the provider's own hosts (`providers.keyHosts`): `null` or `""` sends that provider's key from the API keys page, or, while the form keeps its provider and server, the key it sends now, an own key included; a string becomes that provider's key, as `settings_save_key` saves it, and this form sends it. The page sends `null`. At any other server, a custom one included: `null` keeps the saved key, `""` saves none, a string replaces it, and the key belongs to that server. A key is never carried to another provider or server: when the provider or the endpoint's scheme, host or port differs from the saved one, `null` means the provider's key at its own host, or none. |
 | `language` | `transcription` only; `auto` for Orukeet. |
 | `consent` | `meetings` only. `true` saves `consent: { provider, host, mode }` with the host of `endpoint` and the mode of `model`; `false` clears it. |
 
@@ -411,15 +425,23 @@ The app repeats Ownkey's checks (ownkey-dictation.md 13.8) and rejects with `nee
 
 Consent: the page shows the disclosure and its checkbox when the provider isn't Orukeet and the endpoint's host isn't `localhost`, `127.0.0.1`, `::1` or `0.0.0.0`, which is Ownkey's rule for when to ask. For a realtime model the disclosure says the meeting streams and that clips of up to 15 s per voice go out after a reconnect, and the checkbox reads "Stream meeting audio to …". The app uses the same rule to decide whether a meeting's transcription may start: valid consent names the saved provider, the host of the saved endpoint and the model's mode. Without it, the meeting records and its transcription, and with a realtime model its labels, wait.
 
+### Command `settings_save_key`
+
+`invoke('settings_save_key', { provider, key })` → nothing. Saves a provider's API key from the API keys page: `provider` is an id from `providers.keys`. The features at the provider's own hosts that sent its previous key, or had none while it had none, send the new one from then on; a feature with its own key, or one at another server, keeps what it sends. The key never comes back to the page; `apiKeys.<provider>.saved` and those features' `keySaved` turn `true`. On a first setup (`dictation.firstSetup`) with Orukeet's model missing, when the provider has a `defaultModel` for dictation, the page offers under the key field, ticked, to switch dictation to it. After the key is saved it checks again that dictation is still on Orukeet without the model, then calls `settings_save_provider`. An established profile gets no offer; it keeps the "Use Mistral" button under the feature. Rejects with `invalid_value` for a provider outside `providers.keys`, an empty key, one over 1,024 characters or one with a line break, and with `failed` when `config.json` can't be saved. It doesn't check the key with the provider; a wrong key fails the next request with `auth`.
+
 ### Command `settings_remove_key`
 
-`invoke('settings_remove_key', { target })` → nothing. Deletes the saved key of `transcription`, `rewriting` or `meetings`, or the bucket's secret for `sync`, at once. Removing the bucket's secret pauses uploads until Test connection passes again; the switch stays on.
+`invoke('settings_remove_key', { target })` → nothing, at once.
+
+- A provider id from `providers.keys` removes that provider's key, and the features that sent it send none. A feature with its own key keeps it. The API keys page asks first while a feature sends the key.
+- `transcription`, `rewriting` or `meetings` drops the key that feature sends: a custom server's key goes, and a feature with an own key from before sends its provider's key from the API keys page from then on.
+- `sync` removes the bucket's secret. That pauses uploads until Test connection passes again; the switch stays on.
 
 ### Command `settings_list_models`
 
 `invoke('settings_list_models', { request })` → `["mistral-small-latest", …]`, sorted, without duplicates (ownkey-providers.md 6).
 
-`request` is `{ "target", "provider", "endpoint", "apiKey" }`. `apiKey: null` uses the saved key, but only when `provider` is the saved provider of `target`. Rejects with `auth`, `network`, `timeout`, `provider` or `config`. The page drops a result that arrives after the user changed the provider, endpoint or key.
+`request` is `{ "target", "provider", "endpoint", "apiKey" }`. `apiKey: null` uses the key `target` sends when `provider` and the endpoint's server are its saved ones, else the provider's key from the API keys page when `endpoint` is one of its own hosts, else none, so a model list never takes a key to an unsaved endpoint it doesn't belong to. Rejects with `auth`, `network`, `timeout`, `provider` or `config`. The page drops a result that arrives after the user changed the provider, endpoint or key.
 
 ### Command `settings_model`
 
@@ -519,9 +541,9 @@ The page shows the code only in its dialog, with the window hidden from capture 
 | `pill.html?mock=<state>&theme=light&lang=nl&backdrop=1` | One pill state; `<state>` is a key of `STATES` in `mock/pill.js`, such as `meeting-screen-button` or `meeting-frames-dropped`. `backdrop=1` draws a document behind the pill, `hit=1` outlines the stop and monitor windows from the last `pill_layout`, `edge=top`, `dev=1`. A click on the monitor button moves to the next demo monitor. |
 | `pill.html?mock=dictation`, `mock=meeting`, `mock=cycle` | A dictation; a meeting with a two-step stop you can click; every state in turn |
 | `dev/gallery.html?theme=dark&lang=en` | Every pill state side by side |
-| `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group |
+| `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group; `page=keys` is API keys |
 | `&platform=macos&permissions=granted`, `denied`, `notAsked`, `mixed` | The macOS Permissions group in that state, Mac key names, and only the keys a Mac keyboard has |
-| `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy |
+| `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev`, `nokey`, `ownkey`, `cleared`, `ollama` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy; dictation and rewriting on Mistral without a key and Orukeet not downloaded; everything on Mistral with rewriting and meetings on another key each from before keys were shared; everything on Mistral with rewriting's key removed in an older Voice; rewriting on Ollama at this computer with its own key and an Ollama cloud key on API keys |
 | `&features=screen` | The Settings of the features listed (`screen`, `speakers`, `sync`, comma-separated), as the engine lists them in `state.features` |
 | `&noEncoder=1`, `&noOcr=1`, `&screenUnavailable=1` | Screen recording on a computer without a hardware video encoder, without an OCR language, or on a Windows that can't capture; each turns on `features.screen` |
 | `&later=1` | Every feature's Settings (`features` all `true`): screen recording, speaker labels, bucket sync. Without it the mock's `features` are `false`, except those named in `&features=screen,speakers,sync` and those a scenario parameter of their own turns on. |
@@ -530,4 +552,4 @@ The page shows the code only in its dialog, with the window hidden from capture 
 
 `node voice/ui/dev/screenshots.js <outDir>` saves every pill state and every Settings page in both themes and languages, a narrow window and the dialogs, through the repository's Electron, without taking focus. Keep the images out of Git; they go on the GitHub issue.
 
-`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider, host or way of sending, keys never carried to another provider, speaker labels' reasons and switch, the screen row and its notes, the bucket secret never going through `settings_set`, the sync switch waiting for Test connection, the key dialogs' screen protection and clean-up, the stop and monitor buttons' layout report, the screen notices, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.
+`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider, host or way of sending, keys never carried to another provider, a key entered once on API keys reaching every feature on its provider and never going back to the page, a key never going to another server, dictation switching with the key on a fresh install, the one-click fix and its consent dialog for meetings, own keys kept through Save and Remove, a key an older Voice removed staying removed, an open window moved to a page, speaker labels' reasons and switch, the screen row and its notes, the bucket secret never going through `settings_set`, the sync switch waiting for Test connection, the key dialogs' screen protection and clean-up, the stop and monitor buttons' layout report, the screen notices, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.

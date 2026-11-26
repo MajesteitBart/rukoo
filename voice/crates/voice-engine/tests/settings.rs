@@ -408,8 +408,14 @@ fn a_provider_form_is_checked_and_saved_as_a_whole() {
     assert_eq!(h.saved_config().audio_api_key, "");
     assert_eq!(engine.settings_state()["dictation"]["status"], "noKey");
     save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": SECRET})).unwrap();
+    // A key typed for Mistral is Mistral's one key: rewriting, on Mistral too, sends it as well.
+    assert_eq!(h.saved_config().rewrite_api_key, SECRET);
+    // Removing dictation's key only drops a key of its own; Mistral's key stays.
     engine.settings_remove_key("transcription").unwrap();
+    assert_eq!(h.saved_config().audio_api_key, SECRET);
+    engine.settings_remove_key("mistral").unwrap();
     assert_eq!(h.saved_config().audio_api_key, "");
+    assert_eq!(h.saved_config().rewrite_api_key, "");
     engine.shutdown();
 }
 
@@ -463,7 +469,7 @@ fn mistral_labels_are_not_ready_without_a_meeting_key() {
     assert_eq!(state["speakers"]["ready"], true);
     assert!(stream_builds());
     // Removing the key keeps the agreement, but the stream can't start without a key.
-    engine.settings_remove_key("meetings").unwrap();
+    engine.settings_remove_key("mistral").unwrap();
     let cfg = h.saved_config();
     assert_eq!(cfg.meetings_audio_api_key, "");
     assert!(
@@ -651,6 +657,286 @@ fn meeting_consent_names_the_provider_and_host() {
     // A server on this computer needs none, even with the box ticked.
     save(&engine, json!({"target": "meetings", "provider": "custom", "endpoint": "http://localhost:1234/v1/audio/transcriptions", "model": "whisper", "apiKey": "", "consent": true})).unwrap();
     assert_eq!(h.saved_config().meetings_transcription_consent, None);
+    engine.shutdown();
+}
+
+#[test]
+fn one_key_per_provider_serves_every_feature() {
+    let h = Harness::new("api-keys");
+    h.config(json!({}));
+    let engine = h.start();
+    let state = engine.settings_state();
+    assert_eq!(
+        state["providers"]["keys"],
+        json!([
+            "openai",
+            "anthropic",
+            "google",
+            "mistral",
+            "ollama",
+            "openrouter"
+        ])
+    );
+    let mistral_audio = state["providers"]["audio"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "mistral")
+        .unwrap()
+        .clone();
+    assert_eq!(mistral_audio["defaultModel"], "voxtral-mini-latest");
+    assert_eq!(
+        state["config"]["apiKeys"]["mistral"],
+        json!({"saved": false})
+    );
+    assert_eq!(state["config"]["rewriting"]["keySaved"], false);
+
+    // Refused: a provider without a key here, no key, a key with a line break.
+    for (provider, key) in [
+        ("custom", SECRET),
+        ("orukeet", SECRET),
+        ("nonsense", SECRET),
+        ("mistral", "  "),
+        ("mistral", "sk-a\nsk-b"),
+    ] {
+        assert_eq!(
+            code(engine.settings_save_key(provider, key.to_string())),
+            "invalid_value",
+            "{provider}"
+        );
+    }
+    engine
+        .settings_save_key("Mistral", format!(" {SECRET} "))
+        .unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.shared_key("mistral"), SECRET);
+    assert_eq!(cfg.rewrite_api_key, SECRET, "rewriting is on Mistral");
+    let state = h.sink.last_settings();
+    assert_eq!(
+        state["config"]["apiKeys"]["mistral"],
+        json!({"saved": true})
+    );
+    assert_eq!(state["config"]["rewriting"]["keySaved"], true);
+    assert!(
+        !state.to_string().contains(SECRET),
+        "the key never reaches the page"
+    );
+
+    // Dictation and meetings that pick Mistral send that key without being given one.
+    save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": null})).unwrap();
+    save(&engine, json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": null, "consent": true})).unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.dictation_audio().api_key, SECRET);
+    assert_eq!(cfg.meeting_audio().api_key, SECRET);
+    assert_eq!(engine.settings_state()["dictation"]["status"], "ready");
+    // Decision 10 holds: the agreement came from the form, not from the key.
+    assert!(cfg.meetings_transcription_consent.is_some());
+
+    // A model list for Mistral uses its key; one for OpenAI gets none until OpenAI has one.
+    engine
+        .settings_list_models(json!({"target": "meetings", "provider": "openai", "endpoint": "https://api.openai.com/v1/audio/transcriptions", "apiKey": null}))
+        .unwrap();
+    engine
+        .settings_save_key("openai", "sk-openai".into())
+        .unwrap();
+    engine
+        .settings_list_models(json!({"target": "meetings", "provider": "openai", "endpoint": "https://api.openai.com/v1/audio/transcriptions", "apiKey": null}))
+        .unwrap();
+    engine
+        .settings_list_models(json!({"target": "rewriting", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "apiKey": null}))
+        .unwrap();
+    let keys: Vec<String> = lock(&h.speech.model_requests)
+        .iter()
+        .map(|r| r.api_key.clone())
+        .collect();
+    assert_eq!(keys, ["", "sk-openai", SECRET]);
+
+    // Removing Mistral's key removes it for every feature on Mistral, and dictation says so.
+    engine.settings_remove_key("mistral").unwrap();
+    let cfg = h.saved_config();
+    assert!(!cfg.api_keys.contains_key("mistral"));
+    assert_eq!(
+        (
+            cfg.audio_api_key.as_str(),
+            cfg.rewrite_api_key.as_str(),
+            cfg.meetings_audio_api_key.as_str()
+        ),
+        ("", "", "")
+    );
+    assert_eq!(cfg.shared_key("openai"), "sk-openai");
+    assert_eq!(engine.settings_state()["dictation"]["status"], "noKey");
+    engine.shutdown();
+}
+
+#[test]
+fn a_feature_with_another_key_from_before_keeps_it_until_told() {
+    let h = Harness::new("api-keys-own");
+    // A config from before api_keys, which the harness would otherwise write from today's defaults.
+    h.config(json!({
+        "api_keys": null,
+        "audio_provider": "mistral",
+        "audio_api_key": "sk-dictation",
+        "audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+        "audio_model": "voxtral-mini-latest",
+        "meetings_audio_provider": "mistral",
+        "meetings_audio_api_key": "sk-meetings",
+        "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+        "meetings_audio_model": "voxtral-mini-latest"
+    }));
+    let engine = h.start();
+    let state = engine.settings_state();
+    assert_eq!(state["config"]["apiKeys"]["mistral"]["saved"], true);
+    assert_eq!(state["config"]["transcription"]["ownKey"], false);
+    assert_eq!(state["config"]["meetings"]["ownKey"], true);
+    assert_eq!(
+        state["config"]["rewriting"]["keySaved"], true,
+        "rewriting, on Mistral without a key, now has dictation's"
+    );
+    assert_eq!(h.saved_config().meeting_audio().api_key, "sk-meetings");
+    // Saving a form on the same provider keeps the key it sends.
+    save(&engine, json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-small-latest", "apiKey": null, "consent": false})).unwrap();
+    assert_eq!(h.saved_config().meeting_audio().api_key, "sk-meetings");
+    // "Use the key above": meetings drop their own key.
+    engine.settings_remove_key("meetings").unwrap();
+    assert_eq!(h.saved_config().meeting_audio().api_key, "sk-dictation");
+    assert_eq!(
+        engine.settings_state()["config"]["meetings"]["ownKey"],
+        false
+    );
+    engine.shutdown();
+}
+
+#[test]
+fn saving_or_removing_a_key_leaves_a_feature_s_own_key_alone() {
+    let h = Harness::new("api-keys-own-stays");
+    h.config(json!({
+        "api_keys": null,
+        "audio_provider": "mistral",
+        "audio_api_key": "sk-dictation",
+        "audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+        "audio_model": "voxtral-mini-latest",
+        "meetings_audio_provider": "mistral",
+        "meetings_audio_api_key": "sk-meetings",
+        "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+        "meetings_audio_model": "voxtral-mini-latest"
+    }));
+    let engine = h.start();
+    engine
+        .settings_save_key("mistral", "sk-new".into())
+        .unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.dictation_audio().api_key, "sk-new");
+    assert_eq!(cfg.rewrite().api_key, "sk-new");
+    assert_eq!(
+        cfg.meeting_audio().api_key,
+        "sk-meetings",
+        "its own key stays"
+    );
+    engine.settings_remove_key("mistral").unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.dictation_audio().api_key, "");
+    assert_eq!(cfg.meeting_audio().api_key, "sk-meetings");
+    let state = engine.settings_state();
+    assert_eq!(state["config"]["meetings"]["ownKey"], true);
+    assert_eq!(state["config"]["meetings"]["keySaved"], true);
+    engine.shutdown();
+}
+
+#[test]
+fn only_a_first_setup_is_offered_the_key_s_provider_for_dictation() {
+    let h = Harness::new("first-setup");
+    // As the first start leaves it: Orukeet for dictation, no key anywhere.
+    h.config(json!({}));
+    let engine = h.start();
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], true);
+    engine.settings_save_key("mistral", SECRET.into()).unwrap();
+    assert_eq!(
+        engine.settings_state()["dictation"]["firstSetup"],
+        false,
+        "a key is saved"
+    );
+    engine.settings_remove_key("mistral").unwrap();
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], true);
+    // Saving the Transcription form is a choice, Orukeet included.
+    save(&engine, json!({"target": "transcription", "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "apiKey": null})).unwrap();
+    assert!(h.saved_config().audio_provider_chosen);
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], false);
+    save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": null})).unwrap();
+    assert!(h.saved_config().audio_provider_chosen);
+    assert_eq!(engine.settings_state()["dictation"]["firstSetup"], false);
+    engine.shutdown();
+}
+
+#[test]
+fn a_provider_s_key_never_reaches_another_server() {
+    let h = Harness::new("api-keys-hosts");
+    h.config(json!({}));
+    let engine = h.start();
+    let state = engine.settings_state();
+    assert_eq!(
+        state["providers"]["keyHosts"]["mistral"],
+        json!(["api.mistral.ai"])
+    );
+    assert_eq!(
+        state["providers"]["keyHosts"]["ollama"],
+        json!(["ollama.com"])
+    );
+    engine.settings_save_key("mistral", SECRET.into()).unwrap();
+    engine
+        .settings_save_key("ollama", "sk-ollama-cloud".into())
+        .unwrap();
+
+    // Rewriting on Ollama at this computer: no key from API keys.
+    save(&engine, json!({"target": "rewriting", "provider": "ollama", "endpoint": "http://localhost:11434/api/chat", "model": "llama3.2:3b", "apiKey": null})).unwrap();
+    assert_eq!(h.saved_config().rewrite().api_key, "");
+    // Mistral through a proxy: the key from API keys stays home; a typed key belongs to the proxy.
+    save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://proxy.example.com/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": null})).unwrap();
+    assert_eq!(h.saved_config().dictation_audio().api_key, "");
+    save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://proxy.example.com/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": "proxy-key"})).unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.dictation_audio().api_key, "proxy-key");
+    assert_eq!(
+        cfg.shared_key("mistral"),
+        SECRET,
+        "a proxy's key never becomes Mistral's"
+    );
+    // Back at Mistral's host the form brings Mistral's key ...
+    save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": null})).unwrap();
+    assert_eq!(h.saved_config().dictation_audio().api_key, SECRET);
+    // ... and leaving it for another server takes no key along.
+    save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://other.example.com/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": null})).unwrap();
+    assert_eq!(h.saved_config().dictation_audio().api_key, "");
+
+    // A model list for an unsaved endpoint gets a key only at the provider's own host.
+    lock(&h.speech.model_requests).clear();
+    for (target, provider, endpoint) in [
+        ("rewriting", "ollama", "http://localhost:11434/api/chat"),
+        ("rewriting", "ollama", "https://ollama.com/api/chat"),
+        (
+            "meetings",
+            "mistral",
+            "https://proxy.example.com/v1/audio/transcriptions",
+        ),
+        (
+            "meetings",
+            "mistral",
+            "https://api.mistral.ai/v1/audio/transcriptions",
+        ),
+        (
+            "meetings",
+            "mistral",
+            "http://api.mistral.ai/v1/audio/transcriptions",
+        ),
+    ] {
+        engine
+            .settings_list_models(json!({"target": target, "provider": provider, "endpoint": endpoint, "apiKey": null}))
+            .unwrap();
+    }
+    let keys: Vec<String> = lock(&h.speech.model_requests)
+        .iter()
+        .map(|r| r.api_key.clone())
+        .collect();
+    assert_eq!(keys, ["", "sk-ollama-cloud", "", SECRET, ""]);
     engine.shutdown();
 }
 

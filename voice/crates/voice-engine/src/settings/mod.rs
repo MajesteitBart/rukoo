@@ -16,13 +16,16 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_core::cleanup::{self, CleanupConfig};
-use voice_core::config::{provider_form_problem, Config, Consent, LANGUAGES};
+use voice_core::config::{
+    provider_form_problem, Config, Consent, DEFAULT_AUDIO_MODEL, DEFAULT_REWRITE_MODEL, LANGUAGES,
+};
 use voice_core::consent::ConsentState;
 use voice_core::local::{self, LocalState, Location, ModelErrorKind, ModelSpec, Stage};
 use voice_core::providers::stream::{streams, REALTIME_MODEL_PREFIX};
 use voice_core::providers::{
-    normalize_provider, provider_endpoints, Activity, ProviderConfig, Purpose, AUDIO_PROVIDER_IDS,
-    MODELS_TIMEOUT, ORUKEET_MODEL_ID, REWRITE_PROVIDER_IDS,
+    endpoint_origin, key_hosts, normalize_provider, provider_endpoints, shared_key_applies,
+    shares_key, Activity, ProviderConfig, Purpose, AUDIO_PROVIDER_IDS, MODELS_TIMEOUT,
+    ORUKEET_MODEL_ID, REWRITE_PROVIDER_IDS, SHARED_KEY_PROVIDER_IDS,
 };
 use voice_core::speakers::{cpu_features, Unavailable};
 use voice_core::{ErrorKind, ProviderError};
@@ -104,9 +107,16 @@ impl SettingsRuntime {
         }
     }
 
-    /// The page Settings opens at, once: the import after the first start.
+    /// The page Settings opens at, once: the import after the first start, or API keys after a
+    /// dictation that had no key.
     pub fn take_start_page(&self) -> Option<String> {
         lock(&self.start_page).take()
+    }
+
+    /// Settings opens at `page` the next time it opens without one of its own, unless a page is
+    /// already waiting, such as the import after the first start.
+    pub fn open_next_at(&self, page: &str) {
+        lock(&self.start_page).get_or_insert_with(|| page.to_string());
     }
 
     /// The next state reads folder sizes and Ownkey's files again.
@@ -161,7 +171,7 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
         "locale": match looks.locale { Locale::En => "en", Locale::Nl => "nl" },
         "config": keys::view(&cfg, start_at_login, secret_saved),
         "providers": providers(),
-        "dictation": { "status": dictation_status(core, &cfg) },
+        "dictation": { "status": dictation_status(core, &cfg), "firstSetup": cfg.first_setup() },
         "rukoo": rukoo(core),
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
@@ -240,6 +250,9 @@ fn slow(core: &Core) -> Slow {
 
 /// voice-core's registry in Ownkey's order (ownkey-providers.md 2). An audio provider with a
 /// realtime model names its prefix in `streamingPrefix`: such a model streams meetings.
+/// `defaultModel` is the model a form fills in when the user picks the provider, where Voice
+/// ships one: Mistral's, which are Voice's own defaults. `keys` lists the providers whose key is
+/// entered once, in Settings > API keys, and `keyHosts` the HTTPS hosts each such key may go to.
 pub fn providers() -> Value {
     let audio: Vec<Value> = AUDIO_PROVIDER_IDS
         .iter()
@@ -248,14 +261,25 @@ pub fn providers() -> Value {
                 "id": id,
                 "endpoints": provider_endpoints(id, Activity::Audio),
                 "streamingPrefix": (*id == "mistral").then_some(REALTIME_MODEL_PREFIX),
+                "defaultModel": (*id == "mistral").then_some(DEFAULT_AUDIO_MODEL),
             })
         })
         .collect();
     let rewrite: Vec<Value> = REWRITE_PROVIDER_IDS
         .iter()
-        .map(|id| json!({ "id": id, "endpoints": provider_endpoints(id, Activity::Rewrite) }))
+        .map(|id| {
+            json!({
+                "id": id,
+                "endpoints": provider_endpoints(id, Activity::Rewrite),
+                "defaultModel": (*id == "mistral").then_some(DEFAULT_REWRITE_MODEL),
+            })
+        })
         .collect();
-    json!({ "audio": audio, "rewrite": rewrite })
+    let key_hosts: serde_json::Map<String, Value> = SHARED_KEY_PROVIDER_IDS
+        .iter()
+        .map(|id| (id.to_string(), json!(key_hosts(id))))
+        .collect();
+    json!({ "audio": audio, "rewrite": rewrite, "keys": SHARED_KEY_PROVIDER_IDS, "keyHosts": key_hosts })
 }
 
 /// Settings > Speaker labels: who labels new meetings, whether they can, and what each meeting
@@ -479,21 +503,36 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
 
     // The form's fields only, so they go onto whatever Settings hold when it is saved: a change
     // saved meanwhile, for instance while Orukeet loads, stays.
+    // A provider's key from Settings > API keys goes only to that provider's own hosts.
+    let shared = !local && shared_key_applies(&provider, &endpoint);
     let apply = |cfg: &mut Config| {
-        // A key is never carried to another provider: `null` keeps it only for the same one.
-        let keep = |saved_provider: &str, saved_key: &str| match &api_key {
-            None if saved_provider == provider => saved_key.to_string(),
-            None => String::new(),
-            Some(key) => key.clone(),
+        // The same provider at the same server: a key the form keeps belongs to that server.
+        let same = cfg.provider_of(purpose) == provider
+            && endpoint_origin(cfg.endpoint_of(purpose)) == endpoint_origin(&endpoint);
+        // A key is never carried to another provider or another server. At the provider's own
+        // host the form brings the provider's key, and a feature that stays there keeps the key it
+        // sends, an own key from before included. Any other server's key belongs to the form:
+        // `null` keeps it only for the same provider at the same server.
+        let key = if local {
+            String::new()
+        } else if shared {
+            if same {
+                cfg.key_of(purpose).to_string()
+            } else {
+                cfg.key_for(&provider, &endpoint)
+            }
+        } else {
+            match &api_key {
+                None if same => cfg.key_of(purpose).to_string(),
+                None => String::new(),
+                Some(key) => key.clone(),
+            }
         };
         match purpose {
             Purpose::Dictation => {
-                cfg.audio_api_key = if local {
-                    String::new()
-                } else {
-                    keep(&cfg.audio_provider, &cfg.audio_api_key)
-                };
+                cfg.audio_api_key = key;
                 cfg.audio_provider = provider.clone();
+                cfg.audio_provider_chosen = true;
                 cfg.audio_endpoint = endpoint.clone();
                 cfg.audio_model = model.clone();
                 // Orukeet ignores the language; Ownkey saved it only for a cloud provider.
@@ -502,17 +541,13 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
                 }
             }
             Purpose::Rewrite => {
-                cfg.rewrite_api_key = keep(&cfg.rewrite_provider, &cfg.rewrite_api_key);
+                cfg.rewrite_api_key = key;
                 cfg.rewrite_provider = provider.clone();
                 cfg.rewrite_endpoint = endpoint.clone();
                 cfg.rewrite_model = model.clone();
             }
             Purpose::Meetings => {
-                cfg.meetings_audio_api_key = if local {
-                    String::new()
-                } else {
-                    keep(&cfg.meetings_audio_provider, &cfg.meetings_audio_api_key)
-                };
+                cfg.meetings_audio_api_key = key;
                 cfg.meetings_audio_provider = provider.clone();
                 cfg.meetings_audio_endpoint = endpoint.clone();
                 cfg.meetings_audio_model = model.clone();
@@ -521,6 +556,17 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
                     // Stored only where Ownkey's rule asks for it: a cloud provider on another host.
                     cfg.grant_meeting_consent();
                 }
+            }
+        }
+        // A key typed for a provider's own host is that provider's key in Settings > API keys, as
+        // settings_save_key saves it, and this form sends it.
+        if let Some(typed) = api_key.as_deref().filter(|key| !key.is_empty() && shared) {
+            cfg.set_shared_key(&provider, typed);
+            let typed = typed.to_string();
+            match purpose {
+                Purpose::Dictation => cfg.audio_api_key = typed,
+                Purpose::Rewrite => cfg.rewrite_api_key = typed,
+                Purpose::Meetings => cfg.meetings_audio_api_key = typed,
             }
         }
     };
@@ -540,6 +586,38 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
     })
 }
 
+/// The longest API key Voice keeps.
+const KEY_MAX_CHARS: usize = 1024;
+
+/// Saves a provider's key in Settings > API keys: every feature that uses the provider sends it
+/// from now on (API.md, `settings_save_key`).
+pub fn save_key(core: &Arc<Core>, provider: &str, key: String) -> Result<(), ApiError> {
+    let provider = normalize_provider(provider, "");
+    if !shares_key(&provider) {
+        return Err(invalid(format!(
+            "{provider:?} has no key in API keys; a custom server's key is saved with its form."
+        )));
+    }
+    let key = key.trim();
+    if key.is_empty() || key.chars().count() > KEY_MAX_CHARS {
+        return Err(invalid(format!(
+            "The key is 1 to {KEY_MAX_CHARS} characters."
+        )));
+    }
+    // It goes into an HTTP header, which can't hold a line break.
+    if key.chars().any(char::is_control) {
+        return Err(invalid("The key is one line of text."));
+    }
+    core.commit(|cfg| {
+        cfg.set_shared_key(&provider, key);
+        Ok(())
+    })
+}
+
+/// `sync` removes the bucket's secret. A provider id in `providers.keys` removes that provider's
+/// key for every feature. A feature (`transcription`, `rewriting`, `meetings`) drops the key it
+/// sends: a custom server's key goes, and a feature that kept its own key from before sends the
+/// key in Settings > API keys from now on.
 pub fn remove_key(core: &Arc<Core>, target: &str) -> Result<(), ApiError> {
     if target == "sync" {
         return change_secret(core, |sync| {
@@ -548,12 +626,15 @@ pub fn remove_key(core: &Arc<Core>, target: &str) -> Result<(), ApiError> {
     }
     core.commit(|cfg| {
         match target {
-            "transcription" => cfg.audio_api_key.clear(),
-            "rewriting" => cfg.rewrite_api_key.clear(),
-            "meetings" => cfg.meetings_audio_api_key.clear(),
+            "transcription" => cfg.drop_own_key(Purpose::Dictation),
+            "rewriting" => cfg.drop_own_key(Purpose::Rewrite),
+            "meetings" => cfg.drop_own_key(Purpose::Meetings),
+            provider if shares_key(provider) => {
+                cfg.set_shared_key(provider, "");
+            }
             _ => {
                 return Err(invalid(
-                    "target is transcription, rewriting, meetings or sync.",
+                    "target is transcription, rewriting, meetings, sync or a provider in providers.keys.",
                 ))
             }
         }
@@ -818,25 +899,10 @@ pub fn list_models(core: &Arc<Core>, request: Value) -> Result<Vec<String>, ApiE
     };
     let target = text("target");
     let cfg = core.config();
-    let (activity, purpose, saved_provider, saved_key) = match target.as_str() {
-        "transcription" => (
-            Activity::Audio,
-            Purpose::Dictation,
-            &cfg.audio_provider,
-            &cfg.audio_api_key,
-        ),
-        "meetings" => (
-            Activity::Audio,
-            Purpose::Meetings,
-            &cfg.meetings_audio_provider,
-            &cfg.meetings_audio_api_key,
-        ),
-        "rewriting" => (
-            Activity::Rewrite,
-            Purpose::Rewrite,
-            &cfg.rewrite_provider,
-            &cfg.rewrite_api_key,
-        ),
+    let (activity, purpose) = match target.as_str() {
+        "transcription" => (Activity::Audio, Purpose::Dictation),
+        "meetings" => (Activity::Audio, Purpose::Meetings),
+        "rewriting" => (Activity::Rewrite, Purpose::Rewrite),
         _ => return Err(invalid("target is transcription, rewriting or meetings.")),
     };
     let provider = normalize_provider(&text("provider"), "");
@@ -847,10 +913,17 @@ pub fn list_models(core: &Arc<Core>, request: Value) -> Result<Vec<String>, ApiE
     if endpoint.is_empty() {
         return Err(ApiError::new("config", "Choose an endpoint first."));
     }
+    // `null`: the key the form's feature sends, for its saved provider at its saved server, else
+    // the provider's key from Settings > API keys when the endpoint is one of its own hosts, else
+    // none. A model list never takes a key to an unsaved endpoint it doesn't belong to.
     let api_key = match &request["apiKey"] {
         Value::String(key) => key.trim().to_string(),
-        _ if *saved_provider == provider => saved_key.clone(),
-        _ => String::new(),
+        _ if cfg.provider_of(purpose) == provider
+            && endpoint_origin(cfg.endpoint_of(purpose)) == endpoint_origin(&endpoint) =>
+        {
+            cfg.key_of(purpose).to_string()
+        }
+        _ => cfg.key_for(&provider, &endpoint),
     };
     let provider_cfg = ProviderConfig {
         provider,

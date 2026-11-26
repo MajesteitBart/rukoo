@@ -265,6 +265,9 @@ pub trait EngineApi: Send + Sync + 'static {
     fn settings_closed(&self);
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError>;
     fn settings_save_provider(&self, save: Value) -> Result<(), ApiError>;
+    /// Saves a provider's key in Settings > API keys, for every feature that uses the provider.
+    /// The key never comes back to the page.
+    fn settings_save_key(&self, provider: &str, key: String) -> Result<(), ApiError>;
     fn settings_remove_key(&self, target: &str) -> Result<(), ApiError>;
     fn settings_list_models(&self, request: Value) -> Result<Vec<String>, ApiError>;
     fn settings_model(&self, model: &str, action: &str) -> Result<(), ApiError>;

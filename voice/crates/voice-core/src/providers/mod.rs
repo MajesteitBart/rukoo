@@ -176,6 +176,78 @@ pub const REWRITE_PROVIDER_IDS: [&str; 7] = [
     "custom",
 ];
 
+/// Providers whose API key is entered once, in Settings > API keys, and sent by every feature
+/// that uses the provider. A custom server isn't one provider, so each feature keeps its own key
+/// for it, and Orukeet needs none.
+pub const SHARED_KEY_PROVIDER_IDS: [&str; 6] = [
+    "openai",
+    "anthropic",
+    "google",
+    "mistral",
+    "ollama",
+    "openrouter",
+];
+
+/// Whether a provider's key is the one in Settings > API keys.
+pub fn shares_key(provider: &str) -> bool {
+    SHARED_KEY_PROVIDER_IDS.contains(&provider)
+}
+
+/// The hosts a provider's key from Settings > API keys may go to: the HTTPS hosts of its preset
+/// endpoints, such as `api.mistral.ai`. Empty for a provider without a shared key.
+pub fn key_hosts(provider: &str) -> Vec<String> {
+    let Some(id) = ProviderId::parse(provider).filter(|_| shares_key(provider)) else {
+        return Vec::new();
+    };
+    let preset = id.preset();
+    let mut hosts: Vec<String> = Vec::new();
+    for url in preset
+        .audio_endpoints
+        .iter()
+        .chain(preset.rewrite_endpoints)
+        .chain([&preset.models_endpoint])
+    {
+        let parts = urls::split(url);
+        let host = parts.hostname();
+        if parts.scheme.eq_ignore_ascii_case("https") && !host.is_empty() && !hosts.contains(&host)
+        {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+/// Whether a request for `provider` to `endpoint` may carry the provider's key from Settings >
+/// API keys: only over HTTPS to one of that provider's own hosts ([`key_hosts`]), on the default
+/// port and without user info. A feature pointed at any other server, such as a local Ollama or a
+/// proxy, sends a key of its own for that server instead.
+pub fn shared_key_applies(provider: &str, endpoint: &str) -> bool {
+    let parts = urls::split(endpoint.trim());
+    parts.scheme.eq_ignore_ascii_case("https")
+        && !parts.netloc.contains('@')
+        && parts.port().is_none_or(|port| port == "443")
+        && key_hosts(provider).contains(&parts.hostname())
+}
+
+/// Scheme, host and port of an endpoint, lowercased, with the scheme's default port filled in:
+/// the server a key a form keeps for itself belongs to. "" without a host.
+pub fn endpoint_origin(endpoint: &str) -> String {
+    let parts = urls::split(endpoint.trim());
+    let host = parts.hostname();
+    if host.is_empty() {
+        return String::new();
+    }
+    let scheme = parts.scheme.to_lowercase();
+    let port = parts.port().map(str::to_string).unwrap_or_else(|| {
+        match scheme.as_str() {
+            "https" => "443",
+            _ => "80",
+        }
+        .to_string()
+    });
+    format!("{scheme}://{host}:{port}")
+}
+
 impl ProviderId {
     pub fn parse(id: &str) -> Option<ProviderId> {
         PRESETS
@@ -570,6 +642,47 @@ pub(crate) fn redacted(key: &str) -> &'static str {
     }
 }
 
+/// The one place a provider's key is entered (voice/ui/API.md, `keys`).
+pub const KEYS_SETTINGS_PAGE: &str = "Settings > API keys";
+
+/// The Settings page that fixes a feature's missing key: API keys at the provider's own hosts,
+/// else the feature's own form, where the key for that other server is entered.
+pub fn missing_key_page(provider: &str, endpoint: &str, purpose: Purpose) -> &'static str {
+    if shared_key_applies(provider, endpoint) {
+        KEYS_SETTINGS_PAGE
+    } else {
+        match purpose {
+            Purpose::Rewrite => "Settings > Rewriting",
+            _ => audio_settings_page(purpose),
+        }
+    }
+}
+
+/// What a feature without its provider's key says, in the tray and in Settings. It names the
+/// provider and the one place to add the key: API keys, or for a proxy or another server the
+/// feature's own form, which names that server. The pill reads "Add an API key" for it: it starts
+/// "No " and holds "API key set" (voice-engine's `is_missing_key`).
+pub fn missing_key_message(provider: &str, endpoint: &str, purpose: Purpose) -> String {
+    let page = missing_key_page(provider, endpoint, purpose);
+    if !shared_key_applies(provider, endpoint) {
+        let host = endpoint_host(endpoint);
+        let server = if host.is_empty() {
+            "this server".to_string()
+        } else {
+            host
+        };
+        return format!("No API key set for {server}. Add it in {page}.");
+    }
+    let label = provider_label(provider);
+    match purpose {
+        Purpose::Dictation => format!("No {label} API key set. Add it in {page}."),
+        Purpose::Rewrite => format!("No {label} API key set for rewriting. Add it in {page}."),
+        Purpose::Meetings => {
+            format!("No {label} API key set for meeting transcription. Add it in {page}.")
+        }
+    }
+}
+
 fn audio_settings_page(purpose: Purpose) -> &'static str {
     match purpose {
         Purpose::Meetings => "Settings > Meetings > Transcription",
@@ -608,13 +721,10 @@ pub fn speech_to_text(
         )));
     }
     if provider_requires_key(id.as_str(), &cfg.endpoint) && cfg.api_key.trim().is_empty() {
-        let message = match cfg.purpose {
-            Purpose::Meetings => {
-                format!("No API key set for meeting transcription. Open {page} and add a key.")
-            }
-            _ => "No audio API key set. Open Settings > Transcription and add a key.".to_string(),
-        };
-        return Err(ProviderError::new(ErrorKind::Auth, message));
+        return Err(ProviderError::new(
+            ErrorKind::Auth,
+            missing_key_message(id.as_str(), &cfg.endpoint, cfg.purpose),
+        ));
     }
     Ok(Box::new(cloud::CloudSpeech::new(id, cfg)))
 }
@@ -642,7 +752,7 @@ pub fn rewriter(cfg: &RewriteProviderConfig) -> Result<Box<dyn Rewriter>, Provid
     if provider_requires_key(id.as_str(), &cfg.endpoint) && cfg.api_key.trim().is_empty() {
         return Err(ProviderError::new(
             ErrorKind::Auth,
-            "No rewrite API key set. Open Settings > Rewriting and add a key.",
+            missing_key_message(id.as_str(), &cfg.endpoint, Purpose::Rewrite),
         ));
     }
     Ok(Box::new(rewrite::CloudRewriter::new(id, cfg)))

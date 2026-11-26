@@ -18,7 +18,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use voice_core::config::Config;
-use voice_core::providers::provider_requires_key;
+use voice_core::providers::{
+    missing_key_message, provider_requires_key, shared_key_applies, Purpose,
+};
 use voice_core::{cleanup, prompts, RewriteRequest};
 use voice_input::{
     HotkeyConfig, HotkeyEvent, HotkeyPoller, InputError, InsertMode, Key, Mode, PushToTalk,
@@ -1207,6 +1209,11 @@ fn finish(core: &Core, job: &Job, outcome: Outcome) {
                     now,
                 )
             });
+            // The pill and the tray say where to add the key, and Settings opens there.
+            if notice == errors::NO_KEY {
+                core.settings
+                    .open_next_at(missing_key_settings_page(&job.cfg, title));
+            }
             core.notify(title, body);
         }
         Outcome::Quiet => {}
@@ -1253,6 +1260,21 @@ fn ending_of(outcome: &Outcome) -> Ending {
     }
 }
 
+/// The Settings page a missing key sends the user to: API keys for a provider's own host, else the
+/// failed step's form, where the key for its other server goes (`settings.html?page=`).
+fn missing_key_settings_page(cfg: &Config, title: &str) -> &'static str {
+    let (provider, page) = if title == errors::TITLE_REWRITE {
+        (cfg.rewrite(), "rewriting")
+    } else {
+        (cfg.dictation_audio(), "transcription")
+    };
+    if shared_key_applies(&provider.provider, &provider.endpoint) {
+        "keys"
+    } else {
+        page
+    }
+}
+
 fn failed(notice: &'static str, title: &'static str, body: impl Into<String>) -> Outcome {
     Outcome::Failed {
         notice,
@@ -1292,7 +1314,7 @@ fn process(core: &Core, job: &Job) -> Outcome {
         return failed(
             errors::NO_KEY,
             errors::TITLE_DICTATION,
-            "No audio API key set. Open Settings > Transcription and add a key.",
+            missing_key_message(&audio.provider, &audio.endpoint, Purpose::Dictation),
         );
     }
     match job.mode {
@@ -1469,7 +1491,7 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
         return failed(
             errors::NO_KEY,
             errors::TITLE_REWRITE,
-            "No rewrite API key set. Open Settings > Rewriting and add a key.",
+            missing_key_message(&rewrite.provider, &rewrite.endpoint, Purpose::Rewrite),
         );
     }
     let result = core.svc.speech.rewriter(&rewrite).and_then(|rewriter| {

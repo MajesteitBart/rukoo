@@ -4,7 +4,10 @@
 // settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&features=<list>&sync=<sync>&eventFirst=1&platform=macos&permissions=<state>
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
-//   (development copy).
+//   (development copy), nokey (dictation and rewriting on Mistral without a key, Orukeet not downloaded), ownkey
+//   (everything on Mistral, rewriting and meetings with another key each from before keys were shared), cleared
+//   (everything on Mistral, rewriting's key removed in an older Voice), ollama (rewriting with Ollama on this computer and
+//   its own key, an Ollama cloud key on API keys), proxy (dictation on Mistral through a proxy without its key).
 //   platform=macos shows the macOS Permissions group and the Mac key names; permissions=granted, denied, notAsked
 //   or mixed (the default) picks the states the five rows show. System audio stays unknown, as it has no
 //   public preflight.
@@ -35,11 +38,44 @@ const ZERO_CODE = `RKV1-${Array(11).fill('00000').join('-')}`;
 const REALTIME = 'voxtral-mini-transcribe-realtime';
 const REALTIME_MODEL = 'voxtral-mini-transcribe-realtime-3';
 
+// The providers whose key is on the API keys page (API.md, providers.keys).
+const KEY_PROVIDERS = ['openai', 'anthropic', 'google', 'mistral', 'ollama', 'openrouter'];
+const KEY_FORMS = ['transcription', 'rewriting', 'meetings'];
+
+// The hosts each provider's key from API keys may go to (API.md, providers.keyHosts).
+const KEY_HOSTS = {
+  openai: ['api.openai.com'],
+  anthropic: ['api.anthropic.com'],
+  google: ['generativelanguage.googleapis.com'],
+  mistral: ['api.mistral.ai'],
+  ollama: ['ollama.com'],
+  openrouter: ['openrouter.ai']
+};
+// As voice-core's shared_key_applies: HTTPS to one of the provider's own hosts, on the default port.
+function keyApplies(provider, endpoint) {
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    return url.protocol === 'https:' && !url.username && (url.port === '' || url.port === '443') && (KEY_HOSTS[provider] || []).includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+const serverOf = (endpoint) => {
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    return `${url.protocol}//${url.hostname}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return '';
+  }
+};
+
 const PROVIDERS = {
+  keys: KEY_PROVIDERS,
+  keyHosts: KEY_HOSTS,
   audio: [
     { id: 'openai', endpoints: ['https://api.openai.com/v1/audio/transcriptions'], streamingPrefix: null },
     { id: 'google', endpoints: ['https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'], streamingPrefix: null },
-    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/audio/transcriptions'], streamingPrefix: REALTIME },
+    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/audio/transcriptions'], streamingPrefix: REALTIME, defaultModel: 'voxtral-mini-latest' },
     { id: 'custom', endpoints: ['http://localhost:1234/v1/audio/transcriptions'], streamingPrefix: null },
     { id: 'orukeet', endpoints: [], streamingPrefix: null }
   ],
@@ -47,7 +83,7 @@ const PROVIDERS = {
     { id: 'openai', endpoints: ['https://api.openai.com/v1/responses', 'https://api.openai.com/v1/chat/completions'] },
     { id: 'anthropic', endpoints: ['https://api.anthropic.com/v1/messages'] },
     { id: 'google', endpoints: ['https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'] },
-    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/chat/completions'] },
+    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/chat/completions'], defaultModel: 'mistral-small-latest' },
     { id: 'ollama', endpoints: ['http://localhost:11434/api/chat', 'https://ollama.com/api/chat'] },
     { id: 'openrouter', endpoints: ['https://openrouter.ai/api/v1/chat/completions'] },
     { id: 'custom', endpoints: ['http://localhost:1234/v1/chat/completions'] }
@@ -99,7 +135,7 @@ function baseState() {
     locale: 'en',
     config: {
       dictation: { hotkey: 'right alt', rewriteHotkey: 'right ctrl', pasteMode: true, readyChime: false, startAtLogin: true },
-      transcription: { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false },
+      transcription: { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false, ownKey: false },
       local: { modelFolder: '', idleMinutes: 20 },
       dictionary: {
         vocabulary: ['Rukoo', 'Orukeet', 'Hermes', 'bvdm.ai', 'Keendoc'],
@@ -114,6 +150,7 @@ function baseState() {
         endpoint: 'https://api.mistral.ai/v1/chat/completions',
         model: 'mistral-small-latest',
         keySaved: true,
+        ownKey: false,
         auto: false,
         tone: 'auto',
         formatting: true,
@@ -124,6 +161,7 @@ function baseState() {
         endpoint: '',
         model: 'orukeet-onnx-int8',
         keySaved: false,
+        ownKey: false,
         consent: null,
         retention: 'days7',
         stopKey: 'off',
@@ -132,6 +170,8 @@ function baseState() {
       },
       ui: { language: 'system', theme: 'system', pillEdge: 'bottom', hidePillFromCapture: true },
       updates: { check: false },
+      // Rewriting's Mistral key, which every feature on Mistral uses.
+      apiKeys: Object.fromEntries(KEY_PROVIDERS.map((id) => [id, { saved: id === 'mistral' }])),
       storage: {
         sync: { enabled: false, service: 'upcloud', endpoint: '', region: '', bucket: '', prefix: '', accessKeyId: '', retention: 'keep', secretSaved: false, tested: false, secret: '' }
       }
@@ -348,9 +388,10 @@ const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/;
 const SCENARIOS = {
   default: () => {},
   fresh: (s) => {
-    s.config.transcription = { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false };
+    s.config.transcription = { provider: 'orukeet', endpoint: '', model: 'orukeet-onnx-int8', language: 'auto', keySaved: false, ownKey: false };
     s.config.dictionary = { vocabulary: [], corrections: [] };
     s.config.rewriting.keySaved = false;
+    s.config.apiKeys.mistral.saved = false;
     s.dictation.status = 'modelMissing';
     s.rukoo = { ...s.rukoo, state: 'notRunning', clientVersion: null, protocol: null, behind: null };
     Object.assign(s.models.orukeet, { stage: 'missing', location: null, path: null, active: null });
@@ -365,8 +406,9 @@ const SCENARIOS = {
     s.updates = { state: 'available', version: '0.2.0' };
   },
   cloud: (s) => {
-    s.config.transcription = { provider: 'openai', endpoint: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-4o-mini-transcribe', language: 'nl', keySaved: true };
+    s.config.transcription = { provider: 'openai', endpoint: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-4o-mini-transcribe', language: 'nl', keySaved: true, ownKey: false };
     s.config.meetings = { ...s.config.meetings, provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: 'voxtral-mini-latest', keySaved: true, consent: null };
+    s.config.apiKeys.openai.saved = true;
     s.config.rewriting.auto = true;
     Object.assign(s.models.orukeet, { active: null });
     s.ownkey.report.meetings = { provider: 'mistral', keyImported: true, retention: 'keep', consent: false };
@@ -385,6 +427,44 @@ const SCENARIOS = {
       error: 'Checksum mismatch for encoder.int8.onnx: expected 7f3a…c01e, got 0b9d…44a2. The download may be damaged; try again.'
     });
     s.updates = { state: 'failed', version: null };
+  },
+  // The tester's start: Mistral chosen for dictation, no key anywhere yet, and no Orukeet on this computer.
+  nokey: (s) => {
+    SCENARIOS.fresh(s);
+    s.config.transcription = { provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: 'voxtral-mini-latest', language: 'auto', keySaved: false, ownKey: false };
+    s.dictation.status = 'noKey';
+    s.ownkey = { ...s.ownkey, configFound: false };
+  },
+  // A config from before keys were shared: three Mistral keys, two of them different from dictation's.
+  ownkey: (s) => {
+    s.config.transcription = { provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: 'voxtral-mini-latest', language: 'auto', keySaved: true, ownKey: false };
+    s.config.rewriting.ownKey = true;
+    s.config.meetings = {
+      ...s.config.meetings,
+      provider: 'mistral',
+      endpoint: 'https://api.mistral.ai/v1/audio/transcriptions',
+      model: 'voxtral-mini-latest',
+      keySaved: true,
+      ownKey: true,
+      consent: { provider: 'mistral', host: 'api.mistral.ai', mode: 'windows' }
+    };
+    Object.assign(s.models.orukeet, { active: null });
+  },
+  // An older Voice removed rewriting's key; the Mistral key stays for the others.
+  cleared: (s) => {
+    SCENARIOS.ownkey(s);
+    s.config.rewriting = { ...s.config.rewriting, keySaved: false, ownKey: false };
+    s.config.meetings.ownKey = false;
+  },
+  // Ollama on this computer keeps its own key; the Ollama cloud key on API keys never goes there.
+  ollama: (s) => {
+    s.config.rewriting = { ...s.config.rewriting, provider: 'ollama', endpoint: 'http://localhost:11434/api/chat', model: 'llama3.2:3b', keySaved: true, ownKey: false };
+    s.config.apiKeys.ollama.saved = true;
+  },
+  // A key on API keys can't reach a proxy: its key goes in the form.
+  proxy: (s) => {
+    s.config.transcription = { provider: 'mistral', endpoint: 'https://proxy.example.com/v1/audio/transcriptions', model: 'voxtral-mini-latest', language: 'auto', keySaved: false, ownKey: false };
+    s.dictation.status = 'noKey';
   },
   dev: (s) => {
     s.devMode = true;
@@ -434,6 +514,9 @@ const SPEAKER_SCENARIOS = {
   },
   key: (s) => {
     Object.assign(s.config.meetings, MISTRAL_MEETINGS, { keySaved: false, consent: { provider: 'mistral', host: 'api.mistral.ai', mode: 'stream' } });
+    // No Mistral key at all: one key serves every feature on Mistral.
+    s.config.apiKeys.mistral.saved = false;
+    s.config.rewriting.keySaved = false;
   },
   consent: (s) => {
     Object.assign(s.config.meetings, MISTRAL_MEETINGS, { consent: null });
@@ -534,6 +617,9 @@ export function createMock(params) {
   let ownUploads = params.has('sync') ? (SYNC_SCENARIOS[params.get('sync')] || SYNC_SCENARIOS.fresh)(state) : false;
   const forced = { theme: params.get('theme'), locale: params.get('lang') };
   const handlers = [];
+  // For dev/check.js: the app bringing an open Settings window forward for a page (API.md, settings://page).
+  const pageHandlers = [];
+  window.__settingsMockOpenPage = (page) => pageHandlers.forEach((handler) => handler({ page }));
   let downloadTimer = 0;
   let syncTimer = 0;
   let protectedWindow = false;
@@ -553,8 +639,16 @@ export function createMock(params) {
   };
   resolve();
 
+  // dictation.firstSetup as the engine works it out: dictation not chosen yet, still on Orukeet, and no key anywhere.
+  let dictationChosen = false;
+  const firstSetup = () =>
+    !dictationChosen &&
+    state.config.transcription.provider === 'orukeet' &&
+    !Object.values(state.config.apiKeys).some((k) => k.saved) &&
+    !KEY_FORMS.some((target) => state.config[target].keySaved);
   const snapshot = () => {
     state.speakers = speakersState(state, forcedSpeakers);
+    state.dictation.firstSetup = firstSetup();
     return structuredClone(state);
   };
   // For dev/check.js: what the app would hold now.
@@ -667,6 +761,14 @@ export function createMock(params) {
       emit();
       return null;
     },
+    settings_save_key: ({ provider, key }) => {
+      if (!KEY_PROVIDERS.includes(provider)) fail('invalid_value', `${provider} has no key in API keys.`);
+      if (typeof key !== 'string' || !key.trim() || key.length > 1024) fail('invalid_value', 'The key is 1 to 1024 characters.');
+      if (key.trim() === 'fail') fail('failed', "Voice couldn't save Settings: Access is denied. (os error 5)");
+      sharedKey(provider, true);
+      emit();
+      return null;
+    },
     settings_save_provider: async ({ save }) => {
       window.__lastSave = structuredClone(save);
       await wait(save.provider === 'orukeet' ? 1200 : 500);
@@ -674,15 +776,29 @@ export function createMock(params) {
       if (save.provider !== 'orukeet' && save.model === 'fail') fail('failed', 'HTTP 401 from api.mistral.ai: Unauthorized. Check the API key.');
       if (save.target !== 'meetings' && String(save.model).startsWith(REALTIME)) fail('invalid_value', 'Realtime models work for meeting transcription only.');
       const target = state.config[save.target];
-      const sameProvider = target.provider === save.provider;
+      // A key the form keeps belongs to its provider at its server; a provider's own key goes only to its own hosts.
+      const sameProvider = target.provider === save.provider && serverOf(target.endpoint) === serverOf(save.endpoint);
+      const shared = save.provider !== 'orukeet' && keyApplies(save.provider, save.endpoint);
       Object.assign(target, { provider: save.provider, endpoint: save.endpoint, model: save.model });
-      target.keySaved = save.apiKey === null ? sameProvider && target.keySaved : Boolean(save.apiKey);
+      // As the engine: a provider on the API keys page brings its key; a custom server's key is the form's.
+      if (shared) {
+        target.keySaved = sameProvider ? target.keySaved : state.config.apiKeys[save.provider].saved;
+        target.ownKey = sameProvider && target.ownKey;
+        if (save.apiKey) {
+          sharedKey(save.provider, true);
+          target.keySaved = true;
+        }
+      } else {
+        target.keySaved = save.apiKey === null ? sameProvider && target.keySaved : Boolean(save.apiKey);
+        target.ownKey = false;
+      }
       if (save.language) target.language = save.language;
       if (save.target === 'meetings') {
         const mode = String(save.model).startsWith(REALTIME) ? 'stream' : 'windows';
         target.consent = save.consent ? { provider: save.provider, host: host(save.endpoint), mode } : null;
       }
       if (save.target === 'transcription') {
+        dictationChosen = true;
         state.models.orukeet.active = save.provider === 'orukeet' && state.models.orukeet.stage === 'installed' ? 'loaded' : null;
         state.dictation.status =
           save.provider === 'orukeet' ? (state.models.orukeet.stage === 'installed' ? 'ready' : 'modelMissing') : target.keySaved ? 'ready' : 'noKey';
@@ -694,7 +810,14 @@ export function createMock(params) {
       if (target === 'sync') {
         state.config.storage.sync.secretSaved = false;
         syncUntested();
-      } else state.config[target].keySaved = false;
+      } else if (KEY_PROVIDERS.includes(target)) sharedKey(target, false);
+      else if (KEY_FORMS.includes(target)) {
+        // A feature drops the key it sends: a custom server's goes, another one from before gives way to API keys'.
+        const form = state.config[target];
+        form.keySaved = keyApplies(form.provider, form.endpoint) && state.config.apiKeys[form.provider].saved;
+        form.ownKey = false;
+        if (target === 'transcription') state.dictation.status = dictationStatus();
+      } else fail('invalid_value', `Unknown key ${target}.`);
       emit();
       return null;
     },
@@ -843,6 +966,26 @@ export function createMock(params) {
     settings_close: () => null
   };
 
+  // Dictation's status as the engine works it out from the provider, its key and the model.
+  function dictationStatus() {
+    const tr = state.config.transcription;
+    if (tr.provider === 'orukeet') return state.models.orukeet.stage === 'installed' ? 'ready' : 'modelMissing';
+    const needsKey = tr.provider !== 'custom' && !(tr.provider === 'ollama' && host(tr.endpoint) !== 'ollama.com');
+    return needsKey && !tr.keySaved ? 'noKey' : 'ready';
+  }
+
+  // Saves or removes a provider's key on the API keys page, for the forms that follow it: on that provider at one of its
+  // own hosts, without an own key, and with a key exactly when there was one.
+  function sharedKey(provider, saved) {
+    const was = state.config.apiKeys[provider].saved;
+    state.config.apiKeys[provider] = { saved };
+    for (const target of KEY_FORMS) {
+      const form = state.config[target];
+      if (form.provider === provider && keyApplies(provider, form.endpoint) && !form.ownKey && form.keySaved === was) form.keySaved = saved;
+    }
+    state.dictation.status = dictationStatus();
+  }
+
   // settings_set for storage.sync.*, with the engine's rules (API.md).
   function setSync(field, value) {
     const sync = state.config.storage.sync;
@@ -868,6 +1011,7 @@ export function createMock(params) {
     },
     listen: async (name, handler) => {
       if (name === 'settings://state') handlers.push(handler);
+      if (name === 'settings://page') pageHandlers.push(handler);
       return () => {};
     }
   };
