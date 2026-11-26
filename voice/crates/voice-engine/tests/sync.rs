@@ -21,10 +21,11 @@ use support::{
     skip_on_slow_host, sync_state, wait_for, Harness,
 };
 use voice_bridge::{ControlError, EventLog, MediaKind, MediaOpenArgs, MeetingControl};
-use voice_engine::media::ScreenMedia;
+use voice_engine::media::{ScreenMedia, MIN_PIECE_MS};
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::{Engine, StopReason};
+use voice_meetings::reader::segment_samples;
 use voice_meetings::{TrackReader, Transcript};
 use voice_protocol::{ErrorCode, MeetingId, Speaker, Track};
 use voice_recorder::timeline::{self, History, Line};
@@ -104,8 +105,24 @@ fn main() {
             a_restored_meeting_reaches_the_bridge,
         ),
         (
+            "rukoos_data_reaches_the_other_computer",
+            rukoos_data_reaches_the_other_computer,
+        ),
+        (
             "changes_and_deletions_reach_the_other_computer",
             changes_and_deletions_reach_the_other_computer,
+        ),
+        (
+            "a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit",
+            a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit,
+        ),
+        (
+            "fetching_ahead_leaves_the_room_rukoo_s_own_fetch_took",
+            fetching_ahead_leaves_the_room_rukoo_s_own_fetch_took,
+        ),
+        (
+            "a_passage_from_the_bucket_starts_after_its_first_segment",
+            a_passage_from_the_bucket_starts_after_its_first_segment,
         ),
         (
             "media_open_for_video_answers_within_50_ms",
@@ -290,6 +307,7 @@ fn audio(meeting: &str, start: u64, end: Option<u64>) -> MediaOpenArgs {
         kind: MediaKind::Audio,
         start,
         end,
+        piece: false,
     }
 }
 
@@ -1420,6 +1438,588 @@ fn changes_and_deletions_reach_the_other_computer() {
             .any(|(e, d)| e == "meeting.removed" && d["reason"] == "user")
     });
     assert!(!meeting_dir(&b.data(), &id).exists());
+    engine_a.shutdown();
+    engine_b.shutdown();
+    fake.stop();
+}
+
+// Media on request ----------------------------------------------------------------------------
+
+/// A stand-in JPEG of about 8 KB, different for each `n`.
+fn small_jpeg(n: u8) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    bytes.extend_from_slice(b"JFIF\0");
+    bytes.extend((0..8_000u32).map(|i| (i as u8).wrapping_mul(n)));
+    bytes.extend_from_slice(&[0xFF, 0xD9]);
+    bytes
+}
+
+/// Frames at these meeting times, with their screen journal, as a screen recording leaves them.
+const SHOTS: [u64; 3] = [500, 1500, 2500];
+
+fn shot(at: u64) -> String {
+    voice_screen_files::paths::frame_file(&voice_screen_files::paths::frame_id(at))
+}
+
+fn write_shots(dir: &Path, end: u64) {
+    std::fs::create_dir_all(dir.join("screen").join("frames")).unwrap();
+    let mut lines = vec![ScreenLine::Mode {
+        t: 0,
+        id: "mode-1".into(),
+        mode: "frames".into(),
+        reason: "user".into(),
+    }];
+    for (i, at) in SHOTS.iter().enumerate() {
+        std::fs::write(dir.join(shot(*at)), small_jpeg(i as u8 + 3)).unwrap();
+        lines.push(ScreenLine::Frame {
+            t: *at,
+            id: voice_screen_files::paths::frame_id(*at),
+            file: shot(*at),
+            width: 1280,
+            height: 720,
+            text: format!("Slide {}", i + 1),
+            ocr: "ok".into(),
+            language: None,
+        });
+    }
+    lines.push(ScreenLine::Stop {
+        t: end,
+        reason: "meeting".into(),
+    });
+    let text: String = lines
+        .iter()
+        .map(|l| serde_json::to_string(l).unwrap() + "\n")
+        .collect();
+    std::fs::write(dir.join("screen").join("journal.jsonl"), text).unwrap();
+}
+
+/// The media files of a meeting folder on disk, relative and sorted.
+fn media_files(dir: &Path) -> Vec<String> {
+    let mut files: Vec<String> = voice_meetings::MediaPart::ORDER
+        .iter()
+        .flat_map(|part| part.files(dir))
+        .collect();
+    files.sort();
+    files
+}
+
+/// A meeting recorded on computer A comes to B as text. On B its frame images come back from the
+/// bucket on request (`frame.get` answers `pending`, then the image) and ahead of time
+/// (`media.prefetch`), what came back stays within the cache limit, least recently used going
+/// first, while media B recorded itself and never uploaded stays; and a meeting kept on this
+/// computer downloads everything, keeps it from the limit and survives a restart.
+fn a_pulled_meeting_s_media_comes_on_request_within_the_cache_limit() {
+    let fake = fake_s3();
+    let a = harness("keep-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    write_shots(&meeting_dir(&a.data(), &id), 3000);
+    wait_long("the frames in the bucket", Duration::from_secs(60), || {
+        bucket_kinds(&fake, &code)
+            .iter()
+            .filter(|k| **k == "jpeg")
+            .count()
+            == SHOTS.len()
+    });
+    wait_uploaded(&engine_a);
+    engine_a.shutdown();
+
+    // B: a GB of the cache limit is 5,000 bytes here, so the default limit, 5 GB, is 25,000.
+    let mut b = harness("keep-b", json!({"meetings_retention": "keep"}));
+    b.sync_timing.cache_gb = 5_000;
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    let dir = meeting_dir(&b.data(), &id);
+    assert!(media_files(&dir).is_empty(), "the meeting came as text");
+    let control = engine_b.meeting_control().unwrap();
+
+    // frame.get answers at once with pending, then with the image.
+    let first = control.frame(&id, 1600).unwrap();
+    assert_eq!(
+        (&first["image"], &first["pending"], &first["frame"]["text"]),
+        (&Value::Null, &json!(true), &json!("Slide 2")),
+        "{first}"
+    );
+    let mut image = Value::Null;
+    wait_long(
+        "the frame image from the bucket",
+        Duration::from_secs(30),
+        || {
+            let reply = control.frame(&id, 1600).unwrap();
+            image = reply["image"].clone();
+            !image.is_null()
+        },
+    );
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(image["data"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(data, small_jpeg(4));
+
+    // media.prefetch brings the others in the background.
+    assert_eq!(control.prefetch_frames(&id).unwrap(), json!({}));
+    wait_long("the frames fetched ahead", Duration::from_secs(30), || {
+        SHOTS.iter().all(|at| dir.join(shot(*at)).is_file())
+    });
+    // An agent's link reads the first frame where it is; then the others are used, the last one
+    // last.
+    let link = MediaOpenArgs {
+        kind: MediaKind::Frame,
+        ..audio(&id, 500, None)
+    };
+    assert_eq!(control.media_open(&link).unwrap()["ready"], true);
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!control.frame(&id, 1600).unwrap()["image"].is_null());
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!control.frame(&id, 2600).unwrap()["image"].is_null());
+
+    // B records a meeting the bucket never gets.
+    fake.faults().refuse = true;
+    let own = record(&engine_b, &b.data(), 2000);
+    let own_media = media_files(&meeting_dir(&b.data(), &own));
+    assert!(!own_media.is_empty());
+
+    // 2 GB is 10,000 bytes here, room for one frame. Use a moment ago keeps nothing: the frames
+    // nobody reads go, the one used last too, and the one the link has open stays, as does
+    // everything B recorded itself.
+    engine_b
+        .settings_set("storage.sync.cache", json!("gb2"))
+        .unwrap();
+    wait_long("the cache limit", Duration::from_secs(30), || {
+        !dir.join(shot(1500)).exists() && !dir.join(shot(2500)).exists()
+    });
+    assert!(
+        dir.join(shot(500)).is_file(),
+        "the frame a link reads stays"
+    );
+    assert_eq!(media_files(&meeting_dir(&b.data(), &own)), own_media);
+    // Fetching ahead stops at the limit rather than going past it.
+    fake.faults().refuse = false;
+    assert_eq!(control.prefetch_frames(&id).unwrap(), json!({}));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !dir.join(shot(1500)).exists() && !dir.join(shot(2500)).exists(),
+        "nothing fetched ahead past the limit"
+    );
+    fake.faults().refuse = true;
+    wait_long(
+        "Settings to show the cache",
+        Duration::from_secs(30),
+        || engine_b.settings_state()["storage"]["cacheBytes"] == json!(small_jpeg(5).len()),
+    );
+    fake.faults().refuse = false;
+
+    // Keep on this computer: everything comes down and the limit leaves it alone.
+    let kept = control.keep_media(&id, Some(true)).unwrap();
+    assert_eq!(kept["keep"], true, "{kept}");
+    wait_long("the kept meeting's media", Duration::from_secs(60), || {
+        let state = control.keep_media(&id, None).unwrap();
+        state["have"] == state["total"]
+    });
+    let all = media_files(&dir);
+    assert!(all.iter().any(|p| p.starts_with("audio/")), "{all:?}");
+    assert!(SHOTS.iter().all(|at| all.contains(&shot(*at))), "{all:?}");
+    // One file goes missing while Voice is closed; the choice and the download outlive a restart.
+    std::fs::remove_file(dir.join(&all[0])).unwrap();
+    engine_b.shutdown();
+    let engine_b = b.start();
+    let control = engine_b.meeting_control().unwrap();
+    wait_long(
+        "the kept meeting complete again",
+        Duration::from_secs(60),
+        || {
+            let state = control.keep_media(&id, None).unwrap();
+            state["keep"] == true && state["have"] == state["total"]
+        },
+    );
+    assert_eq!(
+        media_files(&dir),
+        all,
+        "the cache limit left the kept meeting alone"
+    );
+
+    // Not kept any more: the limit applies to it again.
+    assert_eq!(control.keep_media(&id, Some(false)).unwrap()["keep"], false);
+    wait_long(
+        "the limit on the meeting again",
+        Duration::from_secs(30),
+        || media_files(&dir).len() < all.len(),
+    );
+    assert_eq!(media_files(&meeting_dir(&b.data(), &own)), own_media);
+
+    // Deleting the meeting drops the choice.
+    control.keep_media(&id, Some(true)).unwrap();
+    control.delete(&id).unwrap();
+    assert_eq!(code_of(control.keep_media(&id, None)), ErrorCode::NotFound);
+    engine_b.shutdown();
+    fake.stop();
+}
+
+/// Frames fetched ahead wait while Rukoo's own fetch runs, and make room only once it is done: a
+/// frame an agent's link fetched meanwhile, and reads, fills the cache, so nothing comes ahead
+/// and the cache stays within its limit.
+fn fetching_ahead_leaves_the_room_rukoo_s_own_fetch_took() {
+    let fake = fake_s3();
+    let a = harness("ahead-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    write_shots(&meeting_dir(&a.data(), &id), 3000);
+    wait_long("the frames in the bucket", Duration::from_secs(60), || {
+        bucket_kinds(&fake, &code)
+            .iter()
+            .filter(|k| **k == "jpeg")
+            .count()
+            == SHOTS.len()
+    });
+    wait_uploaded(&engine_a);
+    engine_a.shutdown();
+
+    // B: 2 GB is 12,000 bytes here, room for one frame and a half.
+    let mut b = harness("ahead-b", json!({"meetings_retention": "keep"}));
+    b.sync_timing.cache_gb = 6_000;
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    engine_b
+        .settings_set("storage.sync.cache", json!("gb2"))
+        .unwrap();
+    let limit = 12_000;
+    let dir = meeting_dir(&b.data(), &id);
+    let control = engine_b.meeting_control().unwrap();
+
+    // An agent's link to the last frame waits for the bucket; Rukoo asks for the frames ahead
+    // meanwhile, starting with the first.
+    fake.faults().stall = Some(Duration::from_secs(2));
+    let link = MediaOpenArgs {
+        kind: MediaKind::Frame,
+        ..audio(&id, 2500, None)
+    };
+    assert_eq!(control.media_open(&link).unwrap()["ready"], false);
+    assert_eq!(control.prefetch_frames(&id).unwrap(), json!({}));
+    // The link's fetch is on its way; what comes after it is quick.
+    std::thread::sleep(Duration::from_millis(500));
+    fake.faults().stall = None;
+    open_ready(&*control, &link);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !dir.join(shot(500)).exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let cached: u64 = SHOTS
+        .iter()
+        .filter_map(|at| std::fs::metadata(dir.join(shot(*at))).ok())
+        .map(|m| m.len())
+        .sum();
+    assert!(
+        cached <= limit,
+        "the cache holds {cached} bytes, over its limit of {limit}"
+    );
+    assert!(
+        dir.join(shot(2500)).is_file(),
+        "the frame the link reads stays"
+    );
+    assert!(!dir.join(shot(500)).exists(), "no room to fetch ahead");
+    engine_b.shutdown();
+    fake.stop();
+}
+
+/// A passage that spans two segments of a meeting from the bucket: the player's `piece` of it is
+/// ready once the segments its start falls in are here, while the next one still comes, and ends
+/// where they end; the rest follows. A link's `media.open` still waits for the whole range.
+fn a_passage_from_the_bucket_starts_after_its_first_segment() {
+    let fake = fake_s3();
+    let a = harness("piece-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    wait_uploaded(&engine_a);
+    engine_a.shutdown();
+    let recorded = meeting_dir(&a.data(), &id);
+
+    let b = harness("piece-b", json!({"meetings_retention": "keep"}));
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    let control = engine_b.meeting_control().unwrap();
+    // An earlier clip brought the first second back.
+    open_ready(&*control, &audio(&id, 200, Some(600)));
+    let piece = |start, end| MediaOpenArgs {
+        piece: true,
+        ..audio(&id, start, Some(end))
+    };
+
+    // Where the recorder's segments end depends on the machine's timing: the pieces end where
+    // the meeting's own timeline says.
+    let here = meeting_dir(&b.data(), &id);
+    let ends = segment_ends(&here);
+
+    // The bucket holds every answer for 6 s: the first piece doesn't need it.
+    fake.faults().stall = Some(Duration::from_secs(6));
+    let asked = Instant::now();
+    let first = open_ready(&*control, &piece(700, 1700));
+    assert!(
+        asked.elapsed() < Duration::from_secs(3),
+        "the first piece took {:?}",
+        asked.elapsed()
+    );
+    let boundary = first["end"].as_u64().unwrap();
+    assert_eq!(boundary, piece_end(&ends, 700, 1700), "{first}");
+    assert!(boundary < 1700, "{first} with segments ending at {ends:?}");
+    assert_eq!(first["start"], 700);
+    assert_eq!(first["more"], true, "audio follows the piece: {first}");
+    assert_eq!(
+        read_all(&*control, &first, 1 << 20),
+        expected_mix(&recorded, 700, boundary)
+    );
+
+    // A piece that starts just before a boundary doesn't end there: one of a few ms is no use to
+    // the player, so it runs on to the next boundary at least MIN_PIECE_MS on, or the range's end.
+    let short = piece(boundary - 1, 1700);
+    assert_eq!(control.media_open(&short).unwrap()["ready"], false);
+    // The rest waits for the next segment, which comes once the bucket answers.
+    let rest = piece(boundary, 1700);
+    assert_eq!(control.media_open(&rest).unwrap()["ready"], false);
+    fake.faults().stall = None;
+    for (from, open) in [(boundary - 1, short), (boundary, rest)] {
+        let mut at = from;
+        let mut answer = open_ready(&*control, &open);
+        loop {
+            let end = piece_end(&ends, at, 1700);
+            assert!(end - at >= MIN_PIECE_MS || end == 1700, "{answer}");
+            assert_eq!(
+                (&answer["start"], &answer["end"]),
+                (&json!(at), &json!(end)),
+                "segments end at {ends:?}"
+            );
+            assert_eq!(
+                read_all(&*control, &answer, 1 << 20),
+                expected_mix(&recorded, at, end)
+            );
+            if end == 1700 {
+                assert!(answer.get("more").is_none(), "{answer}");
+                break;
+            }
+            assert_eq!(answer["more"], true, "{answer}");
+            at = end;
+            answer = open_ready(&*control, &piece(at, 1700));
+        }
+    }
+
+    // A link gets the whole range in one file, as before.
+    let whole = open_ready(&*control, &audio(&id, 700, Some(1700)));
+    assert_eq!(whole["end"], 1700);
+    assert!(whole.get("more").is_none(), "{whole}");
+    assert_eq!(
+        read_all(&*control, &whole, 1 << 20),
+        expected_mix(&recorded, 700, 1700)
+    );
+
+    // The recorder starts a segment before the previous one ends when it corrects clock drift:
+    // here the first segment of each track still in the bucket starts 200 ms early. The mix keeps
+    // the overlap in the earlier segment, so a piece across that boundary needs only the
+    // segments on this computer.
+    let (before, overlap) = overlap_next_missing(&here, 200);
+    let (from, to) = (
+        before.iter().min().unwrap() - MIN_PIECE_MS - 100,
+        before.iter().max().unwrap() + 100,
+    );
+    assert_eq!(
+        piece_end(&segment_ends(&here), from, to),
+        *before.iter().min().unwrap(),
+        "the overlapping segments start where the earlier ones end"
+    );
+    fake.faults().stall = Some(Duration::from_secs(6));
+    let asked = Instant::now();
+    let early = open_ready(&*control, &piece(from, to));
+    assert!(
+        asked.elapsed() < Duration::from_secs(3),
+        "the piece over overlapping segments took {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(early["end"], *before.iter().min().unwrap(), "{early}");
+    assert_eq!(early["more"], true, "{early}");
+    assert!(overlap.iter().all(|file| !here.join(file).is_file()));
+    assert_eq!(
+        read_all(&*control, &early, 1 << 20),
+        expected_mix(&here, from, early["end"].as_u64().unwrap())
+    );
+    fake.faults().stall = None;
+
+    // The last passage runs past the recording: the player follows `more` from piece to piece,
+    // and the last one ends where the audio ends, without `more`.
+    let past = to + 10_000;
+    let mut at = early["end"].as_u64().unwrap();
+    let mut last = early;
+    while last.get("more").is_some() {
+        assert_eq!(last["more"], true, "{last}");
+        last = open_ready(&*control, &piece(at, past));
+        assert_eq!(last["start"], at, "{last}");
+        at = last["end"].as_u64().unwrap();
+    }
+    assert_eq!(at, recorded_end(&here));
+    assert!(at < past);
+    assert_eq!(
+        code_of(control.media_open(&piece(at, past))),
+        ErrorCode::NotFound,
+        "nothing is recorded after the last piece"
+    );
+    engine_b.shutdown();
+    fake.stop();
+}
+
+/// Where each segment of the meeting ends in ms, as the mix plays it: after the overlap rule, so
+/// a segment the recorder started early starts where the one before it ends. Lengths come from the
+/// timeline, so segments still in the bucket count too.
+fn segment_ends(dir: &Path) -> Vec<u64> {
+    let history = History::from_lines(&timeline::read(&dir.join("timeline.jsonl")).unwrap());
+    let mut ends: Vec<u64> = ["mic", "call"]
+        .iter()
+        .flat_map(|track| {
+            TrackReader::with_lengths(dir, track, &history.segments, |s| {
+                s.ended
+                    .unwrap_or_else(|| segment_samples(&dir.join(&s.file), None))
+            })
+            .spans()
+            .map(|(_, to, _)| to.div_ceil(16))
+            .collect::<Vec<_>>()
+        })
+        .collect();
+    ends.sort_unstable();
+    ends
+}
+
+/// Where a `piece` from `start` to `end` ends while what follows its start is still in the
+/// bucket: the first segment end at least [`MIN_PIECE_MS`] after `start`, else `end`.
+fn piece_end(ends: &[u64], start: u64, end: u64) -> u64 {
+    ends.iter()
+        .copied()
+        .find(|e| *e >= start + MIN_PIECE_MS && *e < end)
+        .unwrap_or(end)
+}
+
+/// Moves the first segment of each track that isn't on this computer `ms` earlier, into the
+/// segment before it, in the meeting's timeline. The ends of the segments before, in ms, and the
+/// files of the moved ones.
+fn overlap_next_missing(dir: &Path, ms: u64) -> (Vec<u64>, Vec<String>) {
+    let path = dir.join("timeline.jsonl");
+    let mut lines: Vec<Value> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let ended = |lines: &[Value], track: &str, seq: u64| {
+        lines
+            .iter()
+            .find(|l| l["kind"] == "segment_end" && l["track"] == track && l["seq"] == seq)
+            .and_then(|l| l["samples"].as_u64())
+            .unwrap()
+    };
+    let (mut before, mut moved) = (Vec::new(), Vec::new());
+    for track in ["mic", "call"] {
+        let mut segments: Vec<(usize, u64, u64, String)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l["kind"] == "segment" && l["track"] == track)
+            .map(|(i, l)| {
+                let seq = l["seq"].as_u64().unwrap();
+                (
+                    i,
+                    seq,
+                    l["t"].as_u64().unwrap(),
+                    l["file"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        segments.sort_by_key(|s| s.1);
+        let n = segments
+            .iter()
+            .position(|s| !dir.join(&s.3).is_file())
+            .unwrap_or_else(|| panic!("every {track} segment is here"));
+        assert!(n > 0, "the first {track} segment isn't here");
+        let p = &segments[n - 1];
+        let end = p.2 + ended(&lines, track, p.1).div_ceil(16);
+        before.push(end);
+        lines[segments[n].0]["t"] = json!(end - ms);
+        moved.push(segments[n].3.clone());
+    }
+    let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(&path, text).unwrap();
+    (before, moved)
+}
+
+/// What Rukoo owns of a meeting, such as its title and notes, goes up as this computer's copy and
+/// reaches Rukoo on the other computer, both ways, and never comes back to the one that wrote it.
+fn rukoos_data_reaches_the_other_computer() {
+    let fake = fake_s3();
+    let a = harness("data-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    wait_uploaded(&engine_a);
+
+    let b = harness("data-b", json!({"meetings_retention": "keep"}));
+    let engine_b = b.start();
+    engine_b.settings_sync_key("import", Some(code)).unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+
+    let doc = |title: &str, by: &str| json!({"v": 1, "device": by, "fields": {"title": {"v": title, "at": 2, "by": by}}});
+    let set = |engine: &Engine, data: &Value| {
+        engine
+            .meeting_control()
+            .unwrap()
+            .set_data(&id, data.as_object().unwrap())
+            .unwrap();
+    };
+    // A copy in the meeting's log, `local` for this computer's own and another computer's index
+    // name otherwise.
+    let copy = |data: &Path, local: bool, wanted: &Value| {
+        events_of(data, &id).iter().any(|(e, d)| {
+            e == "meeting.data" && (d["writer"] == "local") == local && d["data"] == *wanted
+        })
+    };
+
+    let on_a = doc("Renamed on A", "a");
+    set(&engine_a, &on_a);
+    assert!(
+        copy(&a.data(), true, &on_a),
+        "A's Rukoo gets its own copy back"
+    );
+    wait_long("B gets A's copy", Duration::from_secs(60), || {
+        copy(&b.data(), false, &on_a)
+    });
+
+    let on_b = doc("Renamed on B", "b");
+    set(&engine_b, &on_b);
+    wait_long("A gets B's copy", Duration::from_secs(60), || {
+        copy(&a.data(), false, &on_b)
+    });
+    assert!(
+        !copy(&a.data(), false, &on_a),
+        "A's own copy came back to A"
+    );
+    assert!(
+        !copy(&b.data(), false, &on_b),
+        "B's own copy came back to B"
+    );
+    // Each computer keeps its own copy in the meeting's folder, where bucket sync takes it up.
+    let kept = std::fs::read(meeting_dir(&b.data(), &id).join("rukoo.json")).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&kept).unwrap(), on_b);
     engine_a.shutdown();
     engine_b.shutdown();
     fake.stop();

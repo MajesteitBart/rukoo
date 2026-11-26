@@ -1070,6 +1070,15 @@ check('the bucket retention saves from its segmented control', async ({ open, pa
   assert.equal(await page.locator('[data-a="seg:storage.sync.retention:days90"]').getAttribute('aria-selected'), 'true');
 });
 
+check('the fetched media limit saves from its segmented control and says what it uses', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=cached');
+  assert.equal(await page.locator('[data-a="seg:storage.sync.cache:gb20"]').getAttribute('aria-selected'), 'true');
+  assert.match(await page.locator('[data-section="sync-bucket"]').innerText(), /use 18 GB now/);
+  await page.click('[data-a="seg:storage.sync.cache:gb2"]');
+  assert.equal((await mockState()).config.storage.sync.cache, 'gb2');
+  assert.equal(await page.locator('[data-a="seg:storage.sync.cache:gb2"]').getAttribute('aria-selected'), 'true');
+});
+
 check('Dutch is complete on the Storage page with sync, and in the key dialogs', async ({ open, page }) => {
   const english = [
     'Sync to your bucket',
@@ -1084,6 +1093,7 @@ check('Dutch is complete on the Storage page with sync, and in the key dialogs',
     'Use a key',
     'Keep in the bucket',
     'Forever',
+    'Fetched media on this computer',
     'Everything is in the bucket',
     'files waiting',
     'Uploads stopped',

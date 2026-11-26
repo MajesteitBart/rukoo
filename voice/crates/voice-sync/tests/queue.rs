@@ -537,3 +537,36 @@ fn configuring_without_a_change_tells_settings_nothing() {
         > before));
     sync.shutdown();
 }
+
+#[test]
+fn a_kept_meeting_holds_its_media_until_it_is_let_go_or_deleted() {
+    let data = scratch("queue-kept");
+    let _c = Cleanup(data.clone());
+    std::fs::create_dir_all(data.join("meetings")).unwrap();
+    let sync = BucketSync::open(SyncOptions {
+        data_dir: data.clone(),
+        meetings_dir: data.join("meetings"),
+        protector: std::sync::Arc::new(voice_sync::protect::TestProtector),
+        screen: std::sync::Arc::new(voice_sync::NoScreen),
+        now: std::sync::Arc::new(now_ms),
+        reserve: std::sync::Arc::new(|_| true),
+        timing: timing(),
+        on_change: std::sync::Arc::new(|| {}),
+    })
+    .unwrap();
+    let id = "m-20261030-171203-4f2a";
+    // Retention holds a kept meeting's media whatever sync says.
+    assert!(!sync.holds_media(id, false));
+    sync.set_kept(id, true).unwrap();
+    assert_eq!(sync.kept(), vec![id.to_string()]);
+    assert!(sync.holds_media(id, false));
+    sync.set_kept(id, false).unwrap();
+    assert!(sync.kept().is_empty());
+    assert!(!sync.holds_media(id, false));
+    // Deleting the meeting forgets the choice.
+    sync.set_kept(id, true).unwrap();
+    sync.mark_deleted(id, None).unwrap();
+    assert!(sync.kept().is_empty());
+    assert!(sync.set_kept("m-1", true).is_err(), "not a meeting id");
+    sync.shutdown();
+}

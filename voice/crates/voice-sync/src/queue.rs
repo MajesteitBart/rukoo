@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS restored (
   used_at     INTEGER NOT NULL,
   PRIMARY KEY (meeting, path)
 );
+CREATE TABLE IF NOT EXISTS kept (meeting TEXT PRIMARY KEY, kept_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS errors (at INTEGER NOT NULL, code TEXT NOT NULL, message TEXT NOT NULL);
 "#;
 
@@ -524,7 +525,8 @@ impl Queue {
             tx.execute("DELETE FROM parts WHERE file = ?1", [file])?;
             tx.execute(
                 "UPDATE meetings SET manifest_dirty = 1 WHERE id = \
-                   (SELECT meeting FROM files WHERE id = ?1 AND kind NOT IN ('manifest', 'index'))",
+                   (SELECT meeting FROM files WHERE id = ?1 \
+                     AND kind NOT IN ('manifest', 'index', 'data'))",
                 [file],
             )?;
             tx.execute(
@@ -569,6 +571,7 @@ impl Queue {
     ///               or has_media and the meeting has no meetings row yet
     ///               or has_media and the meeting is live or still uploading (phase live or after) ) )
     /// or a restored row of the meeting was used in the last 24 hours
+    /// or the user keeps the meeting on this computer
     /// ```
     ///
     /// The phase line covers files the scan hasn't reached yet: a meeting counts as synced only once
@@ -583,7 +586,8 @@ impl Queue {
         self.with(|c| {
             let recent = now.saturating_sub(RESTORED_HOLD_MS);
             let restored: bool = c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM restored WHERE meeting = ?1 AND used_at > ?2)",
+                "SELECT EXISTS (SELECT 1 FROM restored WHERE meeting = ?1 AND used_at > ?2) \
+                 OR EXISTS (SELECT 1 FROM kept WHERE meeting = ?1)",
                 params![meeting, to_i64(recent)],
                 |r| r.get(0),
             )?;
@@ -750,6 +754,98 @@ impl Queue {
         })
     }
 
+    /// Every restored file, least recently used first: (meeting, path, used_at), for the cache
+    /// limit. Files of meetings the user keeps on this computer aren't listed.
+    pub(crate) fn restored_files(&self) -> Result<Vec<(String, String, u64)>, SyncError> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT meeting, path, used_at FROM restored \
+                 WHERE meeting NOT IN (SELECT meeting FROM kept) ORDER BY used_at, meeting, path",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, to_u64(r.get(2)?))))?;
+            rows.collect()
+        })
+    }
+
+    /// When a restored file was used last, or `None` without its row.
+    pub(crate) fn restored_used_at(
+        &self,
+        meeting: &str,
+        path: &str,
+    ) -> Result<Option<u64>, SyncError> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT used_at FROM restored WHERE meeting = ?1 AND path = ?2",
+                params![meeting, path],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|at| at.map(to_u64))
+        })
+    }
+
+    /// Whether the user keeps the meeting on this computer.
+    pub(crate) fn is_kept(&self, meeting: &str) -> Result<bool, SyncError> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM kept WHERE meeting = ?1)",
+                [meeting],
+                |r| r.get(0),
+            )
+        })
+    }
+
+    /// Forgets a restored file the cache limit removed.
+    pub(crate) fn forget_restored(&self, meeting: &str, path: &str) -> Result<(), SyncError> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM restored WHERE meeting = ?1 AND path = ?2",
+                params![meeting, path],
+            )
+            .map(drop)
+        })
+    }
+
+    /// The meeting's audio, frames and video in the bucket: each path's newest finished row and
+    /// its size, in path order.
+    pub(crate) fn media_in_bucket(&self, meeting: &str) -> Result<Vec<(String, u64)>, SyncError> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT path, size FROM files f WHERE meeting = ?1 AND state = 'done' \
+                   AND kind IN ('audio', 'frame', 'video') \
+                   AND id = (SELECT MAX(id) FROM files g WHERE g.meeting = f.meeting \
+                     AND g.path = f.path AND g.state = 'done') \
+                 ORDER BY path",
+            )?;
+            let rows = stmt.query_map([meeting], |r| Ok((r.get(0)?, to_u64(r.get(1)?))))?;
+            rows.collect()
+        })
+    }
+
+    /// Keeps the meeting's media on this computer, or lets the cache limit apply to it again.
+    pub(crate) fn set_kept(&self, meeting: &str, keep: bool, now: u64) -> Result<(), SyncError> {
+        self.with(|c| {
+            if keep {
+                c.execute(
+                    "INSERT OR IGNORE INTO kept (meeting, kept_at) VALUES (?1, ?2)",
+                    params![meeting, to_i64(now)],
+                )
+            } else {
+                c.execute("DELETE FROM kept WHERE meeting = ?1", [meeting])
+            }
+            .map(drop)
+        })
+    }
+
+    /// The meetings the user keeps on this computer, oldest choice first.
+    pub(crate) fn kept(&self) -> Result<Vec<String>, SyncError> {
+        self.with(|c| {
+            let mut stmt = c.prepare("SELECT meeting FROM kept ORDER BY kept_at, meeting")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.collect()
+        })
+    }
+
     /// Whether this computer uploaded anything with this kid (D5): a finished or removed object, or
     /// a part of one, here or in a bucket it synced with before. Rows a restore imported (no
     /// header) were uploaded by another computer.
@@ -821,6 +917,25 @@ impl Queue {
         self.set_meta(&format!("mid:{meeting}"), Some(id))
     }
 
+    /// The SHA-256 of another data folder's copy of what Rukoo owns of a meeting, as its index gave it
+    /// when this computer last took that copy ([`crate::pull`]). `writer` is its index name.
+    pub(crate) fn data_seen(
+        &self,
+        meeting: &str,
+        writer: &str,
+    ) -> Result<Option<String>, SyncError> {
+        self.meta(&format!("data:{meeting}:{writer}"))
+    }
+
+    pub(crate) fn set_data_seen(
+        &self,
+        meeting: &str,
+        writer: &str,
+        sha256: &str,
+    ) -> Result<(), SyncError> {
+        self.set_meta(&format!("data:{meeting}:{writer}"), Some(sha256))
+    }
+
     pub(crate) fn set_transcript_digest(
         &self,
         meeting: &str,
@@ -845,7 +960,8 @@ impl Queue {
             if reset {
                 tx.execute_batch(
                     "DELETE FROM parts; DELETE FROM files; DELETE FROM meetings; \
-                     DELETE FROM meta WHERE key LIKE 'digest:%' OR key LIKE 'mid:%';",
+                     DELETE FROM meta WHERE key LIKE 'digest:%' OR key LIKE 'mid:%' \
+                       OR key LIKE 'data:%';",
                 )?;
             }
             tx.execute(
@@ -930,7 +1046,8 @@ impl Queue {
                  UPDATE meetings SET uploaded_gen = 0, media_removed_at = NULL, \
                    manifest_dirty = CASE WHEN phase = 'forgotten' THEN 0 ELSE 1 END, \
                    phase = CASE WHEN phase IN ('synced', 'restored') THEN 'after' ELSE phase END; \
-                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at') OR key LIKE 'mid:%';",
+                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at') OR key LIKE 'mid:%' \
+                   OR key LIKE 'data:%';",
             )?;
             tx.commit()?;
             Ok(Some(open))
@@ -1035,7 +1152,7 @@ impl Queue {
     ) -> Result<bool, SyncError> {
         self.with(|c| {
             c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM files WHERE meeting = ?1 \
+                "SELECT EXISTS (SELECT 1 FROM files WHERE meeting = ?1 AND kind != 'data' \
                    AND (?2 OR kind != 'manifest') AND state IN ('waiting', 'uploading'))",
                 params![meeting, with_manifest],
                 |r| r.get(0),
@@ -1049,7 +1166,7 @@ impl Queue {
         self.with(|c| {
             let mut stmt = c.prepare(
                 "SELECT path, kind, object, size, sha256, track, seq, t, samples FROM files f \
-                 WHERE meeting = ?1 AND state = 'done' AND kind NOT IN ('manifest', 'index') \
+                 WHERE meeting = ?1 AND state = 'done' AND kind NOT IN ('manifest', 'index', 'data') \
                    AND id = (SELECT MAX(id) FROM files g WHERE g.meeting = f.meeting \
                      AND g.path = f.path AND g.state = 'done') \
                  ORDER BY id",
@@ -1148,7 +1265,7 @@ impl Queue {
     /// The meeting's finished rows, manifests left out.
     pub(crate) fn done_rows(&self, meeting: &str) -> Result<Vec<Row>, SyncError> {
         self.rows_where(
-            "f.meeting = ?1 AND f.state = 'done' AND f.kind NOT IN ('manifest', 'index')",
+            "f.meeting = ?1 AND f.state = 'done' AND f.kind NOT IN ('manifest', 'index', 'data')",
             meeting,
         )
     }
@@ -1331,7 +1448,7 @@ impl Queue {
                 let gone: Vec<i64> = {
                     let mut stmt = tx.prepare(
                         "SELECT id, path FROM files WHERE meeting = ?1 AND state = 'done' \
-                           AND kind NOT IN ('manifest', 'index')",
+                           AND kind NOT IN ('manifest', 'index', 'data')",
                     )?;
                     let rows = stmt
                         .query_map([m.meeting], |r| {
@@ -1403,11 +1520,13 @@ impl Queue {
             )?;
             tx.execute("DELETE FROM files WHERE meeting = ?1", [meeting])?;
             tx.execute("DELETE FROM restored WHERE meeting = ?1", [meeting])?;
+            tx.execute("DELETE FROM kept WHERE meeting = ?1", [meeting])?;
             tx.execute(
-                "DELETE FROM meta WHERE key LIKE ?1 OR key = ?2",
+                "DELETE FROM meta WHERE key LIKE ?1 OR key = ?2 OR key LIKE ?3",
                 [
                     format!("{}%", digest_key(meeting, "")),
                     format!("mid:{meeting}"),
+                    format!("data:{meeting}:%"),
                 ],
             )?;
             if let Some(now) = tombstone {

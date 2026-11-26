@@ -59,6 +59,14 @@ const INSTALL: &str = "install.json";
 /// In an update folder: where the newer files come down.
 const FILES: &str = "files";
 
+/// In a meeting folder: what Rukoo owns of the meeting, as Rukoo on this computer last gave it
+/// (`meeting.data.set`). It goes up as this data folder's own object and never in a manifest
+/// ([`names::data_object`]); the other computers take it here ([`PullHooks::data`]).
+pub const DATA_FILE: &str = "rukoo.json";
+
+/// The largest copy of what Rukoo owns of a meeting that a pull takes: Rukoo sends at most 1 MiB.
+const DATA_MAX: usize = 2 << 20;
+
 /// The files a pull keeps up to date: what Voice shows and sends to Rukoo. Media stays where it is.
 const TEXT: [&str; 4] = [
     voice_meetings::MEETING_FILE,
@@ -90,6 +98,18 @@ pub trait PullHooks: Send + Sync {
     /// passes `from` to [`BucketSync::mark_deleted`](crate::BucketSync::mark_deleted), which
     /// notes the deletion only while sync still uses the bucket and key the pull read it from.
     fn deleted(&self, meeting: &str, from: &PullOrigin<'_>) -> bool;
+
+    /// What Rukoo owns of a meeting as another data folder, `writer` (its index name), last
+    /// uploaded it. True once Rukoo can get it; the next pull tries again otherwise.
+    fn data(
+        &self,
+        meeting: &str,
+        writer: &str,
+        data: serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        let _ = (meeting, writer, data);
+        false
+    }
 }
 
 /// The bucket and key a pull read a deletion from.
@@ -244,12 +264,15 @@ pub(crate) fn pull_once(
         }
     }
     let indexes = read_indexes(remote, &check)?;
-    // What every data folder says of each meeting: two meetings can share an id, and two computers
-    // can publish the same generation.
-    let mut all: HashMap<&str, Vec<&IndexEntry>> = HashMap::new();
+    // What every data folder says of each meeting, by its index name: two meetings can share an
+    // id, two computers can publish the same generation, and each has its own copy of what Rukoo
+    // owns.
+    let mut all: HashMap<&str, Vec<(&str, &IndexEntry)>> = HashMap::new();
     for index in &indexes {
         for entry in &index.meetings {
-            all.entry(entry.id.as_str()).or_default().push(entry);
+            all.entry(entry.id.as_str())
+                .or_default()
+                .push((index.writer.as_str(), entry));
         }
     }
     let entries = merge_indexes(indexes.clone());
@@ -306,15 +329,83 @@ fn pending_deletion(shared: &Shared, id: &str) -> PathBuf {
 }
 
 /// One meeting of the merged index, with what each data folder says of it. True when the meeting
-/// is on this computer afterwards.
+/// is on this computer afterwards. Then the other computers' copies of what Rukoo owns of it come
+/// too.
 fn pull_meeting(
     shared: &Shared,
     remote: &Remote,
     binding: &Binding,
     hooks: &dyn PullHooks,
     merged: &IndexEntry,
-    others: &[&IndexEntry],
+    writers: &[(&str, &IndexEntry)],
 ) -> Result<bool, SyncError> {
+    let here = pull_text(shared, remote, binding, hooks, merged, writers)?;
+    if here {
+        let id = merged.id.as_str();
+        let created_at = created_at_of(&shared.meeting_dir(id).join(voice_meetings::MEETING_FILE));
+        pull_data(shared, remote, binding, hooks, id, created_at, writers)?;
+    }
+    Ok(here)
+}
+
+/// The other data folders' copies of what Rukoo owns of a meeting that is here, those that changed
+/// since this computer last took them.
+fn pull_data(
+    shared: &Shared,
+    remote: &Remote,
+    binding: &Binding,
+    hooks: &dyn PullHooks,
+    id: &str,
+    created_at: Option<u64>,
+    writers: &[(&str, &IndexEntry)],
+) -> Result<(), SyncError> {
+    let own = names::writer_hash(&remote.name_key, &shared.queue.writer());
+    let mhash = names::meeting_hash(&remote.name_key, id);
+    for (writer, entry) in writers {
+        let Some(sha) = &entry.data else {
+            continue;
+        };
+        let named = writer.len() == 32 && writer.bytes().all(|b| b.is_ascii_hexdigit());
+        if *writer == own || !named || entry.deleted || Some(entry.created_at) != created_at {
+            continue;
+        }
+        if shared.queue.data_seen(id, writer)?.as_deref() == Some(sha.as_str()) {
+            continue;
+        }
+        shared.still(binding)?;
+        let object = names::data_object(&remote.kid, &mhash, writer);
+        let bytes = match open_object(&remote.bucket, &remote.key, &object) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind == SyncErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let data = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(serde_json::Value::Object(data)) if bytes.len() <= DATA_MAX => data,
+            _ => {
+                log::warn!("sync: another computer's copy of a meeting's notes is unreadable");
+                shared.queue.set_data_seen(id, writer, sha)?;
+                continue;
+            }
+        };
+        if hooks.data(id, writer, data) {
+            shared.queue.set_data_seen(id, writer, sha)?;
+        }
+    }
+    Ok(())
+}
+
+/// The text of one meeting of the merged index. True when the meeting is on this computer
+/// afterwards.
+fn pull_text(
+    shared: &Shared,
+    remote: &Remote,
+    binding: &Binding,
+    hooks: &dyn PullHooks,
+    merged: &IndexEntry,
+    writers: &[(&str, &IndexEntry)],
+) -> Result<bool, SyncError> {
+    let others: Vec<&IndexEntry> = writers.iter().map(|(_, e)| *e).collect();
+    let others = others.as_slice();
     let id = merged.id.as_str();
     let dir = shared.meeting_dir(id);
     let created_at = created_at_of(&dir.join(voice_meetings::MEETING_FILE));

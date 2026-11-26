@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod autostart;
+pub mod cache;
 mod dictation;
 mod engine;
 pub mod media;
@@ -254,6 +255,9 @@ pub fn start_with(
             Arc::new(move |path: &std::path::Path| system.free_bytes(path))
         },
     );
+    media
+        .cache()
+        .set_limit(sync::cache_limit(&cfg, services.sync_timing.cache_gb));
     let meetings = Meetings::new(
         controller,
         screen,

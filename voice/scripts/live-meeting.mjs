@@ -1399,7 +1399,11 @@ const rukoo = {
   start: (opts) => win.evaluate((o) => window.mail.call('meetingStart', o), opts),
   stop: (id) => win.evaluate((m) => window.mail.call('meetingStop', m), id),
   name: (id, speaker, name) => win.evaluate(([m, s, n]) => window.mail.call('meetingSetSpeaker', m, s, { name: n, address: '' }), [id, speaker, name]),
-  frame: (id, at) => win.evaluate(([m, a]) => window.mail.call('meetingFrame', m, a), [id, at]),
+  // meetingFrame answers {url, text, pending, inBucket}; url is null while Voice fetches the image back from the bucket.
+  frame: async (id, at) => {
+    const r = await win.evaluate(([m, a]) => window.mail.call('meetingFrame', m, a), [id, at]);
+    return r && typeof r.url === 'string' ? r.url : null;
+  },
   screen: (id) => win.evaluate((m) => window.mail.call('meetingScreen', m), id),
   select: (id, monitor) => win.evaluate(([m, s]) => window.mail.call('meetingScreenSelect', m, s), [id, monitor]),
   setScreen: (id, mode, monitor = null) => win.evaluate(([m, s, d]) => window.mail.call('meetingScreenSet', m, s, d), [id, mode, monitor]),
@@ -1829,7 +1833,7 @@ async function checkFrames(id, { realOffsets = null } = {}) {
   const withText = seen.frames.filter((f) => (f.text || '').length > 0).length;
   check('frames with their text reached Rukoo while it records', recording && withText > 0, { frames: seen.frames.length, withText });
   const latest = seen.frames.at(-1);
-  const url = await rukoo.frame(id, latest.at);
+  const url = await until("the frame's image in Rukoo", () => rukoo.frame(id, latest.at), 15000, 250).catch(() => null);
   check("Rukoo's meetingFrame returns the frame's image", typeof url === 'string' && url.startsWith('data:image/jpeg;base64,'), { at: latest.at, bytes: url ? url.length : 0 });
   report.screen.slideTwoAt = two.t;
   report.screen.captureAt = capture.t;

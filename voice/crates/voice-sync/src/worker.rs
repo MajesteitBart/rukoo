@@ -1022,10 +1022,13 @@ impl Worker {
                     continue;
                 }
             }
+            // What Rukoo owns of a meeting changes long after it synced: a new copy of it doesn't
+            // wait for the next full scan.
             if !all
                 && row.is_some_and(|r| {
                     matches!(r.phase.as_str(), "synced" | "restored" | "forgotten")
                 })
+                && !self.data_changed(&dir, &id)
             {
                 continue;
             }
@@ -1043,6 +1046,17 @@ impl Worker {
             }
         }
         Ok(())
+    }
+
+    /// Whether the meeting's copy of what Rukoo owns isn't the one its newest row describes.
+    fn data_changed(&self, dir: &MeetingDir, id: &str) -> bool {
+        let Some(mtime) = scan::modified_ms(&dir.path().join(crate::pull::DATA_FILE)) else {
+            return false;
+        };
+        !matches!(
+            self.shared.queue.known(id, crate::pull::DATA_FILE),
+            Ok(Some((_, Some(known), _))) if known == mtime
+        )
     }
 
     fn scan_meeting(
@@ -1291,14 +1305,20 @@ impl Worker {
         let Some(remote) = &self.remote else {
             return Ok(false);
         };
-        let object = names::file_object(
-            &remote.kid,
-            mhash,
-            &remote.name_key,
-            meeting,
-            &found.path,
-            &sha,
-        );
+        let object = if found.kind == "data" {
+            // One object per data folder that every version replaces, read by the other computers.
+            let writer = names::writer_hash(&remote.name_key, &self.shared.queue.writer());
+            names::data_object(&remote.kid, mhash, &writer)
+        } else {
+            names::file_object(
+                &remote.kid,
+                mhash,
+                &remote.name_key,
+                meeting,
+                &found.path,
+                &sha,
+            )
+        };
         let (header, _) = Sealer::new(&remote.key, &object, size)?;
         let added = self.shared.queue.insert(NewRow {
             meeting: meeting.to_owned(),
@@ -1425,6 +1445,12 @@ impl Worker {
             .map(|m| {
                 let deleted = m.phase == "forgotten";
                 let mid = shared.queue.manifest_id(&m.id).ok().flatten();
+                let data = shared
+                    .queue
+                    .in_bucket(&m.id, crate::pull::DATA_FILE)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.sha256);
                 IndexEntry {
                     id: m.id,
                     m: m.mhash,
@@ -1441,6 +1467,7 @@ impl Worker {
                     media_removed_at: m.media_removed_at,
                     deleted,
                     mid,
+                    data,
                 }
             })
             .collect();
@@ -1855,8 +1882,9 @@ impl Worker {
     /// The row reached the bucket.
     fn finished(&mut self, row: &Row, plain: Option<&[u8]>, now: u64) -> Result<(), SyncError> {
         let shared = self.shared.clone();
-        if row.kind == "manifest" {
-            // Before the row is done, so the index is pending from then on.
+        if row.kind == "manifest" || row.kind == "data" {
+            // Before the row is done, so the index is pending from then on. A copy of what Rukoo owns
+            // is in no manifest: the index tells the other computers there is a newer one.
             let due = now + millis(shared.opts.timing.index_debounce);
             shared.queue.set_meta("index_due", Some(&due.to_string()))?;
         }

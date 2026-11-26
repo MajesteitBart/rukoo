@@ -237,6 +237,12 @@ impl Core {
                 .set_screen(screen_mode(new), self.meetings.screen.available());
             self.meetings.publish_status();
         }
+        self.media
+            .cache()
+            .set_limit(crate::sync::cache_limit(new, self.svc.sync_timing.cache_gb));
+        if crate::sync::cache_choice(old) != crate::sync::cache_choice(new) {
+            self.sync_rt.sweep_soon();
+        }
         if old.extra.get(crate::sync::SYNC_KEY) != new.extra.get(crate::sync::SYNC_KEY) {
             crate::sync::configure_sync(self, new);
             // Held media may go once the user switches sync off. A changed field or secret only
@@ -759,7 +765,11 @@ impl Core {
         }
         let released = crate::sync::release_below_floor(self, &swept.held);
         crate::sync::note_held(self, !swept.held.is_empty());
-        if !swept.removed.is_empty() || released || clips > 0 {
+        // Media fetched back from the bucket stays within its limit, and kept meetings that miss
+        // media fetch it.
+        let trimmed = self.media.cache().trim();
+        self.media.cache().resume();
+        if !swept.removed.is_empty() || released || clips > 0 || trimmed > 0 {
             self.settings.forget_storage();
             self.settings_changed();
         }

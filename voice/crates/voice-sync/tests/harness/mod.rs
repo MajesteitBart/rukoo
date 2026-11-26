@@ -84,6 +84,7 @@ pub fn timing() -> SyncTiming {
         part_size: 8 << 20,
         single_max: 16 << 20,
         pull_every: Duration::from_millis(200),
+        cache_gb: 1_000,
     }
 }
 

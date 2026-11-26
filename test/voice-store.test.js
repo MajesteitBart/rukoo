@@ -705,3 +705,546 @@ test("a passage Voice removes and sends again takes the place of a higher revisi
   assert.equal(p.text, 'Let us move it to Friday.');
   assert.equal(p.revision, 2);
 });
+
+// ---------- what Rukoo owns, on the user's other computers ----------
+
+// Two computers' stores of the same meeting, each with its own device and clock.
+function twoComputers() {
+  const clock = { a: 1793000600000, b: 1793000600000 };
+  const a = store(tempDir('rukoo-data-a-'), { now: () => clock.a, deviceName: 'Laptop' });
+  const b = store(tempDir('rukoo-data-b-'), { now: () => clock.b, deviceName: 'Desktop' });
+  for (const s of [a, b]) {
+    s.apply(started());
+    s.apply(ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }));
+    s.apply(passage('mic', 0, 'Hello there'));
+  }
+  return { a, b, clock };
+}
+
+test("the user's changes carry a stamp and go into the meeting's document until Voice took them", () => {
+  const { a, clock } = twoComputers();
+  const changed = [];
+  a.onOwnChange = (id) => changed.push(id);
+  assert.equal(a.dataDoc(M), null);
+  a.setTitle(M, 'Design review');
+  clock.a += 1000;
+  a.setName(M, 'call-1', { name: 'Anna', address: 'anna@example.com' });
+  a.correct(M, 'mic-000000000', 'Hello, there');
+  a.saveNotes(M, 'Ship on Thursday', 0);
+  assert.equal(changed.length, 4);
+  const doc = a.dataDoc(M);
+  assert.equal(doc.v, 1);
+  assert.match(doc.device, /^[0-9a-f]{32}$/);
+  assert.equal(doc.name, 'Laptop');
+  assert.deepEqual(Object.keys(doc.fields), ['correction:mic-000000000', 'name:call-1', 'notes', 'title']);
+  assert.deepEqual(doc.fields.title, { v: 'Design review', at: 1793000600000, by: doc.device });
+  assert.deepEqual(doc.fields['name:call-1'].v, { name: 'Anna', address: 'anna@example.com', from: 'user' });
+  assert.equal(doc.fields.notes.base, 0);
+  const unsent = a.unsentData();
+  assert.deepEqual(unsent, [{ id: M, rev: 4 }]);
+  a.dataTaken(M, 4);
+  assert.deepEqual(a.unsentData(), []);
+  // Voice's own changes aren't the user's: a passage or a split don't go into the document.
+  a.apply(passage('mic', 0, 'Hello there.', 2));
+  assert.deepEqual(a.unsentData(), []);
+});
+
+test("another computer's document comes in field by field, the later change winning, and twice changes nothing", () => {
+  const { a, b, clock } = twoComputers();
+  a.setTitle(M, 'From the laptop');
+  a.setName(M, 'call-1', { name: 'Anna' });
+  clock.b += 5000;
+  b.setTitle(M, 'From the desktop');
+  assert.deepEqual(b.applyData(M, a.dataDoc(M)), { meeting: M, kind: 'data' });
+  // The desktop's title is newer; the laptop's name is new to it.
+  assert.equal(b.meeting(M).meeting.title, 'From the desktop');
+  assert.equal(b.meeting(M).speakers.find((s) => s.id === 'call-1').name, 'Anna');
+  assert.equal(b.applyData(M, a.dataDoc(M)), null);
+  assert.deepEqual(a.applyData(M, b.dataDoc(M)), { meeting: M, kind: 'data' });
+  assert.equal(a.meeting(M).meeting.title, 'From the desktop');
+  // Both say the same now, and taking it in sends nothing back.
+  assert.deepEqual(a.dataDoc(M).fields, b.dataDoc(M).fields);
+  assert.deepEqual(b.unsentData(), [{ id: M, rev: 1 }]);
+  // A name taken away, a correction and the calendar link travel too.
+  clock.a += 10000;
+  a.setName(M, 'call-1', null);
+  a.correct(M, 'mic-000000000', 'Hello, there!');
+  a.setEvent(M, 'acc:cal:other');
+  b.applyData(M, a.dataDoc(M));
+  const m = b.meeting(M);
+  assert.equal(m.speakers.find((s) => s.id === 'call-1').name, null);
+  assert.equal(m.passages[0].text, 'Hello, there!');
+  assert.equal(m.meeting.eventId, 'acc:cal:other');
+  // Anything malformed is left out.
+  assert.equal(b.applyData(M, { fields: { title: { v: 7, at: 1, by: 'x' }, 'nope:x': { v: 'y', at: 1, by: 'x' } } }), null);
+  assert.equal(b.applyData(OTHER, a.dataDoc(M)), null);
+});
+
+test('notes changed on two computers at once keep both texts until the user picks', () => {
+  const { a, b, clock } = twoComputers();
+  a.saveNotes(M, 'Agreed: launch Thursday', 0);
+  b.applyData(M, a.dataDoc(M));
+  // Both write from the same notes before either hears of the other.
+  clock.a += 1000;
+  a.saveNotes(M, 'Agreed: launch Thursday. Anna owns QA', a.meeting(M).notes.rev);
+  clock.b += 2000;
+  b.saveNotes(M, 'Agreed: launch Friday', b.meeting(M).notes.rev);
+  // The laptop's are older: the desktop keeps its own and the laptop's wait beside them.
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Agreed: launch Friday');
+  assert.deepEqual(b.meeting(M).notesOther, { text: 'Agreed: launch Thursday. Anna owns QA', at: 1793000601000, device: 'Laptop', mine: false });
+  // The desktop's are newer: the laptop takes them, and what it wrote waits beside them.
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Agreed: launch Friday');
+  assert.equal(a.meeting(M).notesOther.text, 'Agreed: launch Thursday. Anna owns QA');
+  assert.equal(a.meeting(M).notesOther.mine, true);
+  // Using the other text is a change of its own, written from the newest notes: no new conflict on the other side.
+  clock.a += 5000;
+  assert.deepEqual(a.resolveNotes(M, 'use'), { rev: a.meeting(M).notes.rev });
+  assert.equal(a.meeting(M).notes.text, 'Agreed: launch Thursday. Anna owns QA');
+  // The notes it replaced wait in their place: using them again switches back.
+  const replaced = a.meeting(M).notesOther;
+  assert.deepEqual({ ...replaced, at: undefined }, { text: 'Agreed: launch Friday', at: undefined, device: 'Desktop', replaced: true, mine: false });
+  assert.ok(replaced.at > 0, 'when the desktop wrote them');
+  a.resolveNotes(M, 'dismiss');
+  assert.equal(a.meeting(M).notesOther, null);
+  b.resolveNotes(M, 'dismiss');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Agreed: launch Thursday. Anna owns QA');
+  assert.equal(b.meeting(M).notesOther, null);
+  // Notes written one after the other never conflict.
+  clock.b += 5000;
+  b.saveNotes(M, 'Final', b.meeting(M).notes.rev);
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Final');
+  assert.equal(a.meeting(M).notesOther, null);
+});
+
+test("a save from an editor that started before another computer's notes arrived keeps those notes too", () => {
+  const { a, b, clock } = twoComputers();
+  b.saveNotes(M, 'Draft', 0);
+  const rev = b.meeting(M).notes.rev;
+  clock.a += 1000;
+  a.saveNotes(M, 'From the laptop', 0);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'From the laptop');
+  // The desktop's editor saves what it had open, written from its own draft.
+  clock.b += 3000;
+  assert.deepEqual(b.saveNotes(M, 'Draft, finished', rev), { rev: b.meeting(M).notes.rev });
+  assert.equal(b.meeting(M).notes.text, 'Draft, finished');
+  assert.deepEqual(b.meeting(M).notesOther, { text: 'From the laptop', at: 1793000601000, device: 'Laptop', mine: false });
+  // The laptop sees a change made without its notes, and keeps its own beside it.
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Draft, finished');
+  assert.equal(a.meeting(M).notesOther.text, 'From the laptop');
+  // A save that crossed this editor's own earlier save is still just a conflict to retry.
+  const current = b.meeting(M).notes.rev;
+  b.saveNotes(M, 'Again', current);
+  assert.equal(b.saveNotes(M, 'Older tab', current).conflict, true);
+});
+
+test('stamps, the other notes and what Voice took survive a restart', () => {
+  const dir = tempDir('rukoo-data-restart-');
+  const s = store(dir, { deviceName: 'Laptop' });
+  s.apply(started());
+  s.saveNotes(M, 'Kept', 0);
+  s.setTitle(M, 'Renamed');
+  s.dataTaken(M, 1);
+  const before = s.dataDoc(M);
+  s.close();
+  const again = store(dir, { deviceName: 'Laptop' });
+  assert.deepEqual(again.dataDoc(M), before);
+  assert.deepEqual(again.unsentData(), [{ id: M, rev: 2 }]);
+  again.close();
+});
+
+test('a change Voice has yet to take is in voice.json before the meeting file that holds it', () => {
+  const dir = tempDir('rukoo-data-order-');
+  const s = store(dir);
+  s.apply(started());
+  s.flush();
+  const order = [];
+  const write = fs.writeFileSync;
+  fs.writeFileSync = (file, ...rest) => {
+    order.push(path.basename(String(file)));
+    return write.call(fs, file, ...rest);
+  };
+  try {
+    s.setTitle(M, 'Renamed');
+    s.flush();
+  } finally {
+    fs.writeFileSync = write;
+  }
+  assert.deepEqual(order.slice(0, 2), ['voice.json.tmp', `${M}.json.tmp`]);
+  // A crash right after the meeting file: the next start still sends it.
+  const again = store(dir);
+  assert.deepEqual(again.unsentData().map((u) => u.id), [M]);
+  again.close();
+});
+
+test('a profile from before data sync replays once and stamps what the user changed then', () => {
+  const dir = tempDir('rukoo-data-upgrade-');
+  const s = store(dir, { deviceName: 'Laptop' });
+  s.apply(started());
+  s.apply(ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }));
+  s.apply(passage('mic', 0, 'Hello there'));
+  s.setTitle(M, 'Old title');
+  s.setName(M, 'call-1', { name: 'Anna' });
+  s.correct(M, 'mic-000000000', 'Hello, there');
+  s.saveNotes(M, 'Old notes', 0);
+  s.close();
+  // As an older Rukoo left it: no stamps, no data flag, and a cursor past Voice's events.
+  const index = JSON.parse(fs.readFileSync(path.join(dir, 'voice.json'), 'utf8'));
+  delete index.data;
+  delete index.unsent;
+  index.lastSeq = 500;
+  fs.writeFileSync(path.join(dir, 'voice.json'), JSON.stringify(index));
+  const file = path.join(dir, 'meetings', `${M}.json`);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.stamps = {};
+  raw.dataRev = 0;
+  raw.dataSent = 0;
+  fs.writeFileSync(file, JSON.stringify(raw));
+
+  const again = store(dir, { deviceName: 'Laptop' });
+  assert.equal(again.index.lastSeq, 0, 'Voice sends its events again');
+  const doc = again.dataDoc(M);
+  assert.deepEqual(Object.keys(doc.fields), ['correction:mic-000000000', 'name:call-1', 'notes', 'title']);
+  assert.equal(doc.fields.title.at, 1, 'older than any change since');
+  assert.equal(doc.fields.notes.at, raw.notes.updatedAt);
+  assert.deepEqual(again.unsentData().map((u) => u.id), [M]);
+  const replayed = started();
+  again.apply(replayed);
+  again.close();
+  // Only once.
+  const third = store(dir, { deviceName: 'Laptop' });
+  assert.equal(third.index.lastSeq, replayed.seq);
+  third.close();
+});
+
+test('notes saved twice here while another computer wrote its own still show both texts on both', () => {
+  const { a, b, clock } = twoComputers();
+  clock.b += 1000;
+  b.saveNotes(M, 'From the desktop', 0);
+  clock.a += 2000;
+  a.saveNotes(M, 'From the laptop', 0);
+  clock.a += 1000;
+  a.saveNotes(M, 'From the laptop, longer', a.meeting(M).notes.rev);
+  assert.equal(a.dataDoc(M).fields.notes.base, 0, 'a second save here keeps the base of the first');
+  a.applyData(M, b.dataDoc(M));
+  b.applyData(M, a.dataDoc(M));
+  for (const s of [a, b]) {
+    assert.equal(s.meeting(M).notes.text, 'From the laptop, longer');
+    assert.equal(s.meeting(M).notesOther.text, 'From the desktop');
+  }
+});
+
+test("notes that lose to newer ones before Voice took them still reach the other computer", () => {
+  const { a, b, clock } = twoComputers();
+  a.saveNotes(M, 'Written on the laptop', 0);
+  clock.b += 5000;
+  b.saveNotes(M, 'Written on the desktop', 0);
+  // The laptop hears of the desktop's newer notes before it sent its own.
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Written on the desktop');
+  assert.equal(a.meeting(M).notesOther.text, 'Written on the laptop');
+  assert.equal(a.dataDoc(M).fields.notes.v, 'Written on the desktop');
+  assert.equal(a.dataDoc(M).draft.v, 'Written on the laptop', 'its own notes go along as a draft');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Written on the desktop');
+  assert.equal(b.meeting(M).notesOther.text, 'Written on the laptop');
+  // An edit on the laptop meanwhile still travels as the notes.
+  clock.a += 10000;
+  a.saveNotes(M, 'Written on the desktop, and more', a.meeting(M).notes.rev);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Written on the desktop, and more');
+  assert.equal(b.meeting(M).notesOther.text, 'Written on the laptop');
+  // Dismissed on the laptop, the draft goes on the desktop too.
+  a.resolveNotes(M, 'dismiss');
+  assert.equal(a.dataDoc(M).draft, undefined);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther, null);
+});
+
+test('dismissed notes stay dismissed when the same document comes again', () => {
+  const { a, b, clock } = twoComputers();
+  clock.b += 1000;
+  b.saveNotes(M, 'Desktop', 0);
+  clock.a += 5000;
+  a.saveNotes(M, 'Laptop', 0);
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notesOther.text, 'Desktop');
+  a.resolveNotes(M, 'dismiss');
+  assert.equal(a.applyData(M, b.dataDoc(M)), null);
+  assert.equal(a.meeting(M).notesOther, null);
+  // A later change on the desktop is new: it wins, and the laptop's own notes wait beside it.
+  clock.b += 10000;
+  b.saveNotes(M, 'Desktop again', b.meeting(M).notes.rev);
+  a.applyData(M, b.dataDoc(M));
+  assert.equal(a.meeting(M).notes.text, 'Desktop again');
+  assert.equal(a.meeting(M).notesOther.text, 'Laptop');
+});
+
+test("a correction carries what it covered, so a computer that split the passage first hides the same pieces", () => {
+  const { a, b } = twoComputers();
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+    s.apply(passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+  }
+  a.correct(M, 'mic-000005000', 'I can do that. Thanks, Pieter!');
+  const split = (s) => {
+    s.apply(ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+    s.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+    s.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+    s.setSplit(M, 2);
+  };
+  split(a);
+  split(b);
+  assert.deepEqual(a.dataDoc(M).fields['correction:mic-000005000'].v, { text: 'I can do that. Thanks, Pieter!', end: 9000 });
+  b.applyData(M, a.dataDoc(M));
+  const ids = (s) => s.meeting(M).passages.filter((p) => p.track === 'mic').map((p) => [p.id, p.text]);
+  assert.deepEqual(ids(b), ids(a));
+  assert.deepEqual(ids(b), [['mic-000000000', 'Hello there'], ['mic-000005000', 'I can do that. Thanks, Pieter!']]);
+});
+
+test('a document over what one message carries leaves out the oldest corrections, never the rest', () => {
+  const { a, clock } = twoComputers();
+  for (let i = 0; i < 70; i++) {
+    const start = 10000 + i * 2000;
+    a.apply(passage('call', start, `Line ${i}`));
+    clock.a += 1;
+    a.correct(M, `call-${String(start).padStart(9, '0')}`, `${'ä'.repeat(9000)} ${i}`);
+  }
+  clock.a += 1;
+  a.setTitle(M, 'Kept title');
+  const max = 1024 * 1024 - 1024;
+  const doc = a.dataDoc(M, max);
+  assert.ok(Buffer.byteLength(JSON.stringify(doc)) <= max);
+  assert.equal(doc.fields.title.v, 'Kept title');
+  const kept = Object.keys(doc.fields).filter((k) => k.startsWith('correction:'));
+  assert.ok(kept.length > 0 && kept.length < 70);
+  assert.ok(kept.includes(`correction:call-${String(10000 + 69 * 2000).padStart(9, '0')}`), 'the newest stays');
+  assert.ok(!kept.includes('correction:call-000010000'), 'the oldest goes');
+});
+
+test('a link the user removed stays removed when Voice sends the start again', () => {
+  const s = store();
+  s.apply(started());
+  assert.equal(s.meeting(M).meeting.eventId, 'acc:cal:evt');
+  s.setEvent(M, null);
+  s.apply(started());
+  assert.equal(s.meeting(M).meeting.eventId, null);
+  assert.equal(s.dataDoc(M).fields.event.v, null);
+  s.close();
+});
+
+// A profile as an older Rukoo left it: no stamps, no data flag, and its cursor at lastSeq.
+function legacy(dir, lastSeq) {
+  const indexFile = path.join(dir, 'voice.json');
+  const index = JSON.parse(fs.readFileSync(indexFile, 'utf8'));
+  delete index.data;
+  delete index.unsent;
+  delete index.catchUp;
+  index.lastSeq = lastSeq;
+  fs.writeFileSync(indexFile, JSON.stringify(index));
+  const file = path.join(dir, 'meetings', `${M}.json`);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.stamps = {};
+  raw.dataRev = 0;
+  raw.dataSent = 0;
+  fs.writeFileSync(file, JSON.stringify(raw));
+}
+
+test('a catch-up that could not save a meeting runs again at the next start', () => {
+  const dir = tempDir('rukoo-data-upgrade-retry-');
+  const s = store(dir);
+  s.apply(started());
+  s.setTitle(M, 'Old title');
+  s.close();
+  legacy(dir, 40);
+  // The meeting file can't be written for a moment: a folder holds the name it is written under first.
+  const blocker = path.join(dir, 'meetings', `${M}.json.tmp`);
+  fs.mkdirSync(blocker);
+  const first = store(dir);
+  assert.equal(first.index.data, 0, 'not caught up while a meeting is missing its stamps on disk');
+  first.close();
+  fs.rmSync(blocker, { recursive: true });
+  const again = store(dir);
+  assert.equal(again.index.data, 1);
+  assert.equal(again.dataDoc(M).fields.title.v, 'Old title');
+  assert.equal(again.index.catchUp, 40, 'the old cursor stays what it was');
+  again.close();
+});
+
+test("the catch-up's replay applies only meeting.data up to the old cursor", () => {
+  const dir = tempDir('rukoo-data-upgrade-replay-');
+  const s = store(dir);
+  const begin = started();
+  s.apply(begin);
+  const first = passage('call', 1000, 'First words');
+  s.apply(first);
+  s.correct(M, 'call-000001000', 'First words, corrected');
+  s.close();
+  legacy(dir, first.seq);
+  const again = store(dir);
+  // Voice replays from its oldest event: a removal Rukoo applied long ago doesn't undo what came after it.
+  assert.equal(again.apply({ ...ev('passage.removed', M, { id: 'call-000001000' }), seq: 1 }), null);
+  assert.equal(again.meeting(M).passages[0].text, 'First words, corrected');
+  // meeting.data it skipped then applies now.
+  const other = { v: 1, device: 'b'.repeat(32), name: 'Desktop', fields: { title: { v: 'From the desktop', at: 1793000900000, by: 'b'.repeat(32) } } };
+  assert.deepEqual(again.apply({ ...ev('meeting.data', M, { writer: 'a'.repeat(32), data: other }), seq: 2 }), { meeting: M, kind: 'data' });
+  assert.equal(again.meeting(M).meeting.title, 'From the desktop');
+  // Past the old cursor, everything applies again.
+  again.apply({ ...passage('call', 3000, 'New words'), seq: first.seq + 1 });
+  assert.equal(again.meeting(M).passages.length, 2);
+  // The cutoff goes only once the cursor on disk is past it.
+  assert.equal(again.index.catchUp, first.seq);
+  again.flush();
+  assert.equal(again.index.catchUp, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'voice.json'), 'utf8')).catchUp, 0);
+  again.close();
+});
+
+test('a catch-up stopped after a meeting got its stamps still sends that meeting, under the same device', () => {
+  const dir = tempDir('rukoo-data-upgrade-stop-');
+  const s = store(dir);
+  s.apply(started());
+  s.setTitle(M, 'Old title');
+  s.close();
+  legacy(dir, 30);
+  // The first start wrote voice.json, then stopped before it noted the catch-up done.
+  const first = store(dir);
+  const device = first.index.device;
+  const index = JSON.parse(fs.readFileSync(path.join(dir, 'voice.json'), 'utf8'));
+  assert.equal(index.device, device);
+  assert.deepEqual(Object.keys(index.unsent), [M]);
+  first.closed = true;
+  fs.writeFileSync(path.join(dir, 'voice.json'), JSON.stringify({ ...index, data: 0 }));
+  const again = store(dir);
+  assert.equal(again.dataDoc(M).fields.title.by, device);
+  assert.deepEqual(again.unsentData().map((u) => u.id), [M]);
+  again.close();
+});
+
+test('a synced correction made before the split keeps a passage that overlapped it, also after an edit there', () => {
+  const { a, b } = twoComputers();
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+    s.apply(passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+    s.apply(passage('mic', 7000, 'Right.', 1, { end: 7600 }));
+  }
+  a.correct(M, 'mic-000005000', 'I can do that. Thanks, Pieter!');
+  // Sent before either computer split the microphone.
+  assert.deepEqual(a.dataDoc(M).fields['correction:mic-000005000'].v.keep, ['mic-000007000']);
+  b.applyData(M, a.dataDoc(M));
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+    s.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+    s.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  }
+  const mic = (s) => s.meeting(M).passages.filter((p) => p.track === 'mic').map((p) => p.id);
+  assert.deepEqual(mic(b), ['mic-000000000', 'mic-000005000', 'mic-000007000']);
+  assert.deepEqual(mic(b), mic(a));
+  // Editing the correction on the computer that got it keeps what it covered.
+  b.correct(M, 'mic-000005000', 'I can do that. Thanks a lot, Pieter!');
+  assert.deepEqual(mic(b), ['mic-000000000', 'mic-000005000', 'mic-000007000']);
+});
+
+test('a draft first seen as losing notes goes when the computer that wrote it picks', () => {
+  const { a, b, clock } = twoComputers();
+  a.saveNotes(M, 'Laptop', 0);
+  clock.b += 5000;
+  b.saveNotes(M, 'Desktop', 0);
+  // The desktop hears of the laptop's notes first: older, so they wait in its bar.
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther.text, 'Laptop');
+  // The laptop takes the desktop's and offers its own as a draft; then it dismisses its own.
+  a.applyData(M, b.dataDoc(M));
+  b.applyData(M, a.dataDoc(M));
+  a.resolveNotes(M, 'dismiss');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther, null);
+});
+
+test('a link removed before the upgrade goes to the other computers as removed', () => {
+  const dir = tempDir('rukoo-data-upgrade-unlink-');
+  const s = store(dir);
+  s.apply(started());
+  s.setEvent(M, null);
+  s.close();
+  legacy(dir, 10);
+  const again = store(dir);
+  assert.equal(again.dataDoc(M).fields.event.v, null);
+  again.apply(started());
+  assert.equal(again.meeting(M).meeting.eventId, null);
+  again.close();
+});
+
+test('a correction from another computer keeps a passage that overlapped it from the start, and its span when it comes first', () => {
+  const { a, b } = twoComputers();
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+    s.apply(passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+    s.apply(passage('mic', 7000, 'Right.', 1, { end: 7600 }));
+  }
+  a.correct(M, 'mic-000005000', 'I can do that. Thanks, Pieter!');
+  for (const s of [a, b]) {
+    s.apply(ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+    s.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+    s.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  }
+  assert.deepEqual(a.dataDoc(M).fields['correction:mic-000005000'].v, { text: 'I can do that. Thanks, Pieter!', end: 9000, keep: ['mic-000007000'] });
+  b.applyData(M, a.dataDoc(M));
+  const mic = (s) => s.meeting(M).passages.filter((p) => p.track === 'mic').map((p) => p.id);
+  assert.deepEqual(mic(b), mic(a));
+  assert.deepEqual(mic(b), ['mic-000000000', 'mic-000005000', 'mic-000007000']);
+
+  // A computer that gets the correction before the passage itself still hides the pieces once they come.
+  const c = store(tempDir('rukoo-data-c-'), { deviceName: 'Tablet' });
+  c.apply(started());
+  c.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+  c.applyData(M, a.dataDoc(M));
+  c.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+  c.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  c.apply(passage('mic', 7000, 'Right.', 1, { end: 7600 }));
+  assert.deepEqual(mic(c), ['mic-000005000', 'mic-000007000']);
+  c.close();
+});
+
+test("a computer's later notes follow its earlier ones, and keep another computer's draft where it was", () => {
+  const { a, b, clock } = twoComputers();
+  b.saveNotes(M, 'Desktop draft', 0);
+  clock.a += 5000;
+  a.saveNotes(M, 'Laptop first', 0);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notesOther.text, 'Desktop draft');
+  // The laptop goes on writing: on the desktop that is one version after another, not a conflict.
+  clock.a += 5000;
+  a.saveNotes(M, 'Laptop second', a.meeting(M).notes.rev);
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).notes.text, 'Laptop second');
+  assert.equal(b.meeting(M).notesOther.text, 'Desktop draft');
+  assert.equal(b.dataDoc(M).draft.v, 'Desktop draft');
+  // Only the laptop writing: no conflict at all.
+  const { a: x, b: y, clock: c } = twoComputers();
+  x.saveNotes(M, 'One', 0);
+  y.applyData(M, x.dataDoc(M));
+  c.a += 1000;
+  x.saveNotes(M, 'Two', x.meeting(M).notes.rev);
+  y.applyData(M, x.dataDoc(M));
+  assert.equal(y.meeting(M).notes.text, 'Two');
+  assert.equal(y.meeting(M).notesOther, null);
+});
+
+test('two changes in one millisecond, or after the clock went back, still reach the other computer', () => {
+  const { a, b, clock } = twoComputers();
+  a.setTitle(M, 'First');
+  b.applyData(M, a.dataDoc(M));
+  a.setTitle(M, 'Second');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).meeting.title, 'Second');
+  clock.a -= 60000;
+  a.setTitle(M, 'After the clock went back');
+  b.applyData(M, a.dataDoc(M));
+  assert.equal(b.meeting(M).meeting.title, 'After the clock went back');
+});

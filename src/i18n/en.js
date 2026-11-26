@@ -10160,6 +10160,38 @@
     "message": "Not saved: shorten the notes",
     "description": "Meeting notes status when serialized Markdown exceeds the storage limit. Saved notes remain unchanged; the pending editor text stays in memory so the user can shorten it. src/renderer/meeting.js (fillNotes, drainNotes)"
   },
+  "meeting.notes.otherTheirs": {
+    "message": "These notes also changed on {device}, {time}. That version is kept here.",
+    "description": "Meeting view, bar above the notes: the notes changed on another of the user's computers at the same time as on this one; the notes shown are the newer, the other text waits in this bar. {device}: that computer's name, or meeting.notes.otherDevice. {time}: when it changed, such as \"Nov 25, 2026, 3:38 PM\". src/renderer/meeting.js (renderNotesOther)"
+  },
+  "meeting.notes.otherMine": {
+    "message": "Newer notes came from another computer. What you wrote here, {time}, is kept.",
+    "description": "Meeting view, bar above the notes: another computer's newer notes replaced what the user wrote on this computer at the same time; their own text waits in this bar. {time}: when they wrote it, such as \"Nov 25, 2026, 3:38 PM\". src/renderer/meeting.js (renderNotesOther)"
+  },
+  "meeting.notes.otherReplaced": {
+    "message": "The notes you replaced ({time}) are kept here.",
+    "description": "Meeting view, bar above the notes: after the user chose another computer's version with meeting.notes.otherUse, the notes it replaced wait in this bar, so the same button takes them back. {time}: when the replaced notes were written, such as \"Nov 25, 2026, 3:38 PM\". src/renderer/meeting.js (renderNotesOther)"
+  },
+  "meeting.notes.otherDevice": {
+    "message": "another computer",
+    "description": "Meeting view, notes bar: stands in for {device} in meeting.notes.otherTheirs when the other computer has no name. src/renderer/meeting.js (renderNotesOther)"
+  },
+  "meeting.notes.otherShow": {
+    "message": "Show it",
+    "description": "Meeting view, notes bar: button that shows the other version of the notes below the bar. src/renderer/meeting.js (renderNotesOther)"
+  },
+  "meeting.notes.otherHide": {
+    "message": "Hide it",
+    "description": "Meeting view, notes bar: button that hides the other version of the notes again. src/renderer/meeting.js (renderNotesOther)"
+  },
+  "meeting.notes.otherUse": {
+    "message": "Use it instead",
+    "description": "Meeting view, notes bar: button that makes the other version the notes. The text shown now takes its place in the bar, so pressing it again switches back. src/renderer/meeting.js (renderNotesOther)"
+  },
+  "meeting.notes.otherDismiss": {
+    "message": "Dismiss",
+    "description": "Meeting view, notes bar: button that keeps the notes as shown and lets the other version go. src/renderer/meeting.js (renderNotesOther)"
+  },
   "meeting.state.recording": {
     "message": "Recording",
     "description": "Meeting view header: state pill while Rukoo Voice records the meeting. src/renderer/meeting.js (stateHtml)"
@@ -10219,6 +10251,42 @@
   "meeting.frame.offline": {
     "message": "The image shows while Rukoo Voice runs.",
     "description": "Meeting view transcript: beside a screen frame whose image Rukoo can't get because Rukoo Voice isn't connected; Voice keeps the images. src/renderer/meeting.js (frameHtml)"
+  },
+  "meeting.frame.loading": {
+    "message": "Loading from your bucket…",
+    "description": "Meeting view transcript: beside a screen frame whose image Rukoo Voice is fetching back from the user's bucket now; the thumbnail shows a spinner. src/renderer/meeting.js (frameHtml)"
+  },
+  "meeting.frame.inBucket": {
+    "message": "The image shows once Rukoo Voice can reach your bucket.",
+    "description": "Meeting view transcript: beside a screen frame whose image is only in the user's synced bucket while Rukoo Voice isn't running or can't reach the bucket. The frame's text still shows. src/renderer/meeting.js (frameNote)"
+  },
+  "meeting.clip.inBucket": {
+    "message": "The audio is in your bucket. Clips play once Rukoo Voice can reach the bucket.",
+    "description": "Meeting view voice player of a meeting whose audio is only in the user's synced bucket, while Rukoo Voice isn't running or can't reach the bucket. src/renderer/meeting.js (playerHtml, playClip)"
+  },
+  "meeting.actions.keep": {
+    "message": "Keep on this computer",
+    "description": "Meeting menu (header and sidebar right-click), a checkable item: Rukoo Voice downloads all of the meeting's audio, screen frames and video from the user's bucket and keeps them, for offline use. src/renderer/meeting.js (meetingMenu)"
+  },
+  "meeting.actions.keepSub": {
+    "message": "For use without a connection",
+    "description": "Meeting menu: second line under Keep on this computer, saying what it is for: Rukoo Voice downloads the meeting's media so it works offline. src/renderer/meeting.js (meetingMenu)"
+  },
+  "meeting.keep.progress": {
+    "message": "Downloading {have} of {total}",
+    "description": "Meeting view header while a meeting kept on this computer comes down from the user's bucket; have and total are sizes such as 48.2 MB. src/renderer/meeting.js (keepHtml)"
+  },
+  "meeting.keep.waiting": {
+    "message": "Download waits for your bucket",
+    "description": "Meeting view header: a meeting kept on this computer still misses media, and Rukoo Voice can't reach the bucket now or isn't running. src/renderer/meeting.js (keepHtml)"
+  },
+  "meeting.keep.label": {
+    "message": "Downloaded for offline use",
+    "description": "Accessible name of the progress bar in the meeting view header while a kept meeting's media comes down. src/renderer/meeting.js (keepHtml)"
+  },
+  "meeting.keep.unavailable": {
+    "message": "Rukoo Voice can keep a meeting on this computer once bucket sync is on, in an up-to-date Voice.",
+    "description": "Toast after Keep on this computer when Rukoo Voice can't: it is older, or bucket sync is off. src/renderer/meeting.js (refreshMedia)"
   },
   "meeting.frame.gone": {
     "message": "Rukoo Voice no longer has this image.",

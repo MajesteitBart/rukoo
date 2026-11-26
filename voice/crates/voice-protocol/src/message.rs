@@ -23,6 +23,7 @@ pub mod events {
     pub const MARK: &str = "mark";
     pub const FRAME: &str = "frame";
     pub const MEETING_REMOVED: &str = "meeting.removed";
+    pub const MEETING_DATA: &str = "meeting.data";
 
     /// True for the known events that belong to a meeting and so need `meeting`.
     pub fn is_meeting_event(name: &str) -> bool {
@@ -37,6 +38,7 @@ pub mod events {
                 | MARK
                 | FRAME
                 | MEETING_REMOVED
+                | MEETING_DATA
         )
     }
 }
@@ -64,7 +66,13 @@ pub mod commands {
     pub const SYNC_PULL: &str = "sync.pull";
     pub const SYNC_SETTINGS_GET: &str = "sync.settings.get";
     pub const SYNC_SETTINGS_SET: &str = "sync.settings.set";
+    pub const MEETING_DATA_SET: &str = "meeting.data.set";
+    pub const MEDIA_PREFETCH: &str = "media.prefetch";
+    pub const MEDIA_KEEP: &str = "media.keep";
 }
+
+/// What `media.prefetch` fetches: the only `kind` it takes.
+pub const PREFETCH_FRAMES: &str = "frames";
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
 macro_rules! named {
@@ -472,6 +480,12 @@ pub enum EventBody {
     MeetingRemoved {
         reason: Option<String>,
     },
+    /// What Rukoo owns of the meeting, as one computer's Rukoo last gave it.
+    MeetingData {
+        /// Whose copy: `local` for this computer's, else another data folder's index name.
+        writer: String,
+        data: Object,
+    },
     /// An event type this version doesn't know. Rukoo ignores it.
     Unknown {
         event: String,
@@ -493,6 +507,7 @@ impl EventBody {
             EventBody::Mark(_) => events::MARK,
             EventBody::Frame(_) => events::FRAME,
             EventBody::MeetingRemoved { .. } => events::MEETING_REMOVED,
+            EventBody::MeetingData { .. } => events::MEETING_DATA,
             EventBody::Unknown { event, .. } => event,
         }
     }
@@ -513,6 +528,7 @@ impl EventBody {
                 Some(reason) => json!({"reason": reason}),
                 None => json!({}),
             }),
+            EventBody::MeetingData { writer, data } => Ok(json!({"writer": writer, "data": data})),
             EventBody::Unknown { data, .. } => Ok(Value::Object(data.clone())),
         };
         data.expect("event data serializes to JSON")
@@ -716,6 +732,22 @@ pub enum CommandBody {
         meeting: MeetingId,
         track: Track,
     },
+    /// What Rukoo owns of the meeting, for Voice to keep and upload to the user's bucket.
+    MeetingDataSet {
+        meeting: MeetingId,
+        data: Object,
+    },
+    /// Fetch the meeting's frame images back from the bucket in the background. The checks allow
+    /// only `kind` [`PREFETCH_FRAMES`].
+    MediaPrefetch {
+        meeting: MeetingId,
+    },
+    /// Keep all of the meeting's media on this computer (`Some(true)`), let the cache limit apply
+    /// again (`Some(false)`), or only say how it stands (`None`).
+    MediaKeep {
+        meeting: MeetingId,
+        keep: Option<bool>,
+    },
     /// A command this version doesn't know. Voice answers `unknown_command`.
     Unknown {
         command: String,
@@ -748,6 +780,9 @@ impl CommandBody {
             CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
             CommandBody::MediaRead { .. } => commands::MEDIA_READ,
             CommandBody::SpeakersSplit { .. } => commands::SPEAKERS_SPLIT,
+            CommandBody::MeetingDataSet { .. } => commands::MEETING_DATA_SET,
+            CommandBody::MediaPrefetch { .. } => commands::MEDIA_PREFETCH,
+            CommandBody::MediaKeep { .. } => commands::MEDIA_KEEP,
             CommandBody::Unknown { command, .. } => command,
         }
     }
@@ -821,6 +856,9 @@ impl CommandBody {
                 if let Some(end) = open.end {
                     args.insert("end".into(), end.into());
                 }
+                if open.piece {
+                    args.insert("piece".into(), true.into());
+                }
             }
             CommandBody::MediaRead {
                 media,
@@ -834,6 +872,20 @@ impl CommandBody {
             CommandBody::SpeakersSplit { meeting, track } => {
                 args.insert("meeting".into(), meeting.as_str().into());
                 args.insert("track".into(), track.as_str().into());
+            }
+            CommandBody::MeetingDataSet { meeting, data } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("data".into(), Value::Object(data.clone()));
+            }
+            CommandBody::MediaPrefetch { meeting } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("kind".into(), PREFETCH_FRAMES.into());
+            }
+            CommandBody::MediaKeep { meeting, keep } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                if let Some(keep) = keep {
+                    args.insert("keep".into(), (*keep).into());
+                }
             }
             CommandBody::Unknown { args: unknown, .. } => return Value::Object(unknown.clone()),
         }
@@ -949,6 +1001,9 @@ pub struct MediaOpenArgs {
     pub start: u64,
     /// Meeting ms; Voice requires it for audio and video.
     pub end: Option<u64>,
+    /// Audio only: Voice may end the mix at a segment boundary while the rest still comes back
+    /// from the bucket, so a player can start early. The ready answer's `end` says where.
+    pub piece: bool,
 }
 
 /// The result of `media.read`: `{ "offset", "data" }`, the bytes in standard base64 with padding
@@ -1054,6 +1109,52 @@ impl SplitResult {
         match self {
             SplitResult::Running { at, end } => json!({ "state": "running", "at": at, "end": end }),
             SplitResult::Done { voices } => json!({ "state": "done", "voices": voices }),
+        }
+    }
+}
+
+/// The result of `media.open`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaOpenResult {
+    /// Voice prepares the file: Rukoo sends the same `media.open` again.
+    Preparing { media: String },
+    /// The file is ready to read. `kind` is its media type, sent as `type`. `more` is `true` when
+    /// Voice ended a `piece` at a segment boundary and audio follows; it is left out otherwise.
+    Ready {
+        media: String,
+        kind: String,
+        size: u64,
+        start: u64,
+        end: u64,
+        more: bool,
+    },
+}
+
+impl MediaOpenResult {
+    pub fn to_value(&self) -> Value {
+        match self {
+            MediaOpenResult::Preparing { media } => json!({ "media": media, "ready": false }),
+            MediaOpenResult::Ready {
+                media,
+                kind,
+                size,
+                start,
+                end,
+                more,
+            } => {
+                let mut value = json!({
+                    "media": media,
+                    "ready": true,
+                    "type": kind,
+                    "size": size,
+                    "start": start,
+                    "end": end,
+                });
+                if *more {
+                    value["more"] = true.into();
+                }
+                value
+            }
         }
     }
 }

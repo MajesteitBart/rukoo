@@ -386,6 +386,98 @@ test('opening the meetings asks Voice to look for meetings from the other comput
   assert.equal(s.connected, true);
 });
 
+test("what the user changes goes to Voice a moment later, and another computer's copy comes back in", async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Weekly'));
+  voice.append('speaker', M1, { id: 'call-1', track: 'call', label: 'Speaker 1' });
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s = service(t, dir, file, { dataAfterMs: 20, deviceName: 'Laptop' }).init();
+  await until(() => s.store.cursor().after === 3, 'the replay');
+  s.rename(M1, 'Weekly with Anna');
+  s.setSpeaker(M1, 'call-1', { name: 'Anna' });
+  await until(() => (voice.dataSets || []).length >= 1, 'meeting.data.set');
+  const sent = voice.dataSets.at(-1);
+  assert.equal(sent.meeting, M1);
+  assert.equal(sent.data.name, 'Laptop');
+  assert.equal(sent.data.fields.title.v, 'Weekly with Anna');
+  assert.deepEqual(sent.data.fields['name:call-1'].v, { name: 'Anna', address: '', from: 'user' });
+  await until(() => s.store.unsentData().length === 0, 'Voice took it');
+  // Another computer renamed it later.
+  voice.append('meeting.data', M1, { writer: 'a'.repeat(32), data: { v: 1, device: 'b'.repeat(32), name: 'Desktop', fields: { title: { v: 'Renamed on the desktop', at: Date.now() + 60000, by: 'b'.repeat(32) } } } });
+  await until(() => s.get(M1) && s.get(M1).meeting.title === 'Renamed on the desktop', 'the other copy');
+  // Taking it in sends nothing back.
+  const count = voice.dataSets.length;
+  await pause(100);
+  assert.equal(voice.dataSets.length, count);
+});
+
+test('an older Voice that doesn\'t keep the data is asked again only after the next connection', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Weekly'));
+  voice.handlers['meeting.data.set'] = () => ({ error: { code: 'unknown_command', message: 'meeting.data.set' } });
+  const s = service(t, dir, file, { dataAfterMs: 20 }).init();
+  await until(() => s.store.cursor().after === 1, 'the replay');
+  s.rename(M1, 'One');
+  await until(() => voice.commands.some((c) => c.command === 'meeting.data.set'), 'the first try');
+  s.rename(M1, 'Two');
+  await pause(150);
+  assert.equal(voice.commands.filter((c) => c.command === 'meeting.data.set').length, 1);
+  assert.equal(s.store.unsentData().length, 1, 'kept for a Voice that takes it');
+});
+
+test('a frame from the bucket passes pending and inBucket on; media.prefetch goes to Voice each time it is asked', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, { ...started('From the other computer'), screen: 'frames' });
+  voice.append('frame', M1, { id: 'f-000001000', at: 1000, width: 1280, height: 720, text: 'Slide 1' });
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s = service(t, dir, file).init();
+  await until(() => s.store.cursor().after === 3, 'the replay');
+  const frame = { id: 'f-000001000', at: 1000, width: 1280, height: 720, text: 'Slide 1' };
+  const answers = [{ frame, image: null, pending: true }, { frame, image: null, pending: true }, { frame, image: null, inBucket: true }];
+  voice.handlers['frame.get'] = () => answers.shift();
+  assert.equal((await s.frame(M1, 1500)).pending, true);
+  assert.equal((await s.frame(M1, 1500)).pending, true);
+  assert.equal((await s.frame(M1, 1500)).inBucket, true);
+  assert.equal(voice.commands.filter((c) => c.command === 'media.prefetch').length, 0, 'a frame asks for nothing else');
+  // Each open asks again: Voice finds what is missing, so work cut short goes on.
+  assert.equal(await s.prefetchFrames(M1), true);
+  assert.equal(await s.prefetchFrames(M1), true);
+  const prefetches = voice.commands.filter((c) => c.command === 'media.prefetch');
+  assert.deepEqual(prefetches.map((c) => c.args), [{ meeting: M1, kind: 'frames' }, { meeting: M1, kind: 'frames' }]);
+  // An older Voice doesn't know the command.
+  voice.handlers['media.prefetch'] = () => ({ error: { code: 'unknown_command', message: 'media.prefetch' } });
+  assert.equal(await s.prefetchFrames(M1), false);
+});
+
+test('keeping a meeting on this computer: Voice says how its media stands, Rukoo keeps that in the summary, and an older Voice offers nothing', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Kept for the train'));
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s = service(t, dir, file).init();
+  await until(() => s.store.cursor().after === 2, 'the replay');
+  voice.keeps.set(M1, { keep: false, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(await s.keepMedia(M1), { keep: false, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(voice.commands.filter((c) => c.command === 'media.keep').pop().args, { meeting: M1 });
+  assert.deepEqual(await s.keepMedia(M1, true), { keep: true, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(voice.commands.filter((c) => c.command === 'media.keep').pop().args, { meeting: M1, keep: true });
+  assert.deepEqual(s.list().find((m) => m.id === M1).media, { keep: true, have: 1000, total: 9000, stalled: false });
+  assert.deepEqual(s.get(M1).meeting.media, { keep: true, have: 1000, total: 9000, stalled: false });
+  // A reply Rukoo can't read is an error, and changes nothing.
+  voice.handlers['media.keep'] = () => ({ keep: true, have: 9001, total: 9000 });
+  await assert.rejects(s.keepMedia(M1), (err) => err.code === 'failed');
+  assert.equal(s.get(M1).meeting.media.have, 1000);
+  // An older Voice, or one without bucket sync: null.
+  voice.handlers['media.keep'] = () => ({ error: { code: 'unknown_command', message: 'media.keep' } });
+  assert.equal(await s.keepMedia(M1, false), null);
+  voice.handlers['media.keep'] = () => ({ error: { code: 'not_available', message: 'Keeping media on this computer needs bucket sync.' } });
+  assert.equal(await s.keepMedia(M1), null);
+  await assert.rejects(s.keepMedia('m-20261030-090000-ffff'), (err) => err.code === 'not_found');
+});
+
 test('a bad event is skipped and the ones after it still apply', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
@@ -1186,6 +1278,31 @@ test('a split Rukoo never heard finish is asked for again when the meeting opens
   assert.equal(Buffer.from(bytes.data, 'base64').length, 44 + 2000 * 32);
   assert.deepEqual([bytes.start, bytes.end], [1000, 3000]);
   await assert.rejects(s.audioClip(id, 0, 31000), (err) => err.code === 'bad_request');
+  // The player asks for a piece: Voice may end it at a segment boundary while the rest comes from the bucket, and the
+  // player asks for the rest from there. A link's media.open never sends piece.
+  voice.pieceMs = 2000;
+  const first = await s.audioClip(id, 1000, 3000, true);
+  assert.deepEqual([first.start, first.end], [1000, 2000]);
+  assert.equal(Buffer.from(first.data, 'base64').length, 44 + 1000 * 32);
+  assert.equal(first.more, true, 'a piece cut at a boundary says more follows');
+  const rest = await s.audioClip(id, 2000, 3000, true);
+  assert.deepEqual([rest.start, rest.end, rest.more], [2000, 3000, false]);
+  assert.equal(bytes.more, false);
+  // A range past the recording ends with it: Voice cuts end there and leaves more out, so the player stops.
+  voice.audioEndMs = 2500;
+  const last = await s.audioClip(id, 2000, 4000, true);
+  assert.deepEqual([last.end, last.more], [2500, false]);
+  // An older Voice ignores piece and never sends more: the clamped end is the end too.
+  voice.pieceMs = 0;
+  const older = await s.audioClip(id, 1000, 4000, true);
+  assert.deepEqual([older.end, older.more], [2500, false]);
+  // A malformed more is a reply Rukoo can't read.
+  voice.handlers['media.open'] = () => ({ media: 'md-a1B2c3D4e5F6g7H8i9J0kL', ready: true, type: 'audio/wav', size: 44, start: 1000, end: 2000, more: 1 });
+  await assert.rejects(s.audioClip(id, 1000, 3000, true), (err) => err.code === 'failed');
+  delete voice.handlers['media.open'];
+  const opens = voice.commands.filter((c) => c.command === 'media.open').map((c) => c.args);
+  assert.ok(opens.some((a) => a.start === 1000 && a.end === 3000 && a.piece === true));
+  assert.ok(opens.some((a) => a.start === 1000 && a.end === 3000 && !('piece' in a)), 'the whole clip without piece');
 });
 
 test('a split Voice refused as busy can be asked for again once the meeting finished processing', async (t) => {

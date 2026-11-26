@@ -25,7 +25,7 @@ use voice_sync::{PullOrigin, SyncErrorKind};
 use super::controller::Controller;
 use super::screen::ScreenSupervisor;
 use super::split::SplitService;
-use crate::media::MediaService;
+use crate::media::{FrameFetch, MediaService};
 
 /// What Rukoo's commands do.
 pub struct Control {
@@ -266,6 +266,30 @@ impl MeetingControl for Control {
     fn use_sync_settings(&self, settings: &SyncSettings) -> Result<(), ControlError> {
         crate::settings::sync_settings_set(&self.engine()?, settings).map_err(sync_settings_error)
     }
+    /// Keeps what Rukoo owns of the meeting in its folder, where bucket sync takes it up for the
+    /// user's other computers, and gives it back as this computer's copy in the event log, so a
+    /// Rukoo whose profile is new gets it too.
+    fn set_data(&self, id: &str, data: &voice_protocol::Object) -> Result<(), ControlError> {
+        let dir = self.meeting_dir(id)?;
+        let text = serde_json::to_vec(data)
+            .map_err(|e| ControlError::failed(format!("Voice can't keep the data: {e}")))?;
+        let path = dir.join(voice_sync::pull::DATA_FILE);
+        let part = dir.join(format!("{}.part", voice_sync::pull::DATA_FILE));
+        fs::write(&part, &text)
+            .and_then(|()| fs::rename(&part, &path))
+            .map_err(|e| ControlError::failed(format!("Voice can't keep the data: {e}")))?;
+        if let Some(sync) = self.media.bucket_sync() {
+            sync.nudge();
+        }
+        self.log
+            .append(
+                voice_protocol::events::MEETING_DATA,
+                Some(id),
+                serde_json::json!({ "writer": "local", "data": data }),
+            )
+            .map_err(|e| ControlError::failed(e.to_string()))?;
+        Ok(())
+    }
     fn start(&self, args: StartArgs) -> Result<String, ControlError> {
         self.controller.start(args, StartedBy::Rukoo)
     }
@@ -311,7 +335,23 @@ impl MeetingControl for Control {
             ));
         }
         let index = self.frame_index(id, &dir)?;
-        media::frame_reply(&dir, frames, at, &index).map_err(media_error)
+        let mut reply = media::frame_reply(&dir, frames, at, &index).map_err(media_error)?;
+        if !reply["image"].is_null() {
+            if let Some(frame) = reply["frame"]["id"].as_str() {
+                self.media.frame_used(id, &paths::frame_file(frame));
+            }
+            return Ok(reply);
+        }
+        // Not on this computer: it may come back from the bucket (PROTOCOL.md, frame.get).
+        match self.media.fetch_frame(id, at) {
+            FrameFetch::Ready => {
+                reply = media::frame_reply(&dir, frames, at, &index).map_err(media_error)?;
+            }
+            FrameFetch::Pending => reply["pending"] = Value::Bool(true),
+            FrameFetch::Unreachable => reply["inBucket"] = Value::Bool(true),
+            FrameFetch::Gone => {}
+        }
+        Ok(reply)
     }
 
     fn clip(
@@ -395,6 +435,14 @@ impl MeetingControl for Control {
 
     fn split_speakers(&self, id: &str, track: Track) -> Result<Value, ControlError> {
         self.split.split(id, track)
+    }
+
+    fn prefetch_frames(&self, id: &str) -> Result<Value, ControlError> {
+        self.media.cache().prefetch_frames(id)
+    }
+
+    fn keep_media(&self, id: &str, keep: Option<bool>) -> Result<Value, ControlError> {
+        self.media.cache().keep(id, keep)
     }
 }
 

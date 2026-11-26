@@ -1013,14 +1013,19 @@ class Calendars extends EventEmitter {
   }
 
   // One event from the cache, wherever it lies now, or from what read() or a search fetched lately outside it; null when
-  // gone.
+  // gone. An id made on another of the user's computers (a meeting's linked event, synced) names that computer's account:
+  // then an account here with the same calendar has it.
   event(id) {
     const { accountId, calendarId, eventId } = decodeId(id);
-    const acc = this.engine.accounts.find((a) => a.id === accountId);
-    if (!acc || !this.provider(acc)) return null;
     const match = (x) => x.calendarId === calendarId && x.eventId === eventId;
-    const e = this.cache(acc.id).events.find(match) || this.recent(acc.id, calendarId, match);
-    return e ? this.publicEvent(acc, e) : null;
+    const own = this.engine.accounts.find((a) => a.id === accountId);
+    const accounts = own ? [own] : this.engine.accounts.filter((a) => this.cache(a.id).calendars.some((c) => c.id === calendarId));
+    for (const acc of accounts) {
+      if (!this.provider(acc)) continue;
+      const e = this.cache(acc.id).events.find(match) || this.recent(acc.id, calendarId, match);
+      if (e) return this.publicEvent(acc, e);
+    }
+    return null;
   }
 
   // An event read() or a search fetched lately outside the cache, as the provider gave it.

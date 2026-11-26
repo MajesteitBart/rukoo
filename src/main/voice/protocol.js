@@ -28,11 +28,13 @@ const STATES = ['recording', 'paused', 'processing', 'done', 'failed'];
 const ENDED = new Set(['processing', 'done', 'failed']);
 const WITH_REASON = new Set(['processing', 'failed']);
 const MARK_TRACKS = ['mic', 'call', 'screen'];
-const MEETING_EVENTS = new Set(['meeting.started', 'meeting.starting', 'meeting.state', 'speaker', 'passage', 'passage.removed', 'mark', 'frame', 'meeting.removed']);
+const MEETING_EVENTS = new Set(['meeting.started', 'meeting.starting', 'meeting.state', 'speaker', 'passage', 'passage.removed', 'mark', 'frame', 'meeting.removed', 'meeting.data']);
 const ERROR_CODES = ['bad_request', 'unknown_command', 'not_found', 'not_recording', 'busy', 'not_available', 'failed'];
 
 // media.open and media.read: what Voice prepares, its ids, the longest range and the most bytes one read returns.
 const MEDIA_KINDS = ['audio', 'frame', 'video'];
+// What media.prefetch fetches ahead.
+const PREFETCH_KINDS = ['frames'];
 const MEDIA_ID = /^md-[A-Za-z0-9_-]{22}$/;
 const MEDIA_SPAN_MAX = 3600000;
 const MEDIA_READ_MAX = 1024 * 1024;
@@ -203,6 +205,7 @@ const COMMAND_ARGS = {
       int(a, 'end', 0);
       check(a.end >= a.start && a.end - a.start <= MEDIA_SPAN_MAX, 'end');
     }
+    if (given(a, 'piece')) bool(a, 'piece');
   },
   'media.read': (a) => {
     pattern(a, 'media', MEDIA_ID);
@@ -210,10 +213,24 @@ const COMMAND_ARGS = {
     int(a, 'length', 1);
     check(a.length <= MEDIA_READ_MAX, 'length');
   },
+  // What Rukoo owns of a meeting, for Voice to keep in the user's bucket.
+  'meeting.data.set': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    check(isObj(a.data), 'data');
+  },
   // Only the microphone splits: the call's voices are labelled while it records.
   'speakers.split': (a) => {
     pattern(a, 'meeting', MEETING_ID);
     oneOf(a, 'track', SPLIT_TRACKS);
+  },
+  // Only frame images are fetched ahead.
+  'media.prefetch': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    oneOf(a, 'kind', PREFETCH_KINDS);
+  },
+  'media.keep': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    if (given(a, 'keep')) bool(a, 'keep');
   }
 };
 
@@ -301,7 +318,12 @@ const EVENT_DATA = {
     int(d, 'height', 0);
     str(d, 'text');
   },
-  'meeting.removed': (d) => { if (d.reason != null) str(d, 'reason', { min: 1, max: 64 }); }
+  'meeting.removed': (d) => { if (d.reason != null) str(d, 'reason', { min: 1, max: 64 }); },
+  // What Rukoo owns of the meeting, as a computer's Rukoo last gave it: `writer` names whose copy it is.
+  'meeting.data': (d) => {
+    str(d, 'writer', { min: 1, max: 64 });
+    check(isObj(d.data), 'data');
+  }
 };
 
 function event(m) {
@@ -341,6 +363,27 @@ function validate(from, message) {
     const kind = kinds && typeof message.type === 'string' && Object.prototype.hasOwnProperty.call(kinds, message.type) ? kinds[message.type] : null;
     check(kind, 'type');
     return { ok: true, message: kind(message) || message };
+  } catch (err) {
+    if (err instanceof Invalid) return { ok: false, reason: err.reason };
+    throw err;
+  }
+}
+
+// A media.open reply's result, which a reply doesn't name, so the side that sent the command checks it: {ok: true,
+// result} with more false when left out, or {ok: false, reason}. more is true when Voice ended a piece at a segment
+// boundary and audio follows; an older Voice never sends it.
+function validateMediaOpen(result) {
+  try {
+    check(isObj(result), 'result');
+    pattern(result, 'media', MEDIA_ID);
+    if (!bool(result, 'ready')) return { ok: true, result: { media: result.media, ready: false } };
+    str(result, 'type');
+    int(result, 'size', 0);
+    int(result, 'start', 0);
+    int(result, 'end', 0);
+    check(result.end >= result.start, 'end');
+    if (given(result, 'more')) bool(result, 'more');
+    return { ok: true, result: { ...result, more: result.more === true } };
   } catch (err) {
     if (err instanceof Invalid) return { ok: false, reason: err.reason };
     throw err;
@@ -399,6 +442,7 @@ module.exports = {
   ERROR_CODES,
   MEETING_EVENTS,
   MEDIA_KINDS,
+  PREFETCH_KINDS,
   MEDIA_ID,
   MEDIA_SPAN_MAX,
   MEDIA_READ_MAX,
@@ -407,6 +451,7 @@ module.exports = {
   Invalid,
   syncSettingsResult,
   validate,
+  validateMediaOpen,
   validateDiscovery,
   negotiate,
   replayPlan,

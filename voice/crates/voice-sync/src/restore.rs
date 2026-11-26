@@ -312,7 +312,7 @@ pub(crate) fn ensure_local(
 
 /// Audio, frames and video: files that never change once they went up, so one on disk with
 /// another size than its row is damaged and comes back from the bucket.
-fn is_media_path(path: &str) -> bool {
+pub(crate) fn is_media_path(path: &str) -> bool {
     ["audio/", "screen/frames/", "screen/video/"]
         .iter()
         .any(|dir| path.starts_with(dir))
@@ -323,8 +323,9 @@ fn cancelled() -> SyncError {
 }
 
 /// One fetch of a file at a time: two fetches writing the same `<file>.restore` would interleave,
-/// and each checks the hash of the bytes it wrote, not of the file on disk.
-struct Claim<'a> {
+/// and each checks the hash of the bytes it wrote, not of the file on disk. The cache limit takes
+/// the same claim to remove a file, so a fetch never overlaps its removal.
+pub(crate) struct Claim<'a> {
     shared: &'a Shared,
     path: PathBuf,
 }
@@ -347,6 +348,21 @@ impl<'a> Claim<'a> {
         }
         fetching.insert(path.to_owned());
         Ok(Claim {
+            shared,
+            path: path.to_owned(),
+        })
+    }
+
+    /// The claim when nobody holds it now, without waiting.
+    pub(crate) fn try_take(shared: &'a Shared, path: &Path) -> Option<Claim<'a>> {
+        let mut fetching = shared
+            .fetching
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !fetching.insert(path.to_owned()) {
+            return None;
+        }
+        Some(Claim {
             shared,
             path: path.to_owned(),
         })
@@ -1084,6 +1100,8 @@ mod tests {
         let first = [
             file("transcript.db", "transcript", 'a'),
             file("audio/mic/000001.wav", "audio", 'b'),
+            // What Rukoo owns travels outside every manifest: it stays.
+            file("rukoo.json", "data", 'd'),
         ];
         let mut import = rows(id, &binding.target, &binding.kid);
         import.files = &first;
@@ -1101,6 +1119,7 @@ mod tests {
             .map(|f| format!("{} {}", f.path, &f.sha256[..1]))
             .collect();
         assert_eq!(listed, ["transcript.db c"]);
+        assert!(shared.queue.in_bucket(id, "rukoo.json").unwrap().is_some());
         sync.shutdown();
         let _ = fs::remove_dir_all(&dir);
     }

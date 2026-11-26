@@ -395,7 +395,8 @@ class VoiceBridge extends EventEmitter {
     const checked = validate('rukoo', message);
     if (!checked.ok) return Promise.reject(new VoiceError('bad_request', `invalid ${checked.reason}`));
     if (!wellFormed(args)) return Promise.reject(new VoiceError('bad_request', 'text with a lone surrogate'));
-    if (JSON.stringify(message).length > RUKOO_MESSAGE_MAX) return Promise.reject(new VoiceError('bad_request', 'too large'));
+    // Voice counts a message in UTF-8 bytes.
+    if (Buffer.byteLength(JSON.stringify(message)) > RUKOO_MESSAGE_MAX) return Promise.reject(new VoiceError('bad_request', 'too large'));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);

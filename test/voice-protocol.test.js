@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { validate, validateDiscovery, negotiate, replayPlan, syncSettingsResult, Invalid, PROTOCOL, MEDIA_KINDS, MEDIA_ID, MEDIA_SPAN_MAX, MEDIA_READ_MAX } = require('../src/main/voice/protocol');
+const { validate, validateMediaOpen, validateDiscovery, negotiate, replayPlan, syncSettingsResult, Invalid, PROTOCOL, MEDIA_KINDS, MEDIA_ID, MEDIA_SPAN_MAX, MEDIA_READ_MAX } = require('../src/main/voice/protocol');
 const { bridgePath, bridgePathHere } = require('../src/main/voice/paths');
 
 const VECTORS = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'voice', 'fixtures', 'protocol-vectors.json'), 'utf8'));
@@ -28,6 +28,29 @@ test('every invalid message is refused for the reason the vector gives', () => {
     const res = validate(v.from, v.message);
     assert.deepEqual({ ok: res.ok, reason: res.reason }, { ok: false, reason: v.reason }, v.name);
   }
+});
+
+test('the replies to a media.open hold media.open results, and a piece with more to come says so', () => {
+  const opens = new Set(VECTORS.valid.filter((v) => v.message.command === 'media.open').map((v) => v.message.id));
+  const results = VECTORS.valid.filter((v) => v.message.type === 'reply' && v.message.ok && opens.has(v.message.id)).map((v) => {
+    const r = validateMediaOpen(v.message.result);
+    assert.equal(r.ok, true, `${v.name}: ${r.reason}`);
+    return r.result;
+  });
+  assert.ok(results.some((r) => r.ready && r.more === true), 'a piece with more to come');
+  assert.ok(results.some((r) => r.ready && r.more === false), 'a whole file');
+  assert.ok(results.some((r) => !r.ready));
+  const media = 'md-a1B2c3D4e5F6g7H8i9J0kL';
+  const ready = (extra) => ({ media, ready: true, type: 'audio/wav', size: 44, start: 1000, end: 3000, ...extra });
+  // An older Voice never sends more; null counts as left out.
+  assert.equal(validateMediaOpen(ready()).result.more, false);
+  assert.equal(validateMediaOpen(ready({ more: null })).result.more, false);
+  assert.equal(validateMediaOpen(ready({ more: true })).result.more, true);
+  assert.deepEqual(validateMediaOpen(ready({ more: 1 })), { ok: false, reason: 'more' });
+  assert.deepEqual(validateMediaOpen(ready({ more: 'yes' })), { ok: false, reason: 'more' });
+  assert.deepEqual(validateMediaOpen(ready({ end: 500 })), { ok: false, reason: 'end' });
+  assert.deepEqual(validateMediaOpen({ media: 'md-1', ready: false }), { ok: false, reason: 'media' });
+  assert.deepEqual(validateMediaOpen({ media }), { ok: false, reason: 'ready' });
 });
 
 test('a command without args gets {} and a message from the wrong side is refused', () => {
