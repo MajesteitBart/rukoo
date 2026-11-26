@@ -2998,14 +2998,18 @@ body.dragging-mail .nav-item * {
   height: 36px;
   margin: 2px 0 16px;
 }
+/* Three buttons with longer Dutch labels don't fit a narrow dialog in one row: they go on a second row, whole, rather
+   than break a label inside its fixed height. */
 .dialog .buttons {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
 }
 .dialog .buttons button {
   height: 32px;
+  white-space: nowrap;
   padding: 0 14px;
   border-radius: var(--radius);
   font-weight: 600;

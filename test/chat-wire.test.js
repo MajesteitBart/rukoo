@@ -424,7 +424,7 @@ const METHODS = [
   'chatAddToChannel', 'chatSetChannelRole', 'chatRemoveFromChannel', 'chatLeaveChannel', 'chatStartDm', 'chatLeaveDm',
   'chatBlock', 'chatUnblock',
   // Rich messages (rich contract 4.3).
-  'chatReact', 'chatMarkUnread', 'chatPickFiles', 'chatStage', 'chatUnstage', 'chatRetryStage', 'chatStaged', 'chatFile',
+  'chatReact', 'chatMarkUnread', 'chatPickFiles', 'chatStage', 'chatUnstage', 'chatRetryStage', 'chatRedactStaged', 'chatStaged', 'chatFile',
   'chatRemovePreview',
   // Agents in channels (server/WORKSPACES.md "Agents").
   'chatAgents', 'chatCreateAgent', 'chatUpdateAgent', 'chatNewAgentKey', 'chatRemoveAgent'
@@ -563,6 +563,7 @@ const CALLS = {
   },
   chatUnstage: { ok: [[[LOCAL], [LOCAL]]], bad: [[['x'], 'stage']] },
   chatRetryStage: { ok: [[[LOCAL], [LOCAL]]], bad: [[[null], 'stage']] },
+  chatRedactStaged: { ok: [[[LOCAL], [LOCAL]]], bad: [[[null], 'stage'], [['x'], 'stage']] },
   chatStaged: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]]], bad: [[[W, C, 'e_x'], 'root']] },
   chatFile: { ok: [[[W, C, F, 'view'], [W, C, F, 'view']], [[W, C, F, 'save'], [W, C, F, 'save']]], bad: [[[W, C, E, 'view'], 'file'], [[W, C, F, 'delete'], 'action']] },
   chatRemovePreview: { ok: [[[W, C, E, 'https://example.com/a'], [W, C, E, 'https://example.com/a']]], bad: [[[W, C, E, 'javascript:alert(1)'], 'url'], [[W, C, E, 5], 'url']] },

@@ -8422,7 +8422,7 @@
     "description": "Settings > Rukoo account: toast after a manual sync. src/renderer/settings.js."
   },
   "settings.rukoo.pending": {
-    "message": {"one": "{count} change waiting to sync", "other": "{count} changes waiting to sync"},
+    "message": { "one": "{count} change waiting to sync", "other": "{count} changes waiting to sync" },
     "description": "Settings > Rukoo account: sync status when local changes have not reached the server yet. {count}: number of changes. src/renderer/settings.js."
   },
   "settings.rukoo.devices": {
@@ -8586,15 +8586,15 @@
     "description": "Settings > Rukoo account: privacy page: note under the stored counts. src/renderer/settings.js."
   },
   "settings.rukoo.count.category": {
-    "message": {"one": "{count} category", "other": "{count} categories"},
+    "message": { "one": "{count} category", "other": "{count} categories" },
     "description": "Settings > Rukoo account: privacy page: number of inbox categories stored. src/renderer/settings.js."
   },
   "settings.rukoo.count.classification": {
-    "message": {"one": "{count} sorted email", "other": "{count} sorted emails"},
+    "message": { "one": "{count} sorted email", "other": "{count} sorted emails" },
     "description": "Settings > Rukoo account: privacy page: number of emails with a stored category. src/renderer/settings.js."
   },
   "settings.rukoo.count.correction": {
-    "message": {"one": "{count} correction", "other": "{count} corrections"},
+    "message": { "one": "{count} correction", "other": "{count} corrections" },
     "description": "Settings > Rukoo account: privacy page: number of corrections the user made. src/renderer/settings.js."
   },
   "settings.rukoo.serverUsage": {
@@ -8778,7 +8778,7 @@
     "description": "Inbox categories in the main window: empty inbox list when a category tab has no mail. {name}: the category. src/renderer/app.js."
   },
   "mailbox.categories.unreadCount": {
-    "message": {"one": "{count} unread", "other": "{count} unread"},
+    "message": { "one": "{count} unread", "other": "{count} unread" },
     "description": "Inbox categories in the main window: accessible name of the unread count on a category tab. src/renderer/app.js."
   },
   "mailbox.categories.hidden": {
@@ -8962,7 +8962,7 @@
     "description": "Settings > Inbox categories: description of the sort again row. src/renderer/categories-settings.js."
   },
   "settings.categories.againDone": {
-    "message": {"one": "Sorted {count} email", "other": "Sorted {count} emails"},
+    "message": { "one": "Sorted {count} email", "other": "Sorted {count} emails" },
     "description": "Settings > Inbox categories: toast after sorting again. {count}: emails sorted. src/renderer/categories-settings.js."
   },
   "settings.categories.senders": {
@@ -9190,7 +9190,7 @@
     "description": "\"What's new in Rukoo 2.1\" guide: introduction on the last step when categories were already on. src/renderer/whats-new.js."
   },
   "whatsNew.done.categories": {
-    "message": {"one": "{count} category", "other": "{count} categories"},
+    "message": { "one": "{count} category", "other": "{count} categories" },
     "description": "\"What's new\" guide, last step: how many categories. {count}: the number. src/renderer/whats-new.js."
   },
   "whatsNew.done.synced": {
@@ -9498,7 +9498,7 @@
     "description": "Sidebar, sorting status and its panel: line above the sync status while Jev sorts, followed by a count such as 12/48. src/renderer/sort-activity.js."
   },
   "categories.activity.sorted": {
-    "message": {"one": "Sorted {count} email", "other": "Sorted {count} emails"},
+    "message": { "one": "Sorted {count} email", "other": "Sorted {count} emails" },
     "description": "Sidebar, sorting status and its panel: line above the sync status, and in the panel, after a sort someone asked for. {count}: emails sorted. src/renderer/sort-activity.js."
   },
   "categories.activity.nothing": {
@@ -9542,7 +9542,7 @@
     "description": "Sidebar, sorting status and its panel: panel, after the progress while sorting. src/renderer/sort-activity.js."
   },
   "categories.activity.minutesLeft": {
-    "message": {"one": "about {count} minute left", "other": "about {count} minutes left"},
+    "message": { "one": "about {count} minute left", "other": "about {count} minutes left" },
     "description": "Sidebar, sorting status and its panel: panel, after the progress while sorting. {count}: minutes. src/renderer/sort-activity.js."
   },
   "categories.activity.busy": {
@@ -9562,7 +9562,7 @@
     "description": "Sidebar, sorting status and its panel: panel text when TypeSafe refused the API key. src/renderer/sort-activity.js."
   },
   "categories.activity.waitingCount": {
-    "message": {"one": "{count} email waits for Jev.", "other": "{count} emails wait for Jev."},
+    "message": { "one": "{count} email waits for Jev.", "other": "{count} emails wait for Jev." },
     "description": "Sidebar, sorting status and its panel: panel text while Jev waits. {count}: emails. src/renderer/sort-activity.js."
   },
   "categories.activity.newMailJev": {
@@ -11872,6 +11872,38 @@
     "message": "Send (Enter)",
     "description": "Chat composer: tooltip and accessible name of the Send button, with its key. src/renderer/chat-input.js"
   },
+  "chat.input.keyTitle": {
+    "message": "Send an agent's key?",
+    "description": "Chat composer: title of the question that opens when the person sends a message, or a text file attached to it, with an agent's key in it (rka_ and 66 characters). src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keyInText": {
+    "message": "This message holds an agent's key.",
+    "description": "Chat composer, agent key question: where the key is, when it is in the message's text only. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keyInFiles": {
+    "message": { "one": "The file {files} holds an agent's key.", "other": "The files {files} hold an agent's key." },
+    "description": "Chat composer, agent key question: where the key is, when it is in attached text files only. {files}: their names, quoted and separated by commas. {count}: how many files. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keyInBoth": {
+    "message": { "one": "This message and the file {files} hold an agent's key.", "other": "This message and the files {files} hold an agent's key." },
+    "description": "Chat composer, agent key question: where the key is, when it is in the message's text and in attached text files. {files}: their names, quoted and separated by commas. {count}: how many files. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keyBody": {
+    "message": "Anyone who reads this conversation could use the key to read every channel the agent is in and write there as the agent. An agent's key belongs in its runner, never in a message.",
+    "description": "Chat composer, agent key question: why it asks, under where the key is. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keyRemove": {
+    "message": "Take the key out",
+    "description": "Chat composer, agent key question: the primary button. It puts [agent key removed] in place of each key in the message, has each attached file uploaded again without the key, and then sends the message. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keySendAnyway": {
+    "message": "Send anyway",
+    "description": "Chat composer, agent key question: the button that sends the message with the key in it. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keyOutWaiting": {
+    "message": "The key is out of the file. The message goes once the file has uploaded again.",
+    "description": "Chat composer: toast after Take the key out for a file, while the copy without the key uploads; the message goes by itself once it is ready. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
   "chat.input.tooLong": {
     "message": "This message is too long to send. Split it in two.",
     "description": "Chat composer: note while the message is over 16 KB, when Send is disabled. src/renderer/chat-input.js"
@@ -12555,6 +12587,30 @@
   "chat.agents.removed": {
     "message": "{name} was removed.",
     "description": "Toast after an agent was removed. {name}: the agent. src/renderer/chat-dialogs.js (removeAgent)"
+  },
+  "chat.agents.copyLabel": {
+    "message": "Copy an agent",
+    "description": "Add an agent on the computer: label of the list of agents this computer runs in other workspaces, which the form can start from. Shown only when there is one. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
+  },
+  "chat.agents.copyNone": {
+    "message": "Don't copy",
+    "description": "Add an agent, Copy an agent: the first choice, which starts from an empty form. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
+  },
+  "chat.agents.copyOption": {
+    "message": "{name}, in {workspace}",
+    "description": "Add an agent, Copy an agent: one agent this computer runs in another workspace. {name}: the agent. {workspace}: that workspace's name. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
+  },
+  "chat.agents.copyHelp": {
+    "message": "Takes the name, whom it answers, whether it answers other agents and what answers for it from an agent this computer runs in another workspace. The new agent gets a key of its own.",
+    "description": "Add an agent: the line under Copy an agent. 'What answers for it' is the agent of Settings > Agents that the key step then picks. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
+  },
+  "chat.agents.copyChosen": {
+    "message": "{name} answers chosen people in {workspace}. They are members of that workspace, so the new agent starts on Only me here.",
+    "description": "Add an agent, under Copy an agent: the copied agent answers Chosen people, which don't carry over to another workspace. Only me is chat.agents.answersMeOption. {name}: the agent. {workspace}: its workspace. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
+  },
+  "chat.agents.copyUnread": {
+    "message": "Rukoo couldn't read the settings of {name} in {workspace}, so the new agent starts on Only me. What answers for it carries over.",
+    "description": "Add an agent, under Copy an agent: the copied agent's settings couldn't be loaded from its workspace (offline, or it was removed). {name}: the agent. {workspace}: its workspace. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
   },
   "chat.agents.addTitle": {
     "message": "Add an agent",

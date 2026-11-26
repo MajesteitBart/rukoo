@@ -239,3 +239,14 @@ test('Undo of Discard puts the message after a kept draft on a new line, its ran
   assert.deepEqual(appendToDraft({ text: '', mentions: [] }, 'Hoi', []), { text: 'Hoi', mentions: [] });
   assert.deepEqual(appendToDraft({ text: 'Zoë', mentions: [{ actor: ann, start: 0, end: 3 }] }, 'Hoi', undefined), { text: 'Zoë\nHoi', mentions: [] });
 });
+
+test('an agent key is found in a message and taken out of its text, never out of a mention', async () => {
+  const { hasAgentKey, withoutAgentKeys, KEY_MARK } = await import(moduleUrl('chat-text.js'));
+  const key = `rka_${'A'.repeat(22)}.${'b_-'.repeat(14)}c`;
+  assert.equal(hasAgentKey(`use ${key} please`), true);
+  assert.equal(hasAgentKey('rka_too.short'), false);
+  assert.equal(hasAgentKey(''), false);
+  const chip = { member: `u_${'a'.repeat(22)}`, label: '@Clark' };
+  assert.deepEqual(withoutAgentKeys([`key ${key}, and `, chip, ` again ${key}`]), [`key ${KEY_MARK}, and `, chip, ` again ${KEY_MARK}`]);
+  assert.equal(KEY_MARK, '[agent key removed]');
+});

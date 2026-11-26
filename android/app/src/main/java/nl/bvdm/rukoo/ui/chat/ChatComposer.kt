@@ -65,6 +65,7 @@ import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.root.ChatPane
+import nl.bvdm.rukoo.ui.settings.RkDialog
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.lineHeight
 import nl.bvdm.rukoo.ui.theme.medium
@@ -227,10 +228,37 @@ fun ChatComposer(
         change(MentionEditing.insert(now, t, member))
     }
 
-    fun send() {
+    // A message with an agent's key in it asks first (desktop chat-input.js askAboutKey): take the key out, send it
+    // anyway, or cancel.
+    var askKey by remember(ws, room.id, root) { mutableStateOf(false) }
+
+    fun send(keyChecked: Boolean = false) {
         if (sending || !MentionEditing.wire(state.value).canSend) return
+        if (!keyChecked && AgentKeys.has(state.value.text)) {
+            askKey = true
+            return
+        }
         dismissed = null
         ui.send(ws, room.id, root)
+    }
+
+    if (askKey) {
+        RkDialog(
+            title = stringResource(R.string.chat_input_key_title),
+            text = stringResource(R.string.chat_input_key_in_text) + "\n\n" + stringResource(R.string.chat_input_key_body),
+            confirmLabel = stringResource(R.string.chat_input_key_remove),
+            onConfirm = {
+                askKey = false
+                change(AgentKeys.removed(state.value))
+                send(keyChecked = true)
+            },
+            onDismiss = { askKey = false },
+            extraLabel = stringResource(R.string.chat_input_key_send_anyway),
+            onExtra = {
+                askKey = false
+                send(keyChecked = true)
+            },
+        )
     }
 
     if (picking != null) BackHandler { dismissed = picking.start }
@@ -336,7 +364,7 @@ fun ChatComposer(
                     }
                 },
             )
-            SendButton(enabled = wire.canSend && !sending, onClick = ::send)
+            SendButton(enabled = wire.canSend && !sending, onClick = { send() })
         }
     }
 }

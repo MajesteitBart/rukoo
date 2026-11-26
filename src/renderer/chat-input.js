@@ -1,8 +1,8 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { hue, initials, toast, fileSize } from './ui.js';
+import { hue, initials, toast, fileSize, dialog, esc } from './ui.js';
 import { h } from './agent/bui.js';
-import { toWire, sendProblem, byteLength } from './chat-text.js';
+import { toWire, sendProblem, byteLength, hasAgentKey, withoutAgentKeys } from './chat-text.js';
 import { mentionToken, rankMembers } from './mention-match.js';
 import { draftSlotKey, attachDraft, detachDraft, draftWritten, sendStarted, sendSettled } from './chat-drafts.js';
 import { stagedState, draftFiles } from './chat-model.js';
@@ -139,8 +139,9 @@ const stagedOfDraft = (f) => ({ stage: `draft:${f.id}`, name: f.name, type: f.ty
 //                          reconciled against that draft as every composer for it left it, this one or a later one
 //   parts                  what the input starts with
 //   files                  file staging (contract 3.5), or null for a composer without files:
-//                          { enabled(), pick(), stage(source), unstage(stage), retry(stage), errorText(code), maxBytes() }
-//                          stage takes { path } or { name, type, bytes } and answers the Staged row
+//                          { enabled(), pick(), stage(source), unstage(stage), retry(stage), redact(stage), errorText(code),
+//                          maxBytes() }; stage takes { path } or { name, type, bytes } and answers the Staged row, and
+//                          redact uploads a copy of a staged text file without the agent keys in it
 // Returns { el, input, focus, parts, setParts, setMembers, refreshMembers, setBar, setPlaceholder, setStaged,
 // setDraftFiles, attachFiles, refreshCaps, flush, dispose, hasFocus }.
 export function mountChatInput(container, opts = {}) {
@@ -178,7 +179,9 @@ export function mountChatInput(container, opts = {}) {
   const bar = h('div', { class: 'ch-bar', hidden: true });
   container.append(box, bar);
 
-  const state = { caret: 0, composing: false, barKey: null, disposed: false };
+  // askingKey: the question about an agent key is open. sendWhenReady: the person chose to take the key out of a file,
+  // and the message goes once main has uploaded the copy without it.
+  const state = { caret: 0, composing: false, barKey: null, disposed: false, askingKey: false, sendWhenReady: false };
   // Staged files (contract 3.5): what main reports for this composer's room and thread, the ready files of a restored
   // draft that main doesn't list, and the stages a send just took, hidden until main's list drops them or the send
   // failed.
@@ -432,13 +435,22 @@ export function mountChatInput(container, opts = {}) {
   // is never lost (chat-drafts.js sendSettled).
   // The ready files go along as attachments (contract 3.5): they leave the tray at once and come back when main
   // refuses the message, since it keeps them staged then.
-  function submit() {
-    if (state.composing || state.disposed) return;
+  //
+  // A message or a ready file with an agent key in it asks first (askAboutKey); keyChecked: the person said to send it
+  // anyway.
+  function submit({ keyChecked = false } = {}) {
+    if (state.composing || state.disposed || state.askingKey) return;
     const parts = current();
     const wire = toWire(parts);
     const fs = stagedState(shownStaged(), Boolean(wire.text));
     const problem = sendProblem(wire);
     if ((problem && !(problem === 'empty' && fs.ready.length)) || !fs.canSend) return updateSend();
+    state.sendWhenReady = false;
+    if (!keyChecked) {
+      const inFiles = fs.ready.filter((s) => s.agentKey === true);
+      const inText = hasAgentKey(wire.text);
+      if (inText || inFiles.length) return void askAboutKey(inText, inFiles);
+    }
     wire.attachments = fs.ids;
     const took = fs.ready.map((s) => s.stage);
     for (const s of took) sending.add(s);
@@ -484,7 +496,78 @@ export function mountChatInput(container, opts = {}) {
       );
   }
 
-  // ---------- files (contract 3.5) ----------
+  // ---------- agent keys ----------
+
+  // A key in the message or in a ready text file (main marks those, workspaces/files.js): whoever reads the channel
+  // could read the agent's channels with it and post as the agent. The person picks: take it out, send anyway, or
+  // cancel. Taking it out puts KEY_MARK in the text, as a step Undo takes back, and has main upload a copy of each such
+  // file without the key, in the file's place; the message goes once those are ready (sendWhenReady).
+  async function askAboutKey(inText, inFiles) {
+    state.askingKey = true;
+    let choice = null;
+    try {
+      choice = await keyDialog(inText, inFiles.map((s) => s.name));
+    } finally {
+      state.askingKey = false;
+    }
+    if (state.disposed) return;
+    if (choice === 'send') return submit({ keyChecked: true });
+    if (choice !== 'remove') return input.focus({ preventScroll: true });
+    if (inText) {
+      const { start } = selection();
+      render(withoutAgentKeys(current()), start);
+      record('keyRemoved');
+      changed();
+    }
+    const redact = inFiles.filter((s) => files && files.redact && staged.some((x) => x.stage === s.stage));
+    if (!redact.length) return submit();
+    state.sendWhenReady = true;
+    for (const s of redact) {
+      try {
+        const next = await files.redact(s.stage);
+        if (next && next.stage && !state.disposed) staged = staged.map((x) => (x.stage === next.stage ? next : x));
+      } catch (err) {
+        state.sendWhenReady = false;
+        toast(files.errorText ? files.errorText(err && err.code, err) : t('chat.files.failed'), 6000);
+        break;
+      }
+    }
+    if (state.disposed) return;
+    tray.set(shownStaged());
+    updateSend();
+    if (state.sendWhenReady) toast(t('chat.input.keyOutWaiting'), 5000);
+    sendIfReady();
+  }
+
+  // After the key came out of a file: the message goes once every file is ready again, and waits for the person when
+  // an upload failed.
+  function sendIfReady() {
+    if (!state.sendWhenReady || state.disposed) return;
+    const fs = stagedState(shownStaged(), Boolean(toWire(current()).text));
+    if (fs.failed.length) {
+      state.sendWhenReady = false;
+      return;
+    }
+    if (fs.busy.length) return;
+    submit();
+  }
+
+  // The question, with where the key is: the message, files by name, or both.
+  function keyDialog(inText, names) {
+    const list = names.map((n) => `“${n}”`).join(', ');
+    const where = inText && names.length ? t('chat.input.keyInBoth', { files: list, count: names.length }) : inText ? t('chat.input.keyInText') : t('chat.input.keyInFiles', { files: list, count: names.length });
+    return dialog({
+      title: t('chat.input.keyTitle'),
+      body: `<p>${esc(where)}</p><p>${esc(t('chat.input.keyBody'))}</p>`,
+      buttons: [
+        { label: t('common.actions.cancel'), value: null },
+        { label: t('chat.input.keySendAnyway'), value: 'send' },
+        { label: t('chat.input.keyRemove'), value: 'remove', primary: true }
+      ]
+    });
+  }
+
+  // ---------- files (contract 3.5) ----------  // ---------- files (contract 3.5) ----------
 
   const filesOn = () => Boolean(files) && files.enabled();
 
@@ -500,6 +583,7 @@ export function mountChatInput(container, opts = {}) {
     updateSend();
     // A file that became ready (or went) changes the draft.
     if (draftKey(draftOf([], readyFiles())) !== before) scheduleDraft();
+    sendIfReady();
   }
 
   // The files of a restored draft (contract 3.5): those past expiresAt go, and a toast says how many. Main stages the

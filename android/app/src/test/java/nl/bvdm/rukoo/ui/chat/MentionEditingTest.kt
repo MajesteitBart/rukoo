@@ -268,4 +268,27 @@ class MentionEditingTest {
         assertEquals(Draft("@Zoë de Vries hi\n@Ann ok", listOf(Mention(zoe.id, 0, 14), Mention(ann.id, 18, 22))), restored)
         assertEquals(Draft("@Ann ok", listOf(Mention(ann.id, 0, 4))), MentionEditing.appendToDraft(null, "@Ann ok", listOf(Mention(ann.id, 0, 4))))
     }
+
+    @Test
+    fun anAgentKeyIsFoundAndTakenOutWhileTheMentionsAroundItStay() {
+        val key = "rka_" + "A".repeat(22) + "." + "b_-".repeat(14) + "c"
+        assertTrue(AgentKeys.has("use $key now"))
+        assertFalse(AgentKeys.has("rka_too.short"))
+        assertFalse(AgentKeys.has(""))
+        // "@Ann " then a key, "@Zoë de Vries" after it and another key: the mention after the first key moves back.
+        val text = "@Ann use $key with @Zoë de Vries and $key"
+        val zoeAt = text.indexOf("@Zoë")
+        val start = value(text, spans = listOf(MentionSpan(0, 4, ann.id), MentionSpan(zoeAt, zoeAt + 13, zoe.id)))
+        val out = AgentKeys.removed(start)
+        val mark = AgentKeys.MARK
+        assertEquals("@Ann use $mark with @Zoë de Vries and $mark", out.text)
+        val moved = out.text.indexOf("@Zoë")
+        assertEquals(listOf(MentionSpan(0, 4, ann.id), MentionSpan(moved, moved + 13, zoe.id)), out.spans)
+        assertEquals(out.text.length, out.field.selection.start)
+        assertFalse(AgentKeys.has(out.text))
+        // Nothing to take out: the value stays as it is.
+        val plain = value("no key here")
+        assertEquals(plain, AgentKeys.removed(plain))
+        assertEquals("[agent key removed]", mark)
+    }
 }

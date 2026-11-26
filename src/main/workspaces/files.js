@@ -3,7 +3,7 @@
 // Files in team chat (rich chat contract 3.5, 3.6 and 4.6): staging what the person attaches, measuring images,
 // uploading with progress, the files a draft keeps, downloads into a cache on this computer, and the links the
 // renderer shows a downloaded image with. ipc.js turns METHODS into chatPickFiles, chatStage, chatUnstage,
-// chatRetryStage, chatStaged and chatFile, each as (svc, ...checkedArgs) => result.
+// chatRetryStage, chatRedactStaged, chatStaged and chatFile, each as (svc, ...checkedArgs) => result.
 //
 // Staging. A file is staged the moment it is attached: chatStage answers at once with a Staged entry in state
 // measuring, and staged events follow it through uploading (with loaded, at most every 100 ms) to ready, or to failed
@@ -62,6 +62,46 @@ const VIEWS_MAX = 500;
 const VIEW_SCHEME = 'rukoo-chat-file';
 // Types the viewer may show as what they are; anything else is served as a download.
 const VIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
+// An agent's key (server/src/workspaces.js AGENT_KEY): "rka_", 22 characters, a dot and 43. Whoever has one reads every
+// channel its agent is in, so a text file that holds one gets agentKey: true in its staged entry, and the composer
+// asks before it goes (chat-input.js). Text files up to KEY_SCAN_MAX are read for it as they are measured; a file of
+// another kind, or with a NUL byte in its start, isn't text.
+const AGENT_KEY = /rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/;
+const AGENT_KEYS = new RegExp(AGENT_KEY.source, 'g');
+const KEY_MARK = '[agent key removed]';
+const KEY_SCAN_MAX = 1 * MiB;
+const NOT_TEXT = /^(image|audio|video)\/|^application\/(pdf|zip|gzip|x-7z-compressed|rtf|msword|vnd\.)/;
+
+// A file's text as the key check reads it, and how to write it back: UTF-16 by its byte order mark, else each byte as
+// one character (latin1), which keeps every byte of UTF-8 or any single-byte text as it was. null when it isn't text.
+// Plain typed arrays and TextDecoder, so the browser build's Buffer (src/web/engine/shims/buffer.js), which knows only
+// UTF-8 strings, runs it the same.
+function textOf(bytes) {
+  const bom = bytes.subarray(0, 2);
+  const units = (s, big) => {
+    const out = new Uint8Array(s.length * 2);
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      out[2 * i + (big ? 1 : 0)] = c & 0xff;
+      out[2 * i + (big ? 0 : 1)] = c >> 8;
+    }
+    return out;
+  };
+  const withBom = (body) => Buffer.concat([Buffer.from(bom), Buffer.from(body)]);
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return { text: new TextDecoder('utf-16le').decode(bytes.subarray(2)), encode: (s) => withBom(units(s, false)) };
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return { text: new TextDecoder('utf-16be').decode(bytes.subarray(2)), encode: (s) => withBom(units(s, true)) };
+  if (bytes.subarray(0, 8192).includes(0)) return null;
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return {
+    text,
+    encode: (s) => {
+      const out = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+      return Buffer.from(out);
+    }
+  };
+}
 
 // A type by extension, for a file attached from disk. Anything else is application/octet-stream.
 const TYPES = {
@@ -372,6 +412,7 @@ class Files {
     chatStage: (svc, ws, c, root, source) => svc.files.stage(ws, c, root, source),
     chatUnstage: (svc, stage) => svc.files.unstage(stage),
     chatRetryStage: (svc, stage) => svc.files.retry(stage),
+    chatRedactStaged: (svc, stage) => svc.files.redactKeys(stage),
     chatStaged: (svc, ws, c, root) => svc.files.list(ws, c, root),
     chatFile: (svc, ws, c, file, action) => svc.files.file(ws, c, file, action)
   };
@@ -494,7 +535,8 @@ class Files {
       file: entry.file,
       error: entry.error,
       thumb: entry.thumb,
-      expiresAt: entry.expiresAt
+      expiresAt: entry.expiresAt,
+      agentKey: entry.agentKey === true
     };
   }
 
@@ -673,6 +715,7 @@ class Files {
     if (digest.size < 1) throw new ChatError('unreadable');
     entry.size = digest.size;
     entry.sha256 = digest.sha256;
+    entry.agentKey = await this.holdsKey(entry);
     const image = imageInfo(head);
     if (image) {
       entry.type = image.type;
@@ -690,6 +733,57 @@ class Files {
       }
       entry.thumb = await this.thumbnail(entry, image.type);
     }
+  }
+
+  // Whether a text file of up to KEY_SCAN_MAX holds an agent's key. A file that can't be read for it holds none: the
+  // upload reads it again and fails on its own.
+  async holdsKey(entry) {
+    if (entry.size > KEY_SCAN_MAX || NOT_TEXT.test(entry.type)) return false;
+    try {
+      const read = textOf(await fsp.readFile(entry.path));
+      return Boolean(read && AGENT_KEY.test(read.text));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // chatRedactStaged: the agent keys in a staged text file are replaced with KEY_MARK, in a copy that takes the file's
+  // place in the tray and uploads again. The upload with the key is cancelled on the server. Only a file that is
+  // ready or failed, so no measuring or upload of the old bytes is still under way.
+  async redactKeys(stage) {
+    const entry = this.staged.get(stage);
+    if (!entry) throw new ChatError('not_found');
+    if (!entry.path || !['ready', 'failed'].includes(entry.state) || entry.size > KEY_SCAN_MAX || NOT_TEXT.test(entry.type)) throw new ChatError('invalid', { field: 'stage' });
+    const epoch = this.svc.epoch;
+    let read;
+    try {
+      read = textOf(await fsp.readFile(entry.path));
+    } catch (err) {
+      throw new ChatError('unreadable', { cause: err });
+    }
+    this.svc.guard(epoch);
+    if (!read || !AGENT_KEY.test(read.text)) {
+      entry.agentKey = false;
+      this.emit(entry);
+      return this.view(entry);
+    }
+    const bytes = read.encode(read.text.replace(AGENT_KEYS, KEY_MARK));
+    const dir = uploadsDir(this.store().file);
+    await fsp.mkdir(dir, { recursive: true });
+    const file = path.join(dir, crypto.randomBytes(16).toString('hex'));
+    await fsp.writeFile(file, bytes);
+    this.svc.guard(epoch);
+    // Removed or sent meanwhile: the copy goes.
+    if (entry.gone || this.staged.get(stage) !== entry || !['ready', 'failed'].includes(entry.state)) {
+      await removeQuietly(file);
+      throw new ChatError('invalid', { field: 'stage' });
+    }
+    this.cancelOnServer(entry);
+    if (entry.temp) removeQuietly(entry.path);
+    Object.assign(entry, { path: file, temp: true, size: bytes.length, sha256: null, file: null, put: null, expiresAt: null, state: 'measuring', loaded: 0, error: null, agentKey: false, epoch: this.svc.epoch });
+    this.emit(entry);
+    this.run(entry);
+    return this.view(entry);
   }
 
   async thumbnail(entry, type) {

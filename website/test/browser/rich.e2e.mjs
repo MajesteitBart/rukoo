@@ -875,3 +875,32 @@ test('l: an emoji picked from a composer goes in at its caret, in the channel an
   assert.equal(await value(main), '');
   clean(view);
 });
+
+// RUK-294: an agent key in a message or an attached text file asks first, here as on the desktop, and Take the key
+// out sends the message with the mark in the key's place and the file uploaded again without it. A made-up key.
+test('m: a message and a config file with an agent key ask first, and Take the key out sends both without it', async () => {
+  const p = view.page;
+  await openRoom(p, 'general');
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const config = Buffer.from(`{\n  "server": "https://rukoo.example",\n  "key": "${key}"\n}\n`);
+  const chooser = p.waitForEvent('filechooser');
+  await p.locator('.ch-main [data-ch-compose="attach"]').click();
+  await (await chooser).setFiles([{ name: 'clark.json', mimeType: 'application/json', buffer: config }]);
+  await expect(tray(p).locator('.ch-tray-item.is-ready')).toHaveCount(1, { timeout: LIVE_MS });
+  await write(p, `Clark's key is ${key}`);
+  const question = p.locator('.scrim .dialog').last();
+  await expect(question.locator('h2')).toHaveText(tr('en', 'chat.input.keyTitle'));
+  await expect(question.locator('.dialog-body p').first()).toHaveText("This message and the file “clark.json” hold an agent's key.");
+  await shot(p, 'rich-m1-key-question');
+  await question.locator('.buttons button').last().click();
+  const row = message(p, "Clark's key is [agent key removed]");
+  const id = await sentId(row);
+  const sent = await serverMessage(id);
+  assert.equal(sent.text, "Clark's key is [agent key removed]");
+  assert.equal(sent.attachments.length, 1);
+  const bytes = await pietGets(sent.attachments[0].id);
+  assert.equal(bytes.toString('utf8'), config.toString('utf8').replace(key, '[agent key removed]'));
+  await expect(tray(p)).toBeHidden();
+  await shot(p, 'rich-m2-sent');
+  clean(view);
+});

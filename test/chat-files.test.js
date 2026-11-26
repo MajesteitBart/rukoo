@@ -271,7 +271,7 @@ test('a picked image and PDF are measured, reserved and uploaded, with their sta
   const b = await svc.files.stage(W, C, null, { path: picked[1].path });
   assert.equal(a.state, 'measuring');
   assert.match(a.stage, wire.patterns.LOCAL_ID);
-  assert.deepEqual(Object.keys(a).sort(), ['conversation', 'error', 'expiresAt', 'file', 'height', 'loaded', 'name', 'root', 'size', 'stage', 'state', 'thumb', 'type', 'width', 'ws']);
+  assert.deepEqual(Object.keys(a).sort(), ['agentKey', 'conversation', 'error', 'expiresAt', 'file', 'height', 'loaded', 'name', 'root', 'size', 'stage', 'state', 'thumb', 'type', 'width', 'ws']);
   const one = await ready(svc, a.stage);
   const two = await ready(svc, b.stage);
   assert.deepEqual([one.state, one.width, one.height, one.type, one.thumb], ['ready', 640, 480, 'image/png', 'data:image/png;base64,AAAA']);
@@ -330,6 +330,49 @@ test('pasted bytes go to a file in the profile first, and an image takes the typ
   // Removing it takes the temporary file with it.
   svc.files.unstage(s.stage);
   await until(() => !fs.existsSync(entry.path), 2000, 'the temporary file to go');
+});
+
+test('a text file with an agent key in it says so, and taking the key out uploads a copy without it in the same place', async (t) => {
+  const { svc, links, calls, uploads, pick, dir } = await setup(t);
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const config = Buffer.from(`{\n  "server": "https://rukoo.example",\n  "key": "${key}",\n  "note": "café"\n}\n`);
+  const [p] = await pick(writeFile(dir, 'agent.json', config));
+  const keyed = await svc.files.stage(W, C, null, { path: p.path });
+  const plain = await svc.files.stage(W, C, null, { name: 'notes.txt', type: 'text/plain', bytes: Buffer.from('no key here, rka_short.too') });
+  const wide = await svc.files.stage(W, C, null, { name: 'wide.txt', type: 'text/plain', bytes: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`key ${key}`, 'utf16le')]) });
+  const picture = await svc.files.stage(W, C, null, { name: 'shot.png', type: 'image/png', bytes: new Uint8Array(png(4, 4)) });
+  const first = await ready(svc, keyed.stage);
+  assert.equal(first.agentKey, true);
+  assert.equal((await ready(svc, plain.stage)).agentKey, false);
+  assert.equal((await ready(svc, wide.stage)).agentKey, true);
+  assert.equal((await ready(svc, picture.stage)).agentKey, false);
+  assert.equal(svc.files.list(W, C, null).find((s) => s.stage === keyed.stage).agentKey, true);
+  const oldFile = first.file;
+
+  const redacted = await svc.files.redactKeys(keyed.stage);
+  assert.equal(redacted.agentKey, false);
+  assert.equal(redacted.stage, keyed.stage);
+  const again = await ready(svc, keyed.stage);
+  assert.equal(again.state, 'ready');
+  assert.notEqual(again.file, oldFile);
+  const sent = links.put.get(again.file);
+  assert.equal(sent.toString('utf8'), config.toString('utf8').replace(key, '[agent key removed]'));
+  assert.ok(sent.toString('utf8').includes('café'), 'the rest of the file stays as it was');
+  // The upload with the key was cancelled on the server; the copy is the file's in the tray, in its place.
+  assert.ok(calls.some((c) => c.method === 'DELETE' && c.route.endsWith(`/uploads/${oldFile}`)));
+  assert.equal(uploads.has(oldFile), false);
+  assert.deepEqual(svc.files.list(W, C, null).map((s) => s.name), ['agent.json', 'notes.txt', 'wide.txt', 'shot.png']);
+  assert.ok(fs.existsSync(p.path), 'the file the person picked stays as it is');
+  assert.ok(fs.readFileSync(p.path, 'utf8').includes(key));
+
+  await svc.files.redactKeys(wide.stage);
+  const wideAgain = await ready(svc, wide.stage);
+  const wideSent = links.put.get(wideAgain.file);
+  assert.deepEqual([...wideSent.subarray(0, 2)], [0xff, 0xfe]);
+  assert.equal(wideSent.subarray(2).toString('utf16le'), 'key [agent key removed]');
+  // Only a text file that is ready or failed: an image is refused.
+  await assert.rejects(svc.files.redactKeys(picture.stage), (err) => err.code === 'invalid' && err.field === 'stage');
+  await assert.rejects(svc.files.redactKeys(wire.localId()), (err) => err.code === 'not_found');
 });
 
 test('progress goes out at most every 100 ms, and Remove cancels the upload on its way and on the server', async (t) => {

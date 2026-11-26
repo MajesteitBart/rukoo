@@ -709,6 +709,8 @@ export function mountView(section, H) {
       stage: (source) => api('chatStage', ws, c, root, source),
       unstage: (stage) => api('chatUnstage', stage),
       retry: (stage) => api('chatRetryStage', stage),
+      // A copy without the agent keys in it, in the file's place (chat-input.js askAboutKey).
+      redact: (stage) => api('chatRedactStaged', stage),
       errorText: (code, err) => H.errorText(err && err.code ? err : { code: code || null }),
       maxBytes: () => H.fileLimit()
     };

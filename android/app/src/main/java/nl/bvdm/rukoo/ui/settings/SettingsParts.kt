@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -139,8 +141,11 @@ fun StatusLine(label: String, tone: DotTone, modifier: Modifier = Modifier, deta
 
 /**
  * A dialog (ui.js `dialog`): `raised`, a 1dp `border`, 14dp corners, the 16/650 title, text in `text2` and
- * the buttons on the right. The confirm button is the one filled button, red when it destroys something.
+ * the buttons on the right. The confirm button is the one filled button, red when it destroys something. [extraLabel]
+ * and [onExtra]: a third choice between Cancel and the confirm button, such as Send anyway; the buttons wrap onto a
+ * second line when a narrow screen can't hold them in one.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RkDialog(
     title: String,
@@ -152,6 +157,8 @@ fun RkDialog(
     dismissLabel: String = stringResource(R.string.common_actions_cancel),
     danger: Boolean = false,
     confirmEnabled: Boolean = true,
+    extraLabel: String? = null,
+    onExtra: (() -> Unit)? = null,
     content: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -171,9 +178,17 @@ fun RkDialog(
             if (text != null) Text(text, style = Rk.type.text13.copy(lineHeight = Rk.type.text13.fontSize * 1.5f), color = c.text2)
             content?.invoke(this)
             Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                RkButton(dismissLabel, onDismiss, kind = RkButtonKind.SECONDARY)
-                RkButton(confirmLabel, onConfirm, kind = if (danger) RkButtonKind.DANGER else RkButtonKind.PRIMARY, enabled = confirmEnabled)
+            if (extraLabel != null && onExtra != null) {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RkButton(dismissLabel, onDismiss, kind = RkButtonKind.SECONDARY)
+                    RkButton(extraLabel, onExtra, kind = RkButtonKind.SECONDARY)
+                    RkButton(confirmLabel, onConfirm, kind = if (danger) RkButtonKind.DANGER else RkButtonKind.PRIMARY, enabled = confirmEnabled)
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                    RkButton(dismissLabel, onDismiss, kind = RkButtonKind.SECONDARY)
+                    RkButton(confirmLabel, onConfirm, kind = if (danger) RkButtonKind.DANGER else RkButtonKind.PRIMARY, enabled = confirmEnabled)
+                }
             }
         }
     }

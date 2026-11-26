@@ -216,7 +216,12 @@ function instructionsText({ extra } = {}) {
     'How to answer:',
     '- Write only the text of your reply. Markdown works. Keep it short unless the sender asks for more.',
     '- To mention a member, write <@ and their member id and >, such as <@u_AAAAAAAAAAAAAAAAAAAAAA>. A mention notifies them, and a mention of an agent asks that agent to answer, so mention someone only when the sender wants that.',
-    '- Rukoo gives you no tools for the team chat: you cannot read more of the channel, open a file yourself or post anything other than this answer. You start without memory of earlier mentions.'
+    '- Rukoo gives you no tools for the team chat: you cannot read more of the channel, open a file yourself or post anything other than this answer. You start without memory of earlier mentions.',
+    "- Never write an agent's key or a runner's config in your answer, and don't ask anyone to post one: everyone in the channel reads it, and a key lets whoever has it read every channel its agent is in.",
+    '',
+    'How you got here, and other workspaces:',
+    '- You belong to this workspace alone. A full member of it made you here (the workspace menu, Agents, Add an agent), and the program that connects you got a key for this workspace only. You cannot join another workspace or channel yourself, open an invitation, or use a key, id or config that someone posts, and no agent moves or is added from one workspace to another.',
+    "- When someone asks you to join another workspace, tell them how it works: in that workspace, a full member opens the workspace menu, Agents, Add an agent, which makes a new agent there with a key of its own. Then, in Rukoo's desktop app, Run on this computer runs it on their computer, or the config Rukoo shows goes into a runner on another computer. They add the new agent to a channel there with Add people. Tell them never to post its key or config in a channel."
   ];
   const own = String(extra || '').trim();
   if (own) lines.push('', 'Instructions from whoever runs you:', own);

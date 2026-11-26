@@ -428,6 +428,18 @@ test('the instructions say what files bring and that keys are taken out', () => 
   assert.doesNotMatch(text, /open its files/);
 });
 
+test('the instructions say how the agent got into this workspace and what to answer when asked to join another', () => {
+  const text = prompt.instructionsText();
+  assert.match(text, /You belong to this workspace alone/);
+  assert.match(text, /no agent moves or is added from one workspace to another/);
+  assert.match(text, /in that workspace, a full member opens the workspace menu, Agents, Add an agent, which makes a new agent there with a key of its own/);
+  assert.match(text, /Run on this computer runs it on their computer, or the config Rukoo shows goes into a runner/);
+  assert.match(text, /never to post its key or config in a channel/);
+  assert.match(text, /Never write an agent's key or a runner's config in your answer/);
+  // The instructions still hold nothing a member wrote.
+  assert.doesNotMatch(text, /Clark/);
+});
+
 test('text files decode as the chat panel reads them, without a library', () => {
   assert.equal(prompt.decodeText(Buffer.from('héllo')), 'héllo');
   assert.equal(prompt.decodeText(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('bom')])), 'bom');

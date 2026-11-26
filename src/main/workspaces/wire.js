@@ -1446,6 +1446,7 @@ const ARGS = {
   chatStage: (w, conv, root, source) => [ws(w), c(conv), input.root(root), input.stageSource(source)],
   chatUnstage: (stage) => [input.stage(stage)],
   chatRetryStage: (stage) => [input.stage(stage)],
+  chatRedactStaged: (stage) => [input.stage(stage)],
   chatStaged: (w, conv, root) => [ws(w), c(conv), input.root(root)],
   chatFile: (w, conv, file, action) => [ws(w), c(conv), input.file(file), input.fileAction(action)],
   chatRemovePreview: (w, conv, message, url) => [ws(w), c(conv), input.message(message), input.previewUrl(url)]
