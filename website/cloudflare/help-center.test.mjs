@@ -67,9 +67,12 @@ test('the old rukoo.io/help addresses redirect to the same page on help.rukoo.io
     assert.equal(response.status, 301, path);
     assert.equal(response.headers.get('Location'), location, path);
   }
-  // Under `wrangler dev` the help center is help.localhost, on the same port.
-  const local = await worker.fetch(new Request('http://127.0.0.1:8787/help/mail/write/'), bindings);
-  assert.equal(local.headers.get('Location'), 'http://help.localhost:8787/mail/write/');
+  // Plain http still goes to the https address.
+  const plain = await worker.fetch(new Request('http://rukoo.io/help/mail/write/?q=x'), bindings);
+  assert.equal(plain.headers.get('Location'), 'https://help.rukoo.io/mail/write/?q=x');
+  // Under `wrangler dev` the help center is help.localhost, on the same scheme and port.
+  const local = await worker.fetch(new Request('http://127.0.0.1:8787/help/mail/write/?q=x'), bindings);
+  assert.equal(local.headers.get('Location'), 'http://help.localhost:8787/mail/write/?q=x');
   assert.deepEqual(bindings.calls, { assets: [], account: [] });
 });
 

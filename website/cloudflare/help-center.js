@@ -18,11 +18,15 @@ export function isHelpPath(pathname) {
   return pathname === DIR || pathname.startsWith(DIR + '/');
 }
 
-/** rukoo.io/help/mail/write/ moved to help.rukoo.io/mail/write/. */
+/**
+ * rukoo.io/help/mail/write/ moved to https://help.rukoo.io/mail/write/, also from plain http. Under `wrangler dev`
+ * the help center is help.localhost on the same scheme and port.
+ */
 export function helpRedirect(url) {
-  const target = new URL(url);
-  target.hostname = url.hostname === 'rukoo.io' ? HELP_HOST : LOCAL_HOST;
+  const target = url.hostname === 'rukoo.io' ? new URL(`https://${HELP_HOST}`) : new URL(url);
+  if (target.hostname !== HELP_HOST) target.hostname = LOCAL_HOST;
   target.pathname = url.pathname.slice(DIR.length) || '/';
+  target.search = url.search;
   return new Response(null, { status: 301, headers: { Location: target.toString() } });
 }
 

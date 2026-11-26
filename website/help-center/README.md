@@ -16,7 +16,7 @@ npm run preview -- --port 4321
 
 For editing: `npm run dev -- --port 4321`. Search works on the built preview; Pagefind indexes static output during the build. `npm run build` validates the Markdown, builds into `dist/`, copies the build to `../site/help/` with a script policy on every page, and then checks output links, those policies and private-data patterns.
 
-To see the help center as help.rukoo.io serves it, with the Worker and its headers, run `npx wrangler@4 dev` in `website/` after a build and open http://help.localhost:8787/. Browsers send every `*.localhost` address to your own computer, and the Worker answers `help.localhost` as the help center. http://127.0.0.1:8787/help/ redirects there, as rukoo.io/help/ does on the live site.
+To see the help center as help.rukoo.io serves it, with the Worker and its headers, run `npx wrangler@4 dev --infer-origin-from-routes=false` in `website/` after a build and open http://help.localhost:8787/. Browsers send every `*.localhost` address to your own computer, and the Worker answers `help.localhost` as the help center. Without that flag Wrangler hands the Worker every request as rukoo.io, the first route in wrangler.jsonc, and help.localhost shows the main site. http://127.0.0.1:8787/help/ redirects there, as rukoo.io/help/ does on the live site.
 
 ## Why Starlight
 
