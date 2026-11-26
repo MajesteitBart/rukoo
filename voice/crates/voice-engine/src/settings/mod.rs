@@ -1050,8 +1050,10 @@ fn put_back(core: &Arc<Core>, sync: &voice_sync::BucketSync) -> Result<(), ApiEr
         return sync.finish_apply().map_err(failed);
     };
     let kept = {
-        let _key = lock(&core.sync_rt.key);
+        // The secret before the key, as everywhere: a passed test commits under the secret and
+        // then takes the key to configure sync.
         let _secret = lock(&core.sync_rt.secret);
+        let _key = lock(&core.sync_rt.key);
         sync.roll_back_apply()
     }
     .map_err(failed)?;
