@@ -1,0 +1,49 @@
+---
+// Replaces Starlight's site title. The Rukoo wordmark goes to the rukoo.io home page and "Help" to the help home, so
+// a reader can always get back to the main site.
+import { logos } from 'virtual:starlight/user-images';
+const { siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<div class="site-title sl-flex">
+  <a href="/" class="brand sl-flex" aria-label="Rukoo Mail, home">
+    {logos.dark && (
+      <img class="light:sl-hidden print:hidden" alt="" src={logos.dark.src} width={logos.dark.width} height={logos.dark.height} />
+    )}
+    {logos.light && (
+      <img class="dark:sl-hidden print:block" alt="" src={logos.light.src} width={logos.light.width} height={logos.light.height} />
+    )}
+  </a>
+  <a href={siteTitleHref} class="section">Help</a>
+</div>
+
+<style>
+  .site-title {
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  /* 44px tall, so both links are easy to tap on a phone. */
+  .site-title a {
+    min-height: 2.75rem;
+    align-items: center;
+  }
+  .brand img {
+    height: 1.625rem;
+    width: auto;
+  }
+  .section {
+    display: inline-flex;
+    padding-inline-start: 0.75rem;
+    border-inline-start: 1px solid var(--sl-color-gray-5);
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-lg);
+    font-weight: 600;
+    line-height: 1.5rem;
+    text-decoration: none;
+  }
+  .section:hover {
+    color: var(--sl-color-text-accent);
+  }
+</style>

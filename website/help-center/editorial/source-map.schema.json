@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private source map",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "checkpoint",
+    "changes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "checkpoint": {
+      "type": "string"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sourceId",
+          "publicRelease",
+          "released",
+          "outcome",
+          "reason",
+          "pageIds",
+          "review"
+        ],
+        "properties": {
+          "sourceId": {
+            "type": "string"
+          },
+          "publicRelease": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "released": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "enum": [
+              "update-existing",
+              "new-page",
+              "no-doc-change",
+              "hold"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pageIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "review": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "product",
+              "editorial"
+            ],
+            "properties": {
+              "product": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "editorial": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "enum": [
+                    "update-existing",
+                    "new-page"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "released": {
+                  "const": true
+                },
+                "publicRelease": {
+                  "type": "string",
+                  "pattern": "^https://"
+                },
+                "pageIds": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
