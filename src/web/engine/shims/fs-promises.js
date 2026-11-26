@@ -49,7 +49,9 @@ async function open(name, flags = 'r') {
 
 async function readFile(name, options) {
   const blob = need(name, 'open');
-  const bytes = Buffer.from(await blob.arrayBuffer());
+  // As ReadStream in shims/fs.js: the Uint8Array constructor takes an ArrayBuffer of any realm, where Buffer.from's
+  // instanceof check doesn't, such as a picked File's from the page that made it.
+  const bytes = new Buffer(await blob.arrayBuffer());
   const encoding = typeof options === 'string' ? options : options && options.encoding;
   return encoding ? bytes.toString(encoding) : bytes;
 }
