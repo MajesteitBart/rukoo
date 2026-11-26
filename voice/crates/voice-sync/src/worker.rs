@@ -124,6 +124,12 @@ pub(crate) struct State {
     /// Pull meetings from the other computers at the next chance ([`crate::pull`]).
     pub(crate) pull_requested: bool,
     pub(crate) pull: PullInfo,
+    /// Settings from another computer are being applied, or an apply that stopped halfway isn't
+    /// rolled back yet ([`crate::BucketSync::begin_apply`]): sync stays off meanwhile, so nothing
+    /// goes up with a key, a secret and a bucket that don't belong together.
+    pub(crate) applying: bool,
+    /// What [`crate::BucketSync::configure`] was told while `applying`, applied when it ends.
+    pub(crate) held: Option<Option<SyncConfig>>,
 }
 
 impl State {

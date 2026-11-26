@@ -10644,6 +10644,102 @@
     "message": "Connection",
     "description": "Settings > Meetings: title of the row with the connection status of Rukoo Voice; the status pill is on its right. src/renderer/meeting-settings.js"
   },
+  "settings.meetings.others": {
+    "message": "Your other computers",
+    "description": "Settings > Meetings: group heading above sharing Rukoo Voice's bucket with the user's other computers through the Rukoo account. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.noAccount": {
+    "message": "To sync meetings to the same bucket on another computer, open Rukoo Voice's Settings > Storage there, fill in the bucket's details and its secret, and paste the encryption key from this computer.",
+    "description": "Settings > Meetings > Your other computers, without a Rukoo account: how another computer gets the bucket by hand. 'Settings > Storage' and 'encryption key' are the names Rukoo Voice's own Settings use. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.noVoice": {
+    "message": "Start Rukoo Voice to use its bucket on your other computers.",
+    "description": "Settings > Meetings > Your other computers, signed in while Rukoo Voice isn't connected. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.oldVoice": {
+    "message": "Update Rukoo Voice to share its bucket with your other computers through your Rukoo account.",
+    "description": "Settings > Meetings > Your other computers, when the connected Rukoo Voice is too old to share its bucket settings. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.offer": {
+    "message": "Your other computer syncs meetings to a bucket",
+    "description": "Settings > Meetings > Your other computers: title of the row offering the bucket another computer shares through the account, while Rukoo Voice here syncs nowhere or to another bucket. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.offerHelp": {
+    "message": "{device} syncs to the bucket {bucket}. Rukoo Voice here can sync to it too, with the same encryption key, so the meetings of both computers are in one place.",
+    "description": "Settings > Meetings > Your other computers: line under the offer. device: the other computer's name; bucket: the bucket's name. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.offerHelpNoName": {
+    "message": "Another computer syncs to the bucket {bucket}. Rukoo Voice here can sync to it too, with the same encryption key, so the meetings of both computers are in one place.",
+    "description": "Settings > Meetings > Your other computers: line under the offer when the other computer has no name. bucket: the bucket's name. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.offerReplaces": {
+    "message": "Rukoo Voice here then stops syncing to its current bucket.",
+    "description": "Settings > Meetings > Your other computers: sentence after the offer's line while Rukoo Voice here already syncs to another bucket, which Use it here too replaces. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.use": {
+    "message": "Use it here too",
+    "description": "Settings > Meetings > Your other computers: button on the offer; Rukoo Voice here then syncs to the other computer's bucket. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.using": {
+    "message": "Connecting…",
+    "description": "Settings > Meetings > Your other computers: the offer's button while Rukoo Voice tests the bucket and turns sync on. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.share": {
+    "message": "Use this bucket on my other computers",
+    "description": "Settings > Meetings > Your other computers: switch, off by default, that keeps Rukoo Voice's bucket in the Rukoo account for the user's other computers. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.shareHelp": {
+    "message": "Your Rukoo account keeps the bucket's details, its secret and the encryption key, encrypted on this computer so the account's server can't read them. Your other computers signed in to this account can then sync to it with one click.",
+    "description": "Settings > Meetings > Your other computers: what the share switch does and what the account keeps. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.syncOff": {
+    "message": "Rukoo Voice doesn't sync to a bucket on this computer. Turn it on in Rukoo Voice's Settings > Storage to share the bucket with your other computers.",
+    "description": "Settings > Meetings > Your other computers, signed in and connected, while Rukoo Voice here has bucket sync off and no other computer shares one. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.following": {
+    "message": "Rukoo Voice here uses the bucket your other computer shares. When its details change there, Rukoo changes them here too.",
+    "description": "Settings > Meetings > Your other computers: line after the user chose Use it here too once; later changes then apply by themselves. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorScreen": {
+    "message": "Stop the meeting's screen recording first, then try again.",
+    "description": "Settings > Meetings > Your other computers: error while a meeting records the screen; Rukoo Voice doesn't hand over or take its keys then. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorApplying": {
+    "message": "Rukoo Voice is still switching to a bucket. Try again in a moment.",
+    "description": "Settings > Meetings > Your other computers: error of the share switch while Rukoo Voice is busy taking or putting back a bucket's settings, so it doesn't hand them over yet. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorKeyInUse": {
+    "message": "Rukoo Voice on this computer already uploaded meetings with its own encryption key. It keeps that key, so it can't use this bucket.",
+    "description": "Settings > Meetings > Your other computers: error of Use it here too when this computer's Rukoo Voice keeps its own key. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorTest": {
+    "message": "Rukoo Voice couldn't connect to the bucket from this computer. Check on your other computer that the bucket and its access key still work.",
+    "description": "Settings > Meetings > Your other computers: error of Use it here too when the bucket's connection test failed here; nothing changed in Rukoo Voice. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorSecret": {
+    "message": "Rukoo Voice couldn't keep the bucket's secret on this computer.",
+    "description": "Settings > Meetings > Your other computers: error of Use it here too when Rukoo Voice couldn't store the secret; nothing changed. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorOld": {
+    "message": "Update Rukoo Voice to use a bucket from your other computers.",
+    "description": "Settings > Meetings > Your other computers: error when the connected Rukoo Voice doesn't know the command. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorNoAnswer": {
+    "message": "Rukoo Voice didn't answer. Check that it runs, then try again.",
+    "description": "Settings > Meetings > Your other computers: error when Rukoo Voice went away or didn't answer in time. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorSyncOff": {
+    "message": "Turn on sync in Rukoo Voice's Settings > Storage first.",
+    "description": "Settings > Meetings > Your other computers: error of the share switch when Rukoo Voice syncs to no bucket. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorShare": {
+    "message": "Rukoo couldn't read the bucket's details from Rukoo Voice. Try again.",
+    "description": "Settings > Meetings > Your other computers: other error of the share switch. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.others.errorUse": {
+    "message": "Rukoo Voice couldn't use the bucket. Try again, or fill it in by hand in Rukoo Voice's Settings > Storage.",
+    "description": "Settings > Meetings > Your other computers: other error of Use it here too; nothing changed in Rukoo Voice. src/renderer/meeting-settings.js"
+  },
   "settings.agents.removedAgent": {
     "message": "Removed agent",
     "description": "Name shown for a chat whose custom agent the user removed in Settings > Agents. src/renderer/settings.js, src/renderer/agent/panel.js"

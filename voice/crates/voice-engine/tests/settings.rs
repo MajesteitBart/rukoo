@@ -1125,6 +1125,610 @@ fn bucket_sync_turns_on_only_for_a_bucket_that_passed_its_test() {
     fake.stop();
 }
 
+/// The recovery code Settings show.
+fn shown_code(engine: &voice_engine::Engine) -> String {
+    engine.settings_sync_key("show", None).unwrap()["code"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn another_computer_takes_the_bucket_settings_through_rukoo() {
+    let fake = support::fake_s3();
+    let first = Harness::new("sync-share-first");
+    first.config(json!({}));
+    let a = first.start();
+    let control_a = a.meeting_control().unwrap();
+    assert_eq!(control_a.sync_settings().unwrap(), None, "sync is off");
+    support::connect_bucket(&a, &fake.endpoint());
+    let shared = support::shared_sync_settings(&a);
+    assert_eq!(
+        (
+            shared.service.as_str(),
+            shared.bucket.as_str(),
+            shared.access_key_id.as_str(),
+            shared.secret.as_str(),
+            shared.url_style.as_str(),
+            shared.retention.as_str(),
+        ),
+        (
+            "other",
+            BUCKET,
+            support::ACCESS_KEY,
+            BUCKET_SECRET,
+            "path",
+            "keep"
+        )
+    );
+    assert_eq!(shared.endpoint, fake.endpoint());
+    assert_eq!(shared.key, shown_code(&a), "the recovery code");
+
+    let second = Harness::new("sync-share-second");
+    second.config(json!({}));
+    let b = second.start();
+    let control_b = b.meeting_control().unwrap();
+    assert_eq!(control_b.sync_settings().unwrap(), None);
+
+    // Credentials the bucket refuses fail the test before anything here changes. The fake checks
+    // the access key, not the signature the secret makes.
+    let wrong = voice_protocol::SyncSettings {
+        access_key_id: "not-the-key".into(),
+        secret: "not-the-secret".into(),
+        ..shared.clone()
+    };
+    let before = saved_sync(&second);
+    let refused = control_b.use_sync_settings(&wrong).unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.reason.as_deref()),
+        ("failed", Some("test")),
+        "{}",
+        refused.message
+    );
+    assert_eq!(saved_sync(&second), before);
+    assert_eq!(sync_config(&b)["secretSaved"], false);
+    assert_eq!(sync_state(&b)["state"], "off");
+    // Nor does a code that isn't a key.
+    let bad_key = voice_protocol::SyncSettings {
+        key: "RKV1-00000".into(),
+        ..shared.clone()
+    };
+    let refused = control_b.use_sync_settings(&bad_key).unwrap_err();
+    assert_eq!(refused.reason.as_deref(), Some("settings"));
+
+    control_b.use_sync_settings(&shared).unwrap();
+    let config = sync_config(&b);
+    assert_eq!(
+        (
+            &config["enabled"],
+            &config["tested"],
+            &config["secretSaved"]
+        ),
+        (&json!(true), &json!(true), &json!(true))
+    );
+    assert_eq!(config["bucket"], BUCKET);
+    assert_eq!(shown_code(&b), shared.key, "the same key");
+    assert_eq!(control_b.sync_settings().unwrap().as_ref(), Some(&shared));
+    assert!(
+        !std::fs::read_to_string(second.data().join("config.json"))
+            .unwrap()
+            .contains(BUCKET_SECRET),
+        "the secret never reaches config.json"
+    );
+
+    // The same settings again change nothing.
+    let saved = saved_sync(&second);
+    control_b.use_sync_settings(&shared).unwrap();
+    assert_eq!(saved_sync(&second), saved);
+
+    // New credentials that fail their test leave the working bucket as it was.
+    let refused = control_b.use_sync_settings(&wrong).unwrap_err();
+    assert_eq!(refused.reason.as_deref(), Some("test"));
+    assert_eq!(saved_sync(&second), saved);
+    assert_ne!(sync_state(&b)["state"], "paused");
+    assert_eq!(control_b.sync_settings().unwrap().as_ref(), Some(&shared));
+
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+/// The keystore as the test sets it: it keeps everything, refuses the bucket secret (1), Voice
+/// stops while it writes the secret (2), or it refuses the encryption key (3), after Test
+/// connection passed.
+struct FlakySecret(std::sync::atomic::AtomicU8);
+
+impl voice_sync::protect::Protector for FlakySecret {
+    fn protect(&self, plain: &[u8], label: &str) -> Result<Vec<u8>, voice_sync::SyncError> {
+        if label == voice_sync::protect::MASTER_KEY_LABEL && self.0.load(Ordering::SeqCst) == 3 {
+            return Err(voice_sync::SyncError::new(
+                voice_sync::SyncErrorKind::Local,
+                "The keystore is busy.",
+            ));
+        }
+        if label == voice_sync::protect::SECRET_LABEL {
+            match self.0.load(Ordering::SeqCst) {
+                1 => {
+                    return Err(voice_sync::SyncError::new(
+                        voice_sync::SyncErrorKind::Local,
+                        "The keystore refused the secret.",
+                    ))
+                }
+                2 => panic!("Voice stops while it saves the secret"),
+                _ => {}
+            }
+        }
+        voice_sync::protect::TestProtector.protect(plain, label)
+    }
+
+    fn unprotect(
+        &self,
+        blob: &[u8],
+        label: &str,
+    ) -> Result<voice_sync::Zeroizing<Vec<u8>>, voice_sync::SyncError> {
+        voice_sync::protect::TestProtector.unprotect(blob, label)
+    }
+}
+
+fn flaky_harness(name: &str) -> (Harness, std::sync::Arc<FlakySecret>) {
+    let mut h = Harness::new(name);
+    let flaky = std::sync::Arc::new(FlakySecret(std::sync::atomic::AtomicU8::new(0)));
+    h.protector = flaky.clone();
+    h.config(json!({}));
+    (h, flaky)
+}
+
+/// The settings a first computer shares, from a bucket on `fake`.
+fn shared_settings(
+    fake: &voice_s3_fake::FakeS3,
+) -> (voice_engine::Engine, Harness, voice_protocol::SyncSettings) {
+    let first = Harness::new("sync-share-source");
+    first.config(json!({}));
+    let a = first.start();
+    support::connect_bucket(&a, &fake.endpoint());
+    let shared = support::shared_sync_settings(&a);
+    (a, first, shared)
+}
+
+#[test]
+fn a_failure_after_the_test_puts_back_the_key_and_the_secret_it_found() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    let (second, flaky) = flaky_harness("sync-share-flaky");
+    let b = second.start();
+    let control = b.meeting_control().unwrap();
+    let key_file = second.data().join("sync").join("master-key.bin");
+    let journal = second.data().join("sync").join("apply");
+
+    // A fresh profile: no key, no secret, sync off. Test connection passes, the key comes in,
+    // then the keystore refuses the secret: the key goes again, as nothing used it.
+    let before = saved_sync(&second);
+    flaky.0.store(1, Ordering::SeqCst);
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(
+        refused.reason.as_deref(),
+        Some("secret"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(saved_sync(&second), before);
+    assert!(!key_file.exists(), "the imported key went again");
+    assert!(!journal.exists());
+    assert_eq!(sync_config(&b)["secretSaved"], false);
+    assert_eq!(control.sync_settings().unwrap(), None);
+
+    // A key of its own that uploaded nothing yet comes back as it was.
+    flaky.0.store(0, Ordering::SeqCst);
+    let own = shown_code(&b);
+    assert_ne!(own, shared.key);
+    flaky.0.store(1, Ordering::SeqCst);
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(refused.reason.as_deref(), Some("secret"));
+    flaky.0.store(0, Ordering::SeqCst);
+    assert_eq!(shown_code(&b), own);
+    assert_eq!(saved_sync(&second), before);
+    assert!(!journal.exists());
+
+    // With the keystore back, the same settings apply.
+    control.use_sync_settings(&shared).unwrap();
+    assert_eq!(sync_config(&b)["enabled"], true);
+    assert_eq!(shown_code(&b), shared.key);
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+/// The key, its `key.json` and the bucket secret as they are on disk.
+fn sync_files(h: &Harness) -> Vec<Option<Vec<u8>>> {
+    ["master-key.bin", "key.json", "bucket-secret.bin"]
+        .iter()
+        .map(|name| std::fs::read(h.data().join("sync").join(name)).ok())
+        .collect()
+}
+
+/// A second computer with a key and a bucket folder of its own, which uploaded nothing yet: what
+/// an apply has to put back.
+fn own_bucket(engine: &voice_engine::Engine, fake: &voice_s3_fake::FakeS3) {
+    support::connect_bucket(engine, &fake.endpoint());
+    engine
+        .settings_set("storage.sync.prefix", json!("own"))
+        .unwrap();
+    engine
+        .settings_sync_save_secret("own-secret".into())
+        .unwrap();
+    engine.settings_sync_test().unwrap();
+    assert_ne!(sync_state(engine)["state"], "paused");
+}
+
+/// Sync uploads, or would when there were something to upload.
+fn syncs(engine: &voice_engine::Engine) -> bool {
+    !["off", "paused"].contains(&sync_state(engine)["state"].as_str().unwrap_or("off"))
+}
+
+/// Uses `shared` on `engine`, where Voice stops on the way: the panic ends the call there.
+fn stopped(engine: &voice_engine::Engine, shared: &voice_protocol::SyncSettings) {
+    let control = engine.meeting_control().unwrap();
+    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        control.use_sync_settings(shared)
+    }));
+    assert!(ended.is_err(), "Voice stopped");
+}
+
+#[test]
+fn voice_stopping_at_any_step_of_an_apply_rolls_back_at_the_next_start() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    let (second, _flaky) = flaky_harness("sync-share-halfway");
+    let journal = second.data().join("sync").join("apply");
+    let mut b = second.start();
+    own_bucket(&b, &fake);
+    let own = shown_code(&b);
+    let before = (saved_sync(&second), sync_files(&second));
+
+    for step in ["apply:journal", "apply:secret", "apply:key", "apply:config"] {
+        voice_sync::stops::stop_after(step);
+        stopped(&b, &shared);
+        assert!(journal.join("journal.json").exists(), "{step}");
+        // Nothing went up with half the settings.
+        assert_eq!(sync_state(&b)["state"], "paused", "{step}");
+        b.shutdown();
+
+        // The next start puts back what was there before sync runs.
+        b = second.start();
+        assert!(!journal.exists(), "{step}");
+        assert_eq!(
+            (saved_sync(&second), sync_files(&second)),
+            before,
+            "{step}: as it was"
+        );
+        assert_eq!(shown_code(&b), own, "{step}");
+        assert!(syncs(&b), "{step}: its own bucket again");
+    }
+
+    // Rukoo tries again and it works.
+    let control = b.meeting_control().unwrap();
+    control.use_sync_settings(&shared).unwrap();
+    assert_eq!(control.sync_settings().unwrap().as_ref(), Some(&shared));
+    assert!(syncs(&b));
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+#[test]
+fn voice_stopping_while_it_puts_back_an_apply_finishes_at_the_next_start() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    let (second, _flaky) = flaky_harness("sync-share-rollback");
+    let journal = second.data().join("sync").join("apply");
+    let mut b = second.start();
+    own_bucket(&b, &fake);
+    let before = (saved_sync(&second), sync_files(&second));
+
+    // The apply fails once everything changed, and Voice stops while it puts back each part:
+    // the key file, its key.json, the queue's key, the secret and the fields.
+    for step in [
+        "rollback:key-file",
+        "rollback:key-json",
+        "rollback:queue",
+        "rollback:secret",
+        "rollback:config",
+    ] {
+        voice_sync::stops::fail_after("apply:config");
+        voice_sync::stops::stop_after(step);
+        stopped(&b, &shared);
+        assert!(journal.join("journal.json").exists(), "{step}");
+        assert_eq!(sync_state(&b)["state"], "paused", "{step}");
+        b.shutdown();
+
+        b = second.start();
+        assert!(!journal.exists(), "{step}");
+        assert_eq!(
+            (saved_sync(&second), sync_files(&second)),
+            before,
+            "{step}: every part as it was"
+        );
+        assert!(syncs(&b), "{step}");
+    }
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+#[test]
+fn a_new_apply_waits_until_the_last_one_is_put_back() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    let (second, _flaky) = flaky_harness("sync-share-pending");
+    let journal = second.data().join("sync").join("apply");
+    let b = second.start();
+    own_bucket(&b, &fake);
+    let before = (saved_sync(&second), sync_files(&second));
+    let own_key = before.1[0].clone().unwrap();
+    let control = b.meeting_control().unwrap();
+
+    // The apply fails after the key came in, and putting back fails too: the journal stays, and
+    // so does sync's pause.
+    voice_sync::stops::fail_after("apply:key");
+    voice_sync::stops::fail_after("rollback:key-json");
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.reason.as_deref()),
+        ("failed", None),
+        "a step that may work later: {}",
+        refused.message
+    );
+    assert!(journal.join("journal.json").exists());
+    assert_eq!(sync_state(&b)["state"], "paused");
+
+    // A new try puts the last one back first, and while that fails it changes nothing: the
+    // journal and its copies stay.
+    voice_sync::stops::fail_after("rollback:key-json");
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.reason.as_deref()),
+        ("failed", None)
+    );
+    assert!(
+        refused.message.contains("isn't put back yet"),
+        "{}",
+        refused.message
+    );
+    assert!(journal.join("journal.json").exists());
+    assert_eq!(
+        std::fs::read(journal.join("master-key.bin")).unwrap(),
+        own_key
+    );
+    assert_eq!(sync_state(&b)["state"], "paused");
+
+    // The next one puts it back from those copies, then tries its own settings, which fail
+    // their test here: everything is as it was, and sync goes on.
+    let wrong = voice_protocol::SyncSettings {
+        access_key_id: "not-the-key".into(),
+        ..shared.clone()
+    };
+    let refused = control.use_sync_settings(&wrong).unwrap_err();
+    assert_eq!(refused.reason.as_deref(), Some("test"));
+    assert!(!journal.exists());
+    assert_eq!((saved_sync(&second), sync_files(&second)), before);
+    assert!(syncs(&b));
+
+    control.use_sync_settings(&shared).unwrap();
+    assert_eq!(control.sync_settings().unwrap().as_ref(), Some(&shared));
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+/// `sync.settings.get` while a read could mix the settings: refused with `applying`, a refusal
+/// that passes.
+fn refused_while_applying(control: &dyn voice_bridge::MeetingControl, what: &str) {
+    let refused = control.sync_settings().unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.reason.as_deref()),
+        ("busy", Some("applying")),
+        "{what}: {}",
+        refused.message
+    );
+}
+
+/// Uses `shared` on another thread that waits after `pause` (failing the steps in `fail` on the
+/// way), reads the settings meanwhile, lets the apply go on and returns what it answered. The read
+/// must answer at once: one that waits for the apply fails the test instead of hanging it.
+fn read_while_paused(
+    control: &dyn voice_bridge::MeetingControl,
+    shared: &voice_protocol::SyncSettings,
+    fail: &[&str],
+    pause: &str,
+) -> Result<(), voice_bridge::ControlError> {
+    let (reached_tx, reached) = std::sync::mpsc::channel();
+    let (go, go_rx) = std::sync::mpsc::channel::<()>();
+    let (read_tx, read) = std::sync::mpsc::channel();
+    std::thread::scope(move |scope| {
+        let applying = scope.spawn(move || {
+            for step in fail {
+                voice_sync::stops::fail_after(step);
+            }
+            voice_sync::stops::pause_after(pause, reached_tx, go_rx);
+            control.use_sync_settings(shared)
+        });
+        let paused = reached.recv_timeout(Duration::from_secs(60));
+        if paused.is_ok() {
+            scope.spawn(move || {
+                let _ = read_tx.send(control.sync_settings());
+            });
+        }
+        let answer = read.recv_timeout(Duration::from_secs(10));
+        // The apply goes on whatever the read did, so a failure below never leaves it waiting.
+        drop(go);
+        let applied = applying.join().unwrap();
+        paused.unwrap_or_else(|_| panic!("the apply never reached {pause}"));
+        let refused = answer
+            .unwrap_or_else(|_| panic!("{pause}: the read waited for the apply"))
+            .unwrap_err();
+        assert_eq!(
+            (refused.code.as_str(), refused.reason.as_deref()),
+            ("busy", Some("applying")),
+            "{pause}: {}",
+            refused.message
+        );
+        applied
+    })
+}
+
+/// The user imports a key or saves a secret in Voice's Settings while another computer's
+/// settings are applied, after the apply took its key: the change waits until the apply is whole,
+/// so the apply never turns sync on with a key or a secret it didn't test.
+#[test]
+fn voice_s_own_key_and_secret_wait_for_another_computer_s_settings() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    for change in ["import", "secret"] {
+        let (second, _flaky) = flaky_harness(&format!("sync-share-native-{change}"));
+        let b = second.start();
+        own_bucket(&b, &fake);
+        let own = support::shared_sync_settings(&b);
+        let control = b.meeting_control().unwrap();
+        let (reached_tx, reached) = std::sync::mpsc::channel();
+        let (go, go_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let (applied, early, answer) = std::thread::scope(|scope| {
+            let control = &*control;
+            let shared = &shared;
+            let applying = scope.spawn(move || {
+                voice_sync::stops::pause_after("apply:key", reached_tx, go_rx);
+                control.use_sync_settings(shared)
+            });
+            let paused = reached.recv_timeout(Duration::from_secs(60));
+            let b = &b;
+            let own_key = own.key.clone();
+            scope.spawn(move || {
+                let answer = match change {
+                    "import" => b.settings_sync_key("import", Some(own_key)).map(|_| ()),
+                    _ => b.settings_sync_save_secret("a-secret-typed-meanwhile".into()),
+                };
+                let _ = done_tx.send(answer);
+            });
+            let early = done.recv_timeout(Duration::from_millis(500)).is_ok();
+            drop(go);
+            let applied = applying.join().unwrap();
+            paused.expect("the apply never reached apply:key");
+            let answer = done.recv_timeout(Duration::from_secs(60));
+            (applied, early, answer)
+        });
+        assert!(!early, "{change} went ahead in the middle of the apply");
+        applied.expect("the apply");
+        answer
+            .expect("the change after the apply")
+            .unwrap_or_else(|e| panic!("{change}: {}", e.message));
+        if change == "import" {
+            let now = support::shared_sync_settings(&b);
+            assert_eq!(now.key, own.key, "the key imported after the apply");
+        } else {
+            // The secret came after the apply's passed test, so it waits for a test of its own.
+            assert!(
+                saved_sync(&second)["tested"].is_null(),
+                "{}",
+                saved_sync(&second)
+            );
+            assert_eq!(control.sync_settings().unwrap(), None);
+        }
+        drop(control);
+        b.shutdown();
+    }
+    a.shutdown();
+    fake.stop();
+}
+
+/// Rukoo reads Voice's settings while `sync.settings.set` runs beside the bridge's queue (after
+/// its own wait timed out, say): halfway through the apply, the secret or the key is new while
+/// the bucket is still the old one. Voice refuses until the settings are whole again, new or put
+/// back, and also while a rollback that failed leaves its journal.
+#[test]
+fn a_read_while_the_settings_change_never_mixes_old_and_new() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+
+    // Paused after the new secret, and after the new key: the read waits for the whole of it.
+    for pause in ["apply:secret", "apply:key"] {
+        let (second, _flaky) = flaky_harness(&format!("sync-share-read-{}", &pause[6..]));
+        let b = second.start();
+        own_bucket(&b, &fake);
+        let control = b.meeting_control().unwrap();
+        let own = support::shared_sync_settings(&b);
+        assert_ne!(own.key, shared.key);
+        read_while_paused(&*control, &shared, &[], pause).expect("the apply");
+        assert_eq!(
+            control.sync_settings().unwrap().as_ref(),
+            Some(&shared),
+            "{pause}: the new settings, whole"
+        );
+        b.shutdown();
+    }
+
+    // Paused while a failed apply puts back the old key, with the new secret and bucket still
+    // there; then refused while a rollback that failed leaves its journal.
+    let (second, _flaky) = flaky_harness("sync-share-read-rollback");
+    let journal = second.data().join("sync").join("apply");
+    let mut b = second.start();
+    own_bucket(&b, &fake);
+    let control = b.meeting_control().unwrap();
+    let own = support::shared_sync_settings(&b);
+    let refused =
+        read_while_paused(&*control, &shared, &["apply:config"], "rollback:key-file").unwrap_err();
+    assert_eq!(refused.code.as_str(), "failed", "{}", refused.message);
+    assert_eq!(
+        control.sync_settings().unwrap().as_ref(),
+        Some(&own),
+        "the old settings, whole"
+    );
+
+    voice_sync::stops::fail_after("apply:key");
+    voice_sync::stops::fail_after("rollback:key-json");
+    control.use_sync_settings(&shared).unwrap_err();
+    assert!(journal.join("journal.json").exists());
+    refused_while_applying(&*control, "a journal that isn't put back");
+    refused_while_applying(&*control, "asked again");
+    drop(control);
+    b.shutdown();
+    // The next start puts it back, and the read answers again.
+    b = second.start();
+    assert!(!journal.exists());
+    let control = b.meeting_control().unwrap();
+    assert_eq!(control.sync_settings().unwrap().as_ref(), Some(&own));
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
+#[test]
+fn a_keystore_that_fails_for_now_isn_t_a_refusal_of_the_settings() {
+    let fake = support::fake_s3();
+    let (a, _first, shared) = shared_settings(&fake);
+    let (second, flaky) = flaky_harness("sync-share-keystore");
+    let b = second.start();
+    let control = b.meeting_control().unwrap();
+    let before = (saved_sync(&second), sync_files(&second));
+
+    // The keystore doesn't take the key: Rukoo may try again, as it would after `settings`.
+    flaky.0.store(3, Ordering::SeqCst);
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.reason.as_deref()),
+        ("failed", None),
+        "{}",
+        refused.message
+    );
+    assert_eq!((saved_sync(&second), sync_files(&second)), before);
+
+    flaky.0.store(0, Ordering::SeqCst);
+    control.use_sync_settings(&shared).unwrap();
+    assert_eq!(shown_code(&b), shared.key);
+    a.shutdown();
+    b.shutdown();
+    fake.stop();
+}
+
 #[test]
 fn a_test_counts_only_for_the_secret_it_read() {
     let h = Harness::new("sync-test-secret");

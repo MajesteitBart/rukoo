@@ -231,6 +231,10 @@ pub fn start_with(
             (None, Some(e))
         }
     };
+    // Settings from another computer that Voice stopped applying halfway go back first.
+    if let Some(sync) = &sync {
+        settings::recover_sync_apply(&mut cfg, sync, &data_dir);
+    }
     if sync::migrate_secret(
         &mut cfg,
         sync.as_deref(),
@@ -283,6 +287,9 @@ pub fn start_with(
     core.set_this();
     if let Some(sync) = &core.sync {
         sync.set_pull_hooks(Arc::new(sync::EnginePull(Arc::downgrade(&core))));
+    }
+    if let Some(control) = core.meetings.control() {
+        control.set_engine(Arc::downgrade(&core));
     }
     if let Some(e) = &sync_error {
         core.sync_rt.store_failed(e);

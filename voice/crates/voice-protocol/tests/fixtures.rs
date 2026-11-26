@@ -8,8 +8,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use voice_protocol::{
     negotiate, paths, replay_plan, validate_discovery, validate_incoming,
-    validate_media_open_result, validate_split_result, Discovery, EventBody, MediaOpenResult,
-    Message, Platform, Replay, Reply, Side, SplitResult, PROTOCOL,
+    validate_media_open_result, validate_split_result, validate_sync_settings_result, Discovery,
+    EventBody, MediaOpenResult, Message, Platform, Replay, Reply, Side, SplitResult, PROTOCOL,
 };
 
 fn vectors() -> Value {
@@ -319,4 +319,63 @@ fn every_replay_plan_agrees() {
         );
         assert_eq!(from, expected["from"].as_u64().unwrap(), "{name}: from");
     }
+}
+
+/// The replies with the id of a `sync.settings.get` command hold settings or `null`, as Rukoo
+/// checks them, and a refusal says why.
+#[test]
+fn the_replies_to_a_sync_settings_get_hold_settings() {
+    let vectors = vectors();
+    let valid = section(&vectors, &["valid"]);
+    let gets: Vec<&Value> = valid
+        .iter()
+        .filter(|v| v["message"]["command"] == "sync.settings.get")
+        .map(|v| &v["message"]["id"])
+        .collect();
+    assert!(
+        !gets.is_empty(),
+        "no sync.settings.get command in the vectors"
+    );
+    let mut found = Vec::new();
+    for vector in valid {
+        let message = &vector["message"];
+        if message["type"] != "reply" || !gets.contains(&&message["id"]) {
+            continue;
+        }
+        let name = text(vector, "name");
+        match validate_incoming(Side::Voice, message).unwrap() {
+            Message::Reply(Reply {
+                outcome: Ok(result),
+                ..
+            }) => found.push(
+                validate_sync_settings_result(&result)
+                    .unwrap_or_else(|e| panic!("{name}: rejected with reason {:?}", e.reason)),
+            ),
+            Message::Reply(Reply {
+                outcome: Err(error),
+                ..
+            }) => assert!(error.reason.is_some(), "{name}: no reason"),
+            other => panic!("{name}: not a reply: {other:?}"),
+        }
+    }
+    assert!(found.contains(&None));
+    let settings = found.into_iter().flatten().next().expect("settings");
+    assert_eq!(settings.bucket, "meetings");
+    assert!(settings.key.starts_with("RKV1-"));
+    // A log of the command never holds the secret or the code.
+    let logged = format!("{settings:?}");
+    assert!(!logged.contains(&settings.secret) && !logged.contains(&settings.key));
+}
+
+#[test]
+fn a_sync_settings_result_is_checked_like_the_command() {
+    let check = |result: Value| {
+        validate_sync_settings_result(result.as_object().unwrap()).map_err(|e| e.reason)
+    };
+    assert_eq!(check(json!({ "settings": null })), Ok(None));
+    assert_eq!(check(json!({})), Err("settings".to_string()));
+    assert_eq!(
+        check(json!({ "settings": { "bucket": "b" } })),
+        Err("service".to_string())
+    );
 }

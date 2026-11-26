@@ -970,29 +970,28 @@ async fn run_commands(
         let (reply, head) = match job {
             // Nothing ran, so no event of this command is in the log.
             Job::Answer(reply) => (reply, 0),
+            // It tests the bucket, which can take minutes: it runs beside the queue and answers
+            // when it is done, so the commands after it, `status.get` among them, keep their
+            // answers coming (PROTOCOL.md). It finishes also when the connection ends first.
+            Job::Run(
+                Command {
+                    id,
+                    body: body @ CommandBody::SyncSettingsSet { .. },
+                },
+                received,
+            ) => {
+                let (control, log, replies) = (control.clone(), log.clone(), replies.clone());
+                tokio::spawn(async move {
+                    let (reply, head) = run_command(control, log, id, body, received).await;
+                    let _ = replies.send(Answered {
+                        json: within_limit(reply),
+                        head,
+                    });
+                });
+                continue;
+            }
             Job::Run(Command { id, body }, received) => {
-                let control = control.clone();
-                let log_after = log.clone();
-                // The head is read on the command's thread once it returns, so every event it
-                // appended, and every other one appended by then, is at or below it.
-                let run = move || {
-                    let result = dispatch(control.as_ref(), body, received);
-                    (result, log_after.head())
-                };
-                match tokio::task::spawn_blocking(run).await {
-                    Ok((Ok(result), head)) => (Reply::ok(id, result), head),
-                    Ok((Err(error), head)) => (Reply::error(id, reply_error(error)), head),
-                    Err(_) => (
-                        Reply::error(
-                            id,
-                            ReplyError::new(
-                                ErrorCode::Failed,
-                                "Voice failed while running the command.",
-                            ),
-                        ),
-                        log.head(),
-                    ),
-                }
+                run_command(control.clone(), log.clone(), id, body, received).await
             }
         };
         let answered = Answered {
@@ -1002,6 +1001,34 @@ async fn run_commands(
         if replies.send(answered).is_err() {
             return;
         }
+    }
+}
+
+/// Runs one command on a blocking thread: its reply, and the log's head once it had run.
+async fn run_command(
+    control: Arc<dyn MeetingControl>,
+    log: EventLog,
+    id: String,
+    body: CommandBody,
+    received: std::time::Instant,
+) -> (Reply, u64) {
+    let log_after = log.clone();
+    // The head is read on the command's thread once it returns, so every event it appended, and
+    // every other one appended by then, is at or below it.
+    let run = move || {
+        let result = dispatch(control.as_ref(), body, received);
+        (result, log_after.head())
+    };
+    match tokio::task::spawn_blocking(run).await {
+        Ok((Ok(result), head)) => (Reply::ok(id, result), head),
+        Ok((Err(error), head)) => (Reply::error(id, reply_error(error)), head),
+        Err(_) => (
+            Reply::error(
+                id,
+                ReplyError::new(ErrorCode::Failed, "Voice failed while running the command."),
+            ),
+            log.head(),
+        ),
     }
 }
 
@@ -1054,6 +1081,13 @@ fn dispatch(
         CommandBody::StatusGet => json!(control.status()),
         CommandBody::SyncPull => {
             control.pull_meetings();
+            json!({})
+        }
+        CommandBody::SyncSettingsGet => {
+            json!({ "settings": control.sync_settings()?.map(|s| s.to_value()) })
+        }
+        CommandBody::SyncSettingsSet { settings } => {
+            control.use_sync_settings(&settings)?;
             json!({})
         }
         CommandBody::MeetingDataSet { meeting, data } => {

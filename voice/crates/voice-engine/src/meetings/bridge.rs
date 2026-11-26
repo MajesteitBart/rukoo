@@ -6,14 +6,17 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Instant;
 
 use serde_json::Value;
 use voice_bridge::{
     BridgeServer, Clients, ControlError, EventLog, Handle, MediaOpenArgs, MeetingControl, Refused,
 };
-use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status, Track};
+use voice_protocol::{
+    sync_reasons, ErrorCode, MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status,
+    SyncSettings, Track,
+};
 use voice_screen_files::frames::FrameIndex;
 use voice_screen_files::media::{self, ClipCheck, MediaError};
 use voice_screen_files::{paths, policy};
@@ -37,6 +40,8 @@ pub struct Control {
     /// `speakers.split`.
     pub split: Arc<SplitService>,
     deleting: Mutex<()>,
+    /// The engine, for the commands that change Settings: set once it exists.
+    engine: OnceLock<Weak<crate::engine::Core>>,
 }
 
 impl Control {
@@ -57,7 +62,20 @@ impl Control {
             media,
             split,
             deleting: Mutex::new(()),
+            engine: OnceLock::new(),
         }
+    }
+
+    /// Lets `sync.settings.*` reach Settings once the engine exists.
+    pub(crate) fn set_engine(&self, core: Weak<crate::engine::Core>) {
+        let _ = self.engine.set(core);
+    }
+
+    fn engine(&self) -> Result<Arc<crate::engine::Core>, ControlError> {
+        self.engine
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| ControlError::failed("Voice is starting or quitting."))
     }
 
     /// A folder renamed out of the library is a durable deletion intent. Finish it after a
@@ -207,6 +225,24 @@ impl Control {
     }
 }
 
+/// A refusal of Settings as `sync.settings.*` answers it (voice/PROTOCOL.md).
+fn sync_settings_error(error: crate::api::ApiError) -> ControlError {
+    let (code, reason) = match error.code.as_str() {
+        "recording_screen" => (ErrorCode::Busy, Some(sync_reasons::SCREEN)),
+        "key_in_use" => (ErrorCode::Busy, Some(sync_reasons::KEY_IN_USE)),
+        "applying" => (ErrorCode::Busy, Some(sync_reasons::APPLYING)),
+        "settings" | "invalid_value" => (ErrorCode::Failed, Some(sync_reasons::SETTINGS)),
+        "test" => (ErrorCode::Failed, Some(sync_reasons::TEST)),
+        "secret" => (ErrorCode::Failed, Some(sync_reasons::SECRET)),
+        _ => (ErrorCode::Failed, None),
+    };
+    let refusal = ControlError::new(code, error.message);
+    match reason {
+        Some(reason) => refusal.with_reason(reason),
+        None => refusal,
+    }
+}
+
 fn media_error(error: MediaError) -> ControlError {
     match error {
         MediaError::NotFound(message) => ControlError::not_found(message),
@@ -223,6 +259,12 @@ impl MeetingControl for Control {
         if let Some(sync) = self.media.bucket_sync() {
             sync.pull_now();
         }
+    }
+    fn sync_settings(&self) -> Result<Option<SyncSettings>, ControlError> {
+        crate::settings::sync_settings_get(&self.engine()?).map_err(sync_settings_error)
+    }
+    fn use_sync_settings(&self, settings: &SyncSettings) -> Result<(), ControlError> {
+        crate::settings::sync_settings_set(&self.engine()?, settings).map_err(sync_settings_error)
     }
     /// Keeps what Rukoo owns of the meeting in its folder, where bucket sync takes it up for the
     /// user's other computers, and gives it back as this computer's copy in the event log, so a

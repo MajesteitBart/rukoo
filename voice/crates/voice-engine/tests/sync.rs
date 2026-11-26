@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use support::{
-    bucket_kinds, connect_bucket, decrypt_all, fake_s3, fast_sync, skip_on_slow_host, sync_state,
-    wait_for, Harness,
+    bucket_kinds, connect_bucket, decrypt_all, fake_s3, fast_sync, shared_sync_settings,
+    skip_on_slow_host, sync_state, wait_for, Harness,
 };
 use voice_bridge::{ControlError, EventLog, MediaKind, MediaOpenArgs, MeetingControl};
 use voice_engine::media::{ScreenMedia, MIN_PIECE_MS};
@@ -164,6 +164,10 @@ fn main() {
         (
             "the_key_dialogs_wait_while_the_screen_records",
             the_key_dialogs_wait_while_the_screen_records,
+        ),
+        (
+            "a_computer_that_uploaded_keeps_its_key",
+            a_computer_that_uploaded_keeps_its_key,
         ),
         #[cfg(target_os = "macos")]
         (
@@ -2606,6 +2610,16 @@ fn the_key_dialogs_wait_while_the_screen_records() {
             refused.message
         );
     }
+    // Rukoo gets no settings to share either: it may show them.
+    let refused = engine
+        .meeting_control()
+        .unwrap()
+        .sync_settings()
+        .unwrap_err();
+    assert_eq!(
+        (refused.code, refused.reason.as_deref()),
+        (ErrorCode::Busy, Some("screen"))
+    );
     engine.stop_meeting(StopReason::User).unwrap();
     wait_done(&h.data(), &id);
     wait_for("Settings to say the screen stopped", || {
@@ -2631,6 +2645,45 @@ fn the_key_dialogs_wait_while_the_screen_records() {
     engine.stop_meeting(StopReason::User).unwrap();
     wait_done(&h.data(), &audio_only);
     engine.shutdown();
+    fake.stop();
+}
+
+/// A computer that already uploaded meetings with its own key keeps it: another computer's
+/// settings are refused, and nothing here changes.
+fn a_computer_that_uploaded_keeps_its_key() {
+    let fake = fake_s3();
+    let first = harness("share-key-first", json!({}));
+    let a = first.start();
+    connect_bucket(&a, &fake.endpoint());
+    let shared = shared_sync_settings(&a);
+    assert_eq!(
+        shared.key,
+        recovery_code(&a),
+        "the key sync uses on the first computer"
+    );
+
+    let second = harness("share-key-second", json!({}));
+    let b = second.start();
+    connect_bucket(&b, &fake.endpoint());
+    let own = recovery_code(&b);
+    assert_ne!(own, shared.key);
+    record(&b, &second.data(), 1500);
+    wait_uploaded(&b);
+
+    let control = b.meeting_control().unwrap();
+    let before = control.sync_settings().unwrap();
+    let refused = control.use_sync_settings(&shared).unwrap_err();
+    assert_eq!(
+        (refused.code, refused.reason.as_deref()),
+        (ErrorCode::Busy, Some("key_in_use")),
+        "{}",
+        refused.message
+    );
+    assert_eq!(control.sync_settings().unwrap(), before, "nothing changed");
+    assert_eq!(recovery_code(&b), own);
+    assert_eq!(sync_state(&b)["state"], "idle");
+    a.shutdown();
+    b.shutdown();
     fake.stop();
 }
 

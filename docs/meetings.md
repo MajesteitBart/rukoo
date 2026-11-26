@@ -82,9 +82,20 @@ When another computer changes a meeting's transcript, for instance by splitting 
 
 What you add in Rukoo reaches your other computers the same way: a renamed title, your notes, the names you gave speakers, your corrections, the linked calendar event, and which voice at your microphone is you. Rukoo hands them to Voice a moment after you change something, and Voice keeps them, encrypted, in your bucket. Each change wins over an earlier one, field by field. When you change a meeting's notes on two computers before either heard of the other's change, both computers show the later notes, and the others wait above the notes field: **Show it** shows them, **Use it instead** makes them the notes, with the notes it replaced waiting in their place, and **Dismiss** lets them go. What you changed before this version of Rukoo goes to your other computers too, the first time it starts; a change made since wins over it. A calendar link made on another computer opens the event here when this computer has the same calendar. A meeting's data travels as one message of up to 1 MB: past that, its oldest corrections stay on the computer where you made them.
 
+### The same bucket on another computer
+
+With a [Rukoo account](account.md), Rukoo sets up the bucket on your other computers for you:
+
+1. On the computer that syncs, turn on **Use this bucket on my other computers** under Settings → Meetings → Your other computers. Rukoo asks Rukoo Voice for the bucket's details, its secret and the encryption key, and keeps them in your Rukoo account, encrypted on this computer like every record, so the account's server can't read them, and encrypted once more for Rukoo versions that know them, so an older Rukoo or the Android app signed in to the account holds only encrypted bytes. While the switch is on, Rukoo writes them again when they change in Rukoo Voice. Turning it off removes them from the account, also when another computer shares the same bucket: that one shares it again only after its bucket changes or you turn its switch on again. The switch stays there to turn off while Rukoo Voice isn't running.
+2. On another computer signed in to the same account, with Rukoo Voice running, the same place says **Your other computer syncs meetings to a bucket**. **Use it here too** hands the details to Rukoo Voice there, which tests the connection and turns sync on. Rukoo Voice tests the connection before it changes anything. When the test fails, or that Rukoo Voice already uploaded meetings with its own encryption key, nothing changes there and Rukoo says why. When Rukoo Voice stops halfway, it puts back what it had at its next start.
+
+After you used it once on a computer, Rukoo applies later changes there by itself, such as a new secret or a moved bucket, so your computers don't stop syncing one by one. When that fails for a reason that may pass, such as Rukoo Voice not running or the bucket out of reach, Rukoo tries again later, waiting longer each time up to an hour; when Rukoo Voice refuses the bucket, Rukoo waits until the bucket changes on the other computer. Changing or turning off sync in Rukoo Voice on that computer ends this, and Rukoo offers the bucket again. Rukoo Voice doesn't hand over its keys while a meeting records the screen, nor while it is still switching to a bucket or putting back the one it had; Rukoo then shares nothing and looks again a little later. Signing out removes the bucket's details and these choices from the computer; the switch starts off again at the next sign-in.
+
+Without an account, set up the other computer in Rukoo Voice's Settings › Storage: fill in the bucket's details and secret, and paste the encryption key you saved.
+
 ## Settings
 
-Settings → Meetings shows whether Rukoo Voice is connected, and has two switches, both on by default:
+Settings → Meetings shows whether Rukoo Voice is connected, has the bucket for [your other computers](#the-same-bucket-on-another-computer), and has two switches, both on by default:
 
 - **Hide Rukoo from screen recordings during a meeting.** While a meeting records, every Rukoo window is left out of screen capture.
   - Windows 10 2004 and later: screen recordings and screen shares in apps such as Teams and Zoom leave Rukoo out. Remote access tools that capture the screen show Rukoo's windows black; Remote Desktop still shows them.

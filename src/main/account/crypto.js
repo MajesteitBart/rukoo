@@ -153,6 +153,21 @@ function openRecord(keys, id, data) {
   }
 }
 
+// A value only devices that know its collection can open: sealed again inside the record, with a key of its own from
+// the data key (server/PROTOCOL.md, Keys: innerKey). A device that keeps any collection it gets as it is, such as an
+// older Rukoo that doesn't know voicesync, then holds and exports only these sealed bytes.
+const innerKey = (dataKey, c) => hkdf(dataKey, `rukoo/v1/inner:${c}`);
+const innerAad = (c, k) => `rukoo/v1/inner:${c}\n${k}`;
+const sealInner = (dataKey, c, k, value) => b64u(seal(innerKey(dataKey, c), Buffer.from(JSON.stringify(value), 'utf8'), innerAad(c, k)));
+// The value, or undefined when it doesn't open.
+function openInner(dataKey, c, k, sealed) {
+  try {
+    return JSON.parse(open(innerKey(dataKey, c), unb64u(sealed), innerAad(c, k)).toString('utf8'));
+  } catch (_) {
+    return undefined;
+  }
+}
+
 module.exports = {
   DEFAULT_KDF,
   b64u,
@@ -172,5 +187,7 @@ module.exports = {
   recordKeys,
   recordId,
   sealRecord,
-  openRecord
+  openRecord,
+  sealInner,
+  openInner
 };

@@ -40,6 +40,11 @@ const MEDIA_SPAN_MAX = 3600000;
 const MEDIA_READ_MAX = 1024 * 1024;
 // The tracks speakers.split splits.
 const SPLIT_TRACKS = ['mic'];
+// sync.settings.*: the bucket's settings with its secret and the recovery code. Each field is text of at most this
+// many characters; the required ones aren't blank.
+const SYNC_FIELDS = ['service', 'endpoint', 'region', 'bucket', 'prefix', 'accessKeyId', 'urlStyle', 'retention', 'secret', 'key'];
+const SYNC_REQUIRED = new Set(['bucket', 'accessKeyId', 'secret', 'key']);
+const SYNC_FIELD_MAX = 1024;
 
 class Invalid extends Error {
   constructor(reason) {
@@ -122,6 +127,25 @@ function hello(m) {
   if (given(m, 'pid')) int(m, 'pid', 1);
 }
 
+// sync.settings.set's settings, and the settings in sync.settings.get's result.
+function syncSettings(o) {
+  for (const k of SYNC_FIELDS) {
+    str(o, k, { max: SYNC_FIELD_MAX });
+    if (SYNC_REQUIRED.has(k)) check(o[k].trim() !== '', k);
+  }
+}
+
+// sync.settings.get's result: the settings, or null while sync is off on that computer. Throws Invalid.
+function syncSettingsResult(result) {
+  check(isObj(result) && has(result, 'settings'), 'settings');
+  if (result.settings === null) return null;
+  check(isObj(result.settings), 'settings');
+  syncSettings(result.settings);
+  const out = {};
+  for (const k of SYNC_FIELDS) out[k] = result.settings[k];
+  return out;
+}
+
 const COMMAND_ARGS = {
   'meeting.start': (a) => {
     if (given(a, 'title')) str(a, 'title', { max: TITLE_MAX });
@@ -148,6 +172,11 @@ const COMMAND_ARGS = {
   },
   'status.get': () => {},
   'sync.pull': () => {},
+  'sync.settings.get': () => {},
+  'sync.settings.set': (a) => {
+    check(isObj(a.settings), 'settings');
+    syncSettings(a.settings);
+  },
   'clip.get': (a) => {
     pattern(a, 'meeting', MEETING_ID);
     const start = int(a, 'start', 0);
@@ -418,6 +447,9 @@ module.exports = {
   MEDIA_SPAN_MAX,
   MEDIA_READ_MAX,
   SPLIT_TRACKS,
+  SYNC_FIELDS,
+  Invalid,
+  syncSettingsResult,
   validate,
   validateMediaOpen,
   validateDiscovery,

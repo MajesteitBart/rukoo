@@ -1,18 +1,22 @@
 //! The facade the engine uses: one [`BucketSync`] per data folder.
 
+use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use zeroize::Zeroizing;
 
-use crate::keys::{KeyStore, SECRET_FILE};
+use crate::keys::{KeyStore, KEY_FILE, MASTER_KEY_FILE, SECRET_FILE};
 use crate::manifest::is_meeting_path;
-use crate::protect::Protector;
+use crate::protect::{self, Protector};
 use crate::pull::{PullInfo, PullOrigin};
 use crate::queue::Queue;
 use crate::s3::Bucket;
+use crate::stops;
 use crate::worker::{self, Shared};
 use crate::{recovery, ScreenFiles, SyncConfig, SyncError, SyncErrorKind, UrlStyle, SYNC_DIR};
 
@@ -199,6 +203,10 @@ pub type InUse<'a> = &'a dyn Fn(&str, &str) -> bool;
 
 /// `Core::shutdown` waits this long for the worker (2.9).
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+/// `<sync>/apply`: what settings from another computer replace while they are applied, and the
+/// journal that says so.
+const APPLY_DIR: &str = "apply";
+const APPLY_JOURNAL: &str = "journal.json";
 /// The key id Settings shows: its first 8 hex characters (voice/ui/API.md).
 const SHOWN_KID: usize = 8;
 
@@ -213,6 +221,11 @@ impl BucketSync {
         crate::restore::clear_partial(&opts.meetings_dir);
         let keys = KeyStore::new(&sync_dir, opts.protector.clone());
         let shared = Arc::new(Shared::new(opts, sync_dir, queue, keys));
+        // An apply of another computer's settings stopped halfway: nothing uploads until it is
+        // rolled back.
+        if shared.sync_dir.join(APPLY_DIR).join(APPLY_JOURNAL).exists() {
+            shared.lock().applying = true;
+        }
         worker::spawn(shared.clone())
             .map_err(|e| worker::local("Voice can't start the sync worker", &e))?;
         crate::pull::spawn(shared.clone())
@@ -257,6 +270,13 @@ impl BucketSync {
     /// configuration or the on/off state changed, so a start with sync off sends them nothing.
     pub fn configure(&self, cfg: Option<SyncConfig>) {
         let shared = &self.shared;
+        {
+            let mut st = shared.lock();
+            if st.applying {
+                st.held = Some(cfg);
+                return;
+            }
+        }
         let on = cfg.is_some();
         let was_on = shared.queue.meta("on").ok().flatten().as_deref() == Some("1");
         let switched = on != was_on;
@@ -292,45 +312,13 @@ impl BucketSync {
     /// Probes `cfg.url_style`, then the other style when the first fails with bucket, not found or
     /// endpoint. Uses the saved secret (NoSecret without one).
     pub fn test(&self, cfg: &SyncConfig) -> Result<TestReport, SyncError> {
-        let shared = &self.shared;
         // Read before the secret: a save in between then counts as a change, never the reverse.
         let secret_generation = self.secret_generation();
-        let secret = shared.keys.secret()?.ok_or_else(|| {
+        let secret = self.shared.keys.secret()?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::NoSecret, "Save the secret access key first.")
         })?;
-        let own_kid = shared.keys.load().ok().flatten().map(|k| k.kid());
-        let timing = &shared.opts.timing;
-        let probe = |style: UrlStyle| -> Result<u32, SyncError> {
-            let mut cfg = cfg.clone();
-            cfg.url_style = style;
-            Bucket::new(
-                &cfg,
-                &secret,
-                timing.connect_timeout,
-                timing.request_timeout,
-            )?
-            .probe(own_kid.as_deref())
-        };
-        let first = cfg.url_style;
-        let (url_style, other_keys) = match probe(first) {
-            Ok(n) => (first, n),
-            Err(e)
-                if matches!(
-                    e.kind,
-                    SyncErrorKind::Bucket | SyncErrorKind::NotFound | SyncErrorKind::Endpoint
-                ) =>
-            {
-                let other = match first {
-                    UrlStyle::Path => UrlStyle::VirtualHost,
-                    UrlStyle::VirtualHost => UrlStyle::Path,
-                };
-                match probe(other) {
-                    Ok(n) => (other, n),
-                    Err(_) => return Err(e),
-                }
-            }
-            Err(e) => return Err(e),
-        };
+        let (url_style, other_keys) = self.probe(cfg, &secret)?;
+        let shared = &self.shared;
         let _ = shared
             .queue
             .set_meta("other_keys", Some(&other_keys.to_string()));
@@ -362,6 +350,46 @@ impl BucketSync {
         })
     }
 
+    /// Test connection with a secret that isn't saved, as for settings from another computer
+    /// before anything here changes: the URL style that worked, and nothing else changes.
+    pub fn test_secret(&self, cfg: &SyncConfig, secret: &str) -> Result<UrlStyle, SyncError> {
+        self.probe(cfg, secret).map(|(url_style, _)| url_style)
+    }
+
+    /// The URL style that worked and the number of other keys in the bucket.
+    fn probe(&self, cfg: &SyncConfig, secret: &str) -> Result<(UrlStyle, u32), SyncError> {
+        let shared = &self.shared;
+        let own_kid = shared.keys.load().ok().flatten().map(|k| k.kid());
+        let timing = &shared.opts.timing;
+        let probe = |style: UrlStyle| -> Result<u32, SyncError> {
+            let mut cfg = cfg.clone();
+            cfg.url_style = style;
+            Bucket::new(&cfg, secret, timing.connect_timeout, timing.request_timeout)?
+                .probe(own_kid.as_deref())
+        };
+        let first = cfg.url_style;
+        let (url_style, other_keys) = match probe(first) {
+            Ok(n) => (first, n),
+            Err(e)
+                if matches!(
+                    e.kind,
+                    SyncErrorKind::Bucket | SyncErrorKind::NotFound | SyncErrorKind::Endpoint
+                ) =>
+            {
+                let other = match first {
+                    UrlStyle::Path => UrlStyle::VirtualHost,
+                    UrlStyle::VirtualHost => UrlStyle::Path,
+                };
+                match probe(other) {
+                    Ok(n) => (other, n),
+                    Err(_) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        Ok((url_style, other_keys))
+    }
+
     pub fn save_secret(&self, secret: &str) -> Result<(), SyncError> {
         self.shared.keys.save_secret(secret)?;
         self.shared.secret_generation.fetch_add(1, Ordering::SeqCst);
@@ -381,6 +409,19 @@ impl BucketSync {
     /// Grows with every save or removal of the bucket secret in this run (see [`TestReport`]).
     pub fn secret_generation(&self) -> u64 {
         self.shared.secret_generation.load(Ordering::SeqCst)
+    }
+
+    /// The saved bucket secret, to share with the user's other computers.
+    pub fn saved_secret(&self) -> Result<Option<Zeroizing<String>>, SyncError> {
+        self.shared.keys.secret()
+    }
+
+    /// (code, id) of the key there is, or `None`; never makes one.
+    pub fn current_key(&self) -> Result<Option<(Zeroizing<String>, String)>, SyncError> {
+        let _key = self.shared.key_lock();
+        let read = self.shared.keys.load();
+        self.shared.note_key_read(read.as_ref().err());
+        Ok(read?.map(|key| (Zeroizing::new(recovery::encode(&key)), shown(&key.kid()))))
     }
 
     pub fn secret_saved(&self) -> bool {
@@ -442,6 +483,239 @@ impl BucketSync {
         shared.bump();
         shared.changed();
         Ok(shown(&kid))
+    }
+
+    /// Whether this computer's key has uploaded anything, so [`import_key`](Self::import_key)
+    /// would refuse another key with KeyInUse.
+    pub fn key_in_use(&self) -> Result<bool, SyncError> {
+        let shared = &self.shared;
+        let _key = shared.key_lock();
+        match shared.keys.load() {
+            Ok(Some(current)) => shared.queue.uploaded_with(&current.kid()),
+            Ok(None) => Ok(false),
+            Err(e) if e.kind == SyncErrorKind::Key => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Before settings from another computer replace the key, the secret and the bucket here:
+    /// turns uploads off until [`finish_apply`](Self::finish_apply), keeps copies of the key and
+    /// the secret files as they are, and `note`, the caller's own state to put back, in
+    /// `<sync>/apply`. The journal is written last, so a folder without one is from a start that
+    /// never changed anything. Until the journal goes, also after Voice stopped halfway, it says
+    /// what to put back, and nothing uploads: the next start opens sync with uploads off.
+    /// Refused while an earlier journal waits to be rolled back.
+    pub fn begin_apply(&self, note: &serde_json::Value) -> Result<(), SyncError> {
+        if self.unfinished_apply()?.is_some() {
+            return Err(SyncError::new(
+                SyncErrorKind::Local,
+                "An earlier change of the bucket settings isn't put back yet.",
+            ));
+        }
+        self.pause();
+        let begun = self.write_journal(note);
+        if begun.is_err() {
+            let _ = fs::remove_dir_all(self.apply_dir());
+            self.resume();
+        }
+        begun
+    }
+
+    fn write_journal(&self, note: &serde_json::Value) -> Result<(), SyncError> {
+        let dir = self.apply_dir();
+        let _ = fs::remove_dir_all(&dir);
+        let copy = |name: &str| -> Result<bool, SyncError> {
+            match fs::read(self.shared.sync_dir.join(name)) {
+                Ok(bytes) => {
+                    protect::write_atomic(&dir.join(name), &bytes)
+                        .map_err(|e| worker::local("Voice can't keep a copy of its key", &e))?;
+                    Ok(true)
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(worker::local("Voice can't read its key", &e)),
+            }
+        };
+        let journal = {
+            let _key = self.shared.key_lock();
+            let key = copy(MASTER_KEY_FILE)?;
+            if key {
+                copy(KEY_FILE)?;
+            }
+            let secret = copy(SECRET_FILE)?;
+            serde_json::json!({ "key": key, "secret": secret, "note": note })
+        };
+        let bytes = serde_json::to_vec(&journal).expect("the journal serializes");
+        let path = dir.join(APPLY_JOURNAL);
+        // Flushing the journal's own handle after its rename writes NTFS's log through it on
+        // Windows, so no key or secret written after it can outlive it (as `pull` does).
+        protect::write_atomic(&path, &bytes)
+            .and_then(|()| fs::OpenOptions::new().write(true).open(&path)?.sync_all())
+            .and_then(|()| flush_dir(&dir))
+            .map_err(|e| worker::local("Voice can't keep its journal", &e))
+    }
+
+    /// The note of an apply that neither finished nor was rolled back. A journal that can't be
+    /// read now is an error: it may still hold the only copies of the key and the secret.
+    pub fn unfinished_apply(&self) -> Result<Option<serde_json::Value>, SyncError> {
+        Ok(self.journal()?.map(|journal| journal["note"].clone()))
+    }
+
+    fn journal(&self) -> Result<Option<serde_json::Value>, SyncError> {
+        let bytes = match fs::read(self.apply_dir().join(APPLY_JOURNAL)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(worker::local("Voice can't read its journal", &e)),
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(journal) => Ok(Some(journal)),
+            // Written whole or not at all: this never was a journal of ours.
+            Err(e) => {
+                log::warn!("sync: an unreadable apply journal is ignored: {e}");
+                Ok(None)
+            }
+        }
+    }
+
+    /// The apply worked, or [`roll_back_apply`](Self::roll_back_apply) and the caller's own state
+    /// put everything back: the journal goes, for good, then its copies, and only then does sync
+    /// use the settings it was given meanwhile. Uploads stay off when the journal can't go.
+    pub fn finish_apply(&self) -> Result<(), SyncError> {
+        let dir = self.apply_dir();
+        match fs::remove_file(dir.join(APPLY_JOURNAL)) {
+            Ok(()) => {
+                flush_dir(&dir).map_err(|e| worker::local("Voice can't end its journal", &e))?
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(worker::local("Voice can't end its journal", &e)),
+        }
+        let _ = fs::remove_dir_all(&dir);
+        self.resume();
+        Ok(())
+    }
+
+    /// Puts back the key and the secret [`begin_apply`](Self::begin_apply) found, also the
+    /// absence of either; the caller puts its note back and then calls
+    /// [`finish_apply`](Self::finish_apply). Each step can run again after Voice stopped in the
+    /// middle of it or of the next one: the key file, its `key.json`, the queue's key, the secret.
+    ///
+    /// Returns true when the apply has to stay instead: the key there now isn't the one found, and
+    /// something was uploaded with it, so the meetings it encrypted need it. Nothing uploads while
+    /// a journal is there, so that is a key this computer used before; its secret is there too, as
+    /// the apply saves the secret before the key, and the caller keeps the new settings whole.
+    pub fn roll_back_apply(&self) -> Result<bool, SyncError> {
+        let Some(journal) = self.journal()? else {
+            return Ok(false);
+        };
+        let dir = self.apply_dir();
+        let shared = &self.shared;
+        let here = |name: &str| shared.sync_dir.join(name);
+        let restore = |name: &str| -> Result<(), SyncError> {
+            let bytes = fs::read(dir.join(name))
+                .map_err(|e| worker::local("Voice can't read its copy of the key", &e))?;
+            protect::write_atomic(&here(name), &bytes)
+                .map_err(|e| worker::local("Voice can't put its key back", &e))
+        };
+        let remove = |name: &str| -> Result<(), SyncError> {
+            match fs::remove_file(here(name)) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(worker::local("Voice can't remove the key it took", &e)),
+            }
+        };
+        {
+            let _busy = shared.busy();
+            let _key = shared.key_lock();
+            let old = if journal["key"] == true {
+                let copy = KeyStore::new(&dir, shared.opts.protector.clone()).load()?;
+                Some(copy.ok_or_else(|| {
+                    SyncError::new(SyncErrorKind::Key, "Voice's copy of its key is gone.")
+                })?)
+            } else {
+                None
+            };
+            let current = match shared.keys.load() {
+                Ok(current) => current,
+                // Damaged, or half put back: nothing can be read with it here.
+                Err(e) if e.kind == SyncErrorKind::Key => None,
+                // Refused for now, say: tried again later, the journal stays.
+                Err(e) => return Err(e),
+            };
+            if let Some(current) = &current {
+                if old.as_ref().map(|old| old.kid()) != Some(current.kid())
+                    && shared.queue.uploaded_with(&current.kid())?
+                {
+                    log::warn!("sync: the key taken from another computer stays: it was used");
+                    return Ok(true);
+                }
+            }
+            match &old {
+                Some(old) => {
+                    restore(MASTER_KEY_FILE)?;
+                    stops::reached("rollback:key-file")?;
+                    if dir.join(KEY_FILE).is_file() {
+                        restore(KEY_FILE)?;
+                    } else {
+                        remove(KEY_FILE)?;
+                    }
+                    stops::reached("rollback:key-json")?;
+                    shared.queue.adopt_kid(&old.kid())?;
+                    stops::reached("rollback:queue")?;
+                }
+                None => {
+                    remove(MASTER_KEY_FILE)?;
+                    remove(KEY_FILE)?;
+                }
+            }
+            shared.note_key_read(None);
+            let mut st = shared.lock();
+            st.restore = RestoreState::default();
+            st.place += 1;
+        }
+        if journal["secret"] == true {
+            restore(SECRET_FILE)?;
+        } else {
+            remove(SECRET_FILE)?;
+        }
+        shared.secret_generation.fetch_add(1, Ordering::SeqCst);
+        stops::reached("rollback:secret")?;
+        shared.bump();
+        shared.changed();
+        Ok(false)
+    }
+
+    /// Uploads stop: what `configure` says from now on waits for [`resume`](Self::resume).
+    fn pause(&self) {
+        let shared = &self.shared;
+        {
+            let mut st = shared.lock();
+            if st.applying {
+                return;
+            }
+            st.applying = true;
+            st.held = Some(st.cfg.take());
+        }
+        shared.bump();
+        shared.changed();
+    }
+
+    /// Sync uses what `configure` said while uploads were off.
+    fn resume(&self) {
+        let held = {
+            let mut st = self.shared.lock();
+            if !st.applying {
+                return;
+            }
+            st.applying = false;
+            st.held.take()
+        };
+        match held {
+            Some(cfg) => self.configure(cfg),
+            None => self.shared.changed(),
+        }
+    }
+
+    fn apply_dir(&self) -> PathBuf {
+        self.shared.sync_dir.join(APPLY_DIR)
     }
 
     /// Reads the key and the secret again now, and tries the bucket again: Settings' Try again
@@ -858,4 +1132,14 @@ impl Drop for BucketSync {
 
 fn shown(kid: &str) -> String {
     kid.chars().take(SHOWN_KID).collect()
+}
+
+/// A removal or rename in `dir` survives a power cut once the folder is flushed. Windows can't
+/// open a folder for that; there a journal that outlives its removal is rolled back, or kept
+/// whole when its key was used, at the next start.
+fn flush_dir(dir: &std::path::Path) -> io::Result<()> {
+    if cfg!(windows) {
+        return Ok(());
+    }
+    fs::File::open(dir)?.sync_all()
 }

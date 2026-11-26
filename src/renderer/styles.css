@@ -10838,6 +10838,16 @@ button.mt-person:disabled {
 .mtset-pill.is-error i {
   background: var(--danger);
 }
+/* Your other computers: the other computer's bucket with its button on the right, and why using it didn't work. */
+.mtset-offer {
+  gap: 12px;
+}
+.mtset-offer .btn {
+  flex: none;
+}
+.mtset-share-error {
+  color: var(--danger);
+}
 
 /* ---------- team chat ---------- */
 

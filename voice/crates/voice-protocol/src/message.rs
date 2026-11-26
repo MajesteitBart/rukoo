@@ -64,6 +64,8 @@ pub mod commands {
     pub const MEDIA_READ: &str = "media.read";
     pub const SPEAKERS_SPLIT: &str = "speakers.split";
     pub const SYNC_PULL: &str = "sync.pull";
+    pub const SYNC_SETTINGS_GET: &str = "sync.settings.get";
+    pub const SYNC_SETTINGS_SET: &str = "sync.settings.set";
     pub const MEETING_DATA_SET: &str = "meeting.data.set";
     pub const MEDIA_PREFETCH: &str = "media.prefetch";
     pub const MEDIA_KEEP: &str = "media.keep";
@@ -687,6 +689,12 @@ pub enum CommandBody {
     StatusGet,
     /// Look in the bucket for meetings from the user's other computers now.
     SyncPull,
+    /// The bucket's settings, its secret and the recovery code, to use on another computer.
+    SyncSettingsGet,
+    /// Uses the bucket of another computer: its settings, secret and recovery code.
+    SyncSettingsSet {
+        settings: SyncSettings,
+    },
     /// Cuts the meeting's video between `start` and `end` (meeting ms, `end >= start`).
     ClipGet {
         meeting: MeetingId,
@@ -762,6 +770,8 @@ impl CommandBody {
             CommandBody::FrameGet { .. } => commands::FRAME_GET,
             CommandBody::StatusGet => commands::STATUS_GET,
             CommandBody::SyncPull => commands::SYNC_PULL,
+            CommandBody::SyncSettingsGet => commands::SYNC_SETTINGS_GET,
+            CommandBody::SyncSettingsSet { .. } => commands::SYNC_SETTINGS_SET,
             CommandBody::ClipGet { .. } => commands::CLIP_GET,
             CommandBody::MeetingProtected { .. } => commands::MEETING_PROTECTED,
             CommandBody::ScreenGet { .. } => commands::SCREEN_GET,
@@ -822,7 +832,10 @@ impl CommandBody {
                 args.insert("meeting".into(), meeting.as_str().into());
                 args.insert("at".into(), (*at).into());
             }
-            CommandBody::StatusGet | CommandBody::SyncPull => {}
+            CommandBody::StatusGet | CommandBody::SyncPull | CommandBody::SyncSettingsGet => {}
+            CommandBody::SyncSettingsSet { settings } => {
+                args.insert("settings".into(), settings.to_value());
+            }
             CommandBody::ClipGet {
                 meeting,
                 start,
@@ -891,6 +904,79 @@ pub struct StartArgs {
     pub screen: Option<ScreenMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<Object>,
+}
+
+/// The bucket sync settings of `sync.settings.get` and `sync.settings.set`: the fields of Voice's
+/// Settings > Storage, the bucket secret and the recovery code. Every field is text of at most
+/// [`MAX_SYNC_FIELD_CHARS`](crate::MAX_SYNC_FIELD_CHARS) characters. `Debug` leaves out the secret
+/// and the code, so a log of a command never holds them.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettings {
+    pub service: String,
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub prefix: String,
+    pub access_key_id: String,
+    pub url_style: String,
+    pub retention: String,
+    pub secret: String,
+    pub key: String,
+}
+
+impl SyncSettings {
+    /// The field names, as PROTOCOL.md lists them.
+    pub const FIELDS: [&'static str; 10] = [
+        "service",
+        "endpoint",
+        "region",
+        "bucket",
+        "prefix",
+        "accessKeyId",
+        "urlStyle",
+        "retention",
+        "secret",
+        "key",
+    ];
+
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).expect("sync settings serialize to JSON")
+    }
+}
+
+impl fmt::Debug for SyncSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SyncSettings")
+            .field("service", &self.service)
+            .field("endpoint", &self.endpoint)
+            .field("region", &self.region)
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("access_key_id", &self.access_key_id)
+            .field("url_style", &self.url_style)
+            .field("retention", &self.retention)
+            .field("secret", &"<hidden>")
+            .field("key", &"<hidden>")
+            .finish()
+    }
+}
+
+/// The `reason` of a failed `sync.settings.get` or `sync.settings.set`.
+pub mod sync_reasons {
+    /// A meeting records the screen, which could capture what Rukoo shows.
+    pub const SCREEN: &str = "screen";
+    /// The settings can't be used: a field Voice refuses, or a recovery code that isn't one.
+    pub const SETTINGS: &str = "settings";
+    /// Test connection failed with these settings.
+    pub const TEST: &str = "test";
+    /// This Voice already uploaded meetings with another key, so it keeps that key.
+    pub const KEY_IN_USE: &str = "key_in_use";
+    /// Voice couldn't keep the bucket secret.
+    pub const SECRET: &str = "secret";
+    /// Voice is using another computer's settings, or putting back what that changed, so its
+    /// settings are half old and half new: ask again later.
+    pub const APPLYING: &str = "applying";
 }
 
 /// What `media.open` prepares.

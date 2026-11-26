@@ -23,6 +23,7 @@ All key derivation happens on the device.
 | `dataKey` | 32 random bytes, made once at sign-up; it never changes |
 | `recordKey` | `HKDF(dataKey, "rukoo/v1/records")` |
 | `indexKey` | `HKDF(dataKey, "rukoo/v1/index")` |
+| `innerKey(c)` | `HKDF(dataKey, "rukoo/v1/inner:" + c)`, for a collection `c` whose values are sealed again inside the record (Collections) |
 | `recoveryKey` | 20 random bytes, made at sign-up and shown to the person once |
 | `recoveryAuth` | `HKDF(recoveryKey, "rukoo/v1/recovery-auth\n" + server)` |
 | `recoveryWrap` | `HKDF(recoveryKey, "rukoo/v1/recovery-wrap")` |
@@ -41,6 +42,7 @@ The recovery key is written in Crockford base32 (`0123456789ABCDEFGHJKMNPQRSTVWX
 
 - `wrappedKey = seal(wrapKey, dataKey, "rukoo/v1/data-key")`
 - `recoveryWrappedKey = seal(recoveryWrap, dataKey, "rukoo/v1/data-key")`
+- An inner seal: `{ "sealed": base64url(seal(innerKey(c), JSON of the value, "rukoo/v1/inner:" + c + "\n" + k)) }` as a record's `v`, for collection `c` and key `k`.
 
 ### What the server stores to check a sign-in
 
@@ -76,8 +78,9 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | `setting` | a setting's name, such as `categories` | that setting's value, such as `{ enabled, unsure, seeded }` | last write wins |
 | `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became; `meeting:<acct>:<bookingId>`, a video meeting made for a booking whose event isn't written yet | see [Booking pages](#booking-pages) | last write wins |
 | `bookingkey` | `<acct>` | the booking page's key pair: `{ current, keys: { <keyId>: { privatePkcs8, publicRaw, createdAt } } }` | first write wins (`ifAbsent`) |
+| `voicesync` | `bucket` | Rukoo Voice's bucket for the person's other computers, under an inner seal (Sealing): `{ sealed }`, which opens to `{ settings, at, device }`, where `settings` is the object of `sync.settings.*` in [voice/PROTOCOL.md](../voice/PROTOCOL.md) with the bucket's secret and the encryption key, `at` when it was written and `device` the name of the computer that wrote it. A device that doesn't know the collection, such as an older Rukoo that keeps every record and exports it, holds only the sealed bytes | last write wins |
 
-`<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device leaves `bookingkey` out of "Export my data" and removes it locally when it signs out.
+`<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device keeps the values of `bookingkey` and `voicesync` sealed with the system keystore on its own disk, leaves them out of "Export my data" and removes them locally when it signs out.
 
 A device ignores collections it doesn't know, so a newer app can add one without breaking older ones.
 

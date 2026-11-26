@@ -678,6 +678,9 @@ fn change_secret(
 ) -> Result<(), ApiError> {
     let sync = bucket_sync(core)?;
     let result = {
+        // After an apply of another computer's settings, never in the middle of one: its commit
+        // would turn sync on with this secret and the test it ran for its own.
+        let _apply = lock(&core.sync_rt.apply);
         let _secret = lock(&core.sync_rt.secret);
         core.commit(|cfg| {
             keys::untest_sync(cfg);
@@ -727,6 +730,8 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
             }
             let sync = bucket_sync(core)?;
             let imported = {
+                // After an apply of another computer's settings, as for the secret.
+                let _apply = lock(&core.sync_rt.apply);
                 let _key = lock(&core.sync_rt.key);
                 sync.import_key(code)
             };
@@ -809,6 +814,314 @@ pub fn sync_restore(core: &Arc<Core>, action: &str) -> Result<Value, ApiError> {
             Ok(Value::Null)
         }
         _ => Err(invalid("action is list or start.")),
+    }
+}
+
+// The user's other computers (voice/PROTOCOL.md, `sync.settings.*`) ---------------------------
+
+/// The `storage.sync.*` keys `sync.settings.set` sets, with the settings' value for each.
+fn shared_fields(settings: &voice_protocol::SyncSettings) -> [(&'static str, &str); 7] {
+    [
+        ("storage.sync.service", &settings.service),
+        ("storage.sync.endpoint", &settings.endpoint),
+        ("storage.sync.region", &settings.region),
+        ("storage.sync.bucket", &settings.bucket),
+        ("storage.sync.prefix", &settings.prefix),
+        ("storage.sync.accessKeyId", &settings.access_key_id),
+        ("storage.sync.retention", &settings.retention),
+    ]
+}
+
+/// The bucket's settings with the saved secret and the recovery code, for Rukoo to keep in the
+/// user's account; `None` while the switch is off or the connection didn't pass Test connection.
+/// Refused while a meeting records the screen, as the key dialogs are. Never makes a key.
+///
+/// The fields, the secret and the key are read together under the apply lock, so they never mix
+/// the settings before and after [`sync_settings_set`]. While an apply or its rollback runs, or
+/// its journal is still there, the answer is `applying`, which Rukoo takes as "ask again later":
+/// the bridge runs this beside a `sync.settings.set` and must not wait for it.
+pub fn sync_settings_get(
+    core: &Arc<Core>,
+) -> Result<Option<voice_protocol::SyncSettings>, ApiError> {
+    let sync = bucket_sync(core)?;
+    let applying = || {
+        ApiError::new(
+            "applying",
+            "Voice is changing its bucket settings; ask again later.",
+        )
+    };
+    let _one = match core.sync_rt.apply.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return Err(applying()),
+    };
+    if sync
+        .unfinished_apply()
+        .map_err(|e| sync_error(&e))?
+        .is_some()
+    {
+        return Err(applying());
+    }
+    let Some(bucket) = crate::sync::sync_config(&core.config()) else {
+        return Ok(None);
+    };
+    refuse_while_screen_records(core)?;
+    let secret = sync
+        .saved_secret()
+        .map_err(|e| sync_error(&e))?
+        .ok_or_else(|| ApiError::new("failed", "Voice has no bucket secret saved."))?;
+    let key = {
+        let _key = lock(&core.sync_rt.key);
+        sync.current_key()
+    };
+    let (code, _) = key
+        .map_err(|e| sync_error(&e))?
+        .ok_or_else(|| ApiError::new("failed", "Voice has no encryption key yet."))?;
+    Ok(Some(voice_protocol::SyncSettings {
+        service: bucket.service.as_str().into(),
+        endpoint: bucket.endpoint,
+        region: bucket.region,
+        bucket: bucket.bucket,
+        prefix: bucket.prefix,
+        access_key_id: bucket.access_key_id,
+        url_style: bucket.url_style.as_str().into(),
+        retention: bucket.retention.as_str().into(),
+        secret: secret.to_string(),
+        key: code.to_string(),
+    }))
+}
+
+/// Uses the bucket of the user's other computer, as the user would in Settings > Storage: the
+/// key, the fields, the secret, Test connection and the switch. Test connection runs once, with
+/// the given secret, before anything here changes. Only then does Voice write anything, under a
+/// journal ([`voice_sync::BucketSync::begin_apply`]) that a failure, or the next start after Voice
+/// stopped halfway ([`recover_sync_apply`]), rolls back: the key, the secret and the fields it
+/// found, so a failure never leaves a half-changed bucket that pauses sync here. Nothing uploads
+/// while the journal is there. An earlier apply that isn't rolled back yet is rolled back first;
+/// until that works, nothing new is applied. Errors carry the reason as their code: `settings`
+/// for settings Voice refuses, `test`, `key_in_use` or `secret`; `failed` for anything that may
+/// work when tried again.
+pub fn sync_settings_set(
+    core: &Arc<Core>,
+    settings: &voice_protocol::SyncSettings,
+) -> Result<(), ApiError> {
+    let sync = bucket_sync(core)?;
+    let _one = lock(&core.sync_rt.apply);
+    let failed = |e: voice_sync::SyncError| ApiError::new("failed", e.message);
+    if sync.unfinished_apply().map_err(failed)?.is_some() {
+        put_back(core, sync).map_err(|e| {
+            ApiError::new(
+                "failed",
+                format!(
+                    "An earlier change of the bucket settings isn't put back yet: {}",
+                    e.message
+                ),
+            )
+        })?;
+    }
+    let refused = |e: ApiError| ApiError::new("settings", e.message);
+    // The same checks as Settings, on a copy.
+    let mut checked = (*core.config()).clone();
+    for (key, value) in shared_fields(settings) {
+        keys::set(&mut checked, key, json!(value)).map_err(refused)?;
+    }
+    let mut fields = crate::sync::sync_value(&checked);
+    fields["urlStyle"] = json!(settings.url_style.trim());
+    let wanted = voice_sync::SyncConfig::from_json(&fields)
+        .map_err(|e| ApiError::new("settings", e.message))?;
+    let code = settings.key.trim();
+    let key = voice_sync::recovery::decode(code)
+        .map_err(|_| ApiError::new("settings", "That isn't a Rukoo Voice key."))?;
+    let secret = settings.secret.trim();
+    if secret.is_empty() || secret.chars().count() > SECRET_MAX_CHARS {
+        return Err(ApiError::new(
+            "settings",
+            format!("The secret is 1 to {SECRET_MAX_CHARS} characters."),
+        ));
+    }
+
+    let old_secret = sync.saved_secret().map_err(|e| sync_error(&e))?;
+    let old_key = {
+        let _key = lock(&core.sync_rt.key);
+        sync.current_key()
+    }
+    .map_err(|e| sync_error(&e))?;
+    let same_key = old_key
+        .as_ref()
+        .and_then(|(code, _)| voice_sync::recovery::decode(code).ok())
+        .is_some_and(|old| old.kid() == key.kid());
+    let current = crate::sync::sync_config(&core.config());
+    let same_bucket = current.as_ref().is_some_and(|current| {
+        voice_sync::SyncConfig {
+            url_style: current.url_style,
+            ..wanted.clone()
+        } == *current
+    });
+    if same_key && same_bucket && old_secret.as_deref().map(String::as_str) == Some(secret) {
+        return Ok(());
+    }
+    // A computer that uploaded with its own key keeps it (D5): refused before anything changes.
+    if !same_key && sync.key_in_use().map_err(|e| sync_error(&e))? {
+        return Err(ApiError::new(
+            "key_in_use",
+            "This computer already uploaded meetings with its own key, so it keeps that key.",
+        ));
+    }
+
+    // Test connection, once, before anything here changes.
+    let url_style = sync
+        .test_secret(&wanted, secret)
+        .map_err(|e| ApiError::new("test", e.message))?;
+    let tested = voice_sync::SyncConfig {
+        url_style,
+        ..wanted
+    };
+    // `storage_sync` as it will be: the fields, the URL style that worked, the passed test and
+    // the switch.
+    let mut next = fields;
+    next["urlStyle"] = json!(url_style.as_str());
+    next["tested"] = json!(tested.fingerprint());
+    next["enabled"] = json!(true);
+
+    let before = core.config().extra.get(crate::sync::SYNC_KEY).cloned();
+    sync.begin_apply(&json!({ "storageSync": before, "next": next }))
+        .map_err(failed)?;
+    let step = |name: &str| voice_sync::stops::reached(name).map_err(failed);
+    let applied = (|| {
+        step("apply:journal")?;
+        // The secret before the key: a key that came in always has its secret with it.
+        {
+            let _secret = lock(&core.sync_rt.secret);
+            sync.save_secret(secret)
+                .map_err(|e| ApiError::new("secret", e.message))?;
+        }
+        step("apply:secret")?;
+        if !same_key {
+            let imported = {
+                let _key = lock(&core.sync_rt.key);
+                sync.import_key(code)
+            };
+            imported.map_err(|e| match e.kind {
+                voice_sync::SyncErrorKind::KeyInUse => ApiError::new("key_in_use", e.message),
+                _ => ApiError::new("failed", e.message),
+            })?;
+        }
+        step("apply:key")?;
+        {
+            let _secret = lock(&core.sync_rt.secret);
+            core.commit(|cfg| {
+                cfg.extra.insert(crate::sync::SYNC_KEY.into(), next.clone());
+                Ok(())
+            })
+            .map_err(|e| ApiError::new("failed", e.message))?;
+        }
+        step("apply:config")?;
+        // Uploads start only now, with the key, the secret and the bucket together.
+        sync.finish_apply().map_err(failed)
+    })();
+    match applied {
+        Ok(()) => {
+            log::info!("sync: uses the bucket of another computer now");
+            core.settings_changed();
+            Ok(())
+        }
+        Err(error) => {
+            log::warn!(
+                "sync: the bucket of another computer wasn't used: {}",
+                error.message
+            );
+            if let Err(e) = put_back(core, sync) {
+                log::warn!(
+                    "sync: what was there isn't put back yet, the next try or start does: {}",
+                    e.message
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Puts back what [`sync_settings_set`] found, from its journal: the key and the secret, then
+/// `storage_sync`, and only then does the journal go and sync start again. A step that fails
+/// leaves the journal, and uploads off, for the next try or start.
+fn put_back(core: &Arc<Core>, sync: &voice_sync::BucketSync) -> Result<(), ApiError> {
+    let failed = |e: voice_sync::SyncError| ApiError::new("failed", e.message);
+    let Some(note) = sync.unfinished_apply().map_err(failed)? else {
+        return sync.finish_apply().map_err(failed);
+    };
+    let kept = {
+        // The secret before the key, as everywhere: a passed test commits under the secret and
+        // then takes the key to configure sync.
+        let _secret = lock(&core.sync_rt.secret);
+        let _key = lock(&core.sync_rt.key);
+        sync.roll_back_apply()
+    }
+    .map_err(failed)?;
+    let _secret = lock(&core.sync_rt.secret);
+    let committed = core.commit(|cfg| {
+        restore_sync_value(cfg, &note, kept);
+        Ok(())
+    });
+    core.settings_changed();
+    committed?;
+    voice_sync::stops::reached("rollback:config").map_err(failed)?;
+    sync.finish_apply().map_err(failed)
+}
+
+/// `storage_sync` as the journal's note has it: as it was, or as the apply made it when its key
+/// stays.
+fn restore_sync_value(cfg: &mut Config, note: &Value, kept: bool) {
+    let value = &note[if kept { "next" } else { "storageSync" }];
+    if value.is_null() {
+        cfg.extra.remove(crate::sync::SYNC_KEY);
+    } else {
+        cfg.extra
+            .insert(crate::sync::SYNC_KEY.into(), value.clone());
+    }
+}
+
+/// At start, before sync runs: an apply of another computer's settings that Voice stopped in the
+/// middle of is rolled back as [`put_back`] does. Until that works, uploads stay off.
+pub(crate) fn recover_sync_apply(
+    cfg: &mut Config,
+    sync: &voice_sync::BucketSync,
+    data_dir: &std::path::Path,
+) {
+    let note = match sync.unfinished_apply() {
+        Ok(Some(note)) => note,
+        Ok(None) => {
+            if let Err(e) = sync.finish_apply() {
+                log::warn!("sync: {}", e.message);
+            }
+            return;
+        }
+        Err(e) => {
+            log::error!("sync: {}; uploads stay off", e.message);
+            return;
+        }
+    };
+    log::warn!(
+        "sync: Voice stopped while it took another computer's bucket; putting back what was there"
+    );
+    let kept = match sync.roll_back_apply() {
+        Ok(kept) => kept,
+        Err(e) => {
+            log::error!(
+                "sync: the earlier key and secret weren't put back, uploads stay off: {}",
+                e.message
+            );
+            return;
+        }
+    };
+    let mut restored = cfg.clone();
+    restore_sync_value(&mut restored, &note, kept);
+    if let Err(e) = restored.save(data_dir) {
+        log::error!("sync: config.json wasn't saved while rolling back, uploads stay off: {e}");
+        return;
+    }
+    *cfg = restored;
+    if let Err(e) = sync.finish_apply() {
+        log::error!("sync: {}; uploads stay off", e.message);
     }
 }
 

@@ -71,6 +71,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: CHAT_FILE_SCHEME, privileges: { 
 // ---- /chat ----
 // ---- voice ----
 const { VoiceService, VoiceError, bridgePathHere } = require('./voice');
+const { VoiceShare } = require('./voice/share');
 const { isMeetingId, SCREENS: MEETING_SCREENS } = require('./voice/protocol');
 // ---- /voice ----
 
@@ -169,6 +170,8 @@ let invitations = null;
 // Rukoo Voice's meetings and the bridge to it (voice/index.js). Made before the windows, so a meeting that records
 // hides them from the start.
 let voice = null;
+// Voice's bucket on the user's other computers, through the Rukoo account (voice/share.js).
+let voiceShare = null;
 // Whether Rukoo's windows should be left out of screen capture now; new windows follow it. windowsHidden: whether
 // every window took it, which the meeting view and Settings report.
 let captureHidden = false;
@@ -220,7 +223,7 @@ function protectWindows(on) {
 // What the meeting view and Settings show about Voice. Never the discovery file: its token stays in main.
 function voiceState() {
   const base = voice ? voice.state() : { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null };
-  return { ...base, hidden: windowsHidden, canHide: process.platform === 'win32' || process.platform === 'darwin' };
+  return { ...base, hidden: windowsHidden, canHide: process.platform === 'win32' || process.platform === 'darwin', share: voiceShare ? voiceShare.state() : null };
 }
 
 // While Rukoo Voice records the screen, Rukoo's own mail and booking notifications would land in its frames, and
@@ -2271,7 +2274,17 @@ Object.assign(api, {
   meetingSplitMic: (id) => voiceService().splitMic(meetingId(id)),
   // After a split: which voice at the microphone is the user, and whether it shows as one voice again.
   meetingSetYou: (id, speakerId) => voiceService().setYou(meetingId(id), meetingText(speakerId, 100)),
-  meetingJoinMic: (id, joined) => voiceService().joinMic(meetingId(id), joined === true)
+  meetingJoinMic: (id, joined) => voiceService().joinMic(meetingId(id), joined === true),
+  // Settings > Meetings > Your other computers: share this computer's bucket through the account, or use the one
+  // another computer shares. Both return the share state voiceState carries.
+  voiceShareSet: (on) => {
+    if (!voiceShare) throw new Error('unknown');
+    return voiceShare.setShare(on === true);
+  },
+  voiceShareUse: () => {
+    if (!voiceShare) throw new Error('unknown');
+    return voiceShare.use();
+  }
 });
 // ---- /voice ----
 
@@ -2762,6 +2775,16 @@ app.whenReady().then(() => {
     }
   }).init();
   if (process.env.SEM_HIDDEN) global.__semVoice = voice;
+  voiceShare = new VoiceShare({
+    account,
+    voice,
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    log: (scope, line) => {
+      if (!process.env.SEM_HIDDEN) console.warn(`[voice:${scope}] ${line}`);
+    }
+  }).init();
+  if (process.env.SEM_HIDDEN) global.__semVoiceShare = voiceShare;
+  voiceShare.on('changed', () => send('meeting', { kind: 'state', state: voiceState() }));
   voice.on('state', () => send('meeting', { kind: 'state', state: voiceState() }));
   voice.on('meeting', (payload) => send('meeting', payload));
   // ---- /voice ----
@@ -2925,6 +2948,7 @@ app.on('will-quit', destroyTray);
 // Not in before-quit, which a compose window can still call off; synchronous, before the agents' wait. Never
 // meeting.stop: Voice keeps recording when Rukoo quits.
 app.on('will-quit', () => {
+  if (voiceShare) voiceShare.close();
   if (voice) voice.close();
 });
 // ---- /voice ----
