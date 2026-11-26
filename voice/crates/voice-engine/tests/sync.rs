@@ -109,6 +109,10 @@ fn main() {
             rukoos_data_reaches_the_other_computer,
         ),
         (
+            "a_restored_meeting_s_data_comes_after_the_meeting",
+            a_restored_meeting_s_data_comes_after_the_meeting,
+        ),
+        (
             "changes_and_deletions_reach_the_other_computer",
             changes_and_deletions_reach_the_other_computer,
         ),
@@ -1955,6 +1959,57 @@ fn overlap_next_missing(dir: &Path, ms: u64) -> (Vec<u64>, Vec<String>) {
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
     std::fs::write(&path, text).unwrap();
     (before, moved)
+}
+
+/// A meeting that has Rukoo's data in the bucket when another computer first pulls it: that
+/// computer's Rukoo gets the data after the meeting's start, so it has a meeting to put it in.
+fn a_restored_meeting_s_data_comes_after_the_meeting() {
+    let fake = fake_s3();
+    let a = harness("data-first-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    let on_a = json!({"v": 1, "device": "a", "fields": {"title": {"v": "Renamed on A", "at": 2, "by": "a"}}});
+    engine_a
+        .meeting_control()
+        .unwrap()
+        .set_data(&id, on_a.as_object().unwrap())
+        .unwrap();
+    // A's index names its copy, so B's first pull brings the meeting and the copy together.
+    wait_long("A's copy in its index", Duration::from_secs(60), || {
+        decrypt_all(&fake, &code).iter().any(|(_, plain)| {
+            serde_json::from_slice::<Value>(plain).is_ok_and(|v| {
+                v["meetings"].as_array().is_some_and(|ms| {
+                    ms.iter()
+                        .any(|m| m["id"] == id.as_str() && m["data"].is_string())
+                })
+            })
+        })
+    });
+    engine_a.shutdown();
+
+    let b = harness("data-first-b", json!({"meetings_retention": "keep"}));
+    let engine_b = b.start();
+    engine_b.settings_sync_key("import", Some(code)).unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    let mut events = Vec::new();
+    wait_long("B gets A's copy", Duration::from_secs(60), || {
+        events = events_of(&b.data(), &id);
+        events
+            .iter()
+            .any(|(e, d)| e == "meeting.data" && d["data"] == on_a)
+    });
+    let started = events.iter().position(|(e, _)| e == "meeting.started");
+    let data = events.iter().position(|(e, _)| e == "meeting.data");
+    assert!(
+        started.is_some() && started < data,
+        "the data came before the meeting: {:?}",
+        events.iter().map(|(e, _)| e.as_str()).collect::<Vec<_>>()
+    );
+    engine_b.shutdown();
+    fake.stop();
 }
 
 /// What Rukoo owns of a meeting, such as its title and notes, goes up as this computer's copy and
