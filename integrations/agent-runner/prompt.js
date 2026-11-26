@@ -88,6 +88,15 @@ function clipText(text, max, chars = Infinity) {
 }
 const oneLine = (text) => String(text == null ? '' : text).replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
 
+// A file's type on the runner's own line: whoever attached the file names it, so it goes only as a MIME type alone,
+// type/subtype of the characters such names take, without parameters, which leaves no room for a tag or a sentence;
+// anything else is 'file'.
+const MIME = /^[A-Za-z0-9][A-Za-z0-9!#$^_.+-]{0,63}\/[A-Za-z0-9][A-Za-z0-9!#$^_.+-]{0,126}$/;
+const typeText = (type) => {
+  const t = String(type == null ? '' : type).split(';')[0].trim();
+  return MIME.test(t) ? t.toLowerCase() : 'file';
+};
+
 // A block of untrusted text, such as a message.
 function unsafeBlock(text) {
   return `<unsafe_content source="${SOURCE}">\n${escapeText(text)}\n</unsafe_content>`;
@@ -231,7 +240,7 @@ function filesText(ev, files, imageNo) {
   let unlisted = 0;
   files.forEach((f, i) => {
     if (f.unlisted) return void unlisted++;
-    lines.push(`- ${unsafeInline(f.name, 255)} (${oneLine(f.type) || 'file'}, ${size(f.size)}). ${fileNote(f, imageNo(i))}`);
+    lines.push(`- ${unsafeInline(f.name, 255)} (${typeText(f.type)}, ${size(f.size)}). ${fileNote(f, imageNo(i))}`);
     if (typeof f.text === 'string' && (f.state === 'text' || f.state === 'pdf-text')) lines.push(fileBlock(f.text));
   });
   if (unlisted) lines.push(`[${unlisted}${unlisted < files.length ? ' more' : ''} ${unlisted === 1 ? 'file' : 'files'} left off this list to keep this input short, so you can't open ${unlisted === 1 ? 'it' : 'them'}.]`);
