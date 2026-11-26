@@ -22,7 +22,7 @@ use voice_sync::{PullOrigin, SyncErrorKind};
 use super::controller::Controller;
 use super::screen::ScreenSupervisor;
 use super::split::SplitService;
-use crate::media::MediaService;
+use crate::media::{FrameFetch, MediaService};
 
 /// What Rukoo's commands do.
 pub struct Control {
@@ -293,7 +293,23 @@ impl MeetingControl for Control {
             ));
         }
         let index = self.frame_index(id, &dir)?;
-        media::frame_reply(&dir, frames, at, &index).map_err(media_error)
+        let mut reply = media::frame_reply(&dir, frames, at, &index).map_err(media_error)?;
+        if !reply["image"].is_null() {
+            if let Some(frame) = reply["frame"]["id"].as_str() {
+                self.media.frame_used(id, &paths::frame_file(frame));
+            }
+            return Ok(reply);
+        }
+        // Not on this computer: it may come back from the bucket (PROTOCOL.md, frame.get).
+        match self.media.fetch_frame(id, at) {
+            FrameFetch::Ready => {
+                reply = media::frame_reply(&dir, frames, at, &index).map_err(media_error)?;
+            }
+            FrameFetch::Pending => reply["pending"] = Value::Bool(true),
+            FrameFetch::Unreachable => reply["inBucket"] = Value::Bool(true),
+            FrameFetch::Gone => {}
+        }
+        Ok(reply)
     }
 
     fn clip(
@@ -377,6 +393,14 @@ impl MeetingControl for Control {
 
     fn split_speakers(&self, id: &str, track: Track) -> Result<Value, ControlError> {
         self.split.split(id, track)
+    }
+
+    fn prefetch_frames(&self, id: &str) -> Result<Value, ControlError> {
+        self.media.cache().prefetch_frames(id)
+    }
+
+    fn keep_media(&self, id: &str, keep: Option<bool>) -> Result<Value, ControlError> {
+        self.media.cache().keep(id, keep)
     }
 }
 

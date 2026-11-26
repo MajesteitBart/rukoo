@@ -1060,6 +1060,8 @@ fn dispatch(
             control.set_data(meeting.as_str(), &data)?;
             json!({})
         }
+        CommandBody::MediaPrefetch { meeting } => control.prefetch_frames(meeting.as_str())?,
+        CommandBody::MediaKeep { meeting, keep } => control.keep_media(meeting.as_str(), keep)?,
         CommandBody::ClipGet {
             meeting,
             start,

@@ -159,8 +159,16 @@ function indexEntry(id, v = {}) {
     context: isObj(v.context) ? v.context : null,
     eventId: typeof v.eventId === 'string' && v.eventId ? v.eventId.slice(0, EVENT_ID_MAX) : null,
     rev: int(v.rev, 0),
-    removed: v.removed === true
+    removed: v.removed === true,
+    media: mediaState(v.media)
   };
+}
+
+// What Voice last said about a meeting's media (media.keep): whether the user keeps it on this computer, the bytes
+// here and in all, and whether a kept meeting's download waits for the bucket. null before Voice said.
+function mediaState(v) {
+  if (!isObj(v) || typeof v.keep !== 'boolean' || !Number.isSafeInteger(v.have) || !Number.isSafeInteger(v.total) || v.have < 0 || v.total < v.have) return null;
+  return { keep: v.keep, have: v.have, total: v.total, stalled: v.stalled === true };
 }
 
 // A meeting file as stored: anything that isn't the right shape goes, the rest stays.
@@ -974,6 +982,17 @@ class VoiceStore {
     e.rev = this.nextTick();
     this.touchIndex();
     if (e.eventId !== was) this.stamp(id, 'event');
+    return true;
+  }
+
+  // What Voice says about the meeting's media now; true when it changed.
+  setMedia(id, value) {
+    const e = this.index.meetings[id];
+    const next = mediaState(value);
+    if (!e || !next || JSON.stringify(e.media) === JSON.stringify(next)) return false;
+    e.media = next;
+    e.rev = this.nextTick();
+    this.touchIndex();
     return true;
   }
 

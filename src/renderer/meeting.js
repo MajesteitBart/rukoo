@@ -1,6 +1,6 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, hhmm, hue, initials, readerDate, groupLabel, toast, showMenu, closeMenu, menuOpen, menuCount, segmented, setSegmented, confirmDialog } from './ui.js';
+import { api, esc, $, fileSize, hhmm, hue, initials, readerDate, groupLabel, toast, showMenu, closeMenu, menuOpen, menuCount, segmented, setSegmented, confirmDialog } from './ui.js';
 import { formatButtons, mountRichEditor } from './rich-editor.js';
 import { markdownToNotes, notesToMarkdown } from './notes-markdown.js';
 import { foldFrames } from './meeting-frames.js';
@@ -29,9 +29,20 @@ const SCREENS = ['off', 'frames', 'video'];
 const SCREEN_MODES = { off: 'meeting.screen.modeOff', frames: 'meeting.screen.modeFrames', video: 'meeting.screen.modeVideo' };
 // Frame images kept in memory for the meeting on screen; the least recently used goes first.
 const FRAME_CACHE = 60;
-// A frame's image starts loading when its row comes this close to the visible part of the transcript.
-const FRAME_MARGIN_PX = 300;
-const FRAME_MARGIN = `${FRAME_MARGIN_PX}px 0px`;
+// A frame's image starts loading when its row comes within one screen of the visible part of the transcript, so
+// scrolling finds it there, also when Voice fetches it back from the bucket.
+const FRAME_MARGIN = '100% 0px';
+// While Voice fetches a frame image back from the bucket (pending), Rukoo asks again: after 250 ms, then up to a second
+// apart, for about a minute.
+const FRAME_RETRY_MS = 250;
+const FRAME_RETRY_MAX_MS = 1000;
+const FRAME_TRIES = 70;
+// A visible frame whose image is in the bucket while Voice can't reach it is asked for again, 5 s later and then up to a
+// minute apart, while the meeting stays open.
+const BUCKET_RETRY_MS = 5000;
+const BUCKET_RETRY_MAX_MS = 60000;
+// While a kept meeting's media comes down, the header asks Voice how far it got this often.
+const KEEP_POLL_MS = 1000;
 
 const M = {
   open: false,
@@ -180,9 +191,16 @@ export const voiceState = () => ({ ...M.voice });
 
 export function show() {
   M.open = true;
+  K.unsupported = null;
   bind();
   pickAndOpen();
   pullMeetings();
+  // Back to the meeting the view still holds: that opens it again for its media too.
+  if (M.data && M.data.meeting.id === M.id) {
+    openedMedia(M.id);
+    for (const [frameId, entry] of F.cache) if (entry.inBucket) retryFromBucket(F.meeting, frameId);
+    for (const frameId of F.pending) loadFrame(frameId);
+  }
 }
 
 // Meetings from the user's other computers come through Voice's bucket. Main asks at most once a minute.
@@ -192,6 +210,9 @@ function pullMeetings() {
 
 export function hide() {
   M.open = false;
+  clearTimeout(K.timer);
+  K.timer = null;
+  stopBucketRetries();
   stopClip();
   flushNotes();
   closeEditor(false);
@@ -412,6 +433,7 @@ async function fetchMeeting(id) {
   if (data && data.meeting) upsertSummary(data.meeting);
   renderView({ fetched: true });
   ctx.agentSync?.();
+  if (data && data.meeting) openedMedia(id);
 }
 
 function setVoice(state) {
@@ -433,6 +455,7 @@ function setVoice(state) {
       renderLive();
       // Frame images come from Voice: rows that waited for it load now, and the others say why they can't.
       if (before.status !== M.voice.status) redrawFrames();
+      if (before.status !== M.voice.status) openedMedia(M.id);
       // Clips and the split come from Voice too, and no clip plays while a meeting records.
       if (before.status !== M.voice.status || before.recording !== M.voice.recording) renderPeople();
     } else renderView();
@@ -670,6 +693,7 @@ function renderHead() {
     ms !== null ? `<span class="mt-elapsed" title="${esc(t('meeting.head.length'))}">${esc(live(s) ? clock(ms) : length(ms))}</span>` : '',
     when ? `<span class="mt-when">${esc(when)}</span>` : '',
     screen ? `<span class="mt-screen">${icons.monitor}<span>${esc(t('meeting.head.screen', { mode: screenMode(screen) }))}</span></span>` : '',
+    keepHtml(s),
     live(s) && M.voice.hidden ? `<span class="mt-hidden" title="${esc(t('meeting.head.hiddenHelp'))}">${icons.eyeOff}<span>${esc(t('meeting.head.hidden'))}</span></span>` : '',
     visible ? `<span class="mt-visible" title="${esc(t('meeting.head.visibleHelp'))}">${icons.eye}<span>${esc(t('meeting.head.visible'))}</span></span>` : ''
   ]
@@ -702,8 +726,10 @@ function canDelete(s) {
 function meetingMenu(anchor, id, opts = {}) {
   const s = summaryOf(id);
   if (!s) return;
+  const kept = Boolean(s.media && s.media.keep);
   showMenu(anchor, [
     !s.removed ? { label: t('meeting.actions.rename'), icon: 'edit', action: async () => { await open(id); beginRename(id); } } : null,
+    canKeep(s) ? { label: t('meeting.actions.keep'), sub: t('meeting.actions.keepSub'), checked: kept, action: () => keepMeeting(id, !kept) } : null,
     canDelete(s) ? { label: t('meeting.actions.delete'), icon: 'trash', danger: true, disabled: M.deleting.has(id), action: () => deleteMeeting(id) } : null
   ], opts);
 }
@@ -769,6 +795,77 @@ async function deleteMeeting(id) {
   } finally {
     M.deleting.delete(id);
   }
+}
+
+// ---------- keeping a meeting on this computer ----------
+
+// timer: the next question while a kept meeting's media comes down. unsupported: the Voice (voiceKey) that can't keep
+// media, an older one or one without bucket sync; its meetings don't offer it.
+const K = { timer: null, unsupported: null };
+
+// Sizes up to a gigabyte as the attachments show them; above, in GB.
+function mediaSize(bytes) {
+  if (bytes < 1024 ** 3) return fileSize(bytes);
+  return `${new Intl.NumberFormat(getLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(bytes / 1024 ** 3)} GB`;
+}
+
+// Keep on this computer: for a finished meeting, while Voice can say how its media stands.
+function canKeep(s) {
+  return !s.removed && ['done', 'failed'].includes(s.state) && M.voice.status === 'connected' && K.unsupported !== voiceKey();
+}
+
+// Asks Voice how the meeting's media stands, or keeps it (keep true) or lets the cache limit apply again (false).
+// Main keeps the answer in the meeting's summary. While a kept meeting's media comes down, it asks again every second.
+async function refreshMedia(id, keep) {
+  clearTimeout(K.timer);
+  K.timer = null;
+  if (!id || M.voice.status !== 'connected' || K.unsupported === voiceKey()) return;
+  let r;
+  try {
+    r = await api('meetingKeep', id, keep);
+  } catch (err) {
+    if (keep !== undefined) toast(voiceError(err), { ms: 5000 });
+    return;
+  }
+  if (r === null) {
+    K.unsupported = voiceKey();
+    if (keep !== undefined) toast(t('meeting.keep.unavailable'), { ms: 6000 });
+    return;
+  }
+  const s = summaryOf(id);
+  if (s) s.media = r;
+  if (M.data && M.data.meeting.id === id) {
+    M.data.meeting.media = r;
+    renderHead();
+    renderNotice();
+  }
+  if (M.open && M.id === id && r.keep && r.have < r.total) K.timer = setTimeout(() => refreshMedia(id), KEEP_POLL_MS);
+}
+
+function keepMeeting(id, keep) {
+  return refreshMedia(id, keep);
+}
+
+// A finished meeting whose media is partly in the bucket asks Voice to fetch its frame images ahead (media.prefetch)
+// each time it opens or Voice comes back. Voice finds what is missing itself, so a later open goes on with work a
+// disconnect or the bucket cut short.
+async function openedMedia(id) {
+  await refreshMedia(id);
+  const d = M.data;
+  if (!M.open || !d || d.meeting.id !== id || M.voice.status !== 'connected') return;
+  if (!['done', 'failed'].includes(d.meeting.state) || !inBucket(d.meeting) || !(d.frames || []).length) return;
+  api('meetingPrefetch', id).catch(() => {});
+}
+
+// In the header while a kept meeting's media comes down: how much is here, or that it waits for the bucket.
+function keepHtml(s) {
+  const m = s.media;
+  if (!m || !m.keep || m.have >= m.total || s.removed) return '';
+  const waiting = m.stalled || M.voice.status !== 'connected';
+  const pct = m.total > 0 ? Math.floor((m.have / m.total) * 100) : 0;
+  const text = waiting ? t('meeting.keep.waiting') : t('meeting.keep.progress', { have: mediaSize(m.have), total: mediaSize(m.total) });
+  const bar = `<span class="mt-keep-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${esc(t('meeting.keep.label'))}"><i style="width:${pct}%"></i></span>`;
+  return `<span class="mt-keep${waiting ? ' is-waiting' : ''}">${waiting ? icons.download : '<span class="spinner" aria-hidden="true"></span>'}<span>${esc(text)}</span>${bar}</span>`;
 }
 
 // A line under the header when something about the meeting needs saying.
@@ -1022,7 +1119,8 @@ function frameHtml(f, group = [f]) {
   const text = frameText(f, entry);
   const lines = text === null ? [] : text.split('\n').map((line) => line.trim()).filter(Boolean);
   const open = M.frameOpen.has(f.id);
-  const note = frameNote(entry);
+  const note = frameNote(f.id, entry);
+  const fetching = F.pending.has(f.id);
   const ratio = Number.isInteger(f.width) && Number.isInteger(f.height) && f.width > 0 && f.height > 0 ? `${f.width} / ${f.height}` : '16 / 9';
   const label = esc(t('meeting.frame.alt', { time: clock(f.at) }));
   const first = lines.length
@@ -1035,10 +1133,10 @@ function frameHtml(f, group = [f]) {
       ? `<button class="mt-frame-toggle" data-mt="frame" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('meeting.frame.showText'))}</span></button>
         <div class="mt-frame-rest"><div class="mt-frame-full sel">${esc(lines.slice(1).join('\n'))}</div></div>`
       : '';
-  return `<li class="mt-row mt-frame${open ? ' is-open' : ''}" data-key="f:${esc(f.id)}" data-id="${esc(f.id)}" data-at="${f.at}" tabindex="-1">
+  return `<li class="mt-row mt-frame${open ? ' is-open' : ''}${fetching ? ' is-loading' : ''}" data-key="f:${esc(f.id)}" data-id="${esc(f.id)}" data-at="${f.at}" tabindex="-1">
     <time class="mt-at">${esc(clock(f.at))}</time>
     <div class="mt-main">
-      <button class="mt-shot" data-mt="frame" aria-expanded="${open}" aria-label="${label}" style="--ar: ${ratio}">${icons.monitor}<img alt="${label}" loading="lazy" decoding="async" hidden></button>
+      <button class="mt-shot" data-mt="frame" aria-expanded="${open}" aria-label="${label}" style="--ar: ${ratio}"${fetching ? ' aria-busy="true"' : ''}>${fetching ? '<span class="spinner" aria-hidden="true"></span>' : icons.monitor}<img alt="${label}" loading="lazy" decoding="async" hidden></button>
       <div class="mt-frame-body">${first}${note ? `<div class="mt-frame-note">${esc(note)}</div>` : ''}${rest}${group.length > 1 ? `<button class="mt-frame-count" data-mt="frame-group" aria-expanded="${M.groupOpen.has(f.id)}" aria-label="${esc(t('meeting.frame.group', { count: group.length - 1 }))}">+${group.length - 1}</button>` : ''}</div>
       ${group.length > 1 ? `<ol class="mt-frame-strip" ${M.groupOpen.has(f.id) ? '' : 'hidden'}>${group.slice(1).map((x) => frameHtml(x)).join('')}</ol>` : ''}
     </div>
@@ -1170,13 +1268,52 @@ function continuations() {
 // The images of the meeting on screen, by frame id, at most FRAME_CACHE of them; an entry is {url, text} once Voice
 // answered, {gone} when Voice no longer has the image and {offline} when it couldn't be asked. loading: frames asked
 // for now. io: watches the rows whose image isn't there yet.
-const F = { meeting: null, cache: new Map(), loading: new Set(), io: null, root: null };
+// pending: frames whose image Voice fetches back from the bucket now; their rows show that they load.
+// retries: the next question for a row whose image is in the bucket out of Voice's reach, and waits: how long it
+// waited last, by frame id.
+const F = { meeting: null, cache: new Map(), loading: new Set(), pending: new Set(), io: null, root: null, retries: new Map(), waits: new Map(), polls: new Map() };
 
 function forgetFrames(id) {
   if (F.meeting === id) return;
+  stopBucketRetries();
   F.meeting = id;
   F.cache = new Map();
   F.loading = new Set();
+  F.pending = new Set();
+}
+
+// Leaving the view or the meeting: no more questions, and a later visit starts again at the shortest wait. An image
+// Voice was still fetching stays pending, and show() asks for it again.
+function stopBucketRetries() {
+  for (const timer of F.retries.values()) clearTimeout(timer);
+  F.retries.clear();
+  F.waits.clear();
+  for (const [frameId, timer] of F.polls) {
+    clearTimeout(timer);
+    F.loading.delete(frameId);
+  }
+  F.polls.clear();
+}
+
+// The image is in the bucket, but Voice couldn't reach it: Rukoo asks again later, waiting longer each time, as long
+// as the meeting stays open. A row that scrolled away waits for the observer like any row without an image.
+function retryFromBucket(meetingId, frameId) {
+  if (F.retries.has(frameId) || F.meeting !== meetingId || !M.open) return;
+  const wait = F.waits.has(frameId) ? Math.min(BUCKET_RETRY_MAX_MS, F.waits.get(frameId) * 2) : BUCKET_RETRY_MS;
+  F.waits.set(frameId, wait);
+  F.retries.set(
+    frameId,
+    setTimeout(() => {
+      F.retries.delete(frameId);
+      const entry = F.cache.get(frameId);
+      if (!M.open || F.meeting !== meetingId || !M.data || M.data.meeting.id !== meetingId || !entry || !entry.inBucket) return;
+      const row = $('.meeting .mt-transcript')?.querySelector(`[data-key="f:${CSS.escape(frameId)}"]`);
+      if (!row) return;
+      F.cache.delete(frameId);
+      if (nearView(row)) loadFrame(frameId);
+      else if (F.io && M.voice.status === 'connected') F.io.observe(row);
+    }, wait)
+  );
 }
 
 function remember(meetingId, frameId, entry) {
@@ -1205,13 +1342,20 @@ function releaseImage(frameId) {
   if (F.io && M.voice.status === 'connected') F.io.observe(row);
 }
 
-// Within FRAME_MARGIN_PX of the transcript's visible part, as the observer that loads images counts it.
+// Within one screen of the transcript's visible part, as the observer that loads images counts it (FRAME_MARGIN).
 function nearView(row) {
   const sc = scroller();
   if (!sc) return false;
   const view = sc.getBoundingClientRect();
   const box = row.getBoundingClientRect();
-  return box.bottom > view.top - FRAME_MARGIN_PX && box.top < view.bottom + FRAME_MARGIN_PX;
+  return box.bottom > view.top - view.height && box.top < view.bottom + view.height;
+}
+
+// Whether some of the meeting's media is only in the user's bucket, as Voice last said (media.keep): a meeting from
+// another computer, or one whose media the cache limit removed here.
+function inBucket(s = M.data && M.data.meeting) {
+  const m = s && s.media;
+  return Boolean(m && m.total > m.have);
 }
 
 // A frame's text: its own, or, when the snapshot left it out to stay small, what meetingFrame brought. null while
@@ -1222,23 +1366,29 @@ function frameText(f, entry) {
 }
 
 // Why a frame shows no image, or ''.
-function frameNote(entry) {
+function frameNote(id, entry) {
   if (entry && entry.url) return '';
+  if (F.pending.has(id)) return t('meeting.frame.loading');
   if (entry && entry.gone) return t('meeting.frame.gone');
-  if (M.voice.status !== 'connected' || (entry && entry.offline)) return t('meeting.frame.offline');
+  if (entry && entry.inBucket) return t('meeting.frame.inBucket');
+  if (M.voice.status !== 'connected' || (entry && entry.offline)) return t(inBucket() ? 'meeting.frame.inBucket' : 'meeting.frame.offline');
   return '';
 }
 
 const plainImage = (url) => (typeof url === 'string' && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(url) ? url : null);
 
-// meetingFrame answers with the image as a data: URL, or with {url, text} when it brings text Rukoo left out of its
-// copy. null means Voice sent something that isn't a plain image.
+// meetingFrame answers with {url, text, pending, inBucket}: the image as a data: URL, or why there is none. pending:
+// Voice fetches it back from the bucket; inBucket: the bucket has it but Voice can't reach it now. A url that isn't a
+// plain image counts as gone.
 function frameResult(res) {
   if (typeof res === 'string') return plainImage(res) ? { url: res, text: null } : { url: null, text: null, gone: true };
   if (res && typeof res === 'object') {
     const text = typeof res.text === 'string' ? res.text : res.frame && typeof res.frame.text === 'string' ? res.frame.text : null;
     const url = plainImage(res.url);
-    return url ? { url, text } : { url: null, text, gone: true };
+    if (url) return { url, text };
+    if (res.pending === true) return { url: null, text, pending: true };
+    if (res.inBucket === true) return { url: null, text, inBucket: true };
+    return { url: null, text, gone: true };
   }
   return { url: null, text: null, gone: true };
 }
@@ -1268,6 +1418,7 @@ function fillFrames() {
       remember(F.meeting, row.dataset.id, entry);
       showImage(row, entry.url);
     } else if (!entry && M.voice.status === 'connected' && F.io) F.io.observe(row);
+    else if (entry && entry.inBucket) retryFromBucket(F.meeting, row.dataset.id);
   }
 }
 
@@ -1279,7 +1430,9 @@ function framesSeen(seen) {
   }
 }
 
-async function loadFrame(frameId) {
+// tries: how often Voice answered pending for this image already. While it fetches the image back from the bucket the
+// row shows that it loads, and Rukoo asks again, waiting longer each time.
+async function loadFrame(frameId, tries = 0) {
   const d = M.data;
   const f = d && (d.frames || []).find((x) => x.id === frameId);
   if (!f || F.loading.has(frameId) || F.cache.has(frameId) || F.meeting !== d.meeting.id) return;
@@ -1291,22 +1444,48 @@ async function loadFrame(frameId) {
   } catch (err) {
     const code = err && err.voice;
     entry = code === 'not_available' || code === 'not_found' ? { url: null, text: null, gone: true } : { url: null, text: null, offline: true };
-  } finally {
-    F.loading.delete(frameId);
   }
   if (F.meeting !== meetingId) return;
+  const row = () => $('.meeting .mt-transcript')?.querySelector(`[data-key="f:${CSS.escape(frameId)}"]`);
+  if (entry.pending && tries < FRAME_TRIES) {
+    // Stays in F.loading meanwhile, so the observer doesn't ask a second time.
+    const first = !F.pending.has(frameId);
+    F.pending.add(frameId);
+    if (first && row()) updateRows([`f:${frameId}`], []);
+    // Away from the meetings nothing is asked: the image stays pending, and show() asks again.
+    if (!M.open) {
+      F.loading.delete(frameId);
+      return;
+    }
+    F.polls.set(
+      frameId,
+      setTimeout(() => {
+        F.polls.delete(frameId);
+        if (F.meeting !== meetingId) return;
+        F.loading.delete(frameId);
+        loadFrame(frameId, tries + 1);
+      }, Math.min(FRAME_RETRY_MAX_MS, FRAME_RETRY_MS * 2 ** tries))
+    );
+    return;
+  }
+  F.loading.delete(frameId);
+  const was = F.pending.delete(frameId);
+  // Still coming after a minute: the bucket is slow or out of reach.
+  if (entry.pending) entry = { url: null, text: entry.text, inBucket: true };
   remember(meetingId, frameId, entry);
-  const row = $('.meeting .mt-transcript')?.querySelector(`[data-key="f:${CSS.escape(frameId)}"]`);
-  if (!row || !M.data || M.data.meeting.id !== meetingId) return;
-  // The image goes in place; a note or text that just arrived draws the row again.
-  if (entry.url && frameText(f, null) !== null) showImage(row, entry.url);
+  if (entry.url) F.waits.delete(frameId);
+  if (entry.inBucket) retryFromBucket(meetingId, frameId);
+  const el = row();
+  if (!el || !M.data || M.data.meeting.id !== meetingId) return;
+  // The image goes in place; a note or text that just arrived, or the end of a fetch, draws the row again.
+  if (entry.url && frameText(f, null) !== null && !was && !el.querySelector('.mt-frame-note')) showImage(el, entry.url);
   else updateRows([`f:${frameId}`], []);
 }
 
 // Voice came or went: rows that couldn't ask it try again, and the notes follow.
 function redrawFrames() {
   if (!M.data || !(M.data.frames || []).length) return;
-  for (const [id, entry] of [...F.cache]) if (entry.offline) F.cache.delete(id);
+  for (const [id, entry] of [...F.cache]) if (entry.offline || entry.inBucket) F.cache.delete(id);
   renderTranscript(true);
 }
 
@@ -1429,9 +1608,11 @@ function onContextMenu(e) {
 const CLIP_MIN_MS = 1500;
 const CLIP_MAX_MS = 12000;
 const CLIP_CACHE = 24;
-// open: the voice whose player is open; clip: which of its clips; key: the clip in the audio element; urls: clips
-// fetched before, by meeting and stretch; token: makes an answer that comes after the user moved on harmless.
-const P = { open: null, clip: 0, playing: false, loading: false, error: null, key: null, token: 0, urls: new Map(), audio: null, raf: 0, shown: null, sig: '' };
+// open: the voice whose player is open; clip: which of its clips; key: the clip in the audio element and piece: the
+// stretch of it the element holds, {start, end, more} in meeting ms; urls: stretches fetched before, by meeting, start
+// and end, as {url, end, more}, where more says a piece ended early and the rest of the stretch follows from end;
+// token: makes an answer that comes after the user moved on harmless.
+const P = { open: null, clip: 0, playing: false, loading: false, error: null, key: null, piece: null, token: 0, urls: new Map(), audio: null, raf: 0, shown: null, sig: '' };
 
 const nameable = (s) => Boolean(s) && !s.you;
 // Which voices have something to hear: the People card is drawn again when that changes.
@@ -1587,7 +1768,7 @@ function playerHtml(s, clips) {
   const busy = P.loading ? ' aria-busy="true"' : '';
   const toggle = P.playing || P.loading ? t('meeting.clip.pause') : t('meeting.clip.play');
   let status;
-  if (why) status = `<p class="mt-pnote">${icons.info}<span>${esc(t(BLOCK_NOTES[why]))}</span></p>`;
+  if (why) status = `<p class="mt-pnote">${icons.info}<span>${esc(t(why === 'offline' && inBucket() ? 'meeting.clip.inBucket' : BLOCK_NOTES[why]))}</span></p>`;
   else if (P.error) status = `<p class="mt-pnote is-error" role="alert">${icons.warning}<span>${esc(P.error)}</span></p>`;
   else status = `<div class="mt-prog"><span class="mt-track"><span class="mt-fill"></span></span><span class="mt-ptime">${esc(clock(0))} / ${esc(clock(span))}</span></div>`;
   const assign = nameable(s) ? `<button class="btn sm secondary mt-assign" data-mt="assign" data-speaker="${esc(s.id)}" aria-haspopup="menu">${esc(t('meeting.clip.assign'))}${icons.chevronDown}</button>` : '';
@@ -1671,8 +1852,11 @@ function clipProgress() {
   if (!el || !c) return;
   const span = (c.end - c.start) / 1000;
   const a = P.audio;
-  const here = a && P.key === clipKey(c);
-  const pos = here ? (a.ended ? span : Math.min(span, a.currentTime || 0)) : 0;
+  const here = a && P.key === clipKey(c) && P.piece;
+  // A clip that plays in pieces counts from its own start.
+  const before = here ? (P.piece.start - c.start) / 1000 : 0;
+  const last = here && !P.piece.more;
+  const pos = here ? (a.ended && last ? span : Math.min(span, before + (a.ended ? (P.piece.end - P.piece.start) / 1000 : a.currentTime || 0))) : 0;
   const fill = el.querySelector('.mt-fill');
   const time = el.querySelector('.mt-ptime');
   if (fill) fill.style.width = `${span ? (pos / span) * 100 : 0}%`;
@@ -1697,6 +1881,13 @@ function audioElement() {
   a.className = 'mt-clip-audio';
   document.body.append(a);
   a.addEventListener('ended', () => {
+    // The clip plays on with its next piece, fetched while this one played or loading now.
+    const s = P.open && speakerOf(P.open);
+    const c = s ? clipsOf(s)[P.clip] : null;
+    if (M.data && c && P.piece && P.key === clipKey(c) && P.piece.more && P.playing) {
+      playPiece(M.data, s, c, P.piece.end, P.token);
+      return;
+    }
     P.playing = false;
     cancelAnimationFrame(P.raf);
     renderPeople();
@@ -1760,41 +1951,53 @@ async function playClip() {
   if (!d || !s || playBlock()) return;
   const c = clipsOf(s)[P.clip];
   if (!c) return;
-  const key = clipKey(c);
   const token = (P.token += 1);
   P.error = null;
   const a = audioElement();
-  let url = P.urls.get(key);
-  if (!url) {
-    P.loading = true;
-    renderPeople();
-    try {
-      const r = await api('meetingClip', d.meeting.id, c.start, c.end);
-      url = r && typeof r.url === 'string' && r.url.startsWith('data:audio/wav;base64,') ? r.url : null;
-    } catch (err) {
+  const here = P.key === clipKey(c) && P.piece;
+  if (here && !a.ended) return playPiece(d, s, c, null, token);
+  // Paused between two pieces it goes on with the next one; once it played to the end, from the start.
+  return playPiece(d, s, c, here && P.piece.more ? P.piece.end : c.start, token);
+}
+
+// Plays clip c of voice s from `from` (meeting ms) to its end, or, with from null, goes on with the piece the audio
+// element holds. Audio that comes back from the bucket comes in pieces that end where a recorded segment ends: the
+// first plays once its segment is here, and the next is fetched while it plays.
+async function playPiece(d, s, c, from, token) {
+  const a = audioElement();
+  if (from !== null) {
+    let got = P.urls.get(`${d.meeting.id}|${from}|${c.end}`);
+    if (!got) {
+      P.loading = true;
+      renderPeople();
+      try {
+        got = await clipPiece(d, from, c.end, true);
+      } catch (err) {
+        if (token !== P.token) return;
+        P.loading = false;
+        P.playing = false;
+        // Audio that only the bucket has can't come while Voice can't reach it.
+        P.error = inBucket() && ['not_available', 'failed', 'timeout'].includes(err && err.voice) ? t('meeting.clip.inBucket') : voiceError(err);
+        return renderPeople();
+      }
       if (token !== P.token) return;
+      if (!got) {
+        P.loading = false;
+        P.playing = false;
+        P.error = t('meeting.clip.failed');
+        return renderPeople();
+      }
+    }
+    // A recording can have started while the clip loaded.
+    if (playBlock()) {
       P.loading = false;
-      P.error = voiceError(err);
+      P.playing = false;
       return renderPeople();
     }
-    if (token !== P.token) return;
-    if (!url) {
-      P.loading = false;
-      P.error = t('meeting.clip.failed');
-      return renderPeople();
-    }
-    P.urls.set(key, url);
-    while (P.urls.size > CLIP_CACHE) P.urls.delete(P.urls.keys().next().value);
+    a.src = got.url;
+    P.key = clipKey(c);
+    P.piece = { start: from, end: got.end, more: got.more };
   }
-  // A recording can have started while the clip loaded.
-  if (playBlock()) {
-    P.loading = false;
-    return renderPeople();
-  }
-  if (P.key !== key) {
-    a.src = url;
-    P.key = key;
-  } else if (a.ended) a.currentTime = 0;
   // Loading until play() settles, also from memory: a recording that starts meanwhile stops it (setVoice).
   P.loading = true;
   try {
@@ -1802,6 +2005,7 @@ async function playClip() {
   } catch (_) {
     if (token !== P.token) return;
     P.loading = false;
+    P.playing = false;
     P.error = t('meeting.clip.failed');
     return renderPeople();
   }
@@ -1809,6 +2013,7 @@ async function playClip() {
     a.pause();
     if (token === P.token) {
       P.loading = false;
+      P.playing = false;
       renderPeople();
     }
     return;
@@ -1817,6 +2022,60 @@ async function playClip() {
   P.playing = true;
   renderPeople();
   followClip();
+  // The rest of the clip comes first, then the clips that may come next.
+  const rest = P.piece.more ? clipPiece(d, P.piece.end, c.end, true).catch(() => null) : Promise.resolve();
+  rest.then(() => fetchAhead(s));
+}
+
+// Stretches on their way from Voice, by key and piece, so the piece fetched ahead and the same piece asked for when it
+// is due are one request.
+const coming = new Map();
+
+// A stretch of the meeting's audio from start to end as {url, end, more}, from memory or from Voice: with piece, Voice
+// may end it at a segment boundary while the rest still comes from the bucket, end says where and more that the rest
+// follows. null when Voice sent something that isn't a WAV.
+function clipPiece(d, start, end, piece) {
+  const key = `${d.meeting.id}|${start}|${end}`;
+  if (P.urls.has(key)) return Promise.resolve(P.urls.get(key));
+  const asking = `${key}|${piece}`;
+  if (coming.has(asking)) return coming.get(asking);
+  const p = api('meetingClip', d.meeting.id, start, end, piece)
+    .then((r) => {
+      const url = r && typeof r.url === 'string' && r.url.startsWith('data:audio/wav;base64,') ? r.url : null;
+      if (!url) return null;
+      // more: Voice ended the piece where a segment ends and audio follows. Without it the stretch ends here, also
+      // when the recording ends before end.
+      const ended = Number.isInteger(r.end) && r.end > start && r.end <= end ? r.end : end;
+      const got = { url, end: ended, more: r.more === true && ended < end };
+      if (M.data && M.data.meeting.id === d.meeting.id) {
+        P.urls.set(key, got);
+        while (P.urls.size > CLIP_CACHE) P.urls.delete(P.urls.keys().next().value);
+      }
+      return got;
+    })
+    .finally(() => coming.delete(asking));
+  coming.set(asking, p);
+  return p;
+}
+
+// While a clip plays, the ones that may come next are fetched whole: the voice's next passage and the first passage of
+// the next voice without a name, where Assign and Hear each voice go. Voice fetches audio that only the bucket has on
+// the way, so the next clip starts at once. One at a time, behind what the user asked for.
+async function fetchAhead(s) {
+  const d = M.data;
+  if (!d || !s || playBlock()) return;
+  const next = clipsOf(s)[P.clip + 1];
+  const other = nextUnnamed(s.id);
+  const wanted = [next, other ? clipsOf(other)[0] : null].filter(Boolean);
+  for (const c of wanted) {
+    if (P.urls.has(clipKey(c))) continue;
+    try {
+      await clipPiece(d, c.start, c.end, false);
+    } catch (_) {
+      // The clip loads when it is played.
+    }
+    if (M.data !== d || playBlock()) return;
+  }
 }
 
 // After Assign: the player moves to the next voice without a name that has something to hear.

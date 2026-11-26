@@ -388,6 +388,11 @@
       "message": { "type": "command", "id": "c-50", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 600000, "end": 1200000 } }
     },
     {
+      "name": "open the first piece of a range of audio",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-55", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 61000, "end": 73000, "piece": true } }
+    },
+    {
       "name": "open the frame at a moment",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-51", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "frame", "start": 412500 } }
@@ -416,6 +421,11 @@
       "name": "media that is ready",
       "from": "voice",
       "message": { "type": "reply", "id": "c-50", "ok": true, "result": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "ready": true, "type": "audio/wav", "size": 19200044, "start": 600000, "end": 1200000 } }
+    },
+    {
+      "name": "the first piece of a range of audio, with more to come",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-55", "ok": true, "result": { "media": "md-b2C3d4E5f6G7h8I9j0K1lM", "ready": true, "type": "audio/wav", "size": 128044, "start": 61000, "end": 65000, "more": true } }
     },
     {
       "name": "a piece of media",
@@ -476,11 +486,46 @@
       "name": "look for meetings from the other computers",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-61", "command": "sync.pull", "args": {} }
+    },
+    {
+      "name": "frame reply whose image comes back from the bucket",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-36", "ok": true, "result": { "frame": { "id": "f-000412000", "at": 412000, "width": 1920, "height": 1080, "text": "Q3 roadmap" }, "image": null, "pending": true } }
+    },
+    {
+      "name": "frame reply whose image is in the bucket Voice can't reach now",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-36", "ok": true, "result": { "frame": { "id": "f-000412000", "at": 412000, "width": 1920, "height": 1080, "text": "Q3 roadmap" }, "image": null, "inBucket": true } }
+    },
+    {
+      "name": "fetch a meeting's frame images ahead",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-62", "command": "media.prefetch", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "frames" } }
+    },
+    {
+      "name": "keep a meeting's media on this computer",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-63", "command": "media.keep", "args": { "meeting": "m-20261030-171203-4f2a", "keep": true } }
+    },
+    {
+      "name": "ask how keeping a meeting's media stands",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-64", "command": "media.keep", "args": { "meeting": "m-20261030-171203-4f2a" } }
+    },
+    {
+      "name": "a kept meeting's media halfway down",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-64", "ok": true, "result": { "keep": true, "have": 48234496, "total": 96468992, "stalled": false } }
     }
   ],
   "invalid": [
     { "name": "a meeting's data without whose copy it is", "from": "voice", "reason": "writer", "message": { "type": "event", "seq": 1205, "event": "meeting.data", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793003700500, "data": { "data": {} } } },
     { "name": "a meeting's data that isn't an object", "from": "rukoo", "reason": "data", "message": { "type": "command", "id": "c-63", "command": "meeting.data.set", "args": { "meeting": "m-20261030-171203-4f2a", "data": "notes" } } },
+    { "name": "prefetch of another kind than frames", "from": "rukoo", "reason": "kind", "message": { "type": "command", "id": "c-62", "command": "media.prefetch", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio" } } },
+    { "name": "prefetch without a kind", "from": "rukoo", "reason": "kind", "message": { "type": "command", "id": "c-62", "command": "media.prefetch", "args": { "meeting": "m-20261030-171203-4f2a" } } },
+    { "name": "keep without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-63", "command": "media.keep", "args": { "keep": true } } },
+    { "name": "piece that isn't true or false", "from": "rukoo", "reason": "piece", "message": { "type": "command", "id": "c-55", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 61000, "end": 73000, "piece": 1 } } },
+    { "name": "keep that isn't true or false", "from": "rukoo", "reason": "keep", "message": { "type": "command", "id": "c-63", "command": "media.keep", "args": { "meeting": "m-20261030-171203-4f2a", "keep": "yes" } } },
     { "name": "split without a track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a" } } },
     { "name": "split of the call track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a", "track": "call" } } },
     { "name": "split without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "track": "mic" } } },

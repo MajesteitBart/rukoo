@@ -10252,6 +10252,42 @@
     "message": "The image shows while Rukoo Voice runs.",
     "description": "Meeting view transcript: beside a screen frame whose image Rukoo can't get because Rukoo Voice isn't connected; Voice keeps the images. src/renderer/meeting.js (frameHtml)"
   },
+  "meeting.frame.loading": {
+    "message": "Loading from your bucket…",
+    "description": "Meeting view transcript: beside a screen frame whose image Rukoo Voice is fetching back from the user's bucket now; the thumbnail shows a spinner. src/renderer/meeting.js (frameHtml)"
+  },
+  "meeting.frame.inBucket": {
+    "message": "The image shows once Rukoo Voice can reach your bucket.",
+    "description": "Meeting view transcript: beside a screen frame whose image is only in the user's synced bucket while Rukoo Voice isn't running or can't reach the bucket. The frame's text still shows. src/renderer/meeting.js (frameNote)"
+  },
+  "meeting.clip.inBucket": {
+    "message": "The audio is in your bucket. Clips play once Rukoo Voice can reach the bucket.",
+    "description": "Meeting view voice player of a meeting whose audio is only in the user's synced bucket, while Rukoo Voice isn't running or can't reach the bucket. src/renderer/meeting.js (playerHtml, playClip)"
+  },
+  "meeting.actions.keep": {
+    "message": "Keep on this computer",
+    "description": "Meeting menu (header and sidebar right-click), a checkable item: Rukoo Voice downloads all of the meeting's audio, screen frames and video from the user's bucket and keeps them, for offline use. src/renderer/meeting.js (meetingMenu)"
+  },
+  "meeting.actions.keepSub": {
+    "message": "For use without a connection",
+    "description": "Meeting menu: second line under Keep on this computer, saying what it is for: Rukoo Voice downloads the meeting's media so it works offline. src/renderer/meeting.js (meetingMenu)"
+  },
+  "meeting.keep.progress": {
+    "message": "Downloading {have} of {total}",
+    "description": "Meeting view header while a meeting kept on this computer comes down from the user's bucket; have and total are sizes such as 48.2 MB. src/renderer/meeting.js (keepHtml)"
+  },
+  "meeting.keep.waiting": {
+    "message": "Download waits for your bucket",
+    "description": "Meeting view header: a meeting kept on this computer still misses media, and Rukoo Voice can't reach the bucket now or isn't running. src/renderer/meeting.js (keepHtml)"
+  },
+  "meeting.keep.label": {
+    "message": "Downloaded for offline use",
+    "description": "Accessible name of the progress bar in the meeting view header while a kept meeting's media comes down. src/renderer/meeting.js (keepHtml)"
+  },
+  "meeting.keep.unavailable": {
+    "message": "Rukoo Voice can keep a meeting on this computer once bucket sync is on, in an up-to-date Voice.",
+    "description": "Toast after Keep on this computer when Rukoo Voice can't: it is older, or bucket sync is off. src/renderer/meeting.js (refreshMedia)"
+  },
   "meeting.frame.gone": {
     "message": "Rukoo Voice no longer has this image.",
     "description": "Meeting view transcript: beside a screen frame whose image Rukoo Voice removed, with the meeting's audio, under its retention setting. src/renderer/meeting.js (frameHtml)"

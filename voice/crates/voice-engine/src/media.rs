@@ -25,7 +25,9 @@ use serde_json::{json, Value};
 use voice_bridge::ControlError;
 use voice_meetings::reader::{segment_samples, PER_MS};
 use voice_meetings::{MeetingDir, TrackReader};
-use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MAX_CLIP_MS, MAX_MEDIA_READ};
+use voice_protocol::{
+    ErrorCode, MediaKind, MediaOpenArgs, MediaOpenResult, MAX_CLIP_MS, MAX_MEDIA_READ,
+};
 use voice_recorder::timeline::{History, SegmentRecord};
 use voice_screen_files::frames::FrameIndex;
 use voice_screen_files::media::{self as screen_files, MediaError, ScreenFileKind};
@@ -34,6 +36,7 @@ use voice_screen_files::policy::reserve_ok;
 use voice_sync::manifest::is_segment_file;
 use voice_sync::{BucketSync, ScreenFile, ScreenFiles, SyncError, SyncErrorKind};
 
+use crate::cache::MediaCache;
 use crate::meetings::controller::Controller;
 
 /// Prepared audio mixes: `<data>/media/<media id>.wav`.
@@ -48,6 +51,9 @@ const PREPARE_THREADS: usize = 2;
 pub const CLIP_WAIT: Duration = Duration::from_secs(60);
 /// Audio mixes are written ten seconds at a time.
 const MIX_BLOCK: u64 = 10 * 1000 * PER_MS;
+/// The shortest `piece` Voice cuts, in ms: the tracks' segments end a few ms apart, and a piece
+/// that ends at the next track's boundary right after `start` gives the player nothing to play.
+pub const MIN_PIECE_MS: u64 = 250;
 
 /// The screen recording, for media links.
 pub trait ScreenMedia: Send + Sync {
@@ -209,6 +215,8 @@ struct JobKey {
     start: u64,
     /// `None` for a frame, which ignores it.
     end: Option<u64>,
+    /// Audio that may end at a segment boundary (`piece`): another job than the whole range.
+    piece: bool,
 }
 
 impl JobKey {
@@ -222,6 +230,7 @@ impl JobKey {
             } else {
                 args.end
             },
+            piece: args.kind == MediaKind::Audio && args.piece,
         }
     }
 }
@@ -239,6 +248,8 @@ struct Ready {
     /// A clip of the screen recording's: answering `ready` touches it so the sweep keeps it for
     /// another hour.
     clip: bool,
+    /// Audio of a `piece` that ends at a segment boundary while more follows: the answer's `more`.
+    more: bool,
 }
 
 enum State {
@@ -256,6 +267,11 @@ struct Job {
     reserved: u64,
     /// At least one open delivered this completed file before a growing live range replaces it.
     answered_ready: bool,
+    /// A `media.open` asked for it, so a link may read it; `frame.get`'s own fetches don't count.
+    link: bool,
+    /// The meeting's files it reads: while it prepares, and for a frame read where it is, while
+    /// it is known. A path that ends in `/` stands for the files under it.
+    reads: Vec<String>,
 }
 
 /// What a `media-prepare` thread does for a job.
@@ -285,6 +301,8 @@ struct AudioPlan {
     segments: Vec<SegmentRecord>,
     /// The files of the segments in the range, on disk or not.
     needed: Vec<String>,
+    /// A piece ended at a segment boundary before the asked end: audio follows.
+    more: bool,
 }
 
 impl AudioPlan {
@@ -315,6 +333,21 @@ pub struct MediaService {
     inner: Mutex<Inner>,
     stopping: AtomicBool,
     this: std::sync::Weak<MediaService>,
+    /// Fetches behind the scenes and the cache limit.
+    cache: Arc<MediaCache>,
+}
+
+/// What `frame.get` can say about a frame image that isn't on this computer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameFetch {
+    /// It is on this computer now.
+    Ready,
+    /// It is coming back from the bucket.
+    Pending,
+    /// The bucket has it, but Voice can't fetch it now.
+    Unreachable,
+    /// Nobody has it any more.
+    Gone,
 }
 
 impl MediaService {
@@ -322,17 +355,88 @@ impl MediaService {
         self.sync.clone()
     }
 
+    /// Background fetches and the cache limit.
+    pub fn cache(&self) -> &Arc<MediaCache> {
+        &self.cache
+    }
+
+    /// Whether a job prepares now: background fetches wait for it.
+    pub(crate) fn busy(&self) -> bool {
+        self.lock()
+            .jobs
+            .values()
+            .any(|job| matches!(job.state, State::Preparing))
+    }
+
+    /// Whether a job reads this file of the meeting now: the cache limit leaves it alone.
+    pub(crate) fn in_use(&self, meeting: &str, path: &str) -> bool {
+        self.lock().jobs.values().any(|job| {
+            let reading = match &job.state {
+                State::Preparing => true,
+                // A frame is served from the meeting folder; mixes and clips are files of their own.
+                State::Ready(ready) => job.link && !ready.owned && !ready.clip,
+                State::Failed(_) => false,
+            };
+            reading
+                && job.key.meeting == meeting
+                && job
+                    .reads
+                    .iter()
+                    .any(|r| r == path || (r.ends_with('/') && path.starts_with(r.as_str())))
+        })
+    }
+
+    /// The image of the frame at or before `at` for `frame.get`, whose own reply found it missing
+    /// here: a fetch from the bucket starts on a `media-prepare` thread, as for `media.open`, and
+    /// this answers at once.
+    pub fn fetch_frame(&self, meeting: &str, at: u64) -> FrameFetch {
+        let Some(id) = voice_protocol::MeetingId::parse(meeting) else {
+            return FrameFetch::Gone;
+        };
+        let args = MediaOpenArgs {
+            meeting: id,
+            kind: MediaKind::Frame,
+            start: at,
+            end: None,
+            piece: false,
+        };
+        match self.open_as(&args, false) {
+            Ok(answer) if answer["ready"] == true => FrameFetch::Ready,
+            Ok(_) => FrameFetch::Pending,
+            Err(e) if e.code == ErrorCode::NotFound => FrameFetch::Gone,
+            Err(e) if e.code == ErrorCode::NotAvailable && !self.frame_in_bucket(meeting, at) => {
+                FrameFetch::Gone
+            }
+            // In the bucket, but sync can't fetch now or the fetch failed: Rukoo asks again later.
+            Err(_) => FrameFetch::Unreachable,
+        }
+    }
+
+    fn frame_in_bucket(&self, meeting: &str, at: u64) -> bool {
+        let (Some(sync), Some(dir)) = (&self.sync, self.controller.library().dir(meeting)) else {
+            return false;
+        };
+        matches!(self.screen.frame_at(dir.path(), at), Ok(Some((path, _))) if sync.in_bucket(meeting, &path))
+    }
+
+    /// `frame.get` read this frame's image from disk: fetched media counts as used.
+    pub fn frame_used(&self, meeting: &str, path: &str) {
+        self.used(meeting, &[path.to_owned()]);
+    }
+
     /// Stops new media of a meeting that is about to be deleted. A running preparation must
     /// finish first, so a late bucket fetch cannot recreate the meeting folder afterwards. Links
     /// prepared already keep working until [`evict_meeting`](Self::evict_meeting), so a deletion
     /// that doesn't go ahead ([`keep_meeting`](Self::keep_meeting)) leaves them as they were.
     pub(crate) fn forget_meeting(&self, meeting: &str) -> Result<(), ControlError> {
+        self.cache.forget(meeting)?;
         let mut inner = self.lock();
         if inner
             .jobs
             .values()
             .any(|job| job.key.meeting == meeting && matches!(job.state, State::Preparing))
         {
+            self.cache.unforget(meeting);
             return Err(ControlError::new(
                 ErrorCode::Busy,
                 "Voice is still preparing this meeting's media. Try deleting it again in a moment.",
@@ -361,7 +465,9 @@ impl MediaService {
     /// Undoes [`forget_meeting`](Self::forget_meeting) for a deletion that didn't go ahead.
     pub(crate) fn keep_meeting(&self, meeting: &str) {
         self.lock().deleted.remove(meeting);
+        self.cache.unforget(meeting);
     }
+
     /// Empties `<data>/media/`: nothing prepared before this start is still asked for.
     pub fn new(
         data_dir: &Path,
@@ -374,6 +480,7 @@ impl MediaService {
         let _ = fs::remove_dir_all(&dir);
         Arc::new_cyclic(|this| MediaService {
             dir,
+            cache: MediaCache::new(sync.clone(), Arc::clone(&controller), this.clone()),
             controller,
             sync,
             screen,
@@ -391,13 +498,18 @@ impl MediaService {
     /// `{ media, ready: false }` while the file is prepared, then `{ media, ready: true, type,
     /// size, start, end }`. Answers within milliseconds: anything slow runs as a job.
     pub fn open(&self, args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        self.open_as(args, true)
+    }
+
+    /// `open`; `link` when a link may read what it prepares.
+    fn open_as(&self, args: &MediaOpenArgs, link: bool) -> Result<Value, ControlError> {
         if self.lock().deleted.contains(args.meeting.as_str()) {
             return Err(ControlError::not_found(NO_MEETING));
         }
         self.sweep();
         let key = JobKey::of(args);
         self.rekey_grown_audio(&key, args);
-        if let Some(answer) = self.known(&key)? {
+        if let Some(answer) = self.known(&key, link)? {
             return Ok(answer);
         }
         let dir = self
@@ -408,13 +520,14 @@ impl MediaService {
         match args.kind {
             MediaKind::Audio => {
                 let end = args.end.ok_or_else(|| bad_request("Audio needs an end."))?;
-                let plan = self.audio_plan(&dir, args.start, end)?;
+                let plan = self.audio_plan(&dir, args.start, end, key.piece)?;
                 let size = plan.size();
                 if !self.may_write(size) {
                     return Err(ControlError::failed(NO_DISK));
                 }
                 self.make_room(size)?;
-                self.start_job(key, Work::Audio(plan), size)
+                let reads = plan.needed.clone();
+                self.start_job(key, Work::Audio(plan), size, link, reads)
             }
             MediaKind::Frame => {
                 if !self.screen.recorded(dir.path()).0 {
@@ -428,32 +541,52 @@ impl MediaService {
                     })?
                     .ok_or_else(|| ControlError::not_found("There is no frame at that time."))?;
                 let file = dir.path().join(&path);
-                if let Ok(meta) = fs::metadata(&file) {
-                    self.used(args.meeting.as_str(), std::slice::from_ref(&path));
+                let meeting = args.meeting.as_str().to_owned();
+                // Read where it is, checked and registered as read under the claim the cache
+                // limit takes to remove it: the limit either removed it before, and the check
+                // finds it gone, or sees the reader afterwards and leaves the file alone.
+                let serve = || {
+                    let meta = fs::metadata(&file).ok().filter(|m| m.is_file())?;
+                    self.used(&meeting, std::slice::from_ref(&path));
                     let ready = Ready {
-                        path: file,
+                        path: file.clone(),
                         kind: "image/jpeg",
                         size: meta.len(),
                         start: at,
                         end: at,
                         owned: false,
                         clip: false,
+                        more: false,
                     };
-                    return self.insert_ready(key, ready);
+                    Some(self.insert_ready(key.clone(), ready, link, vec![path.clone()]))
+                };
+                let mut claimed = false;
+                if file.is_file() {
+                    let held = match &self.sync {
+                        Some(sync) => sync.try_hold(&meeting, &path, serve),
+                        None => Some(serve()),
+                    };
+                    match held {
+                        Some(Some(answer)) => return answer,
+                        Some(None) => {}
+                        // A fetch or the cache limit has it now: the job below waits for the
+                        // claim, then reads the file where it is or fetches it again.
+                        None => claimed = true,
+                    }
                 }
-                let meeting = args.meeting.as_str().to_owned();
-                if !self.can_fetch(&meeting, std::slice::from_ref(&path)) {
+                if !claimed && !self.can_fetch(&meeting, std::slice::from_ref(&path)) {
                     return Err(ControlError::not_available(
                         "This frame is no longer on this computer and isn't in a synced bucket.",
                     ));
                 }
+                let reads = vec![path.clone()];
                 let work = Work::Frame {
                     meeting,
                     dir: dir.path().to_path_buf(),
                     path,
                     at,
                 };
-                self.start_job(key, work, 0)
+                self.start_job(key, work, 0, link, reads)
             }
             MediaKind::Video => {
                 let end = args.end.ok_or_else(|| bad_request("Video needs an end."))?;
@@ -471,7 +604,13 @@ impl MediaService {
                     start: args.start,
                     end,
                 };
-                self.start_job(key, work, 0)
+                // The fragments a cut reads are found while it prepares.
+                let reads = vec![format!(
+                    "{}/{}/",
+                    screen_paths::SCREEN_DIR,
+                    screen_paths::VIDEO_DIR
+                )];
+                self.start_job(key, work, 0, link, reads)
             }
         }
     }
@@ -481,7 +620,11 @@ impl MediaService {
     /// arguments mix again up to the new end. The old file stays for a link still reading it, and
     /// the sweep removes it once nobody uses it.
     fn rekey_grown_audio(&self, key: &JobKey, args: &MediaOpenArgs) {
-        let Some(wanted) = key.end.filter(|_| key.kind == MediaKind::Audio) else {
+        // A piece ends early on purpose; the rest is another open.
+        let Some(wanted) = key
+            .end
+            .filter(|_| key.kind == MediaKind::Audio && !key.piece)
+        else {
             return;
         };
         let clamped = self
@@ -502,7 +645,7 @@ impl MediaService {
         let Some(dir) = self.controller.library().dir(args.meeting.as_str()) else {
             return;
         };
-        match self.audio_plan(&dir, args.start, wanted) {
+        match self.audio_plan(&dir, args.start, wanted, false) {
             Ok(plan) if plan.end > held => {}
             _ => return,
         }
@@ -514,7 +657,7 @@ impl MediaService {
     }
 
     /// The answer for arguments Voice already knows, or `None` to start again.
-    fn known(&self, key: &JobKey) -> Result<Option<Value>, ControlError> {
+    fn known(&self, key: &JobKey, link: bool) -> Result<Option<Value>, ControlError> {
         let mut inner = self.lock();
         let Some(id) = inner
             .jobs
@@ -525,6 +668,7 @@ impl MediaService {
             return Ok(None);
         };
         let job = inner.jobs.get_mut(&id).expect("found above");
+        job.link |= link;
         match &job.state {
             State::Preparing => Ok(Some(json!({ "media": id, "ready": false }))),
             State::Ready(ready) if ready.path.is_file() => {
@@ -550,12 +694,16 @@ impl MediaService {
         }
     }
 
-    /// Checks an audio range and finds what it needs, without reading any audio.
+    /// Checks an audio range and finds what it needs, without reading any audio. A `piece` ends
+    /// at the first segment boundary at least [`MIN_PIECE_MS`] after `start` when audio after it
+    /// still has to come back from the bucket: it waits for the segments before that boundary
+    /// only, and a player starts on it while the rest comes.
     fn audio_plan(
         &self,
         dir: &MeetingDir,
         start: u64,
         end: u64,
+        piece: bool,
     ) -> Result<AudioPlan, ControlError> {
         let meeting = dir
             .meeting()
@@ -573,28 +721,67 @@ impl MediaService {
             .filter(|s| tracks.contains(&s.track) && is_segment_file(&s.track, s.seq, &s.file))
             .collect();
         let path = dir.path();
-        let samples = |s: &SegmentRecord| segment_length(path, s);
-        let recorded_end = segments
+        // What each segment plays in ms, (from, to, file), as the mix reads it: where the recorder
+        // started a segment before the previous one ended to correct clock drift, the later one
+        // starts where the earlier one ends, and a segment covered whole plays nothing.
+        let files: HashMap<PathBuf, &str> = segments
             .iter()
-            .map(|s| s.t * PER_MS + samples(s))
-            .max()
-            .unwrap_or(0)
-            .div_ceil(PER_MS);
+            .map(|s| (path.join(&s.file), s.file.as_str()))
+            .collect();
+        let spans: Vec<(u64, u64, String)> = tracks
+            .iter()
+            .flat_map(|track| {
+                let reader =
+                    TrackReader::with_lengths(path, track, &segments, |s| segment_length(path, s));
+                reader
+                    .spans()
+                    .filter_map(|(from, to, file)| {
+                        let file = files.get(file)?;
+                        Some((from / PER_MS, to.div_ceil(PER_MS), (*file).to_owned()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let recorded_end = spans.iter().map(|t| t.1).max().unwrap_or(0);
         if start >= recorded_end {
             return Err(ControlError::not_found(
                 "Nothing was recorded at that time.",
             ));
         }
-        let end = end.min(recorded_end);
-        let needed: Vec<String> = segments
-            .iter()
-            .filter(|s| {
-                let from = s.t;
-                let to = (s.t * PER_MS + samples(s)).div_ceil(PER_MS);
-                from < end && to > start
-            })
-            .map(|s| s.file.clone())
-            .collect();
+        let mut end = end.min(recorded_end);
+        // The files the mix of start..end reads.
+        let touched = |end: u64| -> Vec<String> {
+            spans
+                .iter()
+                .filter(|(from, to, _)| *from < end && *to > start)
+                .map(|t| t.2.clone())
+                .collect()
+        };
+        let mut needed = touched(end);
+        let mut more = false;
+        if piece {
+            let within = || {
+                spans
+                    .iter()
+                    .filter(|(from, to, _)| *from < end && *to > start)
+            };
+            // The earliest segment end far enough after start: a boundary just past start, such
+            // as another track's a few ms after this one's, would cut a piece too short to play.
+            let shortest = start + MIN_PIECE_MS;
+            if let Some(boundary) = within()
+                .map(|t| t.1)
+                .filter(|to| *to >= shortest && *to < end)
+                .min()
+            {
+                let later_missing =
+                    within().any(|(from, _, file)| *from >= boundary && !path.join(file).is_file());
+                if later_missing {
+                    end = boundary;
+                    needed = touched(end);
+                    more = true;
+                }
+            }
+        }
         let id = dir.id().as_str().to_owned();
         let fetch = missing(path, &needed);
         if !fetch.is_empty() && !self.can_fetch(&id, &fetch) {
@@ -610,6 +797,7 @@ impl MediaService {
             tracks,
             segments,
             needed,
+            more,
         })
     }
 
@@ -668,7 +856,13 @@ impl MediaService {
         Ok(())
     }
 
-    fn insert_ready(&self, key: JobKey, ready: Ready) -> Result<Value, ControlError> {
+    fn insert_ready(
+        &self,
+        key: JobKey,
+        ready: Ready,
+        link: bool,
+        reads: Vec<String>,
+    ) -> Result<Value, ControlError> {
         let id = new_id()?;
         let answer = ready_answer(&id, &ready);
         let mut inner = self.lock();
@@ -683,13 +877,22 @@ impl MediaService {
                 used: Instant::now(),
                 reserved: 0,
                 answered_ready: true,
+                link,
+                reads,
             },
         );
         Ok(answer)
     }
 
     /// Queues a job and answers `ready: false`.
-    fn start_job(&self, key: JobKey, work: Work, reserved: u64) -> Result<Value, ControlError> {
+    fn start_job(
+        &self,
+        key: JobKey,
+        work: Work,
+        reserved: u64,
+        link: bool,
+        reads: Vec<String>,
+    ) -> Result<Value, ControlError> {
         let id = new_id()?;
         let spawn = {
             let mut inner = self.lock();
@@ -697,13 +900,13 @@ impl MediaService {
                 return Err(ControlError::not_found(NO_MEETING));
             }
             // Another open of the same arguments got here first.
-            if let Some(other) = inner
+            if let Some((other, job)) = inner
                 .jobs
-                .iter()
+                .iter_mut()
                 .find(|(_, j)| j.key == key && matches!(j.state, State::Preparing))
-                .map(|(other, _)| other.clone())
             {
-                return Ok(json!({ "media": other, "ready": false }));
+                job.link |= link;
+                return Ok(json!({ "media": other.clone(), "ready": false }));
             }
             inner.jobs.insert(
                 id.clone(),
@@ -713,6 +916,8 @@ impl MediaService {
                     answered_ready: false,
                     used: Instant::now(),
                     reserved,
+                    link,
+                    reads,
                 },
             );
             inner.queue.push_back((id.clone(), work));
@@ -764,6 +969,7 @@ impl MediaService {
                     end: at,
                     owned: false,
                     clip: false,
+                    more: false,
                 })
             }
             Work::Video {
@@ -808,6 +1014,7 @@ impl MediaService {
                     end,
                     owned: false,
                     clip: true,
+                    more: false,
                 })
             }
         }
@@ -821,7 +1028,10 @@ impl MediaService {
             ));
         };
         sync.ensure_local(meeting, paths, &self.stopping)
-            .map_err(fetch_error)
+            .map_err(fetch_error)?;
+        // What came back counts against the cache limit at once.
+        self.cache.trim();
+        Ok(())
     }
 
     /// Writes the mix of every track as a WAV file in `<data>/media/`.
@@ -849,6 +1059,7 @@ impl MediaService {
             end: plan.end,
             owned: true,
             clip: false,
+            more: plan.more,
         })
     }
 
@@ -952,6 +1163,7 @@ impl MediaService {
     /// Stops the jobs that run: a fetch or a mix ends at its next step.
     pub fn shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.cache.shutdown();
         let mut inner = self.lock();
         let queued: Vec<String> = inner.queue.drain(..).map(|(id, _)| id).collect();
         for id in queued {
@@ -1026,14 +1238,15 @@ fn prepare_loop(service: std::sync::Weak<MediaService>) {
 }
 
 fn ready_answer(id: &str, ready: &Ready) -> Value {
-    json!({
-        "media": id,
-        "ready": true,
-        "type": ready.kind,
-        "size": ready.size,
-        "start": ready.start,
-        "end": ready.end,
-    })
+    MediaOpenResult::Ready {
+        media: id.to_owned(),
+        kind: ready.kind.to_owned(),
+        size: ready.size,
+        start: ready.start,
+        end: ready.end,
+        more: ready.more,
+    }
+    .to_value()
 }
 
 fn new_id() -> Result<String, ControlError> {
@@ -1145,6 +1358,7 @@ mod tests {
             kind,
             start: 1000,
             end,
+            piece: false,
         };
         assert_eq!(
             JobKey::of(&args(MediaKind::Frame, Some(5))),

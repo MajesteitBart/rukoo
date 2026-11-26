@@ -10,9 +10,10 @@ use serde_json::Value;
 
 use crate::message::{
     commands, events, Command, CommandBody, Discovery, ErrorMessage, Event, EventBody, Frame,
-    Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingStarting,
-    MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply,
-    ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status, Track, Welcome,
+    Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MediaOpenResult, MeetingStarted,
+    MeetingStarting, MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved,
+    Replay, Reply, ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status,
+    Track, Welcome, PREFETCH_FRAMES,
 };
 use crate::{
     is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
@@ -420,11 +421,17 @@ fn command(f: &Fields) -> Checked<Command> {
             if end.is_some_and(|end| end < start || end - start > MAX_MEDIA_SPAN_MS) {
                 return invalid("end");
             }
+            let piece = a
+                .optional("piece")
+                .map(|value| value.as_bool().ok_or_else(|| Invalid::new("piece")))
+                .transpose()?
+                .unwrap_or(false);
             CommandBody::MediaOpen(MediaOpenArgs {
                 meeting,
                 kind,
                 start,
                 end,
+                piece,
             })
         }
         commands::MEDIA_READ => {
@@ -455,6 +462,20 @@ fn command(f: &Fields) -> Checked<Command> {
         commands::MEETING_DATA_SET => CommandBody::MeetingDataSet {
             meeting: a.meeting("meeting")?,
             data: a.object("data")?.clone(),
+        },
+        commands::MEDIA_PREFETCH => {
+            let meeting = a.meeting("meeting")?;
+            if a.string("kind")? != PREFETCH_FRAMES {
+                return invalid("kind");
+            }
+            CommandBody::MediaPrefetch { meeting }
+        }
+        commands::MEDIA_KEEP => CommandBody::MediaKeep {
+            meeting: a.meeting("meeting")?,
+            keep: a
+                .optional("keep")
+                .map(|value| value.as_bool().ok_or_else(|| Invalid::new("keep")))
+                .transpose()?,
         },
         unknown => CommandBody::Unknown {
             command: unknown.to_owned(),
@@ -538,6 +559,41 @@ pub fn validate_split_result(result: &Object) -> Result<SplitResult, Invalid> {
         }),
         _ => invalid("state"),
     }
+}
+
+/// Checks the result of a `media.open` reply: `{ media, ready: false }`, or a ready file with
+/// `type`, `size`, `start`, `end` of at least `start`, and `more`, which may be left out and is
+/// `true` or `false` when present. The side that sent the command checks its result with this.
+pub fn validate_media_open_result(result: &Object) -> Result<MediaOpenResult, Invalid> {
+    let f = Fields(result);
+    let media = f.string("media")?;
+    if !is_media_id(media) {
+        return invalid("media");
+    }
+    let media = media.to_owned();
+    if !f.boolean("ready")? {
+        return Ok(MediaOpenResult::Preparing { media });
+    }
+    let kind = f.string("type")?.to_owned();
+    let size = f.uint("size")?;
+    let start = f.uint("start")?;
+    let end = f.uint("end")?;
+    if end < start {
+        return invalid("end");
+    }
+    let more = f
+        .optional("more")
+        .map(|value| value.as_bool().ok_or_else(|| Invalid::new("more")))
+        .transpose()?
+        .unwrap_or(false);
+    Ok(MediaOpenResult::Ready {
+        media,
+        kind,
+        size,
+        start,
+        end,
+        more,
+    })
 }
 
 /// Typed reads of an object's fields. Every failure names the field.
@@ -941,6 +997,7 @@ mod tests {
                 kind,
                 start,
                 end,
+                piece: false,
             }))
         };
         let args = |kind: &str, start: Value, end: Option<Value>| {
@@ -1171,6 +1228,60 @@ mod tests {
                 "{result:?} round trips"
             );
         }
+    }
+
+    #[test]
+    fn a_media_open_result_is_preparing_or_ready_with_more_when_given() {
+        let check = |value: Value| validate_media_open_result(value.as_object().unwrap());
+        let media = "md-a1B2c3D4e5F6g7H8i9J0kL";
+        let ready = |more: Option<Value>| {
+            let mut value = json!({ "media": media, "ready": true, "type": "audio/wav", "size": 44, "start": 1000, "end": 3000 });
+            if let Some(more) = more {
+                value["more"] = more;
+            }
+            value
+        };
+        let file = |more| MediaOpenResult::Ready {
+            media: media.into(),
+            kind: "audio/wav".into(),
+            size: 44,
+            start: 1000,
+            end: 3000,
+            more,
+        };
+        assert_eq!(
+            check(json!({ "media": media, "ready": false })),
+            Ok(MediaOpenResult::Preparing {
+                media: media.into()
+            })
+        );
+        // An older Voice never sends `more`: the file is all there is.
+        assert_eq!(check(ready(None)), Ok(file(false)));
+        assert_eq!(check(ready(Some(Value::Null))), Ok(file(false)));
+        assert_eq!(check(ready(Some(json!(false)))), Ok(file(false)));
+        assert_eq!(check(ready(Some(json!(true)))), Ok(file(true)));
+        let reason = |value: Value| check(value).unwrap_err().reason;
+        assert_eq!(reason(ready(Some(json!(1)))), "more");
+        assert_eq!(reason(ready(Some(json!("yes")))), "more");
+        assert_eq!(reason(json!({ "media": "md-1", "ready": false })), "media");
+        assert_eq!(reason(json!({ "media": media })), "ready");
+        let mut early = ready(None);
+        early["end"] = json!(500);
+        assert_eq!(reason(early), "end");
+        for result in [
+            file(false),
+            file(true),
+            MediaOpenResult::Preparing {
+                media: media.into(),
+            },
+        ] {
+            assert_eq!(
+                check(result.to_value()),
+                Ok(result.clone()),
+                "{result:?} round trips"
+            );
+        }
+        assert!(file(false).to_value().get("more").is_none());
     }
 
     #[test]

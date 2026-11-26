@@ -7,8 +7,9 @@ use std::fs;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use voice_protocol::{
-    negotiate, paths, replay_plan, validate_discovery, validate_incoming, validate_split_result,
-    Discovery, EventBody, Message, Platform, Replay, Reply, Side, SplitResult, PROTOCOL,
+    negotiate, paths, replay_plan, validate_discovery, validate_incoming,
+    validate_media_open_result, validate_split_result, Discovery, EventBody, MediaOpenResult,
+    Message, Platform, Replay, Reply, Side, SplitResult, PROTOCOL,
 };
 
 fn vectors() -> Value {
@@ -170,6 +171,49 @@ fn the_replies_to_a_split_hold_split_results() {
         end: 3_605_120
     }));
     assert!(results.contains(&SplitResult::Done { voices: 3 }));
+}
+
+/// The replies with the id of a `media.open` command hold `media.open` results, as Rukoo checks
+/// them; a piece that ends early says `more`.
+#[test]
+fn the_replies_to_a_media_open_hold_media_open_results() {
+    let vectors = vectors();
+    let valid = section(&vectors, &["valid"]);
+    let opens: Vec<&Value> = valid
+        .iter()
+        .filter(|v| v["message"]["command"] == "media.open")
+        .map(|v| &v["message"]["id"])
+        .collect();
+    let mut results = Vec::new();
+    for vector in valid {
+        let message = &vector["message"];
+        if message["type"] != "reply" || !opens.contains(&&message["id"]) {
+            continue;
+        }
+        let name = text(vector, "name");
+        if let Message::Reply(Reply {
+            outcome: Ok(result),
+            ..
+        }) = validate_incoming(Side::Voice, message).unwrap()
+        {
+            results.push(
+                validate_media_open_result(&result)
+                    .unwrap_or_else(|e| panic!("{name}: rejected with reason {:?}", e.reason)),
+            );
+        }
+    }
+    let more: Vec<bool> = results
+        .iter()
+        .filter_map(|r| match r {
+            MediaOpenResult::Ready { more, .. } => Some(*more),
+            MediaOpenResult::Preparing { .. } => None,
+        })
+        .collect();
+    assert!(more.contains(&true), "no piece with more to come");
+    assert!(more.contains(&false), "no whole file");
+    assert!(results
+        .iter()
+        .any(|r| matches!(r, MediaOpenResult::Preparing { .. })));
 }
 
 #[test]

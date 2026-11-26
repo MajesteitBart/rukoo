@@ -80,6 +80,8 @@ struct Download {
 struct Slow {
     at: Instant,
     used_bytes: u64,
+    /// Media fetched back from the bucket that the cache limit counts.
+    cache_bytes: u64,
     ownkey_running: bool,
     ownkey_keys: Vec<String>,
     ownkey_found: bool,
@@ -171,6 +173,7 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
         "storage": {
             "folder": core.meetings.library().root().display().to_string(),
             "usedBytes": slow.used_bytes,
+            "cacheBytes": slow.cache_bytes,
             "freeBytes": core.svc.system.free_bytes(core.meetings.library().root()).unwrap_or(0),
         },
         "screen": screen(core),
@@ -230,6 +233,7 @@ fn slow(core: &Core) -> Slow {
     let slow = Slow {
         at: Instant::now(),
         used_bytes: core.meetings.library().usage_bytes(),
+        cache_bytes: core.media.cache().bytes(),
         ownkey_running: core.svc.system.ownkey_running(),
         ownkey_keys,
         ownkey_found,
