@@ -13,9 +13,12 @@
   // The Worker from the rukoo repository's server/ directory, deployed separately as rukoo-account.
   "services": [{ "binding": "ACCOUNT", "service": "rukoo-account" }],
 
+  // help.rukoo.io is the help center from site/help/ (cloudflare/help-center.js). A custom domain gets its DNS record
+  // and certificate from the deploy.
   "routes": [
     { "pattern": "rukoo.io", "custom_domain": true },
-    { "pattern": "www.rukoo.io", "custom_domain": true }
+    { "pattern": "www.rukoo.io", "custom_domain": true },
+    { "pattern": "help.rukoo.io", "custom_domain": true }
   ],
   "workers_dev": false,
 

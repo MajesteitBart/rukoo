@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { walk, assertPublic } from './validate.mjs';
-import { site, out, inlineScripts, scriptHash, pagePolicies } from './publish.mjs';
-// Checks the published copy in ../site/help/. Links resolve against ../site/, so links from the help center to the
-// rest of rukoo.io (the home page, the changelog, the shared fonts) are checked as well.
-const base='/help/';
+import { out, inlineScripts, scriptHash, pagePolicies } from './publish.mjs';
+// Checks the published copy in ../site/help/, which is help.rukoo.io: every local link and file a page uses must be
+// in there. Links to rukoo.io are absolute, like any other site's.
+const base='/';
 if(!fs.existsSync(path.join(out,'index.html'))) throw new Error('No published help center in site/help/. Run npm run build.');
 const files=walk(out); const html=files.filter(x=>x.endsWith('.html'));
 if(!fs.existsSync(path.join(out,'pagefind/pagefind.js'))) throw new Error('Missing Pagefind search index');
@@ -21,8 +21,8 @@ for(const f of html){
  const page=base+path.relative(out,f).split(path.sep).join('/').replace(/index\.html$/,'');
  for(const m of text.matchAll(/(?:href|src)=["']([^"']+)["']/g)){
   let h=m[1].replaceAll('&amp;','&');if(/^(?:https?:|mailto:|tel:|data:|javascript:)/.test(h)) continue;
-  const u=new URL(h,'https://rukoo.io'+page);
-  let file=path.join(site,decodeURIComponent(u.pathname));if(u.pathname.endsWith('/'))file=path.join(file,'index.html');
+  const u=new URL(h,'https://help.rukoo.io'+page);
+  let file=path.join(out,decodeURIComponent(u.pathname));if(u.pathname.endsWith('/'))file=path.join(file,'index.html');
   if(!fs.existsSync(file))throw new Error(`Broken output link ${h} in ${f}`);
   if(u.hash&&file.endsWith('.html')){ const target=fs.readFileSync(file,'utf8');const id=decodeURIComponent(u.hash.slice(1));if(!target.includes(`id="${id}"`)&&!target.includes(`id='${id}'`))throw new Error(`Broken fragment ${h} in ${f}`); }
   links++;

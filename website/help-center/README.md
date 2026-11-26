@@ -1,6 +1,6 @@
 # Rukoo help center
 
-A local, English-first static help center, published at https://rukoo.io/help/. Astro Starlight supplies Markdown routing, responsive navigation and Pagefind search. The help center has 60 pages. It covers setup, daily mail, accounts and team chat, calendar and booking, meetings with Rukoo Voice, and everyday agent tasks. Supplemental guides are labeled as GitHub destinations.
+A local, English-first static help center, published at https://help.rukoo.io/. Astro Starlight supplies Markdown routing, responsive navigation and Pagefind search. The help center has 60 pages. It covers setup, daily mail, accounts and team chat, calendar and booking, meetings with Rukoo Voice, and everyday agent tasks. Supplemental guides are labeled as GitHub destinations.
 
 ## Run
 
@@ -11,12 +11,12 @@ npm ci
 npm test
 npm run build
 npm run preview -- --port 4321
-# Open http://127.0.0.1:4321/help/
+# Open http://127.0.0.1:4321/
 ```
 
 For editing: `npm run dev -- --port 4321`. Search works on the built preview; Pagefind indexes static output during the build. `npm run build` validates the Markdown, builds into `dist/`, copies the build to `../site/help/` with a script policy on every page, and then checks output links, those policies and private-data patterns.
 
-The Astro preview serves the help center alone, so the Inter font and the links to the rest of rukoo.io don't load there. To see the help center inside the whole site, with the Worker and its headers, run `npx wrangler@4 dev` in `website/` after a build and open http://127.0.0.1:8787/help/. `npm run serve` there shows the same files without the Worker.
+To see the help center as help.rukoo.io serves it, with the Worker and its headers, run `npx wrangler@4 dev --infer-origin-from-routes=false` in `website/` after a build and open http://help.localhost:8787/. Browsers send every `*.localhost` address to your own computer, and the Worker answers `help.localhost` as the help center. Without that flag Wrangler hands the Worker every request as rukoo.io, the first route in wrangler.jsonc, and help.localhost shows the main site. http://127.0.0.1:8787/help/ redirects there, as rukoo.io/help/ does on the live site.
 
 ## Why Starlight
 
@@ -29,8 +29,9 @@ Markdown remains the content source. Starlight provides routing, mobile navigati
 - `page-registry.json`: persistent page IDs and URLs.
 - `editorial/`: four templates, schema, tone and PR rules. These files are outside the published content and asset directories.
 - `public/`: reviewed public assets only. Rukoo wordmarks come from the public v2.4.0 tag; see THIRD-PARTY-NOTICES.md.
-- `scripts/`: deterministic content/output validation and negative tests, plus the build steps: `astro.mjs` runs Astro with telemetry off, `markdown-base.mjs` adds `/help` to links in the Markdown, and `publish.mjs` copies the build into the site.
+- `scripts/`: deterministic content/output validation and negative tests, plus the build steps: `astro.mjs` runs Astro with telemetry off, `markdown-keys.mjs` turns shortcuts in the Markdown into keycaps, and `publish.mjs` copies the build into the site with the main site's Inter font.
 - `src/components/SiteTitle.astro`: the header title. The Rukoo wordmark links to the rukoo.io home page and "Help" to the help home.
+- `public/robots.txt`: allows every crawler and names the sitemap, `sitemap-index.xml`, which Starlight writes on every build.
 
 Keep the actual source map in a separate private directory outside this project and outside the delivery archive. The schema and fictional example in editorial/ describe its shape.
 
@@ -42,7 +43,9 @@ Use REVIEW.md to follow the instructions on the released apps and record the res
 
 ## URL policy
 
-A title edit never changes pageId or slug. New pages add one registry entry. Treat published URLs as permanent. Page URLs in the registry, the navigation and the Markdown leave out the `/help` base; the build adds it, so `/mail/write/` is published as https://rukoo.io/help/mail/write/. A necessary URL move needs an explicit old-to-new redirect, a retained registry history and a reviewed link migration. Put the redirect in `../site/_redirects` (an HTTP redirect, with the full `/help/...` paths) or under `redirects` in astro.config.mjs (an HTML redirect page). Astro adds the base to the old path there but not to the new one, so write `'/old-page/': '/help/new-page/'`.
+A title edit never changes pageId or slug. New pages add one registry entry. Treat published URLs as permanent. The URL in the registry is the published path: `/mail/write/` is https://help.rukoo.io/mail/write/. A necessary URL move needs an explicit old-to-new redirect, a retained registry history and a reviewed link migration. Put the redirect under `redirects` in astro.config.mjs (an HTML redirect page), or in `../site/_redirects` for an HTTP redirect. The help center's files sit in `site/help/`, so the paths there start with `/help`: `/help/old-page/ /help/new-page/ 301` sends https://help.rukoo.io/old-page/ to /new-page/.
+
+The help center was first published at https://rukoo.io/help/. The Worker sends every address there to the same path on help.rukoo.io with a 301.
 
 ## Checks and packaging
 
@@ -52,6 +55,6 @@ The delivery ZIP contained source files from this project only. It excludes node
 
 ## Deploying
 
-The help center ships with the rest of rukoo.io. The `rukoo-site` Worker serves `../site/`, and the build puts the help center in `../site/help/`, which isn't committed. The Website workflow (`.github/workflows/website.yml`) runs `npm run help:build` and `npm run help:test` from `website/` on every pull request that touches `website/`. On `main` the deploy job takes the help center from that build, together with the browser app, and deploys the site. `npm run deploy` in `website/` builds both too, for a deploy by hand.
+The help center ships with the rest of rukoo.io. The `rukoo-site` Worker serves `../site/` on rukoo.io and `../site/help/` on help.rukoo.io, a custom domain in `../wrangler.jsonc`. The build puts the help center in `../site/help/`, which isn't committed. The Website workflow (`.github/workflows/website.yml`) runs `npm run help:build` and `npm run help:test` from `website/` on every pull request that touches `website/`. On `main` the deploy job takes the help center from that build, together with the browser app, and deploys the site. `npm run deploy` in `website/` builds both too, for a deploy by hand.
 
-`../cloudflare/help-center.js` answers everything under /help/ from those files. A missing page gets the help center's 404 page with a 404 status and never reaches the account server. It replaces the main site's Content-Security-Policy with the help center's, which allows inline scripts and Pagefind's WebAssembly. `publish.mjs` gives every page a second policy in a `<meta>` tag that lists the hashes of that page's own inline scripts. The browser enforces both, so only Starlight's own scripts run. `check-output.mjs` fails the build when a page lacks that policy or an inline script lacks its hash.
+`../cloudflare/help-center.js` answers every request to help.rukoo.io from those files. A missing page gets the help center's 404 page with a 404 status, and nothing on that host reaches the rest of the site or the account server. It replaces the main site's Content-Security-Policy with the help center's, which allows inline scripts and Pagefind's WebAssembly. `publish.mjs` gives every page a second policy in a `<meta>` tag that lists the hashes of that page's own inline scripts. The browser enforces both, so only Starlight's own scripts run. `check-output.mjs` fails the build when a page lacks that policy or an inline script lacks its hash.

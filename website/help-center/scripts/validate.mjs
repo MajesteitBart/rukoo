@@ -43,7 +43,7 @@ export function validate() {
  for(const p of pages)for(const m of p.body.matchAll(/!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g))checkLink(m[1],p.route);
  function nav(items){for(const n of items) { if(n.link)checkLink(n.link,'/');if(n.items)nav(n.items); }}
  const navigation=fs.readFileSync('navigation.json','utf8');assertPublic(navigation,'navigation');nav(JSON.parse(navigation));
- for(const file of walk(path.resolve('public'))) { if(!['rukoo-logo.svg','rukoo-logo-dark.svg','favicon.svg'].includes(path.basename(file))) throw new Error(`Public asset requires allowlist review: ${file}`); assertPublic(fs.readFileSync(file,'utf8'),file); }
+ for(const file of walk(path.resolve('public'))) { if(!['rukoo-logo.svg','rukoo-logo-dark.svg','favicon.svg','robots.txt'].includes(path.basename(file))) throw new Error(`Public asset requires allowlist review: ${file}`); assertPublic(fs.readFileSync(file,'utf8'),file); }
  console.log(`PASS: ${pages.length} pages; unique stable IDs/URLs, metadata, Markdown links, navigation and public-input checks.`);
 }
 if(path.resolve(process.argv[1] || '')===fileURLToPath(import.meta.url))validate();

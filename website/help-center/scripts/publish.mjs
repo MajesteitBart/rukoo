@@ -1,7 +1,8 @@
-// Copies the build from dist/ to ../site/help/, where the rukoo-site Worker serves it as https://rukoo.io/help/, and
+// Copies the build from dist/ to ../site/help/, where the rukoo-site Worker serves it as https://help.rukoo.io/, and
 // gives every page a Content-Security-Policy <meta> that allows only the hashes of its own inline scripts. Starlight
-// writes small inline scripts on every page (theme, sidebar, search shortcut). The Worker's header policy for /help/
-// (../cloudflare/help-center.js) allows inline scripts; the browser enforces both policies, so only these run.
+// writes small inline scripts on every page (theme, sidebar, search shortcut). The Worker's header policy for the help
+// center (../cloudflare/help-center.js) allows inline scripts; the browser enforces both policies, so only these run.
+// The pages use the main site's Inter font at /assets/fonts/, so the build gets a copy of ../site/assets/fonts/.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,6 +11,7 @@ import { walk } from './validate.mjs';
 
 export const site = path.resolve('..', 'site');
 export const out = path.join(site, 'help');
+const fonts = path.join(site, 'assets', 'fonts');
 
 const META = /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/g;
 
@@ -51,6 +53,7 @@ if (path.resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
   if (!fs.existsSync(path.join(dist, 'index.html'))) throw new Error('No build in dist/. Run astro build first.');
   // Every page gets its policy before ../site/help/ is touched, so a page that fails leaves the last copy as it was.
   const pages = walk(dist).filter((f) => f.endsWith('.html')).map((f) => [path.relative(dist, f), withPolicy(fs.readFileSync(f, 'utf8'))]);
+  fs.cpSync(fonts, path.join(dist, 'assets', 'fonts'), { recursive: true });
   fs.rmSync(out, { recursive: true, force: true });
   fs.cpSync(dist, out, { recursive: true });
   for (const [file, html] of pages) fs.writeFileSync(path.join(out, file), html);
