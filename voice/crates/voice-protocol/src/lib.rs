@@ -23,8 +23,7 @@ pub use message::*;
 pub use paths::Platform;
 pub use validate::{
     validate_discovery, validate_incoming, validate_media_open_result, validate_split_result,
-    validate_sync_settings_result,
-    Invalid,
+    validate_sync_settings_result, Invalid,
 };
 
 /// The newest protocol version this crate speaks.

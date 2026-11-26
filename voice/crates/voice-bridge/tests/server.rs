@@ -1438,18 +1438,18 @@ fn sync_settings_reach_the_meeting_control_and_reply_as_the_vectors_do() {
     let get = vector("ask for the bucket settings to share with the other computers");
     client.send(get.clone());
     assert_eq!(
-        client.read_reply("c-62"),
+        client.read_reply("c-65"),
         vector("no bucket settings while sync is off")
     );
 
     client.send(vector("use the bucket of another computer"));
     assert_eq!(
-        client.read_reply("c-63"),
+        client.read_reply("c-66"),
         vector("the bucket is in use here now")
     );
     client.send(get.clone());
     assert_eq!(
-        client.read_reply("c-62"),
+        client.read_reply("c-65"),
         vector("the bucket settings with the secret and the recovery code")
     );
 
@@ -1463,7 +1463,7 @@ fn sync_settings_reach_the_meeting_control_and_reply_as_the_vectors_do() {
     );
     client.send(vector("use the bucket of another computer"));
     assert_eq!(
-        client.read_reply("c-63"),
+        client.read_reply("c-66"),
         vector("this Voice keeps its own key")
     );
 
@@ -1488,7 +1488,7 @@ fn sync_settings_reach_the_meeting_control_and_reply_as_the_vectors_do() {
     let plain = Bridge::start_plain("server-sync-settings-default");
     let (mut client, _) = plain.client(None, 0);
     client.send(get);
-    assert_eq!(client.read_reply("c-62")["error"]["code"], "not_available");
+    assert_eq!(client.read_reply("c-65")["error"]["code"], "not_available");
 }
 
 #[test]
@@ -1503,7 +1503,7 @@ fn a_slow_sync_settings_set_doesnt_hold_back_the_commands_after_it() {
     assert_eq!(client.read_reply("c-70")["ok"], true);
     go.send(()).unwrap();
     assert_eq!(
-        client.read_reply("c-63"),
+        client.read_reply("c-66"),
         vector("the bucket is in use here now")
     );
 }
