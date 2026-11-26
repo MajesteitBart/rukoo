@@ -182,8 +182,8 @@ export function mountChatInput(container, opts = {}) {
 
   // askingKey: the question about an agent key is open. sendWhenReady: the person chose to take the key out of a file,
   // and the message goes once main has uploaded the copy without it, as long as the draft is the one they confirmed:
-  // { parts, files, redacted } (keyOutDraft), or null. picking: the file picker is open (pickFiles).
-  const state = { caret: 0, composing: false, barKey: null, disposed: false, askingKey: false, sendWhenReady: null, picking: false };
+  // { parts, files, redacted } (keyOutDraft), or null. picking: how many file pickers are open (pickFiles).
+  const state = { caret: 0, composing: false, barKey: null, disposed: false, askingKey: false, sendWhenReady: null, picking: 0 };
   // Staged files (contract 3.5): what main reports for this composer's room and thread, the ready files of a restored
   // draft that main doesn't list, and the stages a send just took, hidden until main's list drops them or the send
   // failed.
@@ -728,23 +728,28 @@ export function mountChatInput(container, opts = {}) {
     }
   }
 
-  // While the picker is open, a message waiting after Take the key out holds (sendIfReady); a file picked there stops
-  // it, and none lets it go.
+  // While a picker is open, a message waiting after Take the key out holds (sendIfReady). A file picked there that goes
+  // into the tray stops it (attachFiles); once the last picker is closed and its files are handled, it goes if nothing
+  // changed, as after a cancelled pick or a file too large to attach. state.picking counts the pickers open: the
+  // browser's host opens a new chooser when Attach is clicked while an old one never said it closed.
   async function pickFiles() {
     if (!filesOn()) return;
-    let list = [];
-    state.picking = true;
+    state.picking += 1;
     try {
-      list = (await files.pick()) || [];
-    } catch (err) {
-      toast(files.errorText ? files.errorText(err && err.code, err) : t('chat.files.failed'), 6000);
-      return;
+      let list;
+      try {
+        list = (await files.pick()) || [];
+      } catch (err) {
+        toast(files.errorText ? files.errorText(err && err.code, err) : t('chat.files.failed'), 6000);
+        return;
+      }
+      if (!list.length) return;
+      input.focus({ preventScroll: true });
+      await attachFiles(list);
     } finally {
-      state.picking = false;
-      if (!list.length) sendIfReady();
+      state.picking -= 1;
+      sendIfReady();
     }
-    input.focus({ preventScroll: true });
-    await attachFiles(list);
   }
 
   // The capabilities changed: Attach shows only while the server takes files (contract 5.2).

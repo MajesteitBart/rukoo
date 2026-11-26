@@ -2502,7 +2502,8 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
   // load, the line says so and Add agent stays off, so the agent is never made with what the form held before. Choosing
   // Don't copy leaves what the form holds and forgets the agent that answers for it. Each choice has a turn of its own:
   // only the latest one's read fills the form, also when an earlier choice of the same agent still has its read out.
-  // A read that failed isn't kept, so choosing the agent again reads it again.
+  // A read that failed isn't kept, so choosing the agent again reads it again, and neither is one an older choice
+  // made, which could be older than what a later read of the same workspace already keeps.
   const copyFrom = async (body, copy) => {
     const help = body.querySelector('[data-copy-help]');
     const turn = ++copyTurn;
@@ -2514,6 +2515,7 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
       return showReady(body);
     }
     let found = copyAgents.get(copy.ws);
+    let read = false;
     if (found === undefined) {
       loading = copy;
       help.textContent = t('chat.agents.copyLoading', { name: copy.name || t('native.agentRuns.thisAgent'), workspace: copy.workspace });
@@ -2522,13 +2524,14 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
       try {
         const res = await api('chatAgents', copy.ws);
         found = (res && res.agents) || [];
-        copyAgents.set(copy.ws, found);
+        read = true;
       } catch (_) {
         found = null;
       }
     }
     // Another choice came in meanwhile, or the dialog went.
     if (turn !== copyTurn || !body.isConnected) return;
+    if (read) copyAgents.set(copy.ws, found);
     loading = null;
     const settings = copiedSettings(copy, (found || []).find((a) => a.id === copy.agent) || null);
     body.querySelector('[name="name"]').value = settings.name;

@@ -510,6 +510,52 @@ test('a file pasted while the copy without the key uploads stops the message goi
   expect(sent.attachments.map((f) => f.name).sort()).toEqual(['agent.json', 'notes.txt']);
 });
 
+// RUK-294 third review, P2: after Take the key out, an older file picker that ended empty let the message go while a
+// newer one was still open (the browser's host opens a new chooser when an old one never said it closed), and a pick
+// that ended with a file too large to attach left the message waiting for good.
+test('after Take the key out the message waits while any file picker is open, and goes when the last one adds nothing', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  await ready(bart);
+  const { file } = keyFile(ws);
+  await attach([file], 1);
+  // Each pick from here waits until the test answers it with the paths picked.
+  await app.evaluate(() => {
+    global.__semPicks = [];
+    global.__semChat.files.host.pickFiles = () => new Promise((resolve) => global.__semPicks.push(resolve));
+  });
+  const picks = () => app.evaluate(() => global.__semPicks.length);
+  const answerPick = (i, paths) => app.evaluate((_, [i, paths]) => void global.__semPicks[i](paths), [i, paths]);
+  await composer(win).click();
+  await win.keyboard.type('Waits for the pickers');
+  const release = await holdUploads();
+  await win.keyboard.press('Enter');
+  await dialogBox(win).locator('.buttons button', { hasText: 'Take the key out' }).click();
+  await expect(toast()).toHaveText('The key is out of the file. The message goes once the file has uploaded again, unless you change the message first.');
+  const attachButton = pane().locator('.ch-main [data-ch-compose="attach"]');
+  await attachButton.click();
+  await attachButton.click();
+  await expect.poll(picks).toBe(2);
+  // The copy without the key is up while both pickers are open: nothing goes.
+  await release();
+  await expect.poll(stagedInMain, { timeout: 20000 }).toEqual({ 'agent.json': ['ready', false] });
+  await win.waitForTimeout(1500);
+  expect(await texts(olga, ws)).not.toContain('Waits for the pickers');
+  // The older picker ends empty while the newer one is still open: still nothing.
+  await answerPick(0, []);
+  await win.waitForTimeout(1500);
+  expect(await texts(olga, ws)).not.toContain('Waits for the pickers');
+  // The newer one ends with a file over the server's 25 MiB: it stays out of the tray, the message is as it was
+  // confirmed, and it goes.
+  const big = path.join(dataDir, 'attach', 'big.bin');
+  fs.writeFileSync(big, '');
+  fs.truncateSync(big, 26 * 1024 * 1024);
+  await answerPick(1, [big]);
+  await expect.poll(() => texts(olga, ws), { timeout: 15000 }).toContain('Waits for the pickers');
+  const sent = (await serverMessages(server, olga, ws.id, ws.general)).find((e) => e.text === 'Waits for the pickers');
+  expect(sent.attachments.map((f) => f.name)).toEqual(['agent.json']);
+  await expect(win.locator('.scrim')).toHaveCount(0);
+});
+
 // RUK-294 second review, P2: choosing the same agent to copy again while its first read was out took that read's answer:
 // when it failed, Add agent came on with the form's fallback while the second read still loaded.
 test("choosing the agent to copy again while its settings load waits for that choice's own read", async ({}, testInfo) => {
@@ -551,6 +597,53 @@ test("choosing the agent to copy again while its settings load waits for that ch
   await expect(form.locator('[name="answers"][value="sponsor"]')).toBeChecked();
   await expect(form.locator('[name="name"]')).toHaveValue('Clark');
   await expect(make).toBeEnabled();
+});
+
+// RUK-294 third review, P2: a read of the agent to copy from an older choice, answered after a newer one, replaced what
+// Add an agent kept of that workspace, so choosing the agent again filled the form with the older settings.
+test("an older read of the agent to copy, answered last, doesn't replace the newer settings Add an agent keeps", async () => {
+  test.setTimeout(240000);
+  const { beta } = await clarkInBeta();
+  await workspaceMenu(win, 'Agents');
+  await dialogBox(win).locator('[data-add-agent]').click();
+  const form = dialogBox(win);
+  const copy = form.locator('[name="copy"]');
+  // Each read of Beta's agents waits until the test answers it: ok, or with settings older than Beta's now, in which
+  // its agents answer everyone.
+  await app.evaluate((_, betaId) => {
+    const api = global.__semApi;
+    const read = api.heldAgents || api.chatAgents;
+    api.heldAgents = read;
+    global.__semBetaReads = [];
+    api.chatAgents = (...args) =>
+      args[0] !== betaId
+        ? read(...args)
+        : new Promise((resolve, reject) =>
+            global.__semBetaReads.push({
+              ok: () => read(...args).then(resolve, reject),
+              old: () => read(...args).then((res) => resolve({ ...res, agents: res.agents.map((a) => ({ ...a, answers: 'everyone' })) }), reject)
+            })
+          );
+  }, beta.id);
+  const answer = (i, how) => app.evaluate((_, [i, how]) => void global.__semBetaReads[i][how](), [i, how]);
+  const reads = () => app.evaluate(() => global.__semBetaReads.length);
+  await form.locator('[name="name"]').fill('Helper');
+  await copy.selectOption({ label: 'Clark, in Beta' });
+  await expect.poll(reads).toBe(1);
+  await copy.selectOption({ label: "Don't copy" });
+  await copy.selectOption({ label: 'Clark, in Beta' });
+  await expect.poll(reads).toBe(2);
+  await answer(1, 'ok');
+  await expect(form.locator('[name="answers"][value="sponsor"]')).toBeChecked();
+  // The first choice's read answers last, with the older settings: the form and what it keeps stay the newer.
+  await answer(0, 'old');
+  await win.waitForTimeout(800);
+  await expect(form.locator('[name="answers"][value="sponsor"]')).toBeChecked();
+  await copy.selectOption({ label: "Don't copy" });
+  await form.locator('[name="answers"][value="everyone"]').check();
+  await copy.selectOption({ label: 'Clark, in Beta' });
+  await expect(form.locator('[name="answers"][value="sponsor"]')).toBeChecked();
+  expect(await reads()).toBe(2);
 });
 
 // RUK-294 second review, P2: closing Add an agent while the copied agent was being made lost the agent of Settings that
