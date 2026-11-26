@@ -587,11 +587,11 @@ test('a key someone posted in the message to answer never reaches the backend', 
 // { url, size, sha256 } of bytes, and the link serves served, by default bytes. fetchFile keeps to the contract of
 // rukoo.js fetchFile: what is served goes whole through SHA-256 up to limit, and the first keep bytes stay. fileLink
 // replaces the whole of fileLink.
-function memoryApi({ attachments = [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: 5 }], context = [], files = new Map([['f_1', { bytes: Buffer.from('hello') }]]), fileLink = null } = {}) {
+function memoryApi({ attachments = [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: 5 }], context = [], files = new Map([['f_1', { bytes: Buffer.from('hello') }]]), fileLink = null, text = '@Clark read it' } = {}) {
   const me = { id: `u_${'M'.repeat(22)}`, name: 'Clark', sponsor: `u_${'S'.repeat(22)}`, answers: 'everyone', agents: false, members: [] };
   const other = `u_${'O'.repeat(22)}`;
   const earlier = context.map((e, i) => ({ seq: i + 1, id: `e_${i + 1}`, kind: 'message.posted', actor: other, text: '', mentions: [], attachments: [], ...e }));
-  const trigger = { seq: earlier.length + 1, id: `e_${earlier.length + 1}`, kind: 'message.posted', actor: me.sponsor, text: '@Clark read it', mentions: [{ actor: me.id }], attachments };
+  const trigger = { seq: earlier.length + 1, id: `e_${earlier.length + 1}`, kind: 'message.posted', actor: me.sponsor, text, mentions: [{ actor: me.id }], attachments };
   const all = [...earlier, trigger];
   const posted = [];
   const served = [];
@@ -925,7 +925,9 @@ test("an advertised files origin goes only to public addresses, checked as the c
 test('which addresses count as public, and the lookup answers in both forms Node asks for', async () => {
   const { publicAddress, publicLookup } = require('../integrations/agent-runner/rukoo.js');
   const notPublic = ['127.0.0.1', '127.255.0.9', '0.0.0.0', '0.1.2.3', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '100.64.0.1', '100.127.255.255', '169.254.169.254', '224.0.0.1', '239.1.1.1', '255.255.255.255', '::', '::1', 'fe80::1', 'fe80::1%eth0', 'fc00::1', 'fd12:3456::1', 'fec0::1', 'ff02::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:10.0.0.1', '::ffff:169.254.169.254', '::127.0.0.1', '64:ff9b::a00:1', '64:ff9b::7f00:1', 'not an address', ''];
-  const isPublic = ['8.8.8.8', '1.1.1.1', '100.63.255.255', '100.128.0.1', '172.15.255.255', '172.32.0.1', '192.167.1.1', '203.0.113.9', '2606:4700:4700::1111', '2001:db8::1', '::ffff:8.8.8.8', '64:ff9b::808:808', '[2606:4700::1]'];
+  // RUK-294 third review, P1: ranges IANA marks as not globally reachable passed as public.
+  notPublic.push('198.18.0.1', '198.19.255.255', '192.0.0.1', '192.0.2.1', '192.88.99.1', '198.51.100.7', '203.0.113.9', '::ffff:198.18.0.1', '64:ff9b:1::a00:1', '64:ff9b:1:ffff::1', '100::1', '100:0:0:1::1', '2001::1', '2001:2::1', '2001:1ff::1', '2001:db8::1', '3fff::1', '3fff:fff::1', '5f00::1', '2002:a00:1::1', '2002:7f00:1::1');
+  const isPublic = ['8.8.8.8', '1.1.1.1', '100.63.255.255', '100.128.0.1', '172.15.255.255', '172.32.0.1', '192.167.1.1', '192.0.0.9', '192.0.1.1', '198.17.255.255', '198.20.0.1', '203.0.114.1', '2606:4700:4700::1111', '2001:4860:4860::8888', '2001:200::1', '3fff:1000::1', '2002:808:808::1', '::ffff:8.8.8.8', '64:ff9b::808:808', '[2606:4700::1]'];
   for (const a of notPublic) assert.equal(publicAddress(a), false, a);
   for (const a of isPublic) assert.equal(publicAddress(a), true, a);
 
@@ -1080,6 +1082,43 @@ test('the input stays within maxChars without its images too, and many long file
     assert.match(p.input, /\[message e_1 from u_S+, sender \(trusted\)[^\]]*, 10 files\]/);
     // An image goes along only when its file is on the list, under the number the list gives it.
     assert.equal(p.images.length, (p.input.match(/It comes with this input as image \d+\./g) || []).length);
+  }
+});
+
+// RUK-294 third review: with the message to answer close to maxChars, the list's heading and the line counting the
+// files left off it stayed when every file had left the list (P2), and an image was downloaded and then left off,
+// because its line fit only as the input with images words it (P3). The message's length runs through the last 700
+// characters below maxChars, with one file of a long name, an image or not. The message itself, with the count of its
+// files in its own line, always fits: the runner doesn't cut the text of the message it answers.
+test('near maxChars the files of the message to answer never take the input over it, and an image left off is not downloaded', async () => {
+  const maxChars = 2000;
+  const name = (ext) => `${'n'.repeat(246)}.${ext}`;
+  const bare = recording({ images: true });
+  await memoryRunner(memoryApi({ attachments: [], files: new Map(), text: '@Clark ' }), bare.backend, { maxChars }).once();
+  const base = bare.prompts[0].input.length;
+  for (const image of [true, false]) {
+    let images = 0;
+    let quiet = 0;
+    for (let short = 1; short <= 700; short += 3) {
+      const rec = recording({ images: true });
+      const api = memoryApi({
+        attachments: [{ id: 'f_1', name: name(image ? 'png' : 'bin'), type: image ? 'image/png' : 'application/octet-stream', size: image ? PNG.length : 500 }],
+        files: new Map([['f_1', { bytes: image ? PNG : Buffer.alloc(500) }]]),
+        text: `@Clark ${'y'.repeat(maxChars - base - ', 1 file'.length - short)}`
+      });
+      await memoryRunner(api, rec.backend, { maxChars }).once();
+      const p = rec.prompts[0];
+      const at = `${image ? 'image' : 'file'}, ${short} below`;
+      assert.ok(p.input.length <= maxChars, `${at}: ${p.input.length}`);
+      assert.ok(!p.plain || p.plain.input.length <= maxChars, `${at}, plain: ${p.plain && p.plain.input.length}`);
+      assert.equal(api.served.length, p.images.length, `${at}: downloaded ${api.served.length}, sent ${p.images.length}`);
+      assert.match(p.input, /sender \(trusted\)[^\]]*, 1 file\]/, at);
+      images += p.images.length;
+      if (!p.input.includes('[Files attached to message')) quiet++;
+    }
+    // The sweep reaches both ends: the file listed, and the input with no room for its list at all.
+    assert.ok(quiet > 0, `${image ? 'image' : 'file'}: never without its list`);
+    if (image) assert.ok(images > 0, 'the image never went along');
   }
 });
 

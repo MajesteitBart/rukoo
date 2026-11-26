@@ -811,6 +811,9 @@ class Runner {
           if (!takesImages) f.state = 'no-images';
           else if (f.size > IMAGE_MAX) f.state = 'image-too-large';
           else if (budget.images >= IMAGES_MAX || budget.imageBytes + f.size > IMAGES_BYTES) f.state = 'too-many-images';
+          // Not downloaded when its line doesn't fit as the input without images words it, which is the longer, even
+          // with the text the message's files took so far cut away (fitFiles cuts it for an image that goes along).
+          else if (roomWith(f, { state: 'image', image: PROBE_IMAGE }, room) + list.reduce((n, x) => n + (typeof x.text === 'string' ? escapedLength(x.text) : 0), 0) < 0) f.state = 'image-left-out';
           else {
             const got = await this.download(c, f, IMAGE_MAX, { whole: true });
             const type = got.over ? null : imageType(got.bytes);
@@ -1127,6 +1130,9 @@ function roomWith(f, probe, room) {
 // which a backend sends when its server takes no images.
 const inputLength = (built) => Math.max(built.input.length, built.plain ? built.plain.input.length : 0);
 
+// An image as it goes along, without its bytes, for roomWith before a download.
+const PROBE_IMAGE = Object.freeze({ type: 'image/png', data: Buffer.alloc(0) });
+
 // f as one with text: state, and the start of text, whose keys are out, that fits in space escaped and in chars
 // (clipText, which leaves no part of a key at the cut). cut: text is already short of the file's. A file whose cut
 // leaves nothing goes as left out.
@@ -1158,6 +1164,9 @@ function unlistFiles(list, budget, room) {
     for (const k of ['text', 'truncated', 'partial', 'image']) delete f[k];
     f.unlisted = true;
   }
+  // With every file off the list, the list's heading and the line that counts them can still be too much: then the
+  // message's own line counts its files, and nothing more is said of them.
+  if (list.length && list.every((f) => f.unlisted) && room() < 0) for (const f of list) f.unlisted = 'quiet';
 }
 
 // Cuts the text of a message's files, the last one first, until room() is no longer below 0: each cut takes off as

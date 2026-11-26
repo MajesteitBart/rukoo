@@ -115,8 +115,8 @@ function privateFilesOrigin(value, { allowHttp = false } = {}) {
 // A link to the server's own origin, or to privateFilesOrigin, goes to whatever address it has: the operator chose
 // both in the config. A link to the files origin a server advertises in /v1/info goes only to a public address
 // (server/WORKSPACES.md, "Files"), since a remote workspace can't grant more: never to this computer (loopback), an
-// unspecified, link-local, private (RFC 1918, fc00::/7), CGNAT (100.64.0.0/10) or multicast address, nor one of those
-// as IPv6 writes an IPv4 address. The connection checks the address it connects to in its own lookup (publicLookup),
+// unspecified, link-local, private (RFC 1918, fc00::/7), CGNAT (100.64.0.0/10) or multicast address, any other range
+// IANA's special-purpose registries mark as not globally reachable, nor one of those as IPv6 writes an IPv4 address. The connection checks the address it connects to in its own lookup (publicLookup),
 // so a name can't answer one address to a check and another to the connection.
 
 const NOT_PUBLIC = 'ERR_RUKOO_NOT_PUBLIC';
@@ -128,7 +128,8 @@ function ipv4Parts(address) {
   return n.every((x) => x <= 255) ? n : null;
 }
 
-const publicIPv4 = ([a, b]) =>
+// The ranges IANA's special-purpose registry marks as not globally reachable count as not public, besides multicast.
+const publicIPv4 = ([a, b, c, d]) =>
   !(
     a === 0 || // "this network", 0.0.0.0 among it
     a === 10 ||
@@ -137,6 +138,12 @@ const publicIPv4 = ([a, b]) =>
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && c === 0 && d !== 9 && d !== 10) || // IETF protocol assignments, but for two anycast addresses
+    (a === 192 && b === 0 && c === 2) || // documentation
+    (a === 192 && b === 88 && c === 99) || // the old 6to4 relay
+    (a === 198 && (b === 18 || b === 19)) || // benchmarking
+    (a === 198 && b === 51 && c === 100) || // documentation
+    (a === 203 && b === 0 && c === 113) || // documentation
     a >= 224 // multicast, the reserved block and broadcast
   );
 
@@ -179,6 +186,14 @@ function publicAddress(address) {
   if (g.slice(0, 6).every((x) => x === 0)) return false;
   // 64:ff9b::a.b.c.d, NAT64's well-known prefix, reaches the IPv4 address through the network's gateway.
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return publicIPv4(embedded());
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return false; // 64:ff9b:1::/48, NAT64 for a local network
+  if (g[0] === 0x100 && g[1] === 0 && g[2] === 0 && g[3] <= 1) return false; // 100::/64 discard, 100:0:0:1::/64 dummy
+  if (g[0] === 0x2001 && g[1] < 0x200) return false; // 2001::/23, IETF protocol assignments such as Teredo
+  if (g[0] === 0x2001 && g[1] === 0xdb8) return false; // documentation
+  if (g[0] === 0x3fff && g[1] < 0x1000) return false; // documentation, 3fff::/20
+  if (g[0] === 0x5f00) return false; // SRv6 segment ids
+  // 2002:a.b.c.d::/48, 6to4: as the IPv4 address it carries.
+  if (g[0] === 0x2002) return publicIPv4([g[1] >> 8, g[1] & 0xff, g[2] >> 8, g[2] & 0xff]);
   if ((g[0] & 0xfe00) === 0xfc00) return false; // unique local, fc00::/7
   if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) return false; // link-local, and the old site-local
   if ((g[0] & 0xff00) === 0xff00) return false; // multicast

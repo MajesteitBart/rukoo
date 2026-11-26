@@ -188,6 +188,8 @@ function fileNote(f, n) {
       return "An image. The runtime that answers for you takes no images from the runner, so you can't see it.";
     case 'image-too-large':
       return `An image larger than ${size(IMAGE_MAX)}, so you can't see it.`;
+    case 'image-left-out':
+      return "An image left out to keep this input short, so you can't see it.";
     case 'too-many-images':
       return `One input takes ${IMAGES_MAX} images, or ${size(IMAGES_BYTES)} of them, and this one has as many already, so you can't see it.`;
     case 'not-image':
@@ -221,8 +223,10 @@ function fileBlock(text) {
 // The files of one message, each named (tagged: anyone can name a file) with its type, size and what came of it, and
 // the text of those that have one. imageNo(i): the number of the message's i-th file as an image of this input. A file
 // the runner took off the list (unlisted: the names alone took more room than the input has) is counted in a line of
-// its own after the others.
+// its own after the others. When even that line and the list's heading take more room than there is (unlisted 'quiet'
+// for every file), the files go by the count in the message's own line alone: ''.
 function filesText(ev, files, imageNo) {
+  if (files.length && files.every((f) => f.unlisted === 'quiet')) return '';
   const lines = [`[Files attached to message ${ev.id}:]`];
   let unlisted = 0;
   files.forEach((f, i) => {
@@ -289,7 +293,8 @@ function messageText(ev, role, { me }, files = plainFiles(ev), imageNo = () => n
   const body = String(ev.text == null ? '' : ev.text);
   // A message of files alone has no text to show.
   if (body || !files.length) out.push(role === 'sender' ? body : unsafeBlock(body));
-  if (files.length) out.push(filesText(ev, files, imageNo));
+  const listed = files.length ? filesText(ev, files, imageNo) : '';
+  if (listed) out.push(listed);
   return out.join('\n');
 }
 
