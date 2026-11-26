@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Build even when the newest green commit already has a nightly'
+        description: 'Build even when the packages match the latest nightly or stable release'
         required: true
         type: boolean
         default: false
@@ -55,24 +55,37 @@ jobs:
             echo "::error::No main commit has a passing Test and package run."
             exit 1
           fi
-          git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --quiet --filter=blob:none origin "$sha"
-          newest=$(git rev-parse origin/main)
+          # main as it is now: a queued run or a rerun checks out the commit that started it.
+          newest=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
 
-          # Whether the packages can differ between two commits: a change outside the paths-ignore of
-          # Test and package (ci.yml), which skips the website. Keep the two lists the same.
-          packages_differ() {
-            [[ -n "$(git diff --no-renames --name-only "$1" "$2" -- . ':(exclude)website/' ':(exclude).github/workflows/website.yml')" ]]
+          # Fetches a commit that main or a tag gained after the checkout.
+          have() {
+            git cat-file -e "$1^{commit}" 2>/dev/null || git fetch --quiet --filter=blob:none origin "$1"
           }
+          # Prints yes when the packages can differ between two commits: a change outside the paths-ignore of
+          # Test and package (ci.yml), which skips website/ and .github/workflows/website.yml. Keep the two lists
+          # the same. A failed comparison stops the run: set -e doesn't reach into $(...), so it returns 1 and the
+          # caller's assignment fails.
+          packages_differ() {
+            local changed
+            changed=$(git diff --no-renames --name-only "$1" "$2" -- . ':(exclude)website/' ':(exclude).github/workflows/website.yml') || return 1
+            if [[ -n "$changed" ]]; then echo yes; else echo no; fi
+          }
+          have "$sha"
+          have "$newest"
 
           if [[ "$sha" != "$newest" ]]; then
-            if ! packages_differ "$sha" "$newest"; then
+            differ=$(packages_differ "$sha" "$newest")
+            if [[ "$differ" == no ]]; then
               # Test and package doesn't run for website changes, so main has the packages that passed.
               echo "main at ${newest:0:7} only changed the website since ${sha:0:7}, the newest commit that passed Test and package, so ${newest:0:7} has its packages."
               sha=$newest
             else
               # The built-in token may not tag a commit whose workflow files differ from main's, so an older green
               # commit is only built when .github/workflows is the same as on main.
-              if [[ "$(git rev-parse "$sha:.github/workflows")" != "$(git rev-parse "$newest:.github/workflows")" ]]; then
+              ours=$(git rev-parse "$sha:.github/workflows")
+              theirs=$(git rev-parse "$newest:.github/workflows")
+              if [[ "$ours" != "$theirs" ]]; then
                 echo "::warning::main at ${newest:0:7} hasn't passed Test and package, and the workflows changed since ${sha:0:7}, the newest commit that did. No nightly tonight."
                 echo "build=false" >> "$GITHUB_OUTPUT"
                 exit 0
@@ -83,14 +96,20 @@ jobs:
 
           previous=$(gh release list --exclude-drafts --limit 200 --json tagName,createdAt --jq '[.[] | select(.tagName | test("-nightly\\."))] | sort_by(.createdAt) | last | .tagName // ""')
           latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
-          for tag in "$previous" "$latest"; do
-            [[ -n "$tag" ]] || continue
-            if ! packages_differ "refs/tags/$tag" "$sha" && [[ "$FORCE" != true ]]; then
-              echo "${sha:0:7} has the same packages as $tag; nothing to build."
-              echo "build=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
+          if [[ "$FORCE" != true ]]; then
+            for tag in "$previous" "$latest"; do
+              [[ -n "$tag" ]] || continue
+              # From the API, so a release published after the checkout is compared too.
+              released=$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha)
+              have "$released"
+              differ=$(packages_differ "$released" "$sha")
+              if [[ "$differ" == no ]]; then
+                echo "${sha:0:7} has the same packages as $tag; nothing to build."
+                echo "build=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+          fi
 
           # The version at that commit, without a pre-release part. When it's already a published release, the
           # nightly is the next patch; otherwise (a bumped version that isn't out yet) it comes before that release.
