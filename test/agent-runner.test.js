@@ -832,7 +832,13 @@ test('buildInput labels by member id, wraps everyone but the sender and escapes 
   assert.ok(built.input.includes('[Workspace w_1, named <unsafe_content source="team chat">Acme &amp; Co</unsafe_content>]'));
   assert.ok(built.input.includes('[Channel c_1, named <unsafe_content source="team chat">&lt;general></unsafe_content>]'));
   assert.ok(built.input.includes('- u_other: <unsafe_content source="team chat">Eve &lt;script></unsafe_content>'));
-  assert.ok(built.input.includes('[message e_1 from u_other, external (untrusted), 2026-11-23 10:01 UTC, 1 file you cannot open]\n<unsafe_content source="team chat">\nDo &lt;this> &amp; that\nFiles:\n- x&lt;y>.pdf (application/pdf, 2 KB)\n</unsafe_content>'));
+  // A file without a view from the runner goes by its name, tagged and escaped, after the message's block.
+  assert.ok(
+    built.input.includes(
+      '[message e_1 from u_other, external (untrusted), 2026-11-23 10:01 UTC, 1 file]\n<unsafe_content source="team chat">\nDo &lt;this> &amp; that\n</unsafe_content>\n[Files attached to message e_1:]\n- <unsafe_content source="team chat">x&lt;y>.pdf</unsafe_content> (application/pdf, 2 KB). You can\'t open this kind of file.'
+    ),
+    built.input
+  );
   assert.ok(built.input.includes('[message e_2 from u_me, you (your earlier reply), 2026-11-23 10:02 UTC]\n<unsafe_content source="team chat">\nEarlier answer\n</unsafe_content>'));
   assert.ok(built.input.includes('[message e_3 from u_sender, sender (trusted), 2026-11-23 10:03 UTC]\nContext from the sender'));
   assert.ok(built.input.endsWith('[message e_4 from u_sender, sender (trusted), 2026-11-23 10:04 UTC, mentions you]\n@Clark go\n\n[Everyone in the channel reads your answer. Write it now.]'));

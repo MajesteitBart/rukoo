@@ -82,6 +82,10 @@ const IDENTITY = ['use', 'kind', 'type', 'program', 'args', 'configDir', 'addres
 const ROUTE = Object.freeze({ runs: '/v1/runs', openai: '/v1/chat/completions' });
 // The exit code of a runner whose program is no longer the approved one (agent-runner-child.js).
 const EXIT_CHANGED = 3;
+// A PDF a runner asks main to read: at most the runner's PDF_MAX (10 MB) as base64, and one file's text in the chat
+// panel (chatfiles.js FILE_TEXT_INLINE).
+const PDF_DATA_MAX = Math.ceil((10 * 1024 * 1024) / 3) * 4;
+const PDF_TEXT_MAX = 20000;
 
 const text = (v) => (typeof v === 'string' ? v.trim() : '');
 const withModel = (backend, model) => (text(model) ? { ...backend, model: text(model) } : backend);
@@ -376,8 +380,9 @@ class AgentRuns extends EventEmitter {
   // detail, buttons: [{ id, label }], cancel }); saveTo(name): a promise of the file the
   // person picked in a native save dialog, or null. memberName(ws, member): the member's name in main's own copy of the
   // workspace's directory, or ''. ownerAlive(owner): whether the window document owner (main.js documentOf) is still
-  // the one on screen. t: the catalogs. resolve, env, home, fork, child, delays, steady, stopWait, heldFor and now can
-  // be replaced in tests. log(level, message): ids, states and codes only.
+  // the one on screen. readPdf(bytes, { maxChars }): a promise of a PDF's text from Rukoo's reader (pdfread.js), which
+  // a runner asks for (agent-runner-child.js). t: the catalogs. resolve, env, home, fork, child, delays, steady,
+  // stopWait, heldFor and now can be replaced in tests. log(level, message): ids, states and codes only.
   constructor({
     dataDir,
     secrets,
@@ -390,6 +395,7 @@ class AgentRuns extends EventEmitter {
     saveTo = async () => null,
     memberName = () => '',
     ownerAlive = () => true,
+    readPdf = null,
     t = require('../i18n').t,
     resolve = resolveProgram,
     env = process.env,
@@ -408,6 +414,7 @@ class AgentRuns extends EventEmitter {
     this.file = path.join(dataDir, FILE);
     this.dir = path.join(dataDir, DIR);
     Object.assign(this, { secrets, canKeep, account, backendFor, exportFor, agentExists, ask, saveTo, memberName, ownerAlive, t, resolve, env, home, fork, child, delays, steady, stopWait, now, log });
+    this.readPdf = typeof readPdf === 'function' ? readPdf : null;
     this.heldFor = heldFor || HELD_FOR;
     // { version, server, session, runs: [stored run] }. A stored run: { ws, agent, name, use, key, keyAt, on, refused,
     // stoppedAt, approved }. What only this run of Rukoo knows of each (what its runner reported) is in live, by id.
@@ -1088,7 +1095,7 @@ class AgentRuns extends EventEmitter {
         s.stderr = s.stderr.concat(String(d).split('\n').filter(Boolean)).slice(-20);
       });
     }
-    child.onMessage((msg) => this.report(id, child, msg));
+    child.onMessage((msg) => (msg && msg.type === 'pdf' ? this.pdf(id, child, msg) : this.report(id, child, msg)));
     child.onExit((code) => {
       clearTimeout(proc.killTimer);
       if (this.procs.get(id) === proc) this.procs.delete(id);
@@ -1098,6 +1105,36 @@ class AgentRuns extends EventEmitter {
     child.post({ type: 'start', config, key, backendKey: secret });
     this.log('info', `${run.agent} starting`);
     this.changed();
+  }
+
+  // A runner asks for the text of a PDF in a channel: Rukoo's reader reads it in a process of its own (pdfread.js), as
+  // for the chat panel, and the answer goes back to that runner's process only: { text, truncated, partial, encrypted,
+  // failed }, the text at most what the runner asked for and never more than one file's text in the chat panel. A
+  // request that isn't one, or a reader that fails, gets a PDF without text.
+  pdf(id, child, msg) {
+    const p = this.procs.get(id);
+    if (!p || p.child !== child || p.stopping || !Number.isSafeInteger(msg.id)) return;
+    const answer = (r) => {
+      const result = r && typeof r === 'object' ? r : {};
+      try {
+        child.post({
+          type: 'pdf',
+          id: msg.id,
+          result: { text: typeof result.text === 'string' ? result.text : '', truncated: result.truncated === true, partial: result.partial === true, encrypted: result.encrypted === true, failed: typeof result.failed === 'string' ? result.failed : null }
+        });
+      } catch (_) {
+        // Gone; its exit follows.
+      }
+    };
+    const maxChars = Number.isSafeInteger(msg.maxChars) ? Math.min(PDF_TEXT_MAX, Math.max(0, msg.maxChars)) : 0;
+    if (!this.readPdf || typeof msg.data !== 'string' || msg.data.length > PDF_DATA_MAX || !maxChars) return answer({ failed: 'error' });
+    const bytes = Buffer.from(msg.data, 'base64');
+    Promise.resolve()
+      .then(() => this.readPdf(bytes, { maxChars }))
+      .then(
+        (r) => answer(r && typeof r.text === 'string' ? { ...r, text: r.text.slice(0, maxChars) } : r),
+        () => answer({ failed: 'error' })
+      );
   }
 
   // What a runner reported. A process that was asked to stop has nothing more to say: whoever stopped it says what the

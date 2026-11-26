@@ -92,6 +92,8 @@ Each backend takes `timeout`, the seconds one mention may take (600 unless given
 
 This is the Runs API that Rukoo's chat panel uses for Hermes and for Booper's app channel (`src/main/agents/hermes.js`). The runner sends one run per mention, `POST /v1/runs` with `input` and `instructions` and without `session_id`, so the server starts a new session for it. An `Idempotency-Key` that names the mention and its input means a start sent again after a lost answer gets the run that already started. The runner follows the run's events until it ends and takes its output. Any approval the run asks for is denied, since nobody is there to answer it. `model` is optional; `provider::model` names a model of another provider, as in Rukoo's model menu. A server with a path prefix, such as a Hermes profile at `http://host:8642/p/clark`, works as `url`.
 
+`input` is text, so this backend sends no images: the input names each image and says the agent can't see it ([Files](#files)). Rukoo's chat panel sends Hermes and Booper no images with a message either; they open an image with Rukoo's `read_chat_file` tool, which the runner doesn't offer. Booper's app channel keeps only the text parts of an `input` that is a list of messages.
+
 ### OpenClaw and other Chat Completions servers
 
 ```json
@@ -100,13 +102,15 @@ This is the Runs API that Rukoo's chat panel uses for Hermes and for Booper's ap
 
 One `POST /v1/chat/completions` per mention, with the runner's instructions as the system message and the rest as the user message, streamed. On OpenClaw's gateway `model` names an OpenClaw agent, `openclaw/default` or `openclaw/<agentId>`, and the gateway's Chat Completions endpoint has to be on (`gateway.http.endpoints.chatCompletions.enabled`). The gateway keeps a session per `user` value, so the runner sends the configured `user` with the mention's id after it, a new session for every mention. `headers` adds request headers, such as `{ "x-openclaw-model": "…" }`. The key is optional for a server that takes none.
 
+Images go along as `image_url` parts with `data:` URLs, each after a text part that names its file ([Files](#files)). A model or server that takes no images refuses such a request; when it answers 400, 413, 415, 422 or 500, the runner sends the mention once more as text alone, with every image named as one the agent can't see, under a `user` of its own.
+
 ### Claude Code
 
 ```json
 "backend": { "type": "claude", "model": "sonnet" }
 ```
 
-The runner starts `claude -p` with the input on stdin and reads the JSON result. It finds `claude` in `~/.local/bin` or on `PATH`; on Windows only a real `claude.exe`, because the runner starts programs without a shell. `exe` sets the path, and `configDir` sets `CLAUDE_CONFIG_DIR` for an account other than your usual one. See [Claude Code and Codex](#claude-code-and-codex) for the flags.
+The runner starts `claude -p` with the input on stdin and reads the JSON result. With images it sends one user message of stream-json instead, with each image as an image block after a text block that names its file, as Rukoo's chat panel sends them. It finds `claude` in `~/.local/bin` or on `PATH`; on Windows only a real `claude.exe`, because the runner starts programs without a shell. `exe` sets the path, and `configDir` sets `CLAUDE_CONFIG_DIR` for an account other than your usual one. See [Claude Code and Codex](#claude-code-and-codex) for the flags.
 
 ### Codex
 
@@ -114,7 +118,7 @@ The runner starts `claude -p` with the input on stdin and reads the JSON result.
 "backend": { "type": "codex", "model": "" }
 ```
 
-The runner starts `codex exec` with the input on stdin and reads its last message. It finds Codex in `~/.local/bin` or on `PATH`, and on Windows the `codex.exe` inside the global npm package. `exe` sets the path.
+The runner starts `codex exec` with the input on stdin and reads its last message. Images go as files with `--image`: the runner writes them to the run's own temporary folder, outside the empty folder Codex works in, named `image-1.png` and so on, and removes them with that folder. It finds Codex in `~/.local/bin` or on `PATH`, and on Windows the `codex.exe` inside the global npm package. `exe` sets the path.
 
 ### Any program
 
@@ -122,7 +126,7 @@ The runner starts `codex exec` with the input on stdin and reads its last messag
 "backend": { "type": "command", "command": ["python3", "/opt/agent/answer.py"], "cwd": "/opt/agent", "env": { "MODE": "team" } }
 ```
 
-The runner starts the program without a shell, writes the whole input (instructions, then the rest) to its stdin and posts what it writes to stdout. Exit code 0 with text posts it. Exit code 0 without text, or any other exit code, posts nothing. `command` is the program and its arguments; `env` adds variables. On Windows a `.cmd` or `.bat` file needs `["cmd", "/c", "answer.cmd"]`.
+The runner starts the program without a shell, writes the whole input (instructions, then the rest) to its stdin and posts what it writes to stdout. A program gets no images: the input names each image and says the agent can't see it. Exit code 0 with text posts it. Exit code 0 without text, or any other exit code, posts nothing. `command` is the program and its arguments; `env` adds variables. On Windows a `.cmd` or `.bat` file needs `["cmd", "/c", "answer.cmd"]`.
 
 ## Run it
 
@@ -228,6 +232,7 @@ The desktop app (`src/main/agent-runs.js`) runs the four program files of this f
 - `Runner` takes a `report` function next to `log`; the app uses it for the line it shows under the agent: connected, the channels it is in, the backend's problems from the checks above, a failed answer, a server it can't reach, a key that stopped working. The events carry ids, counts, the runner's codes (a `BackendError`'s `code`, and an HTTP status) and never text that a server, a backend or a message wrote.
 - `stop()` lets a turn in flight end for up to 4 seconds before `run()` returns, also in the first pass: a program the backend started ends with what it started, and a Runs API run gets its stop request. A run whose `POST /v1/runs` is still out gets up to a second more to answer its id, which the runner then stops. The runner's reads of the workspace end at once on `stop()`.
 - The runner reads at most 8 MiB of an answer from the Rukoo server, 4 MiB of a backend's JSON answer, 1 MiB of a streamed answer and 64 KiB of an error. It counts the bytes of a streamed line and event, line ends included, as they arrive, and stops reading the stream past 1 MiB.
+- The runner has no reader for PDFs of its own. In the app, `Runner` takes a `readPdf` function next to `report`: the runner's process sends the PDF to Rukoo's main process, which reads its text layer with the reader of the chat panel (`src/main/pdfread.js`), each PDF in a process of its own with a time limit of 10 seconds and a memory cap, and sends back the text, at most 20,000 characters.
 - A runner that ends by itself starts again after 2 seconds, then after longer pauses up to 5 minutes. Exit code 2 keeps it stopped until New key; when the agent turns out to be removed, the app deletes its key and state file. Signing out, leaving the workspace or removing the agent does that too.
 
 ## Whom the agent answers
@@ -255,9 +260,10 @@ The input has the runner's instructions, then your `instructions`, then the plac
 - The workspace and the channel, by id and name.
 - For a mention in a thread: the thread's first message and its latest replies before the mention. For a mention in the channel itself: the channel's latest top-level messages before it, without the replies in their threads.
 - The people in those messages, by member id with their names, the agent itself included.
+- After each message, its files ([Files](#files)).
 - The message to answer, last.
 
-The instructions tell the model that everyone in the channel reads its answer, and that it has no tools for the team chat and no memory of earlier mentions. They are the same for every agent and hold nothing anyone in the workspace wrote, not even the agent's name: its sponsor, an owner or an admin can rename it, so the name is in the list of people with the other names. The openai backend sends the instructions as the system message.
+The instructions tell the model that everyone in the channel reads its answer, and that it has no tools for the team chat and no memory of earlier mentions. They say what it gets of files, and that agent keys are taken out. The instructions are the same for every agent and hold nothing anyone in the workspace wrote, not even the agent's name: its sponsor, an owner or an admin can rename it, so the name is in the list of people with the other names. The openai backend sends the instructions as the system message.
 
 Every message comes after a line from the runner with its id, its author's member id, the time, the members it mentions and one of these labels. The runner sets the label from the author's member id, never from a name or from what the message says.
 
@@ -272,7 +278,20 @@ A wrapped message sits inside `<unsafe_content source="team chat">`, as Rukoo wr
 
 A message from another agent is wrapped because an agent can repeat what anyone wrote. Its question still gets an answer, but the model is told to treat it as a question from someone it doesn't know.
 
-Files show up as their names, types and sizes. The runner doesn't download them.
+Before the input goes to the runtime, the runner replaces anything that has the shape of an agent key, `rka_` followed by 66 characters, with `[agent key removed]`: in messages, names and the text of files. Whoever holds a key reads every channel its agent is in, so a key someone pasted in a channel never reaches a runtime or its model provider from the runner.
+
+### Files
+
+After a message, the input lists its files under `[Files attached to message e_…:]`: each with its name, tagged and escaped as names are, its type and size, and what the agent got of it. The runner downloads a file with the agent's key through `POST /conversations/{c}/files/{f}/download`, which answers a link that works for 60 seconds, and then fetches the link without the key: over `https`, or plain `http` only to this computer or the Rukoo server's own address, and without following a redirect. A whole file must match the SHA-256 the server has for it.
+
+| File | What the agent gets |
+| --- | --- |
+| Text (a `text/` type, JSON, XML, YAML, CSV, calendar or contact files, or a name ending in `.txt`, `.md`, `.csv`, `.json`, `.log` and the like) | Its text inside `<unsafe_content source="team chat file">`, escaped like a message, also when the sender attached it. UTF-8, UTF-16 with a byte order mark, or else Windows-1252. A file with a NUL byte in its first 8,192 characters counts as no text. |
+| A PDF | Its text, as for a text file, when the runner has a reader for PDFs: in Rukoo's desktop app, which lends it the chat panel's reader ([In Rukoo's desktop app](#in-rukoos-desktop-app)). The runner on its own has none, since it has no dependencies, and names the PDF as one the agent can't open. A PDF over 10 MB, a scanned one without a text layer, or one the reader can't read is named with the reason. |
+| An image (PNG, JPEG, GIF or WebP, by its first bytes) | The image itself for `openai`, `claude` and `codex`, after a line that names its file and says it is untrusted data; `runs` and `command` get the name and the line that the agent can't see it. |
+| Anything else | Its name, type and size, and the line that the agent can't open it. |
+
+The limits are the chat panel's ([docs/agents.md](../../docs/agents.md#attach-files-and-other-emails)): up to 20,000 characters of each file's text, and of all files' text together up to 60,000 or `maxChars`, whichever is smaller; a longer file is cut, and the input says so. An image goes along up to 3.75 MB, and one input takes up to 10 images and 20 MB of them. The files of the message to answer come first. Then those of the earlier messages the input keeps, the thread's first message first and then the newest first, while the input stays within `maxChars`; an earlier message that fits only without its files' text keeps their names, with the line that the text was left out. A file the runner couldn't download, such as one whose message was removed, keeps its name with that reason, and the turn goes on. Only a key that stopped working, or stopping the runner, ends a turn for a file.
 
 ## The answer
 
@@ -295,6 +314,7 @@ Claude Code, checked against version 2.1.328 with `claude --help`:
 | Flag | Why |
 | --- | --- |
 | `-p --output-format json --no-session-persistence` | One answer as JSON, and no session saved on disk |
+| `--input-format stream-json --output-format stream-json --verbose`, only with images | The input as one stream-json user message with image blocks; stream-json input takes stream-json output, which `-p` gives only with `--verbose` (checked against 2.1.331). The answer is the `result` line |
 | `--tools ""` | No built-in tools at all: no commands, no file access, no web fetches |
 | `--safe-mode` | No hooks, plugins, skills, CLAUDE.md files or MCP servers from your settings |
 | `--strict-mcp-config --mcp-config {"mcpServers":{}}` | No MCP servers, Rukoo's included |
@@ -311,6 +331,7 @@ Codex, checked against codex-cli 0.170.0 with `codex exec --help` and `codex fea
 | `--disable hooks --disable plugins --disable apps --disable browser_use --disable computer_use` | No hooks, plugins, connectors, browser or computer control |
 | `-c mcp_servers={} -c web_search="disabled" -c approval_policy="never"` | No MCP servers, no web search, and nothing asks for approval |
 | `--output-last-message <file> -` | The answer goes to a file; the input comes from stdin |
+| `--image <file>`, once per image | The images of the input, from the run's temporary folder (checked against 0.171.0). Each comes before another flag, since `--image` takes several values |
 
 `codex features list` shows `shell_tool`, `hooks`, `plugins`, `apps`, `browser_use` and `computer_use` as off with these flags. It still shows `unified_exec` as on, and `--disable unified_exec` doesn't change that. Whether Codex offers a command tool with `shell_tool` off couldn't be checked without running a model turn. If it does, the read-only sandbox still blocks writes and network, but a command could read files on your disk and the model could put what it read in its answer. Run the Codex backend under an account that holds nothing you wouldn't want in a channel.
 
@@ -330,10 +351,11 @@ Whatever the agent reads in a channel goes to its runtime and to the model provi
 ## Limits
 
 - One mention at a time. A slow answer delays the next mention.
-- No files: the runtime sees file names, not their contents.
+- Files go along as text and images only, within the limits in [Files](#files). A Word file, a spreadsheet or an archive goes by its name. The runner on its own reads no PDFs; in Rukoo's desktop app it does. `runs` and `command` get no images.
+- An agent can't open a file itself, and gets no tool to read more of one than went along. Its replies carry no files.
 - No memory between mentions. Each mention gets its thread or the channel's latest messages, within `maxChars`. The runner reads back at most 1,000 events for that.
 - No streaming: the reply appears once the runtime is done.
 - An agent can't remove its own replies. Its sponsor and a manager of the channel can.
 - An agent replies only to mentions. It doesn't post on its own, and it isn't in DMs.
 - An agent posts at most 120 replies an hour (`WORKSPACE_AGENT_REPLIES`). When it reaches that, the runner waits the time the server says and posts the reply then.
-- The tests drive the runner against a local Rukoo server with a scripted program as the backend, and the Runs API and Chat Completions backends against small stand-ins. A live Hermes, Booper, OpenClaw, Claude Code or Codex hasn't run through the runner in those tests.
+- The tests drive the runner against a local Rukoo server with a scripted program as the backend, the Runs API and Chat Completions backends against small stand-ins, and the `claude` and `codex` backends with a scripted program in the CLI's place. A live Hermes, Booper, OpenClaw, Claude Code or Codex hasn't run through the runner in those tests. By hand, Claude Code 2.1.331 and codex-cli 0.171.0 answered through the runner with what a text file and an image held. Whether a live Hermes, Booper or OpenClaw gateway reads a file's text the same way hasn't been checked; OpenClaw's handling of image parts hasn't either, which is why the runner tries a refused request again as text.

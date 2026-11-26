@@ -90,6 +90,7 @@ class Rukoo {
     if (!/^w_[A-Za-z0-9_-]{22}$/.test(String(workspace || ''))) throw new Error('"workspace" must be a workspace id (w_…)');
     if (!KEY.test(String(key || ''))) throw new Error('The key is not an agent key (rka_…)');
     this.server = serverAddress(server, { allowHttp });
+    this.allowHttp = allowHttp === true;
     this.workspace = workspace;
     this.key = key;
     this.timeout = timeout;
@@ -202,6 +203,61 @@ class Rukoo {
 
   read(conversation, seq) {
     return this.ok('POST', this.ws(`/conversations/${conversation}/read`), { body: { seq } });
+  }
+
+  // A link to a file of a message in a room the agent is in, for the next 60 seconds: { url, expiresAt, name, type,
+  // size, sha256 }. 404 not_found for a file of a removed message, or one retention no longer keeps.
+  fileLink(conversation, file, { signal } = {}) {
+    return this.ok('POST', this.ws(`/conversations/${conversation}/files/${encodeURIComponent(file)}/download`), { signal });
+  }
+
+  // A file's bytes from a link fileLink() answered, at most max of them: { bytes, over }, over when the file holds
+  // more, which isn't read. The link is the only thing a download needs, so the key never goes with it. https, or
+  // plain http to this computer or to the server's own address (where the key goes already); no redirect.
+  async fetchFile(link, max, { signal, timeout = this.timeout } = {}) {
+    let url;
+    try {
+      url = new URL(String(link || ''));
+    } catch {
+      throw new RukooError(0, null, 'The server answered a download link that is no address');
+    }
+    const own = new URL(this.server).origin;
+    const plainOk = url.protocol === 'http:' && (LOOPBACK.test(url.hostname) || url.origin === own || this.allowHttp);
+    if (url.username || url.password || !(url.protocol === 'https:' || plainOk)) throw new RukooError(0, null, 'The server answered a download link the runner does not follow');
+    let res;
+    try {
+      res = await fetch(url, { method: 'GET', headers: { accept: '*/*' }, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]) });
+    } catch (err) {
+      const e = new RukooError(0, null, `No answer from ${url.host}: ${err.cause ? err.cause.message || err.cause : err.message}`);
+      e.network = true;
+      throw e;
+    }
+    if (res.status !== 200) {
+      res.body?.cancel().catch(() => {});
+      throw new RukooError(res.status, null, `The download answered HTTP ${res.status}`);
+    }
+    if (!res.body) return { bytes: Buffer.alloc(0), over: false };
+    const reader = res.body.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (size + value.length > max) {
+          chunks.push(Buffer.from(value).subarray(0, max - size));
+          reader.cancel().catch(() => {});
+          return { bytes: Buffer.concat(chunks), over: true };
+        }
+        size += value.length;
+        chunks.push(Buffer.from(value));
+      }
+    } catch (err) {
+      const e = new RukooError(0, null, `The download broke off: ${err.message}`);
+      e.network = true;
+      throw e;
+    }
+    return { bytes: Buffer.concat(chunks), over: false };
   }
 
   async ticket({ signal } = {}) {

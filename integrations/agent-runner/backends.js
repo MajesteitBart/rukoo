@@ -8,6 +8,11 @@
 //   claude   `claude -p`, without MCP servers, tools, hooks or plugins
 //   codex    `codex exec` in its read-only sandbox, without its command tool, MCP servers or user config
 //   command  any program: the prompt on stdin, the reply on stdout
+//
+// prompt (prompt.js buildInput): { instructions, input, text, images, plain }. images: what a backend whose images
+// property is true sends along with the text, each after its label; the others never get any, and the runner then
+// says so in the text. plain: the same prompt with every image said to be out of reach, for a server that refuses
+// images.
 
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -232,6 +237,9 @@ async function errorOf(res) {
 // One run per trigger, without session_id, so the server starts a session of its own for it. The Idempotency-Key
 // names the trigger, so a POST sent again after a lost answer gets the run it already started. Approval requests are
 // denied: nobody is there to answer them. A run that takes longer than the timeout is stopped.
+//
+// No images: Rukoo's chat panel sends Hermes and Booper text alone and hands them an image through its read_chat_file
+// tool, which the runner doesn't have. Booper's app channel keeps only the text parts of an input that is a list.
 class RunsBackend {
   constructor(config) {
     this.config = config;
@@ -356,6 +364,12 @@ class RunsBackend {
 
 // The instructions as a system message and the prompt as the user's. `user` keeps a session on servers that keep one,
 // such as OpenClaw, so it is unique per trigger: the configured prefix and the trigger's id.
+//
+// Images go as image_url parts with data URLs, each after a text part with its label. A model or server that takes
+// no images refuses such a request; then the turn goes once more as text alone (prompt.plain), under a `user` of its
+// own, so a server that keeps sessions starts that one fresh too.
+const IMAGE_REFUSED = new Set([400, 413, 415, 422, 500]);
+
 class OpenAiBackend {
   constructor(config) {
     this.config = config;
@@ -370,15 +384,35 @@ class OpenAiBackend {
   }
 
   async run(prompt, { id, signal } = {}) {
+    const images = Array.isArray(prompt.images) ? prompt.images : [];
+    if (!images.length || !prompt.plain) return this.complete(prompt, { id, signal });
+    try {
+      return await this.complete(prompt, { id, signal, images });
+    } catch (err) {
+      if (!(err instanceof BackendError && err.code === 'http' && IMAGE_REFUSED.has(err.status)) || (signal && signal.aborted)) throw err;
+      return this.complete(prompt.plain, { id: `${id}:text`, signal });
+    }
+  }
+
+  async complete(prompt, { id, signal, images = [] } = {}) {
     const deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs(this.config)), ...(signal ? [signal] : [])]);
     const user = `${String(this.config.user || 'rukoo-agent').trim()}:${id}`;
+    const content = images.length
+      ? [
+          { type: 'text', text: prompt.input },
+          ...images.flatMap((img) => [
+            { type: 'text', text: img.label },
+            { type: 'image_url', image_url: { url: `data:${img.type};base64,${Buffer.from(img.data).toString('base64')}` } }
+          ])
+        ]
+      : prompt.input;
     const body = {
       model: String(this.config.model || '').trim() || 'default',
       user,
       stream: true,
       messages: [
         { role: 'system', content: prompt.instructions },
-        { role: 'user', content: prompt.input }
+        { role: 'user', content }
       ]
     };
     let res;
@@ -592,6 +626,8 @@ function runProcess(exe, args, { input = '', cwd, env, timeout, signal } = {}) {
   });
 }
 
+const IMAGE_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+
 // An empty folder for one run, so a CLI finds no project files, instructions or settings where it starts.
 function scratchDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-agent-'));
@@ -603,12 +639,13 @@ function removeDir(dir) {
   } catch {}
 }
 
-// The flags for `claude -p`, checked against Claude Code 2.1.328 (README "Claude Code").
-function claudeArgs(config) {
+// The flags for `claude -p`, checked against Claude Code 2.1.328 (README "Claude Code"). images: the input comes as
+// stream-json, one user message with image blocks, which takes stream-json output, which -p gives only with --verbose
+// (checked against 2.1.331); the restrictions stay the same.
+function claudeArgs(config, { images = false } = {}) {
   const args = [
     '-p',
-    '--output-format',
-    'json',
+    ...(images ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'] : ['--output-format', 'json']),
     '--no-session-persistence',
     // No hooks, plugins, skills, CLAUDE.md or MCP servers from the user's settings.
     '--safe-mode',
@@ -632,9 +669,10 @@ function claudeArgs(config) {
 }
 
 class ClaudeBackend {
-  constructor(config, { hide } = {}) {
+  constructor(config, { hide, launchArgs } = {}) {
     this.config = config;
     this.hide = hide || {};
+    this.launchArgs = Array.isArray(launchArgs) ? launchArgs.map(String) : [];
   }
 
   exe() {
@@ -649,14 +687,35 @@ class ClaudeBackend {
   async run(prompt, { signal } = {}) {
     const exe = this.exe();
     const dir = scratchDir();
+    const images = Array.isArray(prompt.images) ? prompt.images : [];
     try {
       const env = childEnv(this.config.configDir ? { CLAUDE_CONFIG_DIR: this.config.configDir } : {}, this.hide);
-      const res = await runProcess(exe, claudeArgs(this.config), { input: prompt.text, cwd: dir, env, timeout: timeoutMs(this.config), signal });
-      // One JSON object, possibly after other lines.
+      // With images, one user message of stream-json: the text, then each image after its label, as Rukoo's chat panel
+      // sends them (src/main/agents/claude.js).
+      const input = images.length
+        ? `${JSON.stringify({
+            type: 'user',
+            message: {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt.text },
+                ...images.flatMap((img) => [
+                  { type: 'text', text: img.label },
+                  { type: 'image', source: { type: 'base64', media_type: img.type, data: Buffer.from(img.data).toString('base64') } }
+                ])
+              ]
+            }
+          })}\n`
+        : prompt.text;
+      const res = await runProcess(exe, [...this.launchArgs, ...claudeArgs(this.config, { images: images.length > 0 })], { input, cwd: dir, env, timeout: timeoutMs(this.config), signal });
+      // One JSON object, possibly after other lines; in stream-json the result is the last of its lines.
       let data = null;
-      for (const candidate of [res.stdout.trim(), res.stdout.trim().split(/\r?\n/).filter(Boolean).pop() || '']) {
+      const lines = res.stdout.trim().split(/\r?\n/).filter(Boolean);
+      for (const candidate of [res.stdout.trim(), ...lines.reverse()]) {
         try {
-          data = JSON.parse(candidate);
+          const parsed = JSON.parse(candidate);
+          if (images.length && !(parsed && parsed.type === 'result')) continue;
+          data = parsed;
           break;
         } catch {}
       }
@@ -669,8 +728,9 @@ class ClaudeBackend {
   }
 }
 
-// The flags for `codex exec`, checked against codex-cli 0.170.0 (README "Codex").
-function codexArgs(config, { dir, last }) {
+// The flags for `codex exec`, checked against codex-cli 0.170.0 (README "Codex"). images: files to attach to the
+// prompt with --image (checked against 0.171.0), each followed by another flag, since --image takes several values.
+function codexArgs(config, { dir, last, images = [] }) {
   const args = [
     'exec',
     '--sandbox',
@@ -701,6 +761,7 @@ function codexArgs(config, { dir, last }) {
     'web_search="disabled"',
     '-c',
     'approval_policy="never"',
+    ...images.flatMap((file) => ['--image', file]),
     '-C',
     dir,
     '--output-last-message',
@@ -713,9 +774,10 @@ function codexArgs(config, { dir, last }) {
 }
 
 class CodexBackend {
-  constructor(config, { hide } = {}) {
+  constructor(config, { hide, launchArgs } = {}) {
     this.config = config;
     this.hide = hide || {};
+    this.launchArgs = Array.isArray(launchArgs) ? launchArgs.map(String) : [];
   }
 
   exe() {
@@ -746,8 +808,15 @@ class CodexBackend {
     const outDir = scratchDir();
     const last = path.join(outDir, 'answer.txt');
     try {
+      // The images as files in the run's own scratch folder, next to its answer and outside the folder Codex works
+      // in, named by their number and type: no name a member chose reaches a path.
+      const images = (Array.isArray(prompt.images) ? prompt.images : []).map((img, i) => {
+        const file = path.join(outDir, `image-${i + 1}.${IMAGE_EXT[img.type] || 'png'}`);
+        fs.writeFileSync(file, Buffer.from(img.data), { mode: 0o600 });
+        return file;
+      });
       const env = childEnv({}, this.hide);
-      const res = await runProcess(exe, codexArgs(this.config, { dir, last }), { input: prompt.text, cwd: dir, env, timeout: timeoutMs(this.config), signal });
+      const res = await runProcess(exe, [...this.launchArgs, ...codexArgs(this.config, { dir, last, images })], { input: prompt.text, cwd: dir, env, timeout: timeoutMs(this.config), signal });
       if (res.code !== 0) throw new BackendError(`Codex stopped with exit code ${res.code}${res.stderr ? `: ${clip(res.stderr.split(/\r?\n/).filter(Boolean).slice(-3).join(' '), 200)}` : ''}`, 'exit');
       let text = '';
       try {
@@ -1034,14 +1103,23 @@ CommandBackend.prototype.check = async function check({ env = process.env } = {}
   return [{ level: 'info', message: `The backend runs ${found}` }];
 };
 
+// Whether a backend sends images along (prompt.images). runs: Rukoo's chat panel sends Hermes and Booper no images
+// with a message either. command: a program gets text on stdin.
+RunsBackend.prototype.images = false;
+OpenAiBackend.prototype.images = true;
+ClaudeBackend.prototype.images = true;
+CodexBackend.prototype.images = true;
+CommandBackend.prototype.images = false;
+
 const TYPES = { runs: RunsBackend, openai: OpenAiBackend, claude: ClaudeBackend, codex: CodexBackend, command: CommandBackend };
 
-// hide: { hideNames, hideValues } that child processes must not get, such as the agent's key.
-function makeBackend(config, { hide } = {}) {
+// hide: { hideNames, hideValues } that child processes must not get, such as the agent's key. launchArgs: arguments
+// that go before a CLI's own (claude, codex), for a test that starts Node with a scripted program in the CLI's place.
+function makeBackend(config, { hide, launchArgs } = {}) {
   const c = config && typeof config === 'object' ? config : {};
   const Type = TYPES[c.type];
   if (!Type) throw new BackendError(`"backend.type" must be one of ${Object.keys(TYPES).join(', ')}`, 'config');
-  return new Type(c, { hide });
+  return new Type(c, { hide, launchArgs });
 }
 
 module.exports = {
