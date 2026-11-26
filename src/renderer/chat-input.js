@@ -182,8 +182,8 @@ export function mountChatInput(container, opts = {}) {
 
   // askingKey: the question about an agent key is open. sendWhenReady: the person chose to take the key out of a file,
   // and the message goes once main has uploaded the copy without it, as long as the draft is the one they confirmed:
-  // { parts, files, redacted } (keyOutDraft), or null.
-  const state = { caret: 0, composing: false, barKey: null, disposed: false, askingKey: false, sendWhenReady: null };
+  // { parts, files, redacted } (keyOutDraft), or null. picking: the file picker is open (pickFiles).
+  const state = { caret: 0, composing: false, barKey: null, disposed: false, askingKey: false, sendWhenReady: null, picking: false };
   // Staged files (contract 3.5): what main reports for this composer's room and thread, the ready files of a restored
   // draft that main doesn't list, and the stages a send just took, hidden until main's list drops them or the send
   // failed.
@@ -579,24 +579,32 @@ export function mountChatInput(container, opts = {}) {
   const draftHolds = (p) => Boolean(p) && p.parts === JSON.stringify(current()) && p.files === fileKeys(p.redacted);
 
   // A change to the text or the files after Take the key out: the message no longer goes by itself, and waits for
-  // Send.
-  function keepOrDropSend() {
-    if (!state.sendWhenReady || state.disposed || draftHolds(state.sendWhenReady)) return;
+  // Send. dropSend: the same for a change that is on its way, such as a file being read before it is staged.
+  function dropSend() {
+    if (!state.sendWhenReady || state.disposed) return;
     state.sendWhenReady = null;
     toast(t('chat.input.keyOutStopped'), 6000);
   }
+  function keepOrDropSend() {
+    if (state.sendWhenReady && !draftHolds(state.sendWhenReady)) dropSend();
+  }
 
-  // After the key came out of a file: the message goes once every file is ready again, and waits for the person when
-  // an upload failed or the draft changed.
+  // After the key came out of a file: the message goes once every file is ready again, each the key came out of as its
+  // copy without the key, and waits for the person when an upload failed or the draft changed. A file whose copy main
+  // hasn't made yet still shows its upload with the key, ready, so ready alone isn't enough. Nothing goes while the
+  // file picker is open, since a file picked there changes the draft.
   function sendIfReady() {
-    if (!state.sendWhenReady || state.disposed) return;
+    if (!state.sendWhenReady || state.disposed || state.picking) return;
     if (!draftHolds(state.sendWhenReady)) return keepOrDropSend();
-    const fs = stagedState(shownStaged(), Boolean(toWire(current()).text));
+    const shown = shownStaged();
+    const fs = stagedState(shown, Boolean(toWire(current()).text));
     if (fs.failed.length) {
       state.sendWhenReady = null;
       return;
     }
     if (fs.busy.length) return;
+    const { redacted } = state.sendWhenReady;
+    if (shown.some((s) => redacted.has(s.stage) && (s.state !== 'ready' || s.agentKey === true))) return;
     submit();
   }
 
@@ -663,6 +671,9 @@ export function mountChatInput(container, opts = {}) {
         toast(t('chat.files.tooLarge', { name: f.name || '', size: fileSize(max) }), 6000);
         continue;
       }
+      // A file on its way into the tray changes the draft from here, before it is read: after Take the key out, the
+      // message no longer goes by itself.
+      dropSend();
       let source;
       try {
         source = f.path ? { path: f.path } : { name: f.name || 'file', type: f.type || 'application/octet-stream', bytes: new Uint8Array(await f.arrayBuffer()) };
@@ -717,14 +728,20 @@ export function mountChatInput(container, opts = {}) {
     }
   }
 
+  // While the picker is open, a message waiting after Take the key out holds (sendIfReady); a file picked there stops
+  // it, and none lets it go.
   async function pickFiles() {
     if (!filesOn()) return;
     let list = [];
+    state.picking = true;
     try {
       list = (await files.pick()) || [];
     } catch (err) {
       toast(files.errorText ? files.errorText(err && err.code, err) : t('chat.files.failed'), 6000);
       return;
+    } finally {
+      state.picking = false;
+      if (!list.length) sendIfReady();
     }
     input.focus({ preventScroll: true });
     await attachFiles(list);

@@ -2439,11 +2439,12 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
   // The request Make or Save sent: an agent made after the dialog closed (the workspace on screen changed, or Escape)
   // still comes back, so its key is never dropped without a word.
   let inFlight = null;
-  // The agent the form was filled from (Copy an agent), the one whose settings are still loading, and the agents of
-  // other workspaces read for it.
+  // The agent the form was filled from (Copy an agent), the one whose settings are still loading, the agents of other
+  // workspaces read for it, and the number of the latest choice (copyFrom).
   let copied = null;
   let loading = null;
   const copyAgents = new Map();
+  let copyTurn = 0;
   const canCopy = !editing && !WEB && copies.length > 0;
   // The people it may answer besides its sponsor: active people, never an agent.
   const people = () => activeMembers().filter((m) => isPerson(m) && m.id !== sponsor).sort(byName);
@@ -2499,9 +2500,12 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
   // Copy an agent: the form takes the copied agent's name, whom it answers and whether it answers other agents, as its
   // own workspace has them (GET /agents there), and the line under the choice says what didn't carry over. While they
   // load, the line says so and Add agent stays off, so the agent is never made with what the form held before. Choosing
-  // Don't copy leaves what the form holds and forgets the agent that answers for it.
+  // Don't copy leaves what the form holds and forgets the agent that answers for it. Each choice has a turn of its own:
+  // only the latest one's read fills the form, also when an earlier choice of the same agent still has its read out.
+  // A read that failed isn't kept, so choosing the agent again reads it again.
   const copyFrom = async (body, copy) => {
     const help = body.querySelector('[data-copy-help]');
+    const turn = ++copyTurn;
     copied = copy;
     loading = null;
     if (!copy) {
@@ -2509,7 +2513,7 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
       help.classList.remove('ch-warn');
       return showReady(body);
     }
-    let found = copyAgents.has(copy.ws) ? copyAgents.get(copy.ws) : undefined;
+    let found = copyAgents.get(copy.ws);
     if (found === undefined) {
       loading = copy;
       help.textContent = t('chat.agents.copyLoading', { name: copy.name || t('native.agentRuns.thisAgent'), workspace: copy.workspace });
@@ -2518,13 +2522,13 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
       try {
         const res = await api('chatAgents', copy.ws);
         found = (res && res.agents) || [];
+        copyAgents.set(copy.ws, found);
       } catch (_) {
         found = null;
       }
-      copyAgents.set(copy.ws, found);
     }
     // Another choice came in meanwhile, or the dialog went.
-    if (copied !== copy || !body.isConnected) return;
+    if (turn !== copyTurn || !body.isConnected) return;
     loading = null;
     const settings = copiedSettings(copy, (found || []).find((a) => a.id === copy.agent) || null);
     body.querySelector('[name="name"]').value = settings.name;
@@ -2545,7 +2549,9 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
   const submit = async (scrim) => {
     if (busy || !ready()) return;
     // The agent copied from, as the form is now: a choice made while the request is out changes nothing of this one.
+    // Its agent that answers comes with the answer, also when the dialog closed before it (inFlight).
     const source = editing ? null : copied;
+    const withUse = (res) => (res ? { ...res, ...(source && source.use ? { copyUse: source.use } : {}) } : null);
     const body = scrim.querySelector('.dialog-body');
     const name = body.querySelector('[name="name"]').value.trim();
     if (!nameOk(name)) return showError(body, 'name', t('chat.errors.invalidName'));
@@ -2558,12 +2564,8 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
       const call = editing
         ? api('chatUpdateAgent', ws, agent.id, { name, answers, agents, ...(answers === 'members' ? { members } : {}) })
         : api('chatCreateAgent', ws, { name, answers, agents, ...(answers === 'members' ? { members } : {}) });
-      inFlight = call.then(
-        (res) => res || null,
-        () => null
-      );
-      const res = await call;
-      finish(res ? { ...res, ...(source && source.use ? { copyUse: source.use } : {}) } : null);
+      inFlight = call.then(withUse, () => null);
+      finish(withUse(await call));
     } catch (err) {
       busy = false;
       setBusy(scrim, false);

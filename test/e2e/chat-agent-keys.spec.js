@@ -406,6 +406,190 @@ test('after Take the key out on a file, a change to the text or the files while 
   expect(second.attachments.map((f) => f.name).sort()).toEqual(['agent.json', 'notes.txt']);
 });
 
+// Holds main's Take the key out (chatRedactStaged) for the nth file it is asked for, until the answer's release() runs.
+async function holdRedact(n) {
+  await app.evaluate((_, n) => {
+    const files = global.__semChat.files;
+    const redact = files.heldRedact || files.redactKeys;
+    files.heldRedact = redact;
+    let open;
+    const gate = new Promise((resolve) => (open = resolve));
+    global.__semRedactCalls = 0;
+    global.__semRedactRelease = open;
+    files.redactKeys = function (stage) {
+      global.__semRedactCalls += 1;
+      return global.__semRedactCalls === n ? gate.then(() => redact.call(this, stage)) : redact.call(this, stage);
+    };
+  }, n);
+  return () => app.evaluate(() => global.__semRedactRelease());
+}
+
+// Main's staged files by name: [state, agentKey].
+const stagedInMain = () => app.evaluate(() => Object.fromEntries([...global.__semChat.files.staged.values()].map((e) => [e.name, [e.state, e.agentKey === true]])));
+
+// RUK-294 second review, P2: with two files to take the key out of, the first copy became ready while the second still
+// showed its upload with the key, so the composer sent, asked about the key again and forgot that it was to go.
+test('Take the key out of two files sends once both copies without the key are ready, and asks nothing again', async ({}, testInfo) => {
+  const { olga, bart, ws } = await twoPeople(server);
+  await ready(bart);
+  const one = keyFile(ws, 'agent.json');
+  const two = keyFile(ws, 'second.json');
+  await attach([one.file, two.file], 2);
+  await composer(win).click();
+  await win.keyboard.type('Two configs');
+  const release = await holdRedact(2);
+  await win.keyboard.press('Enter');
+  await expect(dialogBox(win).locator('.dialog-body p').first()).toHaveText("The files “agent.json”, “second.json” hold an agent's key.");
+  await dialogBox(win).locator('.buttons button', { hasText: 'Take the key out' }).click();
+  // The copy of the first is up while main still has the second as it uploaded, with its key.
+  await expect.poll(() => app.evaluate(() => global.__semRedactCalls), { timeout: 15000 }).toBe(2);
+  await expect.poll(stagedInMain, { timeout: 20000 }).toEqual({ 'agent.json': ['ready', false], 'second.json': ['ready', true] });
+  await win.waitForTimeout(1500);
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  expect(await texts(olga, ws)).not.toContain('Two configs');
+  await capture(testInfo, 'key-out-two-files');
+  await release();
+  // Both copies ready: the message goes by itself, with neither key.
+  await expect.poll(() => texts(olga, ws), { timeout: 30000 }).toContain('Two configs');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  const sent = (await serverMessages(server, olga, ws.id, ws.general)).find((e) => e.text === 'Two configs');
+  expect(sent.attachments.map((f) => f.name).sort()).toEqual(['agent.json', 'second.json']);
+  for (const f of sent.attachments) {
+    const got = await server.download(olga, ws.id, ws.general, f.id);
+    expect(got.bytes.toString('utf8')).toBe(one.config.replace(KEY, MARK));
+  }
+});
+
+// RUK-294 second review, P2: a file pasted while the copy without the key uploaded was still being read when the copy
+// was ready, so the message went without it, and the file came into the tray after.
+test('a file pasted while the copy without the key uploads stops the message going by itself, also while it is still being read', async ({}, testInfo) => {
+  const { olga, bart, ws } = await twoPeople(server);
+  await ready(bart);
+  const { file } = keyFile(ws);
+  await attach([file], 1);
+  await composer(win).click();
+  await win.keyboard.type('The config and the notes');
+  const releaseUpload = await holdUploads();
+  await win.keyboard.press('Enter');
+  await dialogBox(win).locator('.buttons button', { hasText: 'Take the key out' }).click();
+  await expect(toast()).toHaveText('The key is out of the file. The message goes once the file has uploaded again, unless you change the message first.');
+  // Reading a pasted file waits until the test lets it go.
+  await win.evaluate(() => {
+    const read = Blob.prototype.arrayBuffer;
+    let open;
+    const gate = new Promise((resolve) => (open = resolve));
+    window.__semReadRelease = () => {
+      Blob.prototype.arrayBuffer = read;
+      open();
+    };
+    Blob.prototype.arrayBuffer = function () {
+      return gate.then(() => read.call(this));
+    };
+  });
+  await composer(win).evaluate((el) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(['No key here.\n'], 'notes.txt', { type: 'text/plain' }));
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  await expect(toast()).toHaveText("You changed the message, so it won't go by itself. Press Send when it's ready.");
+  // The copy is up while the pasted file is still being read: nothing goes.
+  await releaseUpload();
+  await expect.poll(stagedInMain, { timeout: 20000 }).toEqual({ 'agent.json': ['ready', false] });
+  await win.waitForTimeout(1500);
+  expect(await texts(olga, ws)).not.toContain('The config and the notes');
+  await win.evaluate(() => window.__semReadRelease());
+  await expect(tray(win).locator('.ch-tray-item.is-ready')).toHaveCount(2, { timeout: 20000 });
+  await win.waitForTimeout(1000);
+  expect(await texts(olga, ws)).not.toContain('The config and the notes');
+  // Send: both files go, the copy without the key among them, and nothing asks.
+  await composer(win).click();
+  await win.keyboard.press('Enter');
+  await expect.poll(() => texts(olga, ws), { timeout: 15000 }).toContain('The config and the notes');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  const sent = (await serverMessages(server, olga, ws.id, ws.general)).find((e) => e.text === 'The config and the notes');
+  expect(sent.attachments.map((f) => f.name).sort()).toEqual(['agent.json', 'notes.txt']);
+});
+
+// RUK-294 second review, P2: choosing the same agent to copy again while its first read was out took that read's answer:
+// when it failed, Add agent came on with the form's fallback while the second read still loaded.
+test("choosing the agent to copy again while its settings load waits for that choice's own read", async ({}, testInfo) => {
+  test.setTimeout(240000);
+  const { beta } = await clarkInBeta();
+  await workspaceMenu(win, 'Agents');
+  await dialogBox(win).locator('[data-add-agent]').click();
+  const form = dialogBox(win);
+  const make = form.locator('.buttons button').last();
+  const copy = form.locator('[name="copy"]');
+  // Each read of Beta's agents waits until the test answers it: ok, or a failure.
+  await app.evaluate((_, betaId) => {
+    const api = global.__semApi;
+    const read = api.heldAgents || api.chatAgents;
+    api.heldAgents = read;
+    global.__semBetaReads = [];
+    api.chatAgents = (...args) =>
+      args[0] !== betaId
+        ? read(...args)
+        : new Promise((resolve, reject) => global.__semBetaReads.push({ ok: () => read(...args).then(resolve, reject), fail: () => reject(Object.assign(new Error('offline'), { code: 'offline' })) }));
+  }, beta.id);
+  const answer = (i, how) => app.evaluate((_, [i, how]) => void global.__semBetaReads[i][how](), [i, how]);
+  const reads = () => app.evaluate(() => global.__semBetaReads.length);
+  await form.locator('[name="name"]').fill('Helper');
+  await copy.selectOption({ label: 'Clark, in Beta' });
+  await expect.poll(reads).toBe(1);
+  await copy.selectOption({ label: "Don't copy" });
+  await expect(make).toBeEnabled();
+  await copy.selectOption({ label: 'Clark, in Beta' });
+  await expect.poll(reads).toBe(2);
+  await expect(make).toBeDisabled();
+  // The first read fails: the choice made since still waits for its own.
+  await answer(0, 'fail');
+  await win.waitForTimeout(800);
+  await expect(make).toBeDisabled();
+  await expect(form.locator('[data-copy-help]')).toHaveText('Reading the settings of Clark in Beta…');
+  await capture(testInfo, 'copy-second-read');
+  await answer(1, 'ok');
+  await expect(form.locator('[name="answers"][value="sponsor"]')).toBeChecked();
+  await expect(form.locator('[name="name"]')).toHaveValue('Clark');
+  await expect(make).toBeEnabled();
+});
+
+// RUK-294 second review, P2: closing Add an agent while the copied agent was being made lost the agent of Settings that
+// answers for the one it copies, and the key step picked the default instead.
+test('closing Add an agent while the copied agent is made keeps the agent that answers for it in the key step', async ({}, testInfo) => {
+  test.setTimeout(240000);
+  const { echoId } = await clarkInBeta();
+  // Another agent of Settings, the default now, so the key step picks it unless the copied agent's comes along.
+  const { id: otherId } = await win.evaluate(() => window.mail.call('agentAddCustom', 'openai'));
+  await win.evaluate(([agent, url]) => window.mail.call('agentUpdateConfig', { custom: { [agent]: { url, name: 'Other' } }, defaultAgent: agent }), [otherId, echo.url]);
+  await workspaceMenu(win, 'Agents');
+  await dialogBox(win).locator('[data-add-agent]').click();
+  const form = dialogBox(win);
+  const make = form.locator('.buttons button').last();
+  await form.locator('[name="copy"]').selectOption({ label: 'Clark, in Beta' });
+  await expect(form.locator('[name="name"]')).toHaveValue('Clark');
+  await expect(make).toBeEnabled();
+  // Making the agent waits on the server; Escape closes the dialog meanwhile. The key step still starts with Echo,
+  // which answers for Clark in Beta.
+  await app.evaluate(() => {
+    const api = global.__semApi;
+    const create = api.heldCreate || api.chatCreateAgent;
+    api.heldCreate = create;
+    let open;
+    const gate = new Promise((resolve) => (open = resolve));
+    global.__semCreateRelease = open;
+    api.chatCreateAgent = (...args) => gate.then(() => create(...args));
+  });
+  await make.click();
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim .dialog h2', { hasText: 'Add an agent' })).toHaveCount(0);
+  await app.evaluate(() => global.__semCreateRelease());
+  const step = dialogBox(win);
+  await expect(step.locator('h2')).toHaveText('Connect Clark', { timeout: 15000 });
+  await capture(testInfo, 'copy-closed-key-step');
+  await expect(step.locator('[name="use"]')).toHaveValue(echoId);
+  expect(echoId).not.toBe(otherId);
+});
+
 // RUK-294 review, P2: picking an agent to copy and making the agent at once made it with what the form held before the
 // copied agent's settings came in.
 test("Add an agent waits for a copied agent's settings before it makes the agent, and makes it with them", async ({}, testInfo) => {
