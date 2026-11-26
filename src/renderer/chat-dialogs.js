@@ -2439,8 +2439,10 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
   // The request Make or Save sent: an agent made after the dialog closed (the workspace on screen changed, or Escape)
   // still comes back, so its key is never dropped without a word.
   let inFlight = null;
-  // The agent the form was filled from (Copy an agent), and the agents of other workspaces read for it.
+  // The agent the form was filled from (Copy an agent), the one whose settings are still loading, and the agents of
+  // other workspaces read for it.
   let copied = null;
+  let loading = null;
   const copyAgents = new Map();
   const canCopy = !editing && !WEB && copies.length > 0;
   // The people it may answer besides its sponsor: active people, never an agent.
@@ -2453,8 +2455,9 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
     const live = new Set(people().map((m) => m.id));
     return [...chosen].filter((id) => live.has(id));
   };
-  // Chosen people with nobody picked can't be saved: the button stays off, and the line under the list says why.
-  const ready = () => agentFormReady({ answers, chosen: picked().length });
+  // Chosen people with nobody picked can't be saved: the button stays off, and the line under the list says why. It
+  // stays off too while a copied agent's settings load, which then fill the form.
+  const ready = () => !loading && agentFormReady({ answers, chosen: picked().length });
   const showReady = (body) => {
     const primary = body.closest('.dialog')?.querySelector('.buttons button:last-child');
     if (primary && !busy) primary.disabled = !ready();
@@ -2494,18 +2497,24 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
   };
 
   // Copy an agent: the form takes the copied agent's name, whom it answers and whether it answers other agents, as its
-  // own workspace has them (GET /agents there), and the line under the choice says what didn't carry over. Choosing
+  // own workspace has them (GET /agents there), and the line under the choice says what didn't carry over. While they
+  // load, the line says so and Add agent stays off, so the agent is never made with what the form held before. Choosing
   // Don't copy leaves what the form holds and forgets the agent that answers for it.
   const copyFrom = async (body, copy) => {
     const help = body.querySelector('[data-copy-help]');
     copied = copy;
+    loading = null;
     if (!copy) {
       help.textContent = t('chat.agents.copyHelp');
       help.classList.remove('ch-warn');
-      return;
+      return showReady(body);
     }
     let found = copyAgents.has(copy.ws) ? copyAgents.get(copy.ws) : undefined;
     if (found === undefined) {
+      loading = copy;
+      help.textContent = t('chat.agents.copyLoading', { name: copy.name || t('native.agentRuns.thisAgent'), workspace: copy.workspace });
+      help.classList.remove('ch-warn');
+      showReady(body);
       try {
         const res = await api('chatAgents', copy.ws);
         found = (res && res.agents) || [];
@@ -2516,6 +2525,7 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
     }
     // Another choice came in meanwhile, or the dialog went.
     if (copied !== copy || !body.isConnected) return;
+    loading = null;
     const settings = copiedSettings(copy, (found || []).find((a) => a.id === copy.agent) || null);
     body.querySelector('[name="name"]').value = settings.name;
     answers = settings.answers;
@@ -2534,6 +2544,8 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
 
   const submit = async (scrim) => {
     if (busy || !ready()) return;
+    // The agent copied from, as the form is now: a choice made while the request is out changes nothing of this one.
+    const source = editing ? null : copied;
     const body = scrim.querySelector('.dialog-body');
     const name = body.querySelector('[name="name"]').value.trim();
     if (!nameOk(name)) return showError(body, 'name', t('chat.errors.invalidName'));
@@ -2551,7 +2563,7 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
         () => null
       );
       const res = await call;
-      finish(res ? { ...res, ...(!editing && copied && copied.use ? { copyUse: copied.use } : {}) } : null);
+      finish(res ? { ...res, ...(source && source.use ? { copyUse: source.use } : {}) } : null);
     } catch (err) {
       busy = false;
       setBusy(scrim, false);
@@ -2572,10 +2584,10 @@ async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
     render(body, done) {
       finish = done;
       const copyField = canCopy
-        ? `<label>${esc(t('chat.agents.copyLabel'))}<select name="copy"><option value="">${esc(t('chat.agents.copyNone'))}</option>${copies
+        ? `<label>${esc(t('chat.agents.copyLabel'))}<select name="copy" data-busy-off><option value="">${esc(t('chat.agents.copyNone'))}</option>${copies
             .map((c, i) => `<option value="${i}">${esc(t('chat.agents.copyOption', { name: c.name || t('native.agentRuns.thisAgent'), workspace: c.workspace }))}</option>`)
             .join('')}</select></label>
-        <p class="field-help" data-copy-help>${esc(t('chat.agents.copyHelp'))}</p>`
+        <p class="field-help" data-copy-help aria-live="polite">${esc(t('chat.agents.copyHelp'))}</p>`
         : '';
       body.innerHTML = `<div class="form ch-form">
         ${copyField}

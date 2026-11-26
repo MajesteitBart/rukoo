@@ -457,6 +457,11 @@ const CALLS = {
       [
         [W, C, null, { text: '', attachments: [{ id: F2, name: 'foto.png', type: 'image/png', size: 9, width: 4, height: 3, expiresAt: 5, extra: 1 }] }],
         [W, C, null, { text: '', mentions: [], attachments: [{ id: F2, name: 'foto.png', type: 'image/png', size: 9, width: 4, height: 3, expiresAt: 5 }] }]
+      ],
+      // RUK-294: a file main found an agent's key in keeps that in the draft; false is the same as leaving it out.
+      [
+        [W, C, null, { text: '', attachments: [{ id: F2, name: 'agent.json', type: 'application/json', size: 9, expiresAt: 5, agentKey: true }, { id: F, name: 'a.txt', type: 'text/plain', size: 1, agentKey: false }] }],
+        [W, C, null, { text: '', mentions: [], attachments: [{ id: F2, name: 'agent.json', type: 'application/json', size: 9, expiresAt: 5, agentKey: true }, { id: F, name: 'a.txt', type: 'text/plain', size: 1 }] }]
       ]
     ],
     bad: [
@@ -466,7 +471,8 @@ const CALLS = {
       [[W, C, null, 'draft'], 'draft'],
       [[W, C, null, { text: '', attachments: [{ id: E, name: 'a', type: 'text/plain', size: 1 }] }], 'attachments'],
       [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 0 }] }], 'attachments'],
-      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 1, width: 0 }] }], 'attachments']
+      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 1, width: 0 }] }], 'attachments'],
+      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 1, agentKey: 'yes' }] }], 'attachments']
     ]
   },
   chatDraft: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]], [[W, C], [W, C, null]]], bad: [[[W, C, 'e_x'], 'root'], [[W, E, null], 'conversation']] },

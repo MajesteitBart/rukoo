@@ -64,8 +64,9 @@ const VIEW_SCHEME = 'rukoo-chat-file';
 const VIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
 // An agent's key (server/src/workspaces.js AGENT_KEY): "rka_", 22 characters, a dot and 43. Whoever has one reads every
 // channel its agent is in, so a text file that holds one gets agentKey: true in its staged entry, and the composer
-// asks before it goes (chat-input.js). Text files up to KEY_SCAN_MAX are read for it as they are measured; a file of
-// another kind, or with a NUL byte in its start, isn't text.
+// asks before it goes (chat-input.js). Text files up to KEY_SCAN_MAX are read for it as they are measured, in the same
+// read that gives their SHA-256, so the answer is about the bytes that upload; a file of another kind, or with a NUL
+// byte in its start, isn't text. A draft keeps agentKey with the file, so the question comes again after a restart.
 const AGENT_KEY = /rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/;
 const AGENT_KEYS = new RegExp(AGENT_KEY.source, 'g');
 const KEY_MARK = '[agent key removed]';
@@ -403,6 +404,14 @@ async function readHead(file, bytes) {
   }
 }
 
+const sha256Of = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+
+// Whether bytes, a text file's, hold an agent's key.
+function holdsKey(bytes) {
+  const read = textOf(bytes);
+  return Boolean(read && AGENT_KEY.test(read.text));
+}
+
 const removeQuietly = (file) => fsp.rm(file, { force: true }).catch(() => {});
 const stagedKey = (ws, room, root) => `${ws}\n${room}\n${root || ''}`;
 
@@ -700,13 +709,21 @@ class Files {
     }
   }
 
-  // Its SHA-256, and for an image its type, width, height and thumbnail.
+  // Its SHA-256, whether it holds an agent's key, and for an image its type, width, height and thumbnail. A file that
+  // may be text and is small enough to scan is read once, for its digest and the scan both.
   async measure(entry) {
     let digest;
     let head;
+    let scanned = null;
     try {
-      digest = await hashFile(entry.path);
-      head = await readHead(entry.path, Math.min(HEADER_BYTES, digest.size));
+      if (entry.size <= KEY_SCAN_MAX && !NOT_TEXT.test(entry.type)) {
+        scanned = await fsp.readFile(entry.path);
+        digest = { sha256: sha256Of(scanned), size: scanned.length };
+        head = scanned.subarray(0, HEADER_BYTES);
+      } else {
+        digest = await hashFile(entry.path);
+        head = await readHead(entry.path, Math.min(HEADER_BYTES, digest.size));
+      }
     } catch (err) {
       throw new ChatError('unreadable', { cause: err });
     }
@@ -715,7 +732,7 @@ class Files {
     if (digest.size < 1) throw new ChatError('unreadable');
     entry.size = digest.size;
     entry.sha256 = digest.sha256;
-    entry.agentKey = await this.holdsKey(entry);
+    entry.agentKey = Boolean(scanned) && digest.size <= KEY_SCAN_MAX && holdsKey(scanned);
     const image = imageInfo(head);
     if (image) {
       entry.type = image.type;
@@ -735,43 +752,38 @@ class Files {
     }
   }
 
-  // Whether a text file of up to KEY_SCAN_MAX holds an agent's key. A file that can't be read for it holds none: the
-  // upload reads it again and fails on its own.
-  async holdsKey(entry) {
-    if (entry.size > KEY_SCAN_MAX || NOT_TEXT.test(entry.type)) return false;
-    try {
-      const read = textOf(await fsp.readFile(entry.path));
-      return Boolean(read && AGENT_KEY.test(read.text));
-    } catch (_) {
-      return false;
-    }
-  }
-
   // chatRedactStaged: the agent keys in a staged text file are replaced with KEY_MARK, in a copy that takes the file's
   // place in the tray and uploads again. The upload with the key is cancelled on the server. Only a file that is
-  // ready or failed, so no measuring or upload of the old bytes is still under way.
+  // ready or failed, so no measuring or upload of the old bytes is still under way. The copy is made from the bytes
+  // that were measured and uploaded, which the file on disk must still hold: a draft's file after a restart has no
+  // bytes here any more (file_gone), and a file that changed on disk since may hold the key where the edit doesn't
+  // (file_changed). Either way the person removes it and attaches it again, and the file keeps agentKey until then.
   async redactKeys(stage) {
     const entry = this.staged.get(stage);
     if (!entry) throw new ChatError('not_found');
-    if (!entry.path || !['ready', 'failed'].includes(entry.state) || entry.size > KEY_SCAN_MAX || NOT_TEXT.test(entry.type)) throw new ChatError('invalid', { field: 'stage' });
+    if (!['ready', 'failed'].includes(entry.state) || entry.size > KEY_SCAN_MAX || NOT_TEXT.test(entry.type)) throw new ChatError('invalid', { field: 'stage' });
+    if (!entry.path || !entry.sha256) throw new ChatError(entry.path ? 'file_changed' : 'file_gone', { field: 'stage' });
     const epoch = this.svc.epoch;
-    let read;
+    let bytes;
     try {
-      read = textOf(await fsp.readFile(entry.path));
+      bytes = await fsp.readFile(entry.path);
     } catch (err) {
-      throw new ChatError('unreadable', { cause: err });
+      throw new ChatError('file_gone', { field: 'stage', cause: err });
     }
     this.svc.guard(epoch);
+    if (bytes.length !== entry.size || sha256Of(bytes) !== entry.sha256) throw new ChatError('file_changed', { field: 'stage' });
+    const read = textOf(bytes);
+    // The bytes that uploaded hold no key: nothing to take out.
     if (!read || !AGENT_KEY.test(read.text)) {
       entry.agentKey = false;
       this.emit(entry);
       return this.view(entry);
     }
-    const bytes = read.encode(read.text.replace(AGENT_KEYS, KEY_MARK));
+    const copy = read.encode(read.text.replace(AGENT_KEYS, KEY_MARK));
     const dir = uploadsDir(this.store().file);
     await fsp.mkdir(dir, { recursive: true });
     const file = path.join(dir, crypto.randomBytes(16).toString('hex'));
-    await fsp.writeFile(file, bytes);
+    await fsp.writeFile(file, copy);
     this.svc.guard(epoch);
     // Removed or sent meanwhile: the copy goes.
     if (entry.gone || this.staged.get(stage) !== entry || !['ready', 'failed'].includes(entry.state)) {
@@ -780,7 +792,8 @@ class Files {
     }
     this.cancelOnServer(entry);
     if (entry.temp) removeQuietly(entry.path);
-    Object.assign(entry, { path: file, temp: true, size: bytes.length, sha256: null, file: null, put: null, expiresAt: null, state: 'measuring', loaded: 0, error: null, agentKey: false, epoch: this.svc.epoch });
+    // agentKey stays until the copy is measured: only a copy without the key takes the file's place.
+    Object.assign(entry, { path: file, temp: true, size: copy.length, sha256: null, file: null, put: null, expiresAt: null, state: 'measuring', loaded: 0, error: null, epoch: this.svc.epoch });
     this.emit(entry);
     this.run(entry);
     return this.view(entry);
@@ -985,6 +998,8 @@ class Files {
         error: null,
         thumb: null,
         expiresAt: f.expiresAt ?? null,
+        // What the scan said when it was attached: the bytes aren't here to scan again.
+        agentKey: f.agentKey === true,
         epoch: this.svc.epoch,
         path: null,
         temp: false,

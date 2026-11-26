@@ -11901,8 +11901,20 @@
     "description": "Chat composer, agent key question: the button that sends the message with the key in it. src/renderer/chat-input.js (askAboutKey, keyDialog)"
   },
   "chat.input.keyOutWaiting": {
-    "message": "The key is out of the file. The message goes once the file has uploaded again.",
-    "description": "Chat composer: toast after Take the key out for a file, while the copy without the key uploads; the message goes by itself once it is ready. src/renderer/chat-input.js (askAboutKey, keyDialog)"
+    "message": "The key is out of the file. The message goes once the file has uploaded again, unless you change the message first.",
+    "description": "Chat composer: toast after Take the key out for a file, while the copy without the key uploads; the message goes by itself once it is ready, unless the person changes its text or files first (chat.input.keyOutStopped). src/renderer/chat-input.js (askAboutKey, keyDialog)"
+  },
+  "chat.input.keyOutStopped": {
+    "message": "You changed the message, so it won't go by itself. Press Send when it's ready.",
+    "description": "Chat composer: toast when the person changes the text or the attached files while the copy of a file without its agent key uploads after Take the key out. The message then waits for Send (chat.input.send) instead of going by itself. src/renderer/chat-input.js (keepOrDropSend)"
+  },
+  "chat.input.keyFileGone": {
+    "message": "Rukoo can't take the key out of {file}: it no longer has the copy that was uploaded. Remove the file and attach it again.",
+    "description": "Chat composer: toast after Take the key out (chat.input.keyRemove) for an attached file whose uploaded bytes Rukoo can't read any more: a file of a saved draft after Rukoo restarted, or a picked file that was moved or deleted. Nothing is sent, and Send asks about the key again. {file}: the file's name in quotes. src/renderer/chat-input.js (askAboutKey)"
+  },
+  "chat.input.keyFileChanged": {
+    "message": "{file} changed after it was attached, so Rukoo can't take the key out of the copy that was uploaded. Remove the file and attach it again.",
+    "description": "Chat composer: toast after Take the key out (chat.input.keyRemove) for a file that was edited on disk after it uploaded with the key. Nothing is sent, and Send asks about the key again. {file}: the file's name in quotes. src/renderer/chat-input.js (askAboutKey)"
   },
   "chat.input.tooLong": {
     "message": "This message is too long to send. Split it in two.",
@@ -12607,6 +12619,10 @@
   "chat.agents.copyChosen": {
     "message": "{name} answers chosen people in {workspace}. They are members of that workspace, so the new agent starts on Only me here.",
     "description": "Add an agent, under Copy an agent: the copied agent answers Chosen people, which don't carry over to another workspace. Only me is chat.agents.answersMeOption. {name}: the agent. {workspace}: its workspace. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
+  },
+  "chat.agents.copyLoading": {
+    "message": "Reading the settings of {name} in {workspace}…",
+    "description": "Add an agent, under Copy an agent: while the picked agent's settings load from its workspace. Add agent (chat.agents.make) stays off until they are in. {name}: the agent. {workspace}: its workspace. src/renderer/chat-dialogs.js (agentForm, copyFrom)"
   },
   "chat.agents.copyUnread": {
     "message": "Rukoo couldn't read the settings of {name} in {workspace}, so the new agent starts on Only me. What answers for it carries over.",
@@ -13447,6 +13463,14 @@
   "chat.errors.fileUnreadable": {
     "message": "Rukoo couldn't read this file.",
     "description": "Team chat error, in a toast or under an attached file: Rukoo couldn't read a file on this computer to upload it (code unreadable). src/renderer/chat.js (chatErrorText); src/main/workspaces/wire.js"
+  },
+  "chat.errors.fileGone": {
+    "message": "Rukoo no longer has the copy of this file that was uploaded. Remove it and attach it again.",
+    "description": "Team chat error: taking an agent key out of an attached file needs the bytes that uploaded, which Rukoo can't read any more: a saved draft's file after a restart, or a picked file that was moved or deleted (code file_gone). The composer says chat.input.keyFileGone with the file's name instead. src/renderer/chat.js (chatErrorText); src/main/workspaces/wire.js"
+  },
+  "chat.errors.fileChanged": {
+    "message": "This file changed after it was attached. Remove it and attach it again.",
+    "description": "Team chat error: an attached file was edited on disk after it uploaded, so the agent key can't be taken out of the bytes that uploaded (code file_changed). The composer says chat.input.keyFileChanged with the file's name instead. src/renderer/chat.js (chatErrorText); src/main/workspaces/wire.js"
   },
   "chat.errors.webFileUnreadable": {
     "message": "Rukoo can't read this file any more. Remove it and attach it again.",
