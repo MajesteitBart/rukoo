@@ -1,0 +1,293 @@
+[
+  {
+    "label": "Start here",
+    "items": [
+      {
+        "label": "Help home",
+        "link": "/"
+      },
+      {
+        "label": "Install Rukoo Mail",
+        "link": "/start/install/"
+      },
+      {
+        "label": "Try mail with demo messages",
+        "link": "/start/demo-mail/"
+      },
+      {
+        "label": "Join your team and send a first message",
+        "link": "/chat/join/"
+      },
+      {
+        "label": "Platform and update troubleshooting",
+        "link": "/start/platform-help/"
+      },
+      {
+        "label": "Use Rukoo on Android",
+        "link": "/start/android/"
+      }
+    ]
+  },
+  {
+    "label": "Mail and inbox",
+    "items": [
+      {
+        "label": "Connect an IMAP mailbox",
+        "link": "/mail/connect-account/"
+      },
+      {
+        "label": "Mail provider requirements",
+        "link": "/mail/providers/"
+      },
+      {
+        "label": "Write, reply to or forward an email",
+        "link": "/mail/write/"
+      },
+      {
+        "label": "Add attachments and inline images",
+        "link": "/mail/attachments/"
+      },
+      {
+        "label": "Set your email signature",
+        "link": "/mail/signatures/"
+      },
+      {
+        "label": "Find an email",
+        "link": "/mail/search/"
+      },
+      {
+        "label": "Mark the current list as read",
+        "link": "/mail/mark-read/"
+      },
+      {
+        "label": "Take back an email before it sends",
+        "link": "/mail/undo-send/"
+      },
+      {
+        "label": "Hide Promotions from Inbox",
+        "link": "/mail/hide-category/"
+      },
+      {
+        "label": "Inbox category switches",
+        "link": "/mail/category-switches/"
+      },
+      {
+        "label": "Set up Google sign-in",
+        "link": "/mail/google-sign-in/"
+      },
+      {
+        "label": "Fix a mailbox connection",
+        "link": "/mail/connection-help/"
+      },
+      {
+        "label": "Group and select emails",
+        "link": "/mail/organize/"
+      },
+      {
+        "label": "Choose mail and chat notifications",
+        "link": "/mail/notifications/"
+      },
+      {
+        "label": "Create categories and correct sorting",
+        "link": "/mail/manage-categories/"
+      }
+    ]
+  },
+  {
+    "label": "Account and team chat",
+    "items": [
+      {
+        "label": "Create a Rukoo account",
+        "link": "/account/create/"
+      },
+      {
+        "label": "What a Rukoo account syncs",
+        "link": "/account/sync/"
+      },
+      {
+        "label": "Invite someone to a workspace",
+        "link": "/chat/invite/"
+      },
+      {
+        "label": "Reply in a thread and mention a teammate",
+        "link": "/chat/reply-and-mention/"
+      },
+      {
+        "label": "How account and chat privacy differ",
+        "link": "/chat/privacy/"
+      },
+      {
+        "label": "Start a direct or group message",
+        "link": "/chat/direct-messages/"
+      },
+      {
+        "label": "Create and manage a channel",
+        "link": "/chat/channels/"
+      },
+      {
+        "label": "Share files and react in chat",
+        "link": "/chat/files-and-reactions/"
+      },
+      {
+        "label": "Mute a conversation or block someone",
+        "link": "/chat/notifications-and-blocks/"
+      },
+      {
+        "label": "Workspace roles and limits",
+        "link": "/chat/roles-and-limits/"
+      },
+      {
+        "label": "Devices, passwords and account recovery",
+        "link": "/account/devices-and-recovery/"
+      }
+    ]
+  },
+  {
+    "label": "Calendar and booking",
+    "items": [
+      {
+        "label": "Connect a calendar",
+        "link": "/calendar/connect/"
+      },
+      {
+        "label": "Create or move a calendar event",
+        "link": "/calendar/create-event/"
+      },
+      {
+        "label": "Answer a calendar invitation",
+        "link": "/calendar/invitations/"
+      },
+      {
+        "label": "Find and share your free times",
+        "link": "/calendar/share-free-times/"
+      },
+      {
+        "label": "Set up a booking page",
+        "link": "/booking/set-up/"
+      },
+      {
+        "label": "Booking page rules and limits",
+        "link": "/booking/rules/"
+      },
+      {
+        "label": "Move or cancel a booking",
+        "link": "/booking/manage/"
+      },
+      {
+        "label": "How bookings reach your calendar",
+        "link": "/booking/how-it-works/"
+      },
+      {
+        "label": "Add a video service to bookings",
+        "link": "/booking/video/"
+      },
+      {
+        "label": "Change booking hours for a date",
+        "link": "/booking/hours/"
+      },
+      {
+        "label": "Turn off your booking page",
+        "link": "/booking/turn-off/"
+      }
+    ]
+  },
+  {
+    "label": "Meetings and Rukoo Voice",
+    "items": [
+      {
+        "label": "Rukoo Voice versions and requirements",
+        "link": "/meetings/requirements/"
+      },
+      {
+        "label": "Record an audio meeting",
+        "link": "/meetings/record/"
+      },
+      {
+        "label": "Review meeting speakers and notes",
+        "link": "/meetings/review/"
+      },
+      {
+        "label": "Dictate and rewrite text with Voice",
+        "link": "/voice/dictation/"
+      },
+      {
+        "label": "Change screen capture during a meeting",
+        "link": "/meetings/screen/"
+      },
+      {
+        "label": "Manage meeting storage and deletion",
+        "link": "/voice/storage/"
+      },
+      {
+        "label": "Fix Voice permissions or missing meeting audio",
+        "link": "/voice/recovery/"
+      }
+    ]
+  },
+  {
+    "label": "Your agent",
+    "items": [
+      {
+        "label": "Connect Claude Code or Codex",
+        "link": "/agents/connect/"
+      },
+      {
+        "label": "Agent permission levels",
+        "link": "/agents/permissions/"
+      },
+      {
+        "label": "Draft a reply with an agent",
+        "link": "/agents/draft-reply/"
+      },
+      {
+        "label": "Steer or queue a message while an agent works",
+        "link": "/agents/steer-and-queue/"
+      },
+      {
+        "label": "Connect Hermes Agent",
+        "link": "/agents/hermes/"
+      },
+      {
+        "label": "Connect OpenClaw",
+        "link": "/agents/openclaw/"
+      },
+      {
+        "label": "Connect a custom agent",
+        "link": "/agents/custom/"
+      },
+      {
+        "label": "Give an agent files and other emails",
+        "link": "/agents/files-and-emails/"
+      },
+      {
+        "label": "Choose an agent model or start a skill",
+        "link": "/agents/models-and-skills/"
+      },
+      {
+        "label": "Pair an Android phone with your computer",
+        "link": "/agents/pair-phone/"
+      }
+    ]
+  },
+  {
+    "label": "External guides on GitHub",
+    "items": [
+      {
+        "label": "Calendar and booking (GitHub)",
+        "link": "https://github.com/MajesteitBart/rukoo/blob/v2.4.0/docs/booking.md"
+      },
+      {
+        "label": "Connect your agent (GitHub)",
+        "link": "https://github.com/MajesteitBart/rukoo/blob/v2.4.0/docs/agents.md"
+      },
+      {
+        "label": "Meetings and Rukoo Voice (GitHub)",
+        "link": "https://github.com/MajesteitBart/rukoo/blob/v2.4.0/docs/meetings.md"
+      },
+      {
+        "label": "Android and desktop updates (GitHub)",
+        "link": "https://github.com/MajesteitBart/rukoo/blob/v2.4.0/docs/platforms.md"
+      }
+    ]
+  }
+]

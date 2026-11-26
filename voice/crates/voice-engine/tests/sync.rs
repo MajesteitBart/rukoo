@@ -1967,6 +1967,7 @@ fn overlap_next_missing(dir: &Path, ms: u64) -> (Vec<u64>, Vec<String>) {
 
 /// A meeting that has Rukoo's data in the bucket when another computer first pulls it: that
 /// computer's Rukoo gets the data after the meeting's start, so it has a meeting to put it in.
+/// Also when that computer's event log is lost later and the meeting stays on disk.
 fn a_restored_meeting_s_data_comes_after_the_meeting() {
     let fake = fake_s3();
     let a = harness("data-first-a", json!({"meetings_retention": "keep"}));
@@ -1991,7 +1992,6 @@ fn a_restored_meeting_s_data_comes_after_the_meeting() {
             })
         })
     });
-    engine_a.shutdown();
 
     let b = harness("data-first-b", json!({"meetings_retention": "keep"}));
     let engine_b = b.start();
@@ -2005,13 +2005,40 @@ fn a_restored_meeting_s_data_comes_after_the_meeting() {
             .iter()
             .any(|(e, d)| e == "meeting.data" && d["data"] == on_a)
     });
-    let started = events.iter().position(|(e, _)| e == "meeting.started");
-    let data = events.iter().position(|(e, _)| e == "meeting.data");
-    assert!(
-        started.is_some() && started < data,
-        "the data came before the meeting: {:?}",
-        events.iter().map(|(e, _)| e.as_str()).collect::<Vec<_>>()
-    );
+    let in_order = |events: &[(String, Value)], doc: &Value| {
+        let started = events.iter().position(|(e, _)| e == "meeting.started");
+        let data = events
+            .iter()
+            .position(|(e, d)| e == "meeting.data" && d["data"] == *doc);
+        assert!(
+            started.is_some() && started < data,
+            "the data came before the meeting: {:?}",
+            events.iter().map(|(e, _)| e.as_str()).collect::<Vec<_>>()
+        );
+    };
+    in_order(&events, &on_a);
+
+    // B's event log is lost; the meeting stays on disk. A's next change still reaches B's Rukoo,
+    // after the meeting, which B sends again.
+    engine_b.shutdown();
+    for name in ["bridge.db", "bridge.db-wal", "bridge.db-shm"] {
+        let _ = std::fs::remove_file(b.data().join(name));
+    }
+    let engine_b = b.start();
+    let again = json!({"v": 1, "device": "a", "fields": {"title": {"v": "Renamed on A again", "at": 3, "by": "a"}}});
+    engine_a
+        .meeting_control()
+        .unwrap()
+        .set_data(&id, again.as_object().unwrap())
+        .unwrap();
+    wait_long("B gets A's next copy", Duration::from_secs(60), || {
+        events = events_of(&b.data(), &id);
+        events
+            .iter()
+            .any(|(e, d)| e == "meeting.data" && d["data"] == again)
+    });
+    in_order(&events, &again);
+    engine_a.shutdown();
     engine_b.shutdown();
     fake.stop();
 }
