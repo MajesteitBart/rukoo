@@ -393,15 +393,23 @@ async function hashFile(file) {
   return { sha256: hash.digest('hex'), size };
 }
 
-async function readHead(file, bytes) {
-  const handle = await fsp.open(file, 'r');
-  try {
-    const buffer = Buffer.alloc(bytes);
-    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
-    return buffer.subarray(0, bytesRead);
-  } finally {
-    await handle.close();
+// hashFile, and the file's first keep bytes from the same read: { sha256, size, head }. However large the file has
+// grown since it was attached, no more than keep bytes stay in memory.
+async function hashAndKeep(file, keep) {
+  const hash = crypto.createHash('sha256');
+  const chunks = [];
+  let kept = 0;
+  let size = 0;
+  for await (const chunk of fs.createReadStream(file)) {
+    hash.update(chunk);
+    size += chunk.length;
+    if (kept < keep) {
+      const part = chunk.subarray(0, keep - kept);
+      chunks.push(part);
+      kept += part.length;
+    }
   }
+  return { sha256: hash.digest('hex'), size, head: Buffer.concat(chunks, kept) };
 }
 
 const sha256Of = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -709,21 +717,14 @@ class Files {
     }
   }
 
-  // Its SHA-256, whether it holds an agent's key, and for an image its type, width, height and thumbnail. A file that
-  // may be text and is small enough to scan is read once, for its digest and the scan both.
+  // Its SHA-256, whether it holds an agent's key, and for an image its type, width, height and thumbnail, all from one
+  // read of the file. It keeps up to KEY_SCAN_MAX and a byte of a file that may be text, and the size that read
+  // measured says whether it is scanned: the size when it was attached may be another by now, either way.
   async measure(entry) {
     let digest;
-    let head;
-    let scanned = null;
+    const text = !NOT_TEXT.test(entry.type);
     try {
-      if (entry.size <= KEY_SCAN_MAX && !NOT_TEXT.test(entry.type)) {
-        scanned = await fsp.readFile(entry.path);
-        digest = { sha256: sha256Of(scanned), size: scanned.length };
-        head = scanned.subarray(0, HEADER_BYTES);
-      } else {
-        digest = await hashFile(entry.path);
-        head = await readHead(entry.path, Math.min(HEADER_BYTES, digest.size));
-      }
+      digest = await hashAndKeep(entry.path, text ? KEY_SCAN_MAX + 1 : HEADER_BYTES);
     } catch (err) {
       throw new ChatError('unreadable', { cause: err });
     }
@@ -732,7 +733,8 @@ class Files {
     if (digest.size < 1) throw new ChatError('unreadable');
     entry.size = digest.size;
     entry.sha256 = digest.sha256;
-    entry.agentKey = Boolean(scanned) && digest.size <= KEY_SCAN_MAX && holdsKey(scanned);
+    entry.agentKey = text && digest.size <= KEY_SCAN_MAX && holdsKey(digest.head);
+    const head = digest.head.subarray(0, HEADER_BYTES);
     const image = imageInfo(head);
     if (image) {
       entry.type = image.type;

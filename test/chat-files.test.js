@@ -442,8 +442,54 @@ test('a text file is read once to be measured, for its SHA-256 and the key scan 
   const s = await svc.files.stage(W, C, null, { path: p.path });
   const r = await ready(svc, s.stage);
   assert.deepEqual([r.state, r.agentKey], ['ready', true]);
-  assert.deepEqual(reads, ['read', 'stream'], 'one read to measure, one to upload');
+  assert.deepEqual(reads, ['stream', 'stream'], 'one read to measure, one to upload');
   assert.equal(svc.files.staged.get(s.stage).sha256, sha(fs.readFileSync(file)));
+});
+
+// RUK-294 second review, P1: the size a file had when it was attached chose whether it was scanned, so one attached at
+// over 1 MiB that held 80 bytes with a key by the time it was measured got agentKey false with the digest of those
+// bytes, and went without the question.
+test('whether a text file is scanned for a key goes by the size it is measured at, and a file that grew meanwhile is read in one bounded pass', async (t) => {
+  const { svc, links, pick, dir } = await setup(t);
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const small = Buffer.from(`{"key": "${key}"}\n`);
+  const file = writeFile(dir, 'agent.json', Buffer.alloc(1024 * 1024 + 100, 0x20));
+  // The file changes on disk as the first read after it was attached starts: the one that measures it.
+  let change = null;
+  const createReadStream = fs.createReadStream;
+  fs.createReadStream = function (f, ...rest) {
+    if (String(f) === file && change) {
+      fs.writeFileSync(file, change);
+      change = null;
+    }
+    return createReadStream.call(this, f, ...rest);
+  };
+  t.after(() => (fs.createReadStream = createReadStream));
+
+  const [p] = await pick(file);
+  change = small;
+  const s = await svc.files.stage(W, C, null, { path: p.path });
+  assert.equal(s.size, 1024 * 1024 + 100, 'attached at its size then');
+  const r = await ready(svc, s.stage);
+  assert.deepEqual([r.state, r.size, r.agentKey], ['ready', small.length, true]);
+  assert.equal(svc.files.staged.get(s.stage).sha256, sha(small));
+  assert.ok(links.put.get(r.file).equals(small), 'the bytes that upload are the ones scanned');
+
+  // The other way: attached small, measured at 2 MiB. Its digest is of all of it, and it is past what the scan reads.
+  const grown = Buffer.concat([small, Buffer.alloc(2 * 1024 * 1024, 0x20)]);
+  const other = writeFile(dir, 'notes.txt', small);
+  const [q] = await pick(other);
+  fs.createReadStream = function (f, ...rest) {
+    if (String(f) === other && !change) {
+      fs.writeFileSync(other, grown);
+      change = true;
+    }
+    return createReadStream.call(this, f, ...rest);
+  };
+  const s2 = await svc.files.stage(W, C, null, { path: q.path });
+  const r2 = await ready(svc, s2.stage);
+  assert.deepEqual([r2.state, r2.size, r2.agentKey], ['ready', grown.length, false]);
+  assert.equal(svc.files.staged.get(s2.stage).sha256, sha(grown));
 });
 
 // RUK-294 review, P1: a draft kept the upload of a file with a key but not what the scan found, so after a restart Send
