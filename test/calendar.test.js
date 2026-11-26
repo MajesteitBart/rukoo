@@ -583,3 +583,20 @@ test('the demo calendar seeds a week of sample events and keeps changes', async 
   assert.equal(workAgain.find((e) => e.title === 'Quarterly planning').response, 'accepted');
   assert.equal(workAgain.filter((e) => e.seriesId === 'standup').length, 0);
 });
+
+test("an event id from another of the user's computers finds the same calendar's event here", async () => {
+  const m = monday();
+  const fake = fakeCalendar({
+    events: [{ id: 'm1', summary: 'Review', start: { dateTime: iso(at(m, 2, 10)) }, end: { dateTime: iso(at(m, 2, 11)) }, organizer: { email: 'me@example.com', self: true } }]
+  });
+  const { calendars } = setup(fake);
+  const week = { start: m, end: m + 7 * DAY };
+  calendars.view(week);
+  await settle(calendars);
+  const here = calendars.view(week).events.find((e) => e.title === 'Review');
+  // The same event as the laptop linked it: its own account id, the same calendar and event.
+  const [, calendarId, eventId] = here.id.split(':');
+  const fromLaptop = ['a-laptop-account', calendarId, eventId].join(':');
+  assert.equal(calendars.event(fromLaptop).title, 'Review');
+  assert.equal(calendars.event(['a-laptop-account', 'another-calendar', eventId].join(':')), null);
+});

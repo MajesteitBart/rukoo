@@ -122,7 +122,9 @@ fn assert_data_deserializes_alike(name: &str, message: &Message, input: &Value) 
         EventBody::PassageRemoved(v) => same(name, v, data),
         EventBody::Mark(v) => same(name, v, data),
         EventBody::Frame(v) => same(name, v, data),
-        EventBody::MeetingRemoved { .. } | EventBody::Unknown { .. } => {}
+        EventBody::MeetingRemoved { .. }
+        | EventBody::MeetingData { .. }
+        | EventBody::Unknown { .. } => {}
     }
 }
 

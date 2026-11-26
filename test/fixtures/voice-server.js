@@ -340,6 +340,13 @@ const DEFAULTS = {
   'sync.pull'() {
     return {};
   },
+  // Voice keeps what Rukoo owns of the meeting and gives it back as this computer's copy.
+  'meeting.data.set'(args) {
+    if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    this.dataSets = [...(this.dataSets || []), args];
+    this.append('meeting.data', args.meeting, { writer: 'local', data: args.data });
+    return {};
+  },
   // Voice fetches the frame images in the background; nothing here to fetch.
   'media.prefetch'(args) {
     if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };

@@ -224,6 +224,30 @@ impl MeetingControl for Control {
             sync.pull_now();
         }
     }
+    /// Keeps what Rukoo owns of the meeting in its folder, where bucket sync takes it up for the
+    /// user's other computers, and gives it back as this computer's copy in the event log, so a
+    /// Rukoo whose profile is new gets it too.
+    fn set_data(&self, id: &str, data: &voice_protocol::Object) -> Result<(), ControlError> {
+        let dir = self.meeting_dir(id)?;
+        let text = serde_json::to_vec(data)
+            .map_err(|e| ControlError::failed(format!("Voice can't keep the data: {e}")))?;
+        let path = dir.join(voice_sync::pull::DATA_FILE);
+        let part = dir.join(format!("{}.part", voice_sync::pull::DATA_FILE));
+        fs::write(&part, &text)
+            .and_then(|()| fs::rename(&part, &path))
+            .map_err(|e| ControlError::failed(format!("Voice can't keep the data: {e}")))?;
+        if let Some(sync) = self.media.bucket_sync() {
+            sync.nudge();
+        }
+        self.log
+            .append(
+                voice_protocol::events::MEETING_DATA,
+                Some(id),
+                serde_json::json!({ "writer": "local", "data": data }),
+            )
+            .map_err(|e| ControlError::failed(e.to_string()))?;
+        Ok(())
+    }
     fn start(&self, args: StartArgs) -> Result<String, ControlError> {
         self.controller.start(args, StartedBy::Rukoo)
     }

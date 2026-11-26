@@ -525,7 +525,8 @@ impl Queue {
             tx.execute("DELETE FROM parts WHERE file = ?1", [file])?;
             tx.execute(
                 "UPDATE meetings SET manifest_dirty = 1 WHERE id = \
-                   (SELECT meeting FROM files WHERE id = ?1 AND kind NOT IN ('manifest', 'index'))",
+                   (SELECT meeting FROM files WHERE id = ?1 \
+                     AND kind NOT IN ('manifest', 'index', 'data'))",
                 [file],
             )?;
             tx.execute(
@@ -916,6 +917,25 @@ impl Queue {
         self.set_meta(&format!("mid:{meeting}"), Some(id))
     }
 
+    /// The SHA-256 of another data folder's copy of what Rukoo owns of a meeting, as its index gave it
+    /// when this computer last took that copy ([`crate::pull`]). `writer` is its index name.
+    pub(crate) fn data_seen(
+        &self,
+        meeting: &str,
+        writer: &str,
+    ) -> Result<Option<String>, SyncError> {
+        self.meta(&format!("data:{meeting}:{writer}"))
+    }
+
+    pub(crate) fn set_data_seen(
+        &self,
+        meeting: &str,
+        writer: &str,
+        sha256: &str,
+    ) -> Result<(), SyncError> {
+        self.set_meta(&format!("data:{meeting}:{writer}"), Some(sha256))
+    }
+
     pub(crate) fn set_transcript_digest(
         &self,
         meeting: &str,
@@ -940,7 +960,8 @@ impl Queue {
             if reset {
                 tx.execute_batch(
                     "DELETE FROM parts; DELETE FROM files; DELETE FROM meetings; \
-                     DELETE FROM meta WHERE key LIKE 'digest:%' OR key LIKE 'mid:%';",
+                     DELETE FROM meta WHERE key LIKE 'digest:%' OR key LIKE 'mid:%' \
+                       OR key LIKE 'data:%';",
                 )?;
             }
             tx.execute(
@@ -1025,7 +1046,8 @@ impl Queue {
                  UPDATE meetings SET uploaded_gen = 0, media_removed_at = NULL, \
                    manifest_dirty = CASE WHEN phase = 'forgotten' THEN 0 ELSE 1 END, \
                    phase = CASE WHEN phase IN ('synced', 'restored') THEN 'after' ELSE phase END; \
-                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at') OR key LIKE 'mid:%';",
+                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at') OR key LIKE 'mid:%' \
+                   OR key LIKE 'data:%';",
             )?;
             tx.commit()?;
             Ok(Some(open))
@@ -1130,7 +1152,7 @@ impl Queue {
     ) -> Result<bool, SyncError> {
         self.with(|c| {
             c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM files WHERE meeting = ?1 \
+                "SELECT EXISTS (SELECT 1 FROM files WHERE meeting = ?1 AND kind != 'data' \
                    AND (?2 OR kind != 'manifest') AND state IN ('waiting', 'uploading'))",
                 params![meeting, with_manifest],
                 |r| r.get(0),
@@ -1144,7 +1166,7 @@ impl Queue {
         self.with(|c| {
             let mut stmt = c.prepare(
                 "SELECT path, kind, object, size, sha256, track, seq, t, samples FROM files f \
-                 WHERE meeting = ?1 AND state = 'done' AND kind NOT IN ('manifest', 'index') \
+                 WHERE meeting = ?1 AND state = 'done' AND kind NOT IN ('manifest', 'index', 'data') \
                    AND id = (SELECT MAX(id) FROM files g WHERE g.meeting = f.meeting \
                      AND g.path = f.path AND g.state = 'done') \
                  ORDER BY id",
@@ -1243,7 +1265,7 @@ impl Queue {
     /// The meeting's finished rows, manifests left out.
     pub(crate) fn done_rows(&self, meeting: &str) -> Result<Vec<Row>, SyncError> {
         self.rows_where(
-            "f.meeting = ?1 AND f.state = 'done' AND f.kind NOT IN ('manifest', 'index')",
+            "f.meeting = ?1 AND f.state = 'done' AND f.kind NOT IN ('manifest', 'index', 'data')",
             meeting,
         )
     }
@@ -1426,7 +1448,7 @@ impl Queue {
                 let gone: Vec<i64> = {
                     let mut stmt = tx.prepare(
                         "SELECT id, path FROM files WHERE meeting = ?1 AND state = 'done' \
-                           AND kind NOT IN ('manifest', 'index')",
+                           AND kind NOT IN ('manifest', 'index', 'data')",
                     )?;
                     let rows = stmt
                         .query_map([m.meeting], |r| {
@@ -1500,10 +1522,11 @@ impl Queue {
             tx.execute("DELETE FROM restored WHERE meeting = ?1", [meeting])?;
             tx.execute("DELETE FROM kept WHERE meeting = ?1", [meeting])?;
             tx.execute(
-                "DELETE FROM meta WHERE key LIKE ?1 OR key = ?2",
+                "DELETE FROM meta WHERE key LIKE ?1 OR key = ?2 OR key LIKE ?3",
                 [
                     format!("{}%", digest_key(meeting, "")),
                     format!("mid:{meeting}"),
+                    format!("data:{meeting}:%"),
                 ],
             )?;
             if let Some(now) = tombstone {

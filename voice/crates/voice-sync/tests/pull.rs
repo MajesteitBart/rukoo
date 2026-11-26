@@ -29,6 +29,8 @@ struct Hooks {
     refuse_delete: Mutex<bool>,
     /// The computer's bucket sync, which a deletion tells first, as the engine's does.
     sync: Mutex<Weak<BucketSync>>,
+    /// What Rukoo owns of a meeting, as other data folders gave it: (meeting, writer, data).
+    data: Mutex<Vec<(String, String, serde_json::Value)>>,
 }
 
 impl Hooks {
@@ -66,6 +68,9 @@ impl Hooks {
     fn deleted(&self) -> Vec<String> {
         self.deleted.lock().unwrap().clone()
     }
+    fn data(&self) -> Vec<(String, String, serde_json::Value)> {
+        self.data.lock().unwrap().clone()
+    }
 }
 
 impl PullHooks for Hooks {
@@ -83,6 +88,20 @@ impl PullHooks for Hooks {
         self.follow(meeting);
         self.updated.lock().unwrap().push(meeting.to_owned());
         Ok(())
+    }
+
+    fn data(
+        &self,
+        meeting: &str,
+        writer: &str,
+        data: serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        self.data.lock().unwrap().push((
+            meeting.to_owned(),
+            writer.to_owned(),
+            serde_json::Value::Object(data),
+        ));
+        true
     }
 
     fn deleted(&self, meeting: &str, from: &PullOrigin<'_>) -> bool {
@@ -715,4 +734,66 @@ fn a_meeting_that_can_t_come_in_is_the_look_s_error_and_the_others_still_come() 
     );
     assert!(!hooks.restored().contains(&blocked.id));
     assert_eq!(b.sync.status().restore.available, 1);
+}
+
+#[test]
+fn what_rukoo_owns_of_a_meeting_reaches_the_other_computer_outside_the_manifest() {
+    let fake = fake();
+    let root = scratch("pull-data");
+    let _c = Cleanup(root.clone());
+    let a = Voice::open(&root.join("a"));
+    let (m, _) = finished(&a.meetings(), "With notes", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    // B scans every meeting only once an hour: a new copy goes up without waiting for that.
+    let (b, hooks) = second_computer(
+        &fake,
+        &root,
+        &a,
+        Setup {
+            timing: voice_sync::SyncTiming {
+                scan_all: Duration::from_secs(3_600),
+                ..timing()
+            },
+            ..Setup::default()
+        },
+    );
+    assert!(wait_for(WAIT, || hooks.restored() == vec![m.id.clone()]));
+    let a_hooks = Hooks::new(&a.meetings());
+    a.sync.set_pull_hooks(a_hooks.clone());
+
+    // Rukoo on B renamed the meeting and wrote notes.
+    let doc = serde_json::json!({"v": 1, "device": "b", "fields": {"title": {"v": "Renamed on B", "at": 2, "by": "b"}}});
+    fs::write(b.meetings().join(&m.id).join("rukoo.json"), doc.to_string()).unwrap();
+    b.sync.nudge();
+    assert!(
+        wait_for(WAIT, || a_hooks
+            .data()
+            .iter()
+            .any(|(id, _, d)| *id == m.id && *d == doc)),
+        "A never got B's copy: {:?}",
+        a.sync.status()
+    );
+    let writer = a_hooks.data()[0].1.clone();
+    assert_eq!(writer.len(), 32);
+    // It is in no manifest: an older Voice's restore would refuse a path it doesn't know.
+    let manifest = manifest(&fake, &a.key(), &m.id).unwrap();
+    assert!(manifest.files.iter().all(|f| f.path != "rukoo.json"));
+    // Taken once: later looks fetch it again only when it changed.
+    let calls = a_hooks.data().len();
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(a_hooks.data().len(), calls);
+    let newer = serde_json::json!({"v": 1, "device": "b", "fields": {"title": {"v": "Renamed again", "at": 3, "by": "b"}}});
+    fs::write(
+        b.meetings().join(&m.id).join("rukoo.json"),
+        newer.to_string(),
+    )
+    .unwrap();
+    b.sync.nudge();
+    assert!(wait_for(WAIT, || a_hooks
+        .data()
+        .iter()
+        .any(|(_, w, d)| *w == writer && *d == newer)));
+    // B's own copy never comes back to B.
+    assert!(hooks.data().iter().all(|(_, w, _)| *w != writer));
 }

@@ -79,6 +79,35 @@ impl PullHooks for EnginePull {
         swapped
     }
 
+    fn data(
+        &self,
+        meeting: &str,
+        writer: &str,
+        data: serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        let Some(core) = self.0.upgrade() else {
+            return false;
+        };
+        let Some(log) = core.meetings.log.as_ref() else {
+            return false;
+        };
+        // Rukoo puts the data into a meeting it knows. A meeting that just came in sends its start
+        // from its pipeline a moment later; until then the next pull brings the data again.
+        if !matches!(
+            log.latest(meeting, voice_protocol::events::MEETING_STARTED),
+            Ok(Some(_))
+        ) {
+            return false;
+        }
+        log.append(
+            voice_protocol::events::MEETING_DATA,
+            Some(meeting),
+            json!({ "writer": writer, "data": data }),
+        )
+        .inspect_err(|e| log::warn!("sync: can't hand Rukoo another computer's notes: {e}"))
+        .is_ok()
+    }
+
     fn deleted(&self, meeting: &str, from: &PullOrigin<'_>) -> bool {
         let Some(core) = self.0.upgrade() else {
             return false;

@@ -28,7 +28,7 @@ const STATES = ['recording', 'paused', 'processing', 'done', 'failed'];
 const ENDED = new Set(['processing', 'done', 'failed']);
 const WITH_REASON = new Set(['processing', 'failed']);
 const MARK_TRACKS = ['mic', 'call', 'screen'];
-const MEETING_EVENTS = new Set(['meeting.started', 'meeting.starting', 'meeting.state', 'speaker', 'passage', 'passage.removed', 'mark', 'frame', 'meeting.removed']);
+const MEETING_EVENTS = new Set(['meeting.started', 'meeting.starting', 'meeting.state', 'speaker', 'passage', 'passage.removed', 'mark', 'frame', 'meeting.removed', 'meeting.data']);
 const ERROR_CODES = ['bad_request', 'unknown_command', 'not_found', 'not_recording', 'busy', 'not_available', 'failed'];
 
 // media.open and media.read: what Voice prepares, its ids, the longest range and the most bytes one read returns.
@@ -184,6 +184,11 @@ const COMMAND_ARGS = {
     int(a, 'length', 1);
     check(a.length <= MEDIA_READ_MAX, 'length');
   },
+  // What Rukoo owns of a meeting, for Voice to keep in the user's bucket.
+  'meeting.data.set': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    check(isObj(a.data), 'data');
+  },
   // Only the microphone splits: the call's voices are labelled while it records.
   'speakers.split': (a) => {
     pattern(a, 'meeting', MEETING_ID);
@@ -284,7 +289,12 @@ const EVENT_DATA = {
     int(d, 'height', 0);
     str(d, 'text');
   },
-  'meeting.removed': (d) => { if (d.reason != null) str(d, 'reason', { min: 1, max: 64 }); }
+  'meeting.removed': (d) => { if (d.reason != null) str(d, 'reason', { min: 1, max: 64 }); },
+  // What Rukoo owns of the meeting, as a computer's Rukoo last gave it: `writer` names whose copy it is.
+  'meeting.data': (d) => {
+    str(d, 'writer', { min: 1, max: 64 });
+    check(isObj(d.data), 'data');
+  }
 };
 
 function event(m) {

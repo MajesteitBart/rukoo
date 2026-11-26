@@ -23,6 +23,7 @@ pub mod events {
     pub const MARK: &str = "mark";
     pub const FRAME: &str = "frame";
     pub const MEETING_REMOVED: &str = "meeting.removed";
+    pub const MEETING_DATA: &str = "meeting.data";
 
     /// True for the known events that belong to a meeting and so need `meeting`.
     pub fn is_meeting_event(name: &str) -> bool {
@@ -37,6 +38,7 @@ pub mod events {
                 | MARK
                 | FRAME
                 | MEETING_REMOVED
+                | MEETING_DATA
         )
     }
 }
@@ -62,6 +64,7 @@ pub mod commands {
     pub const MEDIA_READ: &str = "media.read";
     pub const SPEAKERS_SPLIT: &str = "speakers.split";
     pub const SYNC_PULL: &str = "sync.pull";
+    pub const MEETING_DATA_SET: &str = "meeting.data.set";
     pub const MEDIA_PREFETCH: &str = "media.prefetch";
     pub const MEDIA_KEEP: &str = "media.keep";
 }
@@ -475,6 +478,12 @@ pub enum EventBody {
     MeetingRemoved {
         reason: Option<String>,
     },
+    /// What Rukoo owns of the meeting, as one computer's Rukoo last gave it.
+    MeetingData {
+        /// Whose copy: `local` for this computer's, else another data folder's index name.
+        writer: String,
+        data: Object,
+    },
     /// An event type this version doesn't know. Rukoo ignores it.
     Unknown {
         event: String,
@@ -496,6 +505,7 @@ impl EventBody {
             EventBody::Mark(_) => events::MARK,
             EventBody::Frame(_) => events::FRAME,
             EventBody::MeetingRemoved { .. } => events::MEETING_REMOVED,
+            EventBody::MeetingData { .. } => events::MEETING_DATA,
             EventBody::Unknown { event, .. } => event,
         }
     }
@@ -516,6 +526,7 @@ impl EventBody {
                 Some(reason) => json!({"reason": reason}),
                 None => json!({}),
             }),
+            EventBody::MeetingData { writer, data } => Ok(json!({"writer": writer, "data": data})),
             EventBody::Unknown { data, .. } => Ok(Value::Object(data.clone())),
         };
         data.expect("event data serializes to JSON")
@@ -713,6 +724,11 @@ pub enum CommandBody {
         meeting: MeetingId,
         track: Track,
     },
+    /// What Rukoo owns of the meeting, for Voice to keep and upload to the user's bucket.
+    MeetingDataSet {
+        meeting: MeetingId,
+        data: Object,
+    },
     /// Fetch the meeting's frame images back from the bucket in the background. The checks allow
     /// only `kind` [`PREFETCH_FRAMES`].
     MediaPrefetch {
@@ -754,6 +770,7 @@ impl CommandBody {
             CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
             CommandBody::MediaRead { .. } => commands::MEDIA_READ,
             CommandBody::SpeakersSplit { .. } => commands::SPEAKERS_SPLIT,
+            CommandBody::MeetingDataSet { .. } => commands::MEETING_DATA_SET,
             CommandBody::MediaPrefetch { .. } => commands::MEDIA_PREFETCH,
             CommandBody::MediaKeep { .. } => commands::MEDIA_KEEP,
             CommandBody::Unknown { command, .. } => command,
@@ -842,6 +859,10 @@ impl CommandBody {
             CommandBody::SpeakersSplit { meeting, track } => {
                 args.insert("meeting".into(), meeting.as_str().into());
                 args.insert("track".into(), track.as_str().into());
+            }
+            CommandBody::MeetingDataSet { meeting, data } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("data".into(), Value::Object(data.clone()));
             }
             CommandBody::MediaPrefetch { meeting } => {
                 args.insert("meeting".into(), meeting.as_str().into());

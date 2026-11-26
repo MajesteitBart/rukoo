@@ -286,6 +286,17 @@ impl EventLog {
                 params![event, to_sql(seq)?],
             )?;
         }
+        // Of a meeting's data only each writer's newest copy counts: the older ones go, so a meeting
+        // whose notes change often doesn't fill the log (PROTOCOL.md, meeting.data).
+        if event == events::MEETING_DATA {
+            if let (Some(meeting), Some(writer)) = (meeting, data["writer"].as_str()) {
+                tx.execute(
+                    "DELETE FROM events WHERE event = ?1 AND meeting = ?2 \
+                       AND json_extract(data, '$.writer') = ?3 AND seq < ?4",
+                    params![event, meeting, writer, to_sql(seq)?],
+                )?;
+            }
+        }
         tx.commit()?;
         db.head = seq;
         self.push(Stored {

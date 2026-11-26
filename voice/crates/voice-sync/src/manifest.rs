@@ -75,6 +75,10 @@ pub struct IndexEntry {
     /// same generation can tell (crate::pull). An older Voice leaves it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mid: Option<String>,
+    /// SHA-256 of this data folder's copy of what Rukoo owns of the meeting, when it has one in the
+    /// bucket ([`crate::names::data_object`]). An older Voice leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// The meeting's next manifest: the newest version of each of its files that reached the bucket.
@@ -230,6 +234,7 @@ mod tests {
             media_removed_at: None,
             deleted,
             mid: None,
+            data: None,
         }
     }
 

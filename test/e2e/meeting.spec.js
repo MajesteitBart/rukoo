@@ -520,6 +520,56 @@ test('older Voice hides live screen controls and an unsupported deletion keeps t
   expect((await win.evaluate((id) => window.mail.call('meetingGet', id), id)).notes.text).toBe('Keep these decisions.');
 });
 
+test('notes another computer changed at the same time wait beside these until the user picks', async () => {
+  test.setTimeout(90000);
+  const id = voiceStarts({ title: 'Planning' });
+  say(id, 'call', 1000, 'Thursday works for me.');
+  voice.append('meeting.state', id, { state: 'done', at: 5000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().fill('Agreed: launch Friday.');
+  await notes().blur();
+  await expect.poll(async () => (await win.evaluate((id) => window.mail.call('meetingGet', id), id)).notes.text).toBe('Agreed: launch Friday.');
+  // Voice keeps it for the user's other computers.
+  await expect.poll(() => (voice.dataSets || []).map((s) => s.data.fields.notes && s.data.fields.notes.v).at(-1)).toBe('Agreed: launch Friday.');
+  // The desktop wrote other notes a moment earlier, from none of these.
+  const desktop = 'b'.repeat(32);
+  voice.append('meeting.data', id, { writer: 'a'.repeat(32), data: { v: 1, device: desktop, name: 'Desktop', fields: { notes: { v: 'Agreed: launch Thursday. Anna owns QA.', at: Date.now() - 60000, by: desktop, base: 0 } } } });
+  const bar = view().locator('.mt-notes-other');
+  await expect(bar).toBeVisible();
+  await expect(bar).toContainText('These notes also changed on Desktop');
+  await expect(notes()).toHaveText('Agreed: launch Friday.');
+  for (const language of ['en', 'nl']) {
+    await setLanguage(language);
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme);
+      await bar.locator('[data-mt="notes-other-show"]').click();
+      await expect(bar.locator('.mt-notes-other-preview')).toContainText('Anna owns QA');
+      // Drawn again, the bar keeps the keyboard where it was.
+      await expect(bar.locator('[data-mt="notes-other-show"]')).toBeFocused();
+      await shot(`notes-other-${theme}-${language}`);
+      await bar.locator('[data-mt="notes-other-show"]').click();
+      await expect(bar.locator('.mt-notes-other-preview')).toHaveCount(0);
+    }
+  }
+  await setLanguage('en');
+  await bar.locator('[data-mt="notes-other-use"]').click();
+  await expect(notes()).toHaveText('Agreed: launch Thursday. Anna owns QA.');
+  // Using it is a change of its own, which goes to the other computers too.
+  await expect.poll(() => voice.dataSets.at(-1).data.fields.notes.v).toBe('Agreed: launch Thursday. Anna owns QA.');
+  // The notes it replaced wait in the bar: the same button takes them back.
+  await expect(bar).toContainText('The notes you replaced');
+  await shot('notes-other-replaced-light-en');
+  await bar.locator('[data-mt="notes-other-use"]').click();
+  await expect(notes()).toHaveText('Agreed: launch Friday.');
+  await bar.locator('[data-mt="notes-other-dismiss"]').click();
+  await expect(bar).toBeHidden();
+  // A rename on another computer that came later shows here.
+  voice.append('meeting.data', id, { writer: 'a'.repeat(32), data: { v: 1, device: desktop, name: 'Desktop', fields: { title: { v: 'Launch planning', at: Date.now() + 1000, by: desktop } } } });
+  await expect(view().locator('h1')).toHaveText('Launch planning');
+});
+
 test('similar screen frames fold across speech, open as a strip, and the Screen toggle persists after restart', async () => {
   const id = voiceStarts({ title: 'Launch review', screen: 'frames' });
   say(id, 'call', 1000, 'We can ship on Thursday.');

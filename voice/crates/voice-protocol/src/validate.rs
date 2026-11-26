@@ -225,6 +225,10 @@ fn event(f: &Fields) -> Checked<Event> {
         events::MEETING_REMOVED => EventBody::MeetingRemoved {
             reason: optional_short(&data, "reason")?,
         },
+        events::MEETING_DATA => EventBody::MeetingData {
+            writer: data.short_text("writer")?,
+            data: data.object("data")?.clone(),
+        },
         unknown => EventBody::Unknown {
             event: unknown.to_owned(),
             data: data.0.clone(),
@@ -455,6 +459,10 @@ fn command(f: &Fields) -> Checked<Command> {
             };
             CommandBody::SpeakersSplit { meeting, track }
         }
+        commands::MEETING_DATA_SET => CommandBody::MeetingDataSet {
+            meeting: a.meeting("meeting")?,
+            data: a.object("data")?.clone(),
+        },
         commands::MEDIA_PREFETCH => {
             let meeting = a.meeting("meeting")?;
             if a.string("kind")? != PREFETCH_FRAMES {

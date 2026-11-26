@@ -168,6 +168,14 @@ pub trait MeetingControl: Send + Sync {
     /// happens without bucket sync.
     fn pull_meetings(&self) {}
 
+    /// `meeting.data.set`: keeps what Rukoo owns of the meeting and uploads it to the user's bucket
+    /// for their other computers. `not_found` for a meeting Voice doesn't have.
+    fn set_data(&self, _id: &str, _data: &voice_protocol::Object) -> Result<(), ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't keep Rukoo's meeting data.",
+        ))
+    }
+
     /// `media.prefetch` with `kind` `frames`: fetch the meeting's frame images that aren't on this
     /// computer back from the bucket in the background, at low priority. Answers `{}` at once.
     fn prefetch_frames(&self, _id: &str) -> Result<Value, ControlError> {

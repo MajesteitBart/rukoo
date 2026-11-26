@@ -250,6 +250,19 @@ A moment the screen changed noticeably, in a meeting that records the screen.
 
 Voice removed the meeting and its events. `data` is `{}` for retention or an ordinary removal. An explicit user deletion sends `{ "reason": "user" }`; every connected Rukoo then purges its notes, names, corrections and cached transcript, and remembers the deleted id so stale replay cannot restore it. Chats remain, with a deleted-meeting label.
 
+### `meeting.data`
+
+What Rukoo owns of the meeting, as one computer's Rukoo last gave it: renamed title, notes, speaker names, corrections, the linked calendar event and how the microphone shows.
+
+```json
+{ "writer": "3f9a1c0e5b7d2a4c6e8f0a1b2c3d4e5f", "data": { "v": 1, "device": "…", "name": "Laptop", "fields": { "title": { "v": "Weekly with Anna", "at": 1793000600000, "by": "…" } } } }
+```
+
+- `writer` says whose copy it is: `local` for this computer's, which Voice gives back after `meeting.data.set` so a Rukoo with a new profile gets it too, or another computer's data folder by the name it has in the user's bucket. Voice keeps only each writer's newest copy, so a replay can skip older ones.
+- A meeting's `meeting.data` always comes after its `meeting.started`. Another computer's copy of a meeting that just came in from the bucket waits for the next look in the bucket when the meeting's start isn't in the log yet.
+- `data` is the object Rukoo sent with `meeting.data.set`, unchanged. Voice doesn't read it. Rukoo merges it field by field: `fields` maps each field to its value `v`, when it changed (`at`, wall ms) and on which device (`by`); the later change wins, and notes changed on two devices at once both stay (docs/meetings.md, Your other computers).
+- With bucket sync, Voice takes another computer's copy from the bucket whenever it looks for meetings from the other computers.
+
 ## Commands
 
 Rukoo sends commands; Voice answers each with one reply.
@@ -288,6 +301,7 @@ Rukoo sends commands; Voice answers each with one reply.
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `speakers.split` | `meeting`, `track` | `{ "state", … }` | `not_found`, `not_available`, `busy`, `failed` |
 | `sync.pull` | | `{}` | |
+| `meeting.data.set` | `meeting`, `data` | `{}` | `not_found` |
 | `media.prefetch` | `meeting`, `kind` | `{}` | `not_found` |
 | `media.keep` | `meeting`, `keep`? | `{ "keep", "have", "total", "stalled" }` | `not_found`, `not_available`, `failed` |
 | `status.get` | | the `status` object | |
@@ -325,6 +339,8 @@ Rukoo sends commands; Voice answers each with one reply.
 - `media.keep` keeps all of a meeting's media on this computer for offline use. With `keep` `true`, Voice stores the choice, which lasts until the user turns it off or deletes the meeting, and fetches every audio segment, frame and video file the meeting has in the bucket, one at a time in the background; retention and the cache limit leave a kept meeting's media alone. With `keep` `false` the cache limit applies to it again. Without `keep` nothing changes. The result is always how it stands: `keep`, `have`, the bytes of the meeting's media on this computer, `total`, those plus what only the bucket has, and `stalled`, `true` while a kept meeting misses media and Voice can't reach the bucket. Rukoo sends it without `keep` when it shows a meeting and about once a second while a kept meeting's `have` is below `total`; Voice tries a stalled download again when asked, at most every 30 seconds. `not_available` means Voice has no bucket sync to keep media with. An older Voice answers `unknown_command`; Rukoo then doesn't offer the choice.
 - `sync.pull` asks Voice to look in the user's bucket for meetings from their other computers now; Rukoo sends it when its meetings open, at most once a minute. Voice answers at once and looks on its own thread. What it finds reaches Rukoo as ordinary events: a meeting that finished on another computer arrives like a meeting Voice transcribes, newer text of a meeting as new passage revisions and `passage.removed`, and a meeting deleted on another computer as `meeting.removed` with reason `user`. Without bucket sync nothing happens. An older Voice answers `unknown_command`, which Rukoo ignores.
 
+- `meeting.data.set` keeps `data`, what Rukoo owns of the meeting, in the meeting's folder and gives it back as `meeting.data` with writer `local`. With bucket sync it goes up, encrypted, as this computer's own copy, in no manifest; the other computers take it when they next look. Rukoo sends it a moment after the user changed something, and again when it connects with changes Voice hasn't taken. An older Voice answers `unknown_command`; Rukoo then keeps the changes and tries again after the next connection.
+
 Errors carry a `code` and an English `message` for logs. Rukoo shows its own text for a code.
 
 | `code` | Meaning |
@@ -347,6 +363,7 @@ Both sides check what they receive with the same rules and drop a message that b
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
 - `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.
+- `meeting.data` needs `writer` (1 to 64 characters) and an object in `data`. `meeting.data.set` needs `meeting` and an object in `data`.
 - `speakers.split` needs `meeting` and `track`, which is `mic`. Its result's `state` is `running`, with `at` and `end`, or `done`, with `voices` of 1 or more; an error's `reason`, when present, is a string.
 - `media.prefetch` needs `meeting` and `kind`, which is `frames`. `media.keep` needs `meeting`; `keep`, when present and not `null`, is `true` or `false`.
 - `media.open` needs `meeting`, `kind` (`audio`, `frame` or `video`) and `start`; `end`, when given, is ≥ `start` and at most 3,600,000 more; `piece`, when present and not `null`, is `true` or `false`. Its result has `media` and `ready`; a ready one also has `type`, `size`, `start` and `end` ≥ `start`, and `more`, when present and not `null`, is `true` or `false`. `media.read` needs `media`, which matches `^md-[A-Za-z0-9_-]{22}$`, `offset`, and `length` from 1 to 1,048,576.
