@@ -259,6 +259,7 @@ What Rukoo owns of the meeting, as one computer's Rukoo last gave it: renamed ti
 ```
 
 - `writer` says whose copy it is: `local` for this computer's, which Voice gives back after `meeting.data.set` so a Rukoo with a new profile gets it too, or another computer's data folder by the name it has in the user's bucket. Voice keeps only each writer's newest copy, so a replay can skip older ones.
+- A meeting's `meeting.data` always comes after its `meeting.started`. Another computer's copy of a meeting that just came in from the bucket waits for the next look in the bucket when the meeting's start isn't in the log yet.
 - `data` is the object Rukoo sent with `meeting.data.set`, unchanged. Voice doesn't read it. Rukoo merges it field by field: `fields` maps each field to its value `v`, when it changed (`at`, wall ms) and on which device (`by`); the later change wins, and notes changed on two devices at once both stay (docs/meetings.md, Your other computers).
 - With bucket sync, Voice takes another computer's copy from the bucket whenever it looks for meetings from the other computers.
 

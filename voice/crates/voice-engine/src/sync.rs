@@ -91,6 +91,14 @@ impl PullHooks for EnginePull {
         let Some(log) = core.meetings.log.as_ref() else {
             return false;
         };
+        // Rukoo puts the data into a meeting it knows. A meeting that just came in sends its start
+        // from its pipeline a moment later; until then the next pull brings the data again.
+        if !matches!(
+            log.latest(meeting, voice_protocol::events::MEETING_STARTED),
+            Ok(Some(_))
+        ) {
+            return false;
+        }
         log.append(
             voice_protocol::events::MEETING_DATA,
             Some(meeting),
