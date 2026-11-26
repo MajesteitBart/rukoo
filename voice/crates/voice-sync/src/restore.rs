@@ -364,19 +364,49 @@ impl Drop for Claim<'_> {
     }
 }
 
-/// Removes the `.restore-<id>` folders of restores that a hard kill cut off. `open` calls it before
-/// the worker starts, when no restore runs.
+/// Removes the `.restore-<id>` folders of restores that a hard kill cut off, and the `.update-<id>`
+/// folders of pulls that didn't get to replace anything. A replacement that started goes on to the
+/// end instead (`finish_install`). `open` calls it before the worker starts and before the engine
+/// follows any meeting, when nothing reads a transcript.
 pub(crate) fn clear_partial(meetings: &Path) {
     let Ok(entries) = fs::read_dir(meetings) else {
         return;
     };
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !entry.path().is_dir() {
+            continue;
+        }
+        if let Some(id) = name.strip_prefix(crate::pull::UPDATE_PREFIX) {
+            if MeetingId::parse(id).is_none() {
+                continue;
+            }
+            match crate::pull::finish_install(meetings, id) {
+                // The folder stays until a pull noted the version (crate::pull).
+                Ok(true) => log::info!("sync: finished putting a meeting's newer text in place"),
+                Ok(false) => {
+                    if let Err(e) = fs::remove_dir_all(entry.path()) {
+                        log::warn!("sync: can't remove an unfinished pull: {e}");
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    // Not all of it is staged or in place: the text here is this computer's own.
+                    log::warn!(
+                        "sync: a meeting's newer text didn't all arrive; its text here goes up"
+                    );
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+                Err(e) => log::warn!("sync: can't finish putting newer meeting text in place: {e}"),
+            }
+            continue;
+        }
         let partial = name
-            .to_str()
-            .and_then(|n| n.strip_prefix(RESTORE_PREFIX))
+            .strip_prefix(RESTORE_PREFIX)
             .is_some_and(|id| MeetingId::parse(id).is_some());
-        if partial && entry.path().is_dir() {
+        if partial {
             if let Err(e) = fs::remove_dir_all(entry.path()) {
                 log::warn!("sync: can't remove an unfinished restore: {e}");
             }
@@ -384,14 +414,12 @@ pub(crate) fn clear_partial(meetings: &Path) {
     }
 }
 
-/// The bucket's meetings that aren't on this computer, newest first: every index under
-/// `rkv1/<kid>/index/` merged, deleted ones and ids that don't parse left out. `check` runs before
-/// every request; its error stops the listing.
-pub(crate) fn list_remote(
-    shared: &Shared,
+/// Every index under `rkv1/<kid>/index/`, one per data folder that synced to this bucket with this
+/// key. An unreadable one is left out. `check` runs before every request.
+pub(crate) fn read_indexes(
     remote: &Remote,
     check: &dyn Fn() -> Result<(), SyncError>,
-) -> Result<Vec<RemoteMeeting>, SyncError> {
+) -> Result<Vec<Index>, SyncError> {
     let listing = remote
         .bucket
         .list_checked(&names::index_prefix(&remote.kid), None, check)?;
@@ -408,6 +436,18 @@ pub(crate) fn list_remote(
             Err(_) => log::warn!("sync: an index in the bucket is unreadable"),
         }
     }
+    Ok(indexes)
+}
+
+/// The bucket's meetings that aren't on this computer, newest first: every index under
+/// `rkv1/<kid>/index/` merged, deleted ones and ids that don't parse left out. `check` runs before
+/// every request; its error stops the listing.
+pub(crate) fn list_remote(
+    shared: &Shared,
+    remote: &Remote,
+    check: &dyn Fn() -> Result<(), SyncError>,
+) -> Result<Vec<RemoteMeeting>, SyncError> {
+    let indexes = read_indexes(remote, check)?;
     let mut local: HashSet<String> = crate::worker::meeting_dirs(&shared.opts.meetings_dir)
         .into_iter()
         .map(|d| d.id().as_str().to_owned())
@@ -544,6 +584,10 @@ pub(crate) fn restore_one(
     }
     let meetings = &shared.opts.meetings_dir;
     let target = meetings.join(id);
+    let _one = shared
+        .restoring_one
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     if target.join(voice_meetings::MEETING_FILE).is_file() {
         return Ok(false);
     }
@@ -565,8 +609,17 @@ pub(crate) fn restore_one(
     let tmp = meetings.join(format!("{RESTORE_PREFIX}{id}"));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| local("Voice can't make a folder to restore into", &e))?;
+    let manifest_id = crate::worker::sha256_hex(&bytes);
     let result = restore_into(
-        shared, remote, binding, &manifest, id, &mhash, &tmp, &target,
+        shared,
+        remote,
+        binding,
+        &manifest,
+        &manifest_id,
+        id,
+        &mhash,
+        &tmp,
+        &target,
     );
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp);
@@ -576,7 +629,12 @@ pub(crate) fn restore_one(
 
 /// Refuses a manifest with another meeting's id, a path outside the meeting folder's files, a
 /// file twice, or an object outside this meeting's folder in the bucket.
-fn check_manifest(manifest: &Manifest, id: &str, kid: &str, mhash: &str) -> Result<(), SyncError> {
+pub(crate) fn check_manifest(
+    manifest: &Manifest,
+    id: &str,
+    kid: &str,
+    mhash: &str,
+) -> Result<(), SyncError> {
     if manifest.meeting != id || MeetingId::parse(&manifest.meeting).is_none() {
         return Err(crypto(BAD_MANIFEST));
     }
@@ -603,6 +661,7 @@ fn restore_into(
     remote: &Remote,
     binding: &Binding,
     manifest: &Manifest,
+    manifest_id: &str,
     id: &str,
     mhash: &str,
     tmp: &Path,
@@ -639,28 +698,10 @@ fn restore_into(
     {
         fetch(file)?;
     }
-    let meeting_file: MeetingFile = fs::read(tmp.join(voice_meetings::MEETING_FILE))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .ok_or_else(|| crypto(BAD_MANIFEST))?;
-    if meeting_file.id.as_str() != id {
-        return Err(crypto(BAD_MANIFEST));
-    }
+    let meeting_file = check_meeting_file(&tmp.join(voice_meetings::MEETING_FILE), id)?;
     let has_timeline = manifest.files.iter().any(|f| f.path == timeline::FILE_NAME);
     if has_timeline {
-        // The timeline comes back byte for byte, and its segment lines name the files that media
-        // links and transcription read: each must be the segment's own file in this folder.
-        let lines = timeline::read(&tmp.join(timeline::FILE_NAME))
-            .map_err(|e| local("Voice can't read a restored timeline", &e))?;
-        let foreign = lines.iter().any(|line| match line {
-            Line::Segment {
-                track, seq, file, ..
-            } => !is_segment_file(track, *seq, file),
-            _ => false,
-        });
-        if foreign {
-            return Err(crypto(BAD_MANIFEST));
-        }
+        check_timeline(&tmp.join(timeline::FILE_NAME))?;
     } else {
         let text = synthesize_timeline(meeting_file.created_at, &manifest.files);
         fs::write(tmp.join(timeline::FILE_NAME), text)
@@ -697,13 +738,59 @@ fn restore_into(
         now: shared.now(),
         target: &binding.target,
         kid: &binding.kid,
+        update: false,
     };
     let media: Vec<&str> = audio
         .iter()
         .filter(|f| MEDIA_KINDS.contains(&f.kind.as_str()))
         .map(|f| f.path.as_str())
         .collect();
+    // What the transcript says, so following the meeting here doesn't count as a change to upload.
+    let digest = manifest
+        .files
+        .iter()
+        .find(|f| f.path == voice_meetings::transcript::FILE_NAME)
+        .and_then(|f| {
+            let digest = crate::digest::transcript_digest(&tmp.join(&f.path)).ok()?;
+            Some((f.sha256.clone(), digest))
+        });
+    // Noted before the rows: the worker may scan the meeting as soon as it is in place.
+    if let Some((sha, digest)) = digest {
+        shared.queue.set_transcript_digest(id, &sha, &digest)?;
+    }
+    shared.queue.set_manifest_id(id, manifest_id)?;
+    // In place together with the meeting: Rukoo hears of it once the engine followed it.
+    crate::pull::write_marker(tmp).map_err(|e| local("Voice can't mark a restored meeting", &e))?;
     put_in_place(shared, binding, &import, tmp, target, &media)
+}
+
+/// The timeline comes back byte for byte, and its segment lines name the files that media links
+/// and transcription read: each must be the segment's own file in this folder.
+pub(crate) fn check_timeline(path: &Path) -> Result<(), SyncError> {
+    let lines =
+        timeline::read(path).map_err(|e| local("Voice can't read a restored timeline", &e))?;
+    let foreign = lines.iter().any(|line| match line {
+        Line::Segment {
+            track, seq, file, ..
+        } => !is_segment_file(track, *seq, file),
+        _ => false,
+    });
+    if foreign {
+        return Err(crypto(BAD_MANIFEST));
+    }
+    Ok(())
+}
+
+/// The meeting file at `path`, when it names meeting `id`.
+pub(crate) fn check_meeting_file(path: &Path, id: &str) -> Result<MeetingFile, SyncError> {
+    let meeting_file: MeetingFile = fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| crypto(BAD_MANIFEST))?;
+    if meeting_file.id.as_str() != id {
+        return Err(crypto(BAD_MANIFEST));
+    }
+    Ok(meeting_file)
 }
 
 /// Imports the meeting's rows and renames its folder into place, under the worker's lock and only
@@ -763,6 +850,7 @@ mod tests {
 
     use super::*;
     use crate::format::Sealer;
+    use crate::pull::PullOrigin;
     use crate::{BucketRetention, Service, SyncConfig, UrlStyle};
 
     fn wait_for(mut f: impl FnMut() -> bool) -> bool {
@@ -797,6 +885,28 @@ mod tests {
         ))
     }
 
+    /// Bucket sync in `dir` with a saved secret, still off.
+    fn open(dir: &Path, meetings: &Path) -> crate::BucketSync {
+        let sync = crate::BucketSync::open(crate::SyncOptions {
+            data_dir: dir.to_path_buf(),
+            meetings_dir: meetings.to_path_buf(),
+            protector: Arc::new(crate::protect::TestProtector),
+            screen: Arc::new(crate::NoScreen),
+            now: Arc::new(|| {
+                let since = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap();
+                u64::try_from(since.as_millis()).unwrap()
+            }),
+            reserve: Arc::new(|_| true),
+            timing: crate::SyncTiming::default(),
+            on_change: Arc::new(|| {}),
+        })
+        .unwrap();
+        sync.save_secret("secret").unwrap();
+        sync
+    }
+
     /// A restored meeting's rows, read from `target` with key `kid`.
     fn rows<'a>(meeting: &'a str, target: &'a str, kid: &'a str) -> Import<'a> {
         Import {
@@ -812,6 +922,7 @@ mod tests {
             now: 1,
             target,
             kid,
+            update: false,
         }
     }
 
@@ -827,23 +938,7 @@ mod tests {
         let dir = scratch("place");
         let meetings = dir.join("meetings");
         fs::create_dir_all(&meetings).unwrap();
-        let sync = crate::BucketSync::open(crate::SyncOptions {
-            data_dir: dir.clone(),
-            meetings_dir: meetings.clone(),
-            protector: Arc::new(crate::protect::TestProtector),
-            screen: Arc::new(crate::NoScreen),
-            now: Arc::new(|| {
-                let since = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap();
-                u64::try_from(since.as_millis()).unwrap()
-            }),
-            reserve: Arc::new(|_| true),
-            timing: crate::SyncTiming::default(),
-            on_change: Arc::new(|| {}),
-        })
-        .unwrap();
-        sync.save_secret("secret").unwrap();
+        let sync = open(&dir, &meetings);
         sync.configure(Some(config(first.endpoint())));
         assert!(
             wait_for(|| sync.can_fetch()),
@@ -886,6 +981,126 @@ mod tests {
         put(&read_second).unwrap();
         assert!(target.join(voice_meetings::MEETING_FILE).is_file());
         assert!(shared.queue.meeting(id).unwrap().is_some());
+        sync.shutdown();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A pull read a deletion from the first bucket, and sync moved to the second while the
+    /// deletion waited for the worker's request: nothing is noted, so the second bucket never
+    /// hears of it and the meeting stays.
+    #[test]
+    fn a_deletion_read_from_a_bucket_sync_left_is_never_noted() {
+        let (first, second) = (
+            FakeS3::start("test", "test", None).unwrap(),
+            FakeS3::start("test", "test", None).unwrap(),
+        );
+        let dir = scratch("deletion-place");
+        let meetings = dir.join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let sync = open(&dir, &meetings);
+        sync.configure(Some(config(first.endpoint())));
+        assert!(
+            wait_for(|| sync.can_fetch()),
+            "sync starts with the first bucket"
+        );
+        let shared = sync.shared();
+        let id = "m-20261031-100000-0abc";
+        let (_, read_first) = shared.remote().unwrap();
+        assert!(shared
+            .queue
+            .import(&rows(id, &read_first.target, &read_first.kid))
+            .unwrap());
+        let from = PullOrigin {
+            shared,
+            place: read_first.place(),
+        };
+        assert!(from.holds());
+
+        let request = shared.busy();
+        let refused = std::thread::scope(|s| {
+            let deleting = s.spawn(|| sync.mark_deleted(id, Some(&from)));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(
+                !deleting.is_finished(),
+                "the deletion waits for the request"
+            );
+            sync.configure(Some(config(second.endpoint())));
+            drop(request);
+            deleting.join().unwrap()
+        });
+        assert_eq!(refused.unwrap_err().kind, SyncErrorKind::Off);
+        assert!(!from.holds());
+        let row = shared.queue.meeting(id).unwrap();
+        assert!(row.is_none_or(|r| r.phase != "forgotten"));
+
+        // Read from the bucket sync uses, the deletion is noted.
+        assert!(
+            wait_for(|| sync.can_fetch()),
+            "sync starts with the second bucket"
+        );
+        let (_, read_second) = shared.remote().unwrap();
+        assert!(shared
+            .queue
+            .import(&rows(id, &read_second.target, &read_second.kid))
+            .unwrap());
+        let from = PullOrigin {
+            shared,
+            place: read_second.place(),
+        };
+        sync.mark_deleted(id, Some(&from)).unwrap();
+        assert_eq!(
+            shared.queue.meeting(id).unwrap().unwrap().phase,
+            "forgotten"
+        );
+        sync.shutdown();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Another computer removed some of a meeting's media from the bucket: its newer version comes
+    /// in without them, and no manifest from here lists them again.
+    #[test]
+    fn a_newer_version_without_some_media_marks_it_removed_here() {
+        let fake = FakeS3::start("test", "test", None).unwrap();
+        let dir = scratch("update-removed");
+        let meetings = dir.join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let sync = open(&dir, &meetings);
+        sync.configure(Some(config(fake.endpoint())));
+        assert!(wait_for(|| sync.can_fetch()), "sync starts");
+        let shared = sync.shared();
+        let (_, binding) = shared.remote().unwrap();
+        let id = "m-20261031-100000-0abc";
+        let file = |path: &str, kind: &str, sha: char| crate::manifest::ManifestFile {
+            path: path.into(),
+            kind: kind.into(),
+            object: format!("o/{path}/{sha}"),
+            size: 1,
+            sha256: sha.to_string().repeat(64),
+            track: None,
+            seq: None,
+            t: None,
+            samples: None,
+        };
+        let first = [
+            file("transcript.db", "transcript", 'a'),
+            file("audio/mic/000001.wav", "audio", 'b'),
+        ];
+        let mut import = rows(id, &binding.target, &binding.kid);
+        import.files = &first;
+        assert!(shared.queue.import(&import).unwrap());
+        let newer = [file("transcript.db", "transcript", 'c')];
+        import.files = &newer;
+        import.gen = 2;
+        import.update = true;
+        assert!(shared.queue.import(&import).unwrap());
+        let listed: Vec<String> = shared
+            .queue
+            .manifest_rows(id)
+            .unwrap()
+            .into_iter()
+            .map(|f| format!("{} {}", f.path, &f.sha256[..1]))
+            .collect();
+        assert_eq!(listed, ["transcript.db c"]);
         sync.shutdown();
         let _ = fs::remove_dir_all(&dir);
     }

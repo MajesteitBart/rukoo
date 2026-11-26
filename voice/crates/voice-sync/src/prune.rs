@@ -66,7 +66,7 @@ pub(crate) fn forget(
     delete_objects: bool,
 ) -> Result<(), SyncError> {
     if !delete_objects {
-        shared.queue.drop_meeting(meeting, false)?;
+        shared.queue.drop_meeting(meeting, None)?;
         shared.changed();
         return Ok(());
     }
@@ -114,9 +114,7 @@ pub(crate) fn forget(
             format!("The bucket kept {} of the meeting's files.", failed.len()),
         ));
     }
-    shared.queue.drop_meeting(meeting, true)?;
-    let now = shared.now();
-    shared.queue.set_meta("index_due", Some(&now.to_string()))?;
+    shared.queue.drop_meeting(meeting, Some(shared.now()))?;
     shared.changed();
     shared.poke();
     Ok(())

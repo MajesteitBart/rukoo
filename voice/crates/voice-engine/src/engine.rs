@@ -380,6 +380,12 @@ impl Core {
         self.meetings.follow(id, self.pipeline_options());
     }
 
+    /// Follows the meetings a pull brought until Rukoo can get all of them
+    /// ([`Meetings::settle_pulled`]).
+    pub fn settle_pulled(self: &Arc<Self>) {
+        self.meetings.settle_pulled(|id| self.follow(id));
+    }
+
     /// What the meeting controller reports.
     pub fn on_meeting(self: &Arc<Self>, change: Change) {
         match change {
@@ -987,6 +993,7 @@ pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
             minute = Instant::now();
             core.media.sweep();
             crate::sync::check_failing(&core);
+            core.settle_pulled();
         }
         // Borrowed from the engine each round, so the log closes as soon as the engine is gone.
         let Some(log) = core.meetings.log.as_ref() else {

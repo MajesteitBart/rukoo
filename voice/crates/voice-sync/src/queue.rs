@@ -246,6 +246,9 @@ pub(crate) struct Import<'a> {
     /// the key id the files were read with: the rows describe objects there.
     pub(crate) target: &'a str,
     pub(crate) kid: &'a str,
+    /// A newer version of a meeting this computer has: its phase stays, so a meeting recorded here
+    /// still counts as synced from here.
+    pub(crate) update: bool,
 }
 
 impl Queue {
@@ -787,8 +790,44 @@ impl Queue {
         })
     }
 
+    /// Writes what the queue committed into its database file and flushes it, so a power cut can't
+    /// take it back.
+    pub(crate) fn checkpoint(&self) -> Result<(), SyncError> {
+        self.with(|c| c.query_row("PRAGMA wal_checkpoint(FULL)", [], |_| Ok(())))
+    }
+
     pub(crate) fn meta_u64(&self, key: &str) -> Result<Option<u64>, SyncError> {
         Ok(self.meta(key)?.and_then(|v| v.parse().ok()))
+    }
+
+    /// The content digest ([`crate::digest`]) of the version of a meeting's `transcript.db` whose
+    /// file has `sha256`, when this computer read it.
+    pub(crate) fn transcript_digest(
+        &self,
+        meeting: &str,
+        sha256: &str,
+    ) -> Result<Option<String>, SyncError> {
+        self.meta(&digest_key(meeting, sha256))
+    }
+
+    /// SHA-256 of the manifest of the version of a meeting this computer has: the one it published,
+    /// or the one it took from the bucket. Two computers that published the same generation tell
+    /// their versions apart by it.
+    pub(crate) fn manifest_id(&self, meeting: &str) -> Result<Option<String>, SyncError> {
+        self.meta(&format!("mid:{meeting}"))
+    }
+
+    pub(crate) fn set_manifest_id(&self, meeting: &str, id: &str) -> Result<(), SyncError> {
+        self.set_meta(&format!("mid:{meeting}"), Some(id))
+    }
+
+    pub(crate) fn set_transcript_digest(
+        &self,
+        meeting: &str,
+        sha256: &str,
+        digest: &str,
+    ) -> Result<(), SyncError> {
+        self.set_meta(&digest_key(meeting, sha256), Some(digest))
     }
 
     /// The rows were made with `kid`. With another key every row is useless: object names and
@@ -804,7 +843,10 @@ impl Queue {
             }
             let reset = old.is_some();
             if reset {
-                tx.execute_batch("DELETE FROM parts; DELETE FROM files; DELETE FROM meetings;")?;
+                tx.execute_batch(
+                    "DELETE FROM parts; DELETE FROM files; DELETE FROM meetings; \
+                     DELETE FROM meta WHERE key LIKE 'digest:%' OR key LIKE 'mid:%';",
+                )?;
             }
             tx.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('kid', ?1)",
@@ -888,7 +930,7 @@ impl Queue {
                  UPDATE meetings SET uploaded_gen = 0, media_removed_at = NULL, \
                    manifest_dirty = CASE WHEN phase = 'forgotten' THEN 0 ELSE 1 END, \
                    phase = CASE WHEN phase IN ('synced', 'restored') THEN 'after' ELSE phase END; \
-                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at');",
+                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at') OR key LIKE 'mid:%';",
             )?;
             tx.commit()?;
             Ok(Some(open))
@@ -1262,7 +1304,8 @@ impl Queue {
                 "INSERT INTO meetings (id, mhash, phase, title, created_at, duration_ms, \
                    manifest_gen, media_removed_at, state, uploaded_gen) \
                  VALUES (?1, ?2, 'restored', ?3, ?4, ?5, ?6, ?7, ?8, ?6) \
-                 ON CONFLICT (id) DO UPDATE SET mhash = excluded.mhash, phase = 'restored', \
+                 ON CONFLICT (id) DO UPDATE SET mhash = excluded.mhash, \
+                   phase = CASE WHEN ?9 THEN phase ELSE 'restored' END, \
                    title = excluded.title, created_at = excluded.created_at, \
                    duration_ms = excluded.duration_ms, \
                    manifest_gen = MAX(manifest_gen, excluded.manifest_gen), \
@@ -1277,8 +1320,34 @@ impl Queue {
                     to_i64(m.gen),
                     m.media_removed_at.map(to_i64),
                     m.state,
+                    m.update,
                 ],
             )?;
+            if m.update {
+                // A newer version without some of the meeting's media: another computer removed
+                // it from the bucket. Its rows here say so, so no manifest from here lists it again.
+                let listed: std::collections::HashSet<&str> =
+                    m.files.iter().map(|f| f.path.as_str()).collect();
+                let gone: Vec<i64> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT id, path FROM files WHERE meeting = ?1 AND state = 'done' \
+                           AND kind NOT IN ('manifest', 'index')",
+                    )?;
+                    let rows = stmt
+                        .query_map([m.meeting], |r| {
+                            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    rows.into_iter()
+                        .filter(|(_, path)| !listed.contains(path.as_str()))
+                        .map(|(id, _)| id)
+                        .collect()
+                };
+                for id in gone {
+                    tx.execute("UPDATE files SET state = 'removed' WHERE id = ?1", [id])?;
+                    tx.execute("DELETE FROM parts WHERE file = ?1", [id])?;
+                }
+            }
             for f in m.files {
                 tx.execute(
                     "INSERT OR IGNORE INTO files (meeting, path, kind, lane, size, sha256, object, \
@@ -1319,9 +1388,13 @@ impl Queue {
         })
     }
 
-    /// Forgets a meeting's rows. With `tombstone` its `meetings` row stays as `forgotten`, so the
-    /// next index marks it deleted.
-    pub(crate) fn drop_meeting(&self, meeting: &str, tombstone: bool) -> Result<(), SyncError> {
+    /// Forgets a meeting's rows. With `tombstone`, the time now, its `meetings` row stays as
+    /// `forgotten` and the next index, due from then, marks it deleted.
+    pub(crate) fn drop_meeting(
+        &self,
+        meeting: &str,
+        tombstone: Option<u64>,
+    ) -> Result<(), SyncError> {
         self.with(|c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute(
@@ -1330,10 +1403,23 @@ impl Queue {
             )?;
             tx.execute("DELETE FROM files WHERE meeting = ?1", [meeting])?;
             tx.execute("DELETE FROM restored WHERE meeting = ?1", [meeting])?;
-            if tombstone {
+            tx.execute(
+                "DELETE FROM meta WHERE key LIKE ?1 OR key = ?2",
+                [
+                    format!("{}%", digest_key(meeting, "")),
+                    format!("mid:{meeting}"),
+                ],
+            )?;
+            if let Some(now) = tombstone {
                 tx.execute(
                     "UPDATE meetings SET phase = 'forgotten', manifest_dirty = 0 WHERE id = ?1",
                     [meeting],
+                )?;
+                // In the same transaction: a tombstone the next index doesn't carry would stay
+                // forgotten here and never reach the other computers.
+                tx.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('index_due', ?1)",
+                    [now.to_string()],
                 )?;
             } else {
                 tx.execute("DELETE FROM meetings WHERE id = ?1", [meeting])?;
@@ -1400,6 +1486,11 @@ fn db(e: rusqlite::Error) -> SyncError {
 
 fn local(what: &str, e: &std::io::Error) -> SyncError {
     SyncError::new(SyncErrorKind::Local, format!("{what}: {e}"))
+}
+
+/// `digest:<meeting>:<sha256>` in `meta`.
+fn digest_key(meeting: &str, sha256: &str) -> String {
+    format!("digest:{meeting}:{sha256}")
 }
 
 /// `bytes` random bytes as lowercase hex.

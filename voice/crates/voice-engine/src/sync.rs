@@ -6,7 +6,7 @@
 //! for the network, except the Settings commands the app runs on its blocking pool.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -14,7 +14,10 @@ use voice_core::config::Config;
 use voice_meetings::{release_held, MediaPart};
 use voice_sync::keys::KeyStore;
 use voice_sync::protect::Protector;
-use voice_sync::{BucketSync, LastError, SyncConfig, SyncError, SyncState, SyncStatus};
+use voice_sync::{
+    BucketSync, LastError, PullHooks, PullOrigin, SyncConfig, SyncError, SyncErrorKind, SyncState,
+    SyncStatus,
+};
 
 use crate::engine::{lock, Core};
 use crate::meetings::now_ms;
@@ -32,6 +35,74 @@ const DAY: Duration = Duration::from_millis(DAY_MS);
 const FAILING_BODY: &str = "Voice couldn't upload to your bucket for a day. Your audio stays on this computer until it can, as long as 10 GB stay free.";
 const LOST_BODY: &str = "The disk was almost full, so Voice removed meeting media that hadn't reached your bucket yet. Settings > Storage lists how much.";
 const UNREADABLE_BODY: &str = "The disk was almost full, so Voice removed meeting media it couldn't check against your bucket.";
+
+/// What the engine does with meetings pulled from the other computers (voice-sync `pull`).
+pub(crate) struct EnginePull(pub(crate) Weak<Core>);
+
+impl PullHooks for EnginePull {
+    fn restored(&self, meeting: &str) {
+        let Some(core) = self.0.upgrade() else {
+            return;
+        };
+        // Its pipeline sends the meeting to Rukoo: the event log has none of it.
+        core.follow(meeting);
+        core.settings.forget_storage();
+        core.settings_changed();
+    }
+
+    fn update(
+        &self,
+        meeting: &str,
+        swap: &mut dyn FnMut() -> Result<(), SyncError>,
+    ) -> Result<(), SyncError> {
+        let core = self
+            .0
+            .upgrade()
+            .ok_or_else(|| SyncError::new(SyncErrorKind::Local, "Voice is quitting."))?;
+        if !core.meetings.begin_replace(meeting) {
+            return Err(SyncError::new(
+                SyncErrorKind::Local,
+                "The meeting's transcript is being written here.",
+            ));
+        }
+        core.meetings.stop_following(meeting);
+        let swapped = swap();
+        if swapped.is_ok() {
+            // Before anything follows the meeting again. Whatever doesn't make it, settling the
+            // meeting's `.pulled` file sends later.
+            core.meetings.reconcile_replaced(meeting);
+        }
+        core.meetings.end_replace(meeting);
+        // Again either way: with the newer text it sends what changed. The meeting's `.pulled`
+        // file keeps it followed until Rukoo can get all of it (Meetings::settle_pulled).
+        core.follow(meeting);
+        swapped
+    }
+
+    fn deleted(&self, meeting: &str, from: &PullOrigin<'_>) -> bool {
+        let Some(core) = self.0.upgrade() else {
+            return false;
+        };
+        let Some(control) = core.meetings.control() else {
+            return false;
+        };
+        match control.delete_meeting_from(meeting, Some(from)) {
+            Ok(()) => {
+                log::info!("sync: a meeting deleted on another computer is gone here too");
+                core.settings.forget_storage();
+                core.settings_changed();
+                true
+            }
+            Err(e) => {
+                log::info!(
+                    "sync: a meeting deleted elsewhere stays for now: {}",
+                    e.message
+                );
+                false
+            }
+        }
+    }
+}
 
 /// What the engine remembers about sync between calls.
 #[derive(Default)]

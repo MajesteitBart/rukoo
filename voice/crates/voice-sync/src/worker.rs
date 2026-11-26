@@ -25,6 +25,7 @@ use crate::format::{cipher_len, Header, Sealer};
 use crate::keys::{KeyStore, MasterKey};
 use crate::manifest::{manifest_for, Index, IndexEntry, Manifest};
 use crate::names;
+use crate::pull::{PullHooks, PullInfo};
 use crate::queue::{hex, MeetingRow, NewRow, Progress, Queue, Row, MEDIA_KINDS};
 use crate::s3::Bucket;
 use crate::scan::{self, Found};
@@ -74,6 +75,13 @@ pub(crate) struct Shared {
     /// Counts saves and removals of the bucket secret, so a Test connection can tell whether the
     /// secret it read is still the saved one when its result is stored.
     pub(crate) secret_generation: AtomicU64,
+    /// What the engine does with pulled meetings; no pull runs before it says.
+    pull_hooks: Mutex<Option<Arc<dyn PullHooks>>>,
+    /// Held while one meeting is restored: a pull and a restore from Settings would otherwise
+    /// write the same `.restore-<id>` folder.
+    pub(crate) restoring_one: Mutex<()>,
+    /// The worker's connection, with the settings generation and the place it was made for.
+    connected: Mutex<Option<Connected>>,
     notifier: Notifier,
 }
 
@@ -113,6 +121,9 @@ pub(crate) struct State {
     /// to another bucket, endpoint or folder, or got another key. A restore made before reads
     /// from a place or with a key sync no longer uses ([`Binding`]).
     pub(crate) place: u64,
+    /// Pull meetings from the other computers at the next chance ([`crate::pull`]).
+    pub(crate) pull_requested: bool,
+    pub(crate) pull: PullInfo,
 }
 
 impl State {
@@ -122,6 +133,11 @@ impl State {
         self.cfg
             .as_ref()
             .is_some_and(|cfg| self.target.as_deref() != Some(cfg.target().as_str()))
+    }
+
+    /// Sync is on, Voice isn't quitting, and `place` is still the bucket and key it uses.
+    pub(crate) fn uses(&self, place: u64) -> bool {
+        !self.stopping && self.cfg.is_some() && self.place == place
     }
 }
 
@@ -165,6 +181,9 @@ impl Shared {
             fetched: Condvar::new(),
             key_lock: Mutex::new(()),
             secret_generation: AtomicU64::new(0),
+            pull_hooks: Mutex::new(None),
+            restoring_one: Mutex::new(()),
+            connected: Mutex::new(None),
             notifier: Notifier {
                 inner: Mutex::new((None, false)),
             },
@@ -226,6 +245,42 @@ impl Shared {
 
     pub(crate) fn stopping(&self) -> bool {
         self.lock().stopping
+    }
+
+    /// The worker's connection, with the settings generation and the place it was made for.
+    pub(crate) fn connected(&self) -> Option<Connected> {
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_connected(&self, connected: Option<Connected>) {
+        *self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = connected;
+    }
+
+    /// Scan every meeting soon: one changed here.
+    pub(crate) fn rescan_soon(&self) {
+        self.lock().rescan = true;
+        self.poke();
+    }
+
+    pub(crate) fn pull_hooks(&self) -> Option<Arc<dyn PullHooks>> {
+        self.pull_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_pull_hooks(&self, hooks: Arc<dyn PullHooks>) {
+        *self
+            .pull_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hooks);
+        self.poke();
     }
 
     /// The configuration, the secret or the key changed.
@@ -428,6 +483,15 @@ impl Shared {
     }
 }
 
+/// The worker's connection, as the pull reads over it ([`crate::pull`]): made for settings
+/// `generation`, with the binding of the place and key it reads.
+#[derive(Clone)]
+pub(crate) struct Connected {
+    pub(crate) generation: u64,
+    pub(crate) remote: Arc<Remote>,
+    pub(crate) binding: Binding,
+}
+
 /// What a restore or a fetch reads with: the bucket sync was on for and the key, when it started.
 #[derive(Clone, Debug)]
 pub(crate) struct Binding {
@@ -436,6 +500,13 @@ pub(crate) struct Binding {
     /// [`SyncConfig::target`] of that bucket, endpoint and folder.
     pub(crate) target: String,
     pub(crate) kid: String,
+}
+
+impl Binding {
+    /// [`State::place`] when it was made.
+    pub(crate) fn place(&self) -> u64 {
+        self.place
+    }
 }
 
 /// A connection to the bucket with the key that opens it.
@@ -583,10 +654,10 @@ struct Worker {
     /// The generation the key, the secret and the bucket below belong to.
     generation: Option<u64>,
     cfg: Option<SyncConfig>,
-    remote: Option<Remote>,
+    remote: Option<Arc<Remote>>,
     /// The last connection before this one, until the next connect: when it was to another
     /// bucket, the uploads left open there are cancelled with it.
-    previous: Option<Remote>,
+    previous: Option<Arc<Remote>>,
     scanned_live: Option<Instant>,
     scanned_all: Option<Instant>,
     /// The live lane's token bucket in bytes, never above 0: a request may put it into debt by
@@ -710,9 +781,9 @@ impl Worker {
     /// whether uploads may go. `unlocked` holds the key and the secret [`Worker::unlock`] read.
     fn prepare(&mut self, unlocked: Option<Unlocked>) -> Ready {
         let shared = self.shared.clone();
-        let (cfg, generation, blocked) = {
+        let (cfg, generation, blocked, place) = {
             let st = shared.lock();
-            (st.cfg.clone(), st.generation, st.blocked.clone())
+            (st.cfg.clone(), st.generation, st.blocked.clone(), st.place)
         };
         let Some(cfg) = cfg else {
             if self.cfg.take().is_some() {
@@ -757,6 +828,18 @@ impl Worker {
         match self.connect(&cfg, now, unlocked) {
             Ok((remote, left_open)) => {
                 self.cancel_left_open(left_open);
+                let remote = Arc::new(remote);
+                // The pull reads the bucket over this connection: the key and the secret were read
+                // once for these settings.
+                shared.set_connected(Some(Connected {
+                    generation,
+                    binding: Binding {
+                        place,
+                        target: cfg.target(),
+                        kid: remote.kid.clone(),
+                    },
+                    remote: remote.clone(),
+                }));
                 self.remote = Some(remote);
                 self.cfg = Some(cfg);
                 self.generation = Some(generation);
@@ -820,6 +903,7 @@ impl Worker {
     /// The connection Voice stops using, so a change of bucket can still cancel the uploads it left
     /// open there.
     fn keep_previous(&mut self) {
+        self.shared.set_connected(None);
         if let Some(remote) = self.remote.take() {
             self.previous = Some(remote);
         }
@@ -916,6 +1000,21 @@ impl Worker {
             // the engine renames the local folder out of the library.
             if row.is_some_and(|r| r.phase == "forgotten") {
                 continue;
+            }
+            // Newer text from the bucket is in place and its version not noted yet: it isn't a
+            // change of this computer's to send back, unless it came from a bucket or key sync no
+            // longer uses.
+            if crate::pull::pending_install(&shared.opts.meetings_dir, &id) {
+                let target = shared.lock().target.clone();
+                let kid = shared.queue.meta("kid").ok().flatten();
+                if !crate::pull::release_elsewhere(
+                    &shared.opts.meetings_dir,
+                    &id,
+                    target.as_deref(),
+                    kid.as_deref(),
+                ) {
+                    continue;
+                }
             }
             if !all
                 && row.is_some_and(|r| {
@@ -1135,11 +1234,39 @@ impl Worker {
             shared.queue.set_mtime(id, &found.path, &sha, found.mtime)?;
             return Ok(Queued::Known);
         }
-        let added = self.insert(id, mhash, found, size, sha, Some(staged.clone()), now)?;
+        // The same transcript in other bytes: this computer followed a meeting it pulled, and its
+        // pipeline noted what its own event log holds. Uploading that would make the computer it
+        // came from pull it back.
+        let digest = match crate::digest::transcript_digest(&staged) {
+            Ok(digest) => digest,
+            Err(e) => {
+                let _ = fs::remove_file(&staged);
+                return Err(e);
+            }
+        };
+        if let Some(known_sha) = known_sha.as_deref() {
+            if shared.queue.transcript_digest(id, known_sha)?.as_deref() == Some(digest.as_str()) {
+                let _ = fs::remove_file(&staged);
+                shared
+                    .queue
+                    .set_mtime(id, &found.path, known_sha, found.mtime)?;
+                return Ok(Queued::Known);
+            }
+        }
+        let added = self.insert(
+            id,
+            mhash,
+            found,
+            size,
+            sha.clone(),
+            Some(staged.clone()),
+            now,
+        )?;
         if !added {
             let _ = fs::remove_file(&staged);
             return Ok(Queued::Known);
         }
+        shared.queue.set_transcript_digest(id, &sha, &digest)?;
         Ok(Queued::Added)
     }
 
@@ -1291,6 +1418,7 @@ impl Worker {
             .filter(|m| m.uploaded_gen > 0)
             .map(|m| {
                 let deleted = m.phase == "forgotten";
+                let mid = shared.queue.manifest_id(&m.id).ok().flatten();
                 IndexEntry {
                     id: m.id,
                     m: m.mhash,
@@ -1306,6 +1434,7 @@ impl Worker {
                     gen: m.uploaded_gen + u64::from(deleted),
                     media_removed_at: m.media_removed_at,
                     deleted,
+                    mid,
                 }
             })
             .collect();
@@ -1766,6 +1895,9 @@ impl Worker {
         let Some(remote) = &self.remote else {
             return Ok(());
         };
+        shared
+            .queue
+            .set_manifest_id(&row.meeting, &sha256_hex(plain))?;
         let manifest: Manifest = serde_json::from_slice(plain).map_err(|e| {
             SyncError::new(
                 SyncErrorKind::Local,

@@ -215,6 +215,40 @@ fn transcription_waits_for_consent_then_catches_up() {
 }
 
 #[test]
+fn a_transcribed_meeting_never_reaches_a_provider_without_consent() {
+    // As a meeting from another computer arrives: its transcript says it is done, though audio is
+    // here that its transcript doesn't cover.
+    let tmp = TempDir::new("pipeline-transcribed");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = finished_recording(&lib);
+    Transcript::open(rec.dir.path())
+        .unwrap()
+        .set_outcome(&voice_meetings::transcript::Outcome {
+            state: MeetingState::Done,
+            at: 6500,
+            ended_at: 1_793_000_006_500,
+            reason: Some("user".into()),
+            done_at: Some(1_793_000_010_000),
+        })
+        .unwrap();
+    let echo_stt = Arc::new(Echo::default());
+    let options = PipelineOptions {
+        transcription_allowed: Arc::new(|| Err("No consent on this computer.".into())),
+        timing: fast(),
+        ..PipelineOptions::new(echo_stt.clone())
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_for_state(&handle, |s| *s == PipelineState::Done);
+    assert_eq!(echo_stt.calls.load(Ordering::SeqCst), 0);
+    assert!(passages(&events(&log, &rec.id())).is_empty());
+    assert_eq!(
+        states(&events(&log, &rec.id())).last().map(String::as_str),
+        Some("done")
+    );
+}
+
+#[test]
 fn a_recognizer_that_keeps_failing_after_the_stop_fails_the_meeting() {
     let tmp = TempDir::new("pipeline-failed");
     let lib = Library::open(tmp.path()).unwrap();

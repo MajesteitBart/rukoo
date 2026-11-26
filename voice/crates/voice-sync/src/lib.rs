@@ -1,5 +1,6 @@
 //! Encrypted sync of meetings to the user's own S3-compatible bucket (voice/README.md, Storage).
 pub mod config;
+pub mod digest;
 pub mod error;
 pub mod format;
 pub mod keys;
@@ -7,6 +8,7 @@ pub mod manifest;
 pub mod names;
 pub mod protect;
 mod prune;
+pub mod pull;
 pub mod queue;
 pub mod recovery;
 pub mod restore;
@@ -17,6 +19,7 @@ mod worker;
 
 pub use config::{BucketRetention, Service, SyncConfig, UrlStyle};
 pub use error::{SyncError, SyncErrorKind};
+pub use pull::{PullHooks, PullInfo, PullOrigin};
 pub use scan::{NoScreen, ScreenFile, ScreenFileKind, ScreenFiles};
 pub use sync::{
     BucketSync, KeyInfo, LastError, RemoteMeeting, RestoreState, SyncOptions, SyncState,

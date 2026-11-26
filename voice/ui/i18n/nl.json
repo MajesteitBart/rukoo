@@ -406,12 +406,17 @@
   "settings.sync.retentionYear": "1 jaar",
   "settings.sync.retention90": "90 dagen",
   "settings.sync.retentionHelp": "Daarna haalt Voice de audio, beelden en video van een vergadering uit de bucket. Het transcript blijft.",
+  "settings.sync.pull": "Vergaderingen van je andere computers",
+  "settings.sync.pullHelp": "Een vergadering die op een andere computer klaar is, komt vanzelf hierheen, als tekst. De audio, beelden en video blijven in je bucket tot je ze afspeelt of opent.",
+  "settings.sync.pullAt": "Laatst gekeken {time}",
+  "settings.sync.pullRunning": "De bucket wordt bekeken…",
+  "settings.sync.pullFailed": "De laatste keer kijken is gestopt. Voice probeert het over een paar minuten opnieuw.",
   "settings.sync.restoreAvailable": {
     "one": "{count} vergadering in je bucket staat niet op deze computer",
     "other": "{count} vergaderingen in je bucket staan niet op deze computer"
   },
   "settings.sync.restore": "Terugzetten",
-  "settings.sync.restoreHelp": "Zet de transcripten nu terug. Audio komt uit de bucket terug zodra die nodig is.",
+  "settings.sync.restoreHelp": "Deze zijn op hun computer niet klaargekomen, of konden niet vanzelf hierheen komen. Terugzetten haalt hun transcripten nu op; audio komt uit de bucket terug zodra die nodig is.",
   "settings.sync.restoring": "Terugzetten: {done} van {total}",
   "settings.sync.restored": "Teruggezet",
   "settings.sync.restoreFailed": "Terugzetten is gestopt.",

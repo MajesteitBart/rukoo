@@ -1558,6 +1558,26 @@
     "message": "After this, Voice removes a meeting's audio, frames and video from the bucket. The transcript stays.",
     "description": "Settings > Storage: description of Keep in the bucket. voice/ui/settings.js (syncSection)."
   },
+  "settings.sync.pull": {
+    "message": "Meetings from your other computers",
+    "description": "Settings > Storage: row title about meetings that come from the user's other computers through the bucket. voice/ui/settings.js (pullRow)."
+  },
+  "settings.sync.pullHelp": {
+    "message": "A meeting that finished on another computer comes here by itself, as text. Its audio, frames and video stay in your bucket until you play or open them.",
+    "description": "Settings > Storage: description of the row about meetings from other computers. voice/ui/settings.js (pullRow)."
+  },
+  "settings.sync.pullAt": {
+    "message": "Last checked {time}",
+    "description": "Settings > Storage: when Voice last looked in the bucket for meetings from other computers. {time}: a date and time such as \"Oct 30, 2026, 3:38 PM\". voice/ui/settings.js (pullRow)."
+  },
+  "settings.sync.pullRunning": {
+    "message": "Checking the bucket…",
+    "description": "Settings > Storage: while Voice looks in the bucket for meetings from other computers. voice/ui/settings.js (pullRow)."
+  },
+  "settings.sync.pullFailed": {
+    "message": "The last check stopped. Voice tries again in a few minutes.",
+    "description": "Settings > Storage: the last look for meetings from other computers failed. voice/ui/settings.js (pullRow)."
+  },
   "settings.sync.restoreAvailable": {
     "message": {
       "one": "{count} meeting in your bucket isn't on this computer",
@@ -1570,7 +1590,7 @@
     "description": "Settings > Storage: button that restores the meetings from the bucket. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.restoreHelp": {
-    "message": "Brings their transcripts back now. Audio comes back from the bucket when it's needed.",
+    "message": "These didn't finish on their computer, or couldn't come here by themselves. Restore brings their transcripts now; audio comes back from the bucket when it's needed.",
     "description": "Settings > Storage: description of the restore row. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.restoring": {

@@ -1120,7 +1120,25 @@ function syncBucketCard() {
     desc: t('settings.sync.retentionHelp'),
     side: segmented('storage.sync.retention', SYNC_RETENTION, sync.retention || 'keep', t('settings.sync.retention'))
   });
-  return card(retention + restoreRow(state.sync?.restore || {}));
+  return card(retention + pullRow(state.sync) + restoreRow(state.sync?.restore || {}));
+}
+
+// Meetings from the user's other computers: they come by themselves once they finished.
+function pullRow(s) {
+  if (!s || s.state === 'off' || !s.pull) return '';
+  const p = s.pull;
+  const failed = p.error && !p.running;
+  const line = p.running
+    ? t('settings.sync.pullRunning')
+    : failed
+      ? t('settings.sync.pullFailed')
+      : p.at
+        ? t('settings.sync.pullAt', { time: dateTime(p.at) })
+        : '';
+  const details = failed ? ` <button class="link-btn" data-a="sync-details:pull">${esc(t('common.errorDetails'))}</button>` : '';
+  // As a restore that stopped says it.
+  const below = !line ? '' : failed ? `<div class="desc field-error">${esc(line)}${details}</div>` : `<p class="sync-note quiet">${esc(line)}</p>`;
+  return row({ title: t('settings.sync.pull'), desc: t('settings.sync.pullHelp'), below });
 }
 
 // Meetings in the bucket that aren't on this computer, and the restore once it started.
@@ -1716,6 +1734,7 @@ async function act(action, button) {
     case 'sync-details': {
       if (arg === 'test') return showError(t(SYNC_ERRORS[syncTest?.code] || 'settings.sync.error.failed'), syncTest?.message);
       if (arg === 'restore') return showError(t('settings.sync.restoreFailed'), state.sync?.restore?.error);
+      if (arg === 'pull') return showError(t('settings.sync.pullFailed'), state.sync?.pull?.error);
       if (arg === 'unavailable') return showError(t('settings.sync.unavailable'), state.sync?.lastError?.message);
       // As in the status line, `failed` says "Uploads stopped." rather than "The test failed.".
       const last = state.sync?.lastError;

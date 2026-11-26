@@ -2203,6 +2203,7 @@ Object.assign(api, {
   voiceState: () => voiceState(),
   // Newest first.
   meetingList: () => voiceService().list(),
+  meetingPull: () => voiceService().pull(),
   meetingGet: (id) => voiceService().get(meetingId(id)),
   // Hides the windows first when the user wants that, then asks Voice: {meetingId}.
   meetingStart: (opts) => {

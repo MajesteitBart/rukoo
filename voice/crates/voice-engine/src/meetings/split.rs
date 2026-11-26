@@ -12,7 +12,7 @@
 //! sending its events is caught up at the next start ([`SplitService::catch_up`]), and again
 //! before the next `done`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
@@ -61,6 +61,10 @@ pub struct SplitService {
     diarizers: Diarizers,
     timing: FollowerTiming,
     jobs: Mutex<HashMap<(String, Track), Job>>,
+    /// Meetings whose transcript newer text from another computer replaces now: no split starts
+    /// while it does. Changed only while `jobs` is held, so a split and a replacement never begin
+    /// together.
+    replacing: Mutex<HashSet<String>>,
     stopping: Arc<AtomicBool>,
     this: Weak<SplitService>,
 }
@@ -77,6 +81,7 @@ impl SplitService {
             diarizers,
             timing: FollowerTiming::default(),
             jobs: Mutex::new(HashMap::new()),
+            replacing: Mutex::new(HashSet::new()),
             stopping: Arc::new(AtomicBool::new(false)),
             this: this.clone(),
         })
@@ -108,15 +113,31 @@ impl SplitService {
             return answer;
         }
         self.stopped(id)?;
-        // Split by this run or an earlier one: the events it still owes go out first.
-        if voice_meetings::split_voices(&dir)
-            .map_err(|e| split_error(id, e))?
-            .is_some()
         {
-            let voices =
-                voice_meetings::send_split(&dir, &self.log).map_err(|e| split_error(id, e))?;
-            self.lock().insert(key, Job::Done(voices));
-            return Ok(SplitResult::Done { voices }.to_value());
+            // Under the jobs lock, which a replacement takes to begin: newer text from another
+            // computer can't replace the transcript while this reads and writes it.
+            let mut jobs = self.lock();
+            if self
+                .replacing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(id)
+            {
+                return Err(ControlError::busy(
+                    id,
+                    "Voice is taking newer text of the meeting from another computer.",
+                ));
+            }
+            // Split by this run or an earlier one: the events it still owes go out first.
+            if voice_meetings::split_voices(&dir)
+                .map_err(|e| split_error(id, e))?
+                .is_some()
+            {
+                let voices =
+                    voice_meetings::send_split(&dir, &self.log).map_err(|e| split_error(id, e))?;
+                jobs.insert(key, Job::Done(voices));
+                return Ok(SplitResult::Done { voices }.to_value());
+            }
         }
         let diarizer = (self.diarizers)().map_err(|why| {
             ControlError::not_available(why.to_string()).with_reason(unavailable_reason(&why))
@@ -177,6 +198,17 @@ impl SplitService {
             if let Some(Job::Running(running)) = jobs.get(&key) {
                 return Ok(running.answer());
             }
+            if self
+                .replacing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(&key.0)
+            {
+                return Err(ControlError::busy(
+                    &key.0,
+                    "Voice is taking newer text of the meeting from another computer.",
+                ));
+            }
             jobs.insert(key.clone(), Job::Running(Arc::clone(&progress)));
         }
         let this = self.this.clone();
@@ -213,6 +245,34 @@ impl SplitService {
                 ),
             }
         }
+    }
+
+    /// Holds splits of the meeting off while newer text replaces its transcript. False while a
+    /// split of it runs: its transcript is being written.
+    pub fn begin_replace(&self, meeting: &str) -> bool {
+        let jobs = self.lock();
+        if jobs
+            .iter()
+            .any(|((m, _), job)| m == meeting && matches!(job, Job::Running(_)))
+        {
+            return false;
+        }
+        self.replacing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(meeting.to_owned());
+        // What this run remembers of the meeting's split came from the old transcript.
+        drop(jobs);
+        self.lock().retain(|(m, _), _| m != meeting);
+        true
+    }
+
+    pub fn end_replace(&self, meeting: &str) {
+        let _jobs = self.lock();
+        self.replacing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(meeting);
     }
 
     /// Whether a split runs now, so the speaker model stays.

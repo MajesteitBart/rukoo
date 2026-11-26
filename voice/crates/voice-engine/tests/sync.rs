@@ -104,6 +104,10 @@ fn main() {
             a_restored_meeting_reaches_the_bridge,
         ),
         (
+            "changes_and_deletions_reach_the_other_computer",
+            changes_and_deletions_reach_the_other_computer,
+        ),
+        (
             "media_open_for_video_answers_within_50_ms",
             media_open_for_video_answers_within_50_ms,
         ),
@@ -1226,19 +1230,19 @@ fn a_restored_meeting_reaches_the_bridge() {
     assert!(!snapshot_a["passages"].as_array().unwrap().is_empty());
     engine_a.shutdown();
 
-    // Another data folder with the saved key and the same bucket.
+    // Another data folder with the saved key and the same bucket: the finished meeting comes by
+    // itself, as text.
     let b = harness("restore-b", json!({"meetings_retention": "keep"}));
     let engine_b = b.start();
+    // A cloud provider this computer hasn't agreed to: a meeting transcribed elsewhere doesn't wait
+    // for it, because nothing goes to the provider.
+    engine_b
+        .settings_save_provider(json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": "sk-test-not-a-real-key", "consent": false}))
+        .unwrap();
     engine_b
         .settings_sync_key("import", Some(code.clone()))
         .unwrap();
     connect_bucket(&engine_b, &fake.endpoint());
-    let list = engine_b.settings_sync_restore("list").unwrap();
-    let meetings = list["meetings"].as_array().unwrap();
-    assert_eq!(meetings.len(), 1, "{list}");
-    assert_eq!(meetings[0]["id"], id.as_str());
-    assert_eq!(meetings[0]["startedAt"], snapshot_a["meeting"]["startedAt"]);
-    engine_b.settings_sync_restore("start").unwrap();
     wait_done(&b.data(), &id);
     let snapshot_b = engine_b.meeting_control().unwrap().get(&id).unwrap();
     for part in ["passages", "speakers"] {
@@ -1255,6 +1259,7 @@ fn a_restored_meeting_reaches_the_bridge() {
             "{file}"
         );
     }
+    assert!(!meeting_dir(&b.data(), &id).join("audio").exists());
     // The audio comes back when a link needs it.
     let control = engine_b.meeting_control().unwrap();
     let wav = read_all(
@@ -1264,10 +1269,154 @@ fn a_restored_meeting_reaches_the_bridge() {
     );
     let dir_a = meeting_dir(&a.data(), &id);
     assert_eq!(wav, expected_mix(&dir_a, 0, recorded_end(&dir_a)));
+    let state = sync_state(&engine_b);
+    assert!(state["pull"]["at"].is_u64(), "{state}");
+    assert_eq!(state["restore"]["available"], 0, "{state}");
+    // A restore from Settings finds nothing left to bring.
+    let list = engine_b.settings_sync_restore("list").unwrap();
+    assert_eq!(list["meetings"], json!([]), "{list}");
+    engine_b.shutdown();
+    fake.stop();
+}
+
+/// The events of `id` in a data folder's event log: (event, data), oldest first.
+fn events_of(data: &Path, id: &str) -> Vec<(String, Value)> {
+    EventLog::open(data)
+        .unwrap()
+        .after(0)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.meeting.as_deref() == Some(id))
+        .map(|s| (s.event, s.data))
+        .collect()
+}
+
+/// Two computers with the same bucket at once: newer text and a deletion on one reach the other,
+/// and Rukoo on the other hears of them through its event log.
+fn changes_and_deletions_reach_the_other_computer() {
+    let fake = fake_s3();
+    let a = harness("pull-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    wait_uploaded(&engine_a);
+
+    let b = harness("pull-b", json!({"meetings_retention": "keep"}));
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    wait_done(&b.data(), &id);
+    let passages = engine_b.meeting_control().unwrap().get(&id).unwrap()["passages"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(passages.len() >= 2, "{passages:?}");
+    let kept = passages[0]["id"].as_str().unwrap().to_string();
+    let dropped = passages[passages.len() - 1]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // B had changed the same passage on its own, to a higher revision: what A's newer text says
+    // still has to win in Rukoo there.
+    let stale_revision = passages[0]["revision"].as_u64().unwrap() + 5;
+    {
+        let first = &passages[0];
+        let mut stale = first.clone();
+        stale["text"] = "Stale words from this computer".into();
+        stale["revision"] = (first["revision"].as_u64().unwrap() + 5).into();
+        EventLog::open(&b.data())
+            .unwrap()
+            .append("passage", Some(&id), stale)
+            .unwrap();
+    }
+    // Newer text on A, as another transcription would leave it: one passage reworded, one gone.
+    {
+        let db =
+            rusqlite::Connection::open(meeting_dir(&a.data(), &id).join("transcript.db")).unwrap();
+        db.execute(
+            "UPDATE passages SET text = 'Reworded on the other computer', revision = revision + 1 \
+             WHERE id = ?1",
+            [&kept],
+        )
+        .unwrap();
+        db.execute("DELETE FROM passages WHERE id = ?1", [&dropped])
+            .unwrap();
+    }
+    wait_long("B hears of the newer text", Duration::from_secs(60), || {
+        let events = events_of(&b.data(), &id);
+        // Its revision is lower than the one B logged: it goes out with the next revision after
+        // that one, which any Rukoo takes, and the user's correction of it stays.
+        let last = events
+            .iter()
+            .rev()
+            .find(|(e, d)| e == "passage" && d["id"] == kept.as_str());
+        let reworded = last.is_some_and(|(_, d)| {
+            d["text"] == "Reworded on the other computer"
+                && d["revision"].as_u64() == Some(stale_revision + 1)
+        }) && !events
+            .iter()
+            .any(|(e, d)| e == "passage.removed" && d["id"] == kept.as_str());
+        let removed = events
+            .iter()
+            .any(|(e, d)| e == "passage.removed" && d["id"] == dropped.as_str());
+        reworded && removed
+    });
+    let snapshot = engine_b.meeting_control().unwrap().get(&id).unwrap();
+    let ids: Vec<&str> = snapshot["passages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(!ids.contains(&dropped.as_str()), "{snapshot}");
+    // A Rukoo that asks for the whole meeting gets the newer words too.
+    let words = snapshot["passages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == kept.as_str())
+        .map(|p| p["text"].clone());
     assert_eq!(
-        engine_b.settings_state()["sync"]["restore"]["state"],
-        "done"
+        words,
+        Some(json!("Reworded on the other computer")),
+        "{snapshot}"
     );
+    // B's transcript carries that revision now, and goes up once; A takes it and nothing more goes
+    // back and forth.
+    wait_long("A takes B's revision", Duration::from_secs(60), || {
+        events_of(&a.data(), &id).iter().rev().any(|(e, d)| {
+            e == "passage"
+                && d["id"] == kept.as_str()
+                && d["revision"].as_u64() == Some(stale_revision + 1)
+                && d["text"] == "Reworded on the other computer"
+        })
+    });
+    let manifests = |fake: &FakeS3| {
+        fake.log()
+            .iter()
+            .filter(|l| l.op == Op::Put && l.key.ends_with("/manifest"))
+            .count()
+    };
+    wait_uploaded(&engine_a);
+    wait_uploaded(&engine_b);
+    std::thread::sleep(Duration::from_secs(3));
+    let before = manifests(&fake);
+    std::thread::sleep(Duration::from_secs(5));
+    assert_eq!(manifests(&fake), before, "the meeting went back and forth");
+
+    // A deletes it: B removes it as a user deletion, so Rukoo there purges its notes too.
+    engine_a.meeting_control().unwrap().delete(&id).unwrap();
+    wait_long("B deletes the meeting", Duration::from_secs(60), || {
+        events_of(&b.data(), &id)
+            .iter()
+            .any(|(e, d)| e == "meeting.removed" && d["reason"] == "user")
+    });
+    assert!(!meeting_dir(&b.data(), &id).exists());
+    engine_a.shutdown();
     engine_b.shutdown();
     fake.stop();
 }

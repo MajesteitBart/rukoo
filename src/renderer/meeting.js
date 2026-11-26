@@ -182,6 +182,12 @@ export function show() {
   M.open = true;
   bind();
   pickAndOpen();
+  pullMeetings();
+}
+
+// Meetings from the user's other computers come through Voice's bucket. Main asks at most once a minute.
+function pullMeetings() {
+  if (M.voice.status === 'connected') api('meetingPull').catch(() => {});
 }
 
 export function hide() {
@@ -418,6 +424,7 @@ function setVoice(state) {
   // A recording that starts while the view is open shows at once, unless the user is writing in this one.
   if (started && M.open && M.voice.recording !== M.id && !busyHere()) open(M.voice.recording);
   afterVoice();
+  if (M.open && before.status !== M.voice.status) pullMeetings();
   if (before.status !== M.voice.status || before.recording !== M.voice.recording) redrawSide();
   if (M.open) {
     if (M.data) {

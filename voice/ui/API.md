@@ -210,7 +210,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
     "screenRecording": false,
     "key": { "exists": false, "id": null, "exported": false },
     "restore": { "state": "idle", "available": 0, "done": 0, "total": 0, "error": null },
-    "otherKeys": 0
+    "otherKeys": 0,
+    "pull": { "at": null, "running": false, "error": null }
   }
 }
 ```
@@ -249,7 +250,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `sync.lost` | Files Voice removed from this computer before they reached the bucket, because the disk was almost full (under 10 GiB free). |
 | `sync.screenRecording` | A meeting records the screen now. The page closes the key dialogs when it turns true. |
 | `sync.key` | `exists`: Voice has an encryption key, and on macOS could open it the last time it read it (`false` there while `lastError` is a `key` or `key_denied` for the key itself); `id`: its first 8 hex characters, to tell keys apart; `exported`: the user said they saved it. Never the key. |
-| `sync.restore` | `state`: `idle`, `listing`, `available`, `restoring`, `done` or `failed`; `available`: meetings in the bucket that aren't on this computer; `done` and `total` while restoring; `error`: English text after a failure. |
+| `sync.restore` | `state`: `idle`, `listing`, `available`, `restoring`, `done` or `failed`; `available`: meetings in the bucket that aren't on this computer and didn't come by themselves: they didn't finish on their computer, or a pull couldn't bring them; `done` and `total` while restoring; `error`: English text after a failure. |
+| `sync.pull` | Meetings from the user's other computers. Every 5 minutes, when sync starts and when Rukoo opens its meetings (`sync.pull` on the bridge), Voice reads the bucket's indexes: a finished meeting that isn't here comes in as text, newer text of a meeting that is here replaces the old, and a meeting another computer deleted is deleted here. `at`: when the last look finished, or `null`; `running`; `error`: English text when the last look stopped, `null` after one that finished. |
 | `sync.otherKeys` | How many other encryption keys have meetings in this bucket, from the last Test connection. |
 
 `config`, by the key `settings_set` takes for each field:

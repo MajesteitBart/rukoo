@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::keys::{KeyStore, SECRET_FILE};
 use crate::protect::Protector;
+use crate::pull::{PullInfo, PullOrigin};
 use crate::queue::Queue;
 use crate::s3::Bucket;
 use crate::worker::{self, Shared};
@@ -40,6 +41,8 @@ pub struct SyncTiming {
     pub part_size: u64,
     /// Larger ciphertexts upload in parts.
     pub single_max: u64,
+    /// How often the indexes are read for meetings from the other computers ([`crate::pull`]).
+    pub pull_every: Duration,
 }
 
 impl Default for SyncTiming {
@@ -58,6 +61,7 @@ impl Default for SyncTiming {
             request_timeout: Duration::from_secs(120),
             part_size: 8 << 20,
             single_max: 16 << 20,
+            pull_every: Duration::from_secs(5 * 60),
         }
     }
 }
@@ -96,6 +100,8 @@ pub struct SyncStatus {
     pub key: KeyInfo,
     pub restore: RestoreState,
     pub other_keys: u32,
+    /// Meetings from the other computers ([`crate::pull`]).
+    pub pull: PullInfo,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -196,7 +202,31 @@ impl BucketSync {
         let shared = Arc::new(Shared::new(opts, sync_dir, queue, keys));
         worker::spawn(shared.clone())
             .map_err(|e| worker::local("Voice can't start the sync worker", &e))?;
+        crate::pull::spawn(shared.clone())
+            .map_err(|e| worker::local("Voice can't start pulling meetings", &e))?;
         Ok(BucketSync { shared })
+    }
+
+    /// Lets the `sync-pull` thread bring meetings from the other computers: until the engine says
+    /// what to do with them, none come.
+    pub fn set_pull_hooks(&self, hooks: Arc<dyn crate::PullHooks>) {
+        self.shared.set_pull_hooks(hooks);
+    }
+
+    /// Look for meetings from the other computers now, for instance because Rukoo opened its
+    /// meetings. A pull that runs already counts.
+    pub fn pull_now(&self) {
+        let shared = &self.shared;
+        let running = {
+            let mut st = shared.lock();
+            if !st.pull.running {
+                st.pull_requested = true;
+            }
+            st.pull.running
+        };
+        if !running {
+            shared.poke();
+        }
     }
 
     /// The state the worker shares, for this crate's unit tests.
@@ -408,7 +438,7 @@ impl BucketSync {
 
     pub fn status(&self) -> SyncStatus {
         let shared = &self.shared;
-        let (on, blocked, failures, last_error, restore, unlocking, key_unreadable) = {
+        let (on, blocked, failures, last_error, restore, unlocking, key_unreadable, pull) = {
             let st = shared.lock();
             (
                 st.cfg.is_some(),
@@ -418,6 +448,7 @@ impl BucketSync {
                 st.restore.clone(),
                 st.unlocking,
                 st.key_unreadable,
+                st.pull.clone(),
             )
         };
         let queue = &shared.queue;
@@ -473,6 +504,7 @@ impl BucketSync {
                 .flatten()
                 .and_then(|n| u32::try_from(n).ok())
                 .unwrap_or(0),
+            pull,
         }
     }
 
@@ -609,16 +641,33 @@ impl BucketSync {
 
     /// A durable deletion, also offline: the next index tombstones the meeting. Encrypted
     /// objects remain subject to the bucket's lifecycle rules; restore cannot select them.
-    pub fn mark_deleted(&self, meeting: &str) -> Result<(), SyncError> {
+    ///
+    /// With `from`, the deletion is another computer's that a pull read, and it counts only while
+    /// sync still uses the bucket and key the pull read it from: `Off` otherwise, with nothing
+    /// noted. The check and the note happen under the lock every settings change takes, after
+    /// the worker's request is done, so a change lands either before both or after both.
+    pub fn mark_deleted(
+        &self,
+        meeting: &str,
+        from: Option<&PullOrigin<'_>>,
+    ) -> Result<(), SyncError> {
         if voice_protocol::MeetingId::parse(meeting).is_none() {
             return Err(SyncError::new(SyncErrorKind::Local, "Invalid meeting id."));
         }
         let shared = &self.shared;
         let _busy = shared.busy();
-        shared.queue.drop_meeting(meeting, true)?;
-        shared
-            .queue
-            .set_meta("index_due", Some(&shared.now().to_string()))?;
+        {
+            let st = shared.lock();
+            if let Some(from) = from {
+                if !std::ptr::eq(from.shared, &**shared) || !st.uses(from.place) {
+                    return Err(SyncError::new(
+                        SyncErrorKind::Off,
+                        "Bucket sync changed while the meeting was to be deleted.",
+                    ));
+                }
+            }
+            shared.queue.drop_meeting(meeting, Some(shared.now()))?;
+        }
         shared.changed();
         shared.poke();
         Ok(())

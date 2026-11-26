@@ -322,8 +322,10 @@ impl MediaService {
         self.sync.clone()
     }
 
-    /// Revoke prepared media links before deleting their meeting. A running preparation must
-    /// finish first, so a late bucket fetch cannot recreate the meeting folder afterwards.
+    /// Stops new media of a meeting that is about to be deleted. A running preparation must
+    /// finish first, so a late bucket fetch cannot recreate the meeting folder afterwards. Links
+    /// prepared already keep working until [`evict_meeting`](Self::evict_meeting), so a deletion
+    /// that doesn't go ahead ([`keep_meeting`](Self::keep_meeting)) leaves them as they were.
     pub(crate) fn forget_meeting(&self, meeting: &str) -> Result<(), ControlError> {
         let mut inner = self.lock();
         if inner
@@ -336,6 +338,13 @@ impl MediaService {
                 "Voice is still preparing this meeting's media. Try deleting it again in a moment.",
             ));
         }
+        inner.deleted.insert(meeting.to_owned());
+        Ok(())
+    }
+
+    /// Revokes the prepared media links of a meeting whose deletion is noted.
+    pub(crate) fn evict_meeting(&self, meeting: &str) {
+        let mut inner = self.lock();
         let ids: Vec<String> = inner
             .jobs
             .iter()
@@ -347,8 +356,11 @@ impl MediaService {
                 forget_file(&job);
             }
         }
-        inner.deleted.insert(meeting.to_owned());
-        Ok(())
+    }
+
+    /// Undoes [`forget_meeting`](Self::forget_meeting) for a deletion that didn't go ahead.
+    pub(crate) fn keep_meeting(&self, meeting: &str) {
+        self.lock().deleted.remove(meeting);
     }
     /// Empties `<data>/media/`: nothing prepared before this start is still asked for.
     pub fn new(

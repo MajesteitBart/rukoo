@@ -1179,9 +1179,17 @@ impl Worker {
         self.backfill_speakers()?;
         let stop = self.watcher.mapper().stop().cloned();
 
-        if let Err(reason) = (self.allowed)() {
-            shared.set(PipelineState::Waiting { reason });
-            return Ok(Step::Idle);
+        // A meeting that is transcribed already, such as one from another computer, sends nothing to
+        // a provider: it doesn't wait for this computer's consent.
+        let transcribed = self
+            .transcript
+            .outcome()?
+            .is_some_and(|o| o.state == MeetingState::Done);
+        if !transcribed {
+            if let Err(reason) = (self.allowed)() {
+                shared.set(PipelineState::Waiting { reason });
+                return Ok(Step::Idle);
+            }
         }
         if self
             .failure
@@ -1197,7 +1205,10 @@ impl Worker {
 
         let count = self.tracks.len();
         let mut complete = true;
-        for k in 0..count {
+        // A transcribed meeting, such as one from another computer, only sends what it has: audio
+        // here past what its transcript covers never goes to a provider from this computer.
+        let tracks = if transcribed { 0 } else { count };
+        for k in 0..tracks {
             let i = (self.next_track + k) % count;
             match self.advance(self.tracks[i], stop.is_some(), shared)? {
                 Advance::Moved => {

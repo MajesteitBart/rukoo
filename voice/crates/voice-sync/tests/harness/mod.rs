@@ -83,6 +83,7 @@ pub fn timing() -> SyncTiming {
         request_timeout: Duration::from_secs(20),
         part_size: 8 << 20,
         single_max: 16 << 20,
+        pull_every: Duration::from_millis(200),
     }
 }
 
@@ -106,7 +107,8 @@ pub fn config(endpoint: &str) -> SyncConfig {
 /// A data folder with its sync.
 pub struct Voice {
     pub data: PathBuf,
-    pub sync: BucketSync,
+    /// Shared, so a test's pull hooks can reach it as the engine's do (`Weak`, no cycle).
+    pub sync: Arc<BucketSync>,
 }
 
 pub struct Setup {
@@ -147,7 +149,7 @@ impl Voice {
         .unwrap();
         Voice {
             data: data.to_owned(),
-            sync,
+            sync: Arc::new(sync),
         }
     }
 
