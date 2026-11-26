@@ -1,12 +1,29 @@
-// The help center under /help, built from help-center/ into site/help/ by npm run help:build.
+// The help center at https://help.rukoo.io, built from help-center/ into site/help/ by npm run help:build.
 //
-// /help/* is answered from the site's files only, like /app/*: a missing page gets the help center's own 404 page
-// with a 404 status, and nothing under /help reaches the account server (help is a reserved booking handle there).
+// That host is answered from site/help/ only: /mail/write/ is site/help/mail/write/index.html. A missing page gets
+// the help center's own 404 page with a 404 status, and no request on that host reaches the rest of the site or the
+// account server. The help center was at rukoo.io/help/ before, so those addresses redirect to the same page here.
 
-export const HELP = '/help/';
+export const HELP_HOST = 'help.rukoo.io';
+// Where the help center's files sit among the site's files.
+const DIR = '/help';
+// The help center under `wrangler dev`. Browsers send *.localhost to this computer.
+const LOCAL_HOST = 'help.localhost';
+
+export function isHelpHost(hostname) {
+  return hostname === HELP_HOST || hostname === LOCAL_HOST;
+}
 
 export function isHelpPath(pathname) {
-  return pathname === '/help' || pathname.startsWith(HELP);
+  return pathname === DIR || pathname.startsWith(DIR + '/');
+}
+
+/** rukoo.io/help/mail/write/ moved to help.rukoo.io/mail/write/. */
+export function helpRedirect(url) {
+  const target = new URL(url);
+  target.hostname = url.hostname === 'rukoo.io' ? HELP_HOST : LOCAL_HOST;
+  target.pathname = url.pathname.slice(DIR.length) || '/';
+  return new Response(null, { status: 301, headers: { Location: target.toString() } });
 }
 
 // Starlight puts small inline scripts on every page (theme, sidebar, search shortcut), and Pagefind's search runs
@@ -32,16 +49,23 @@ export async function helpResponse(request, env, url) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
   }
-  if (url.pathname === '/help') return new Response(null, { status: 301, headers: { Location: HELP + url.search } });
-  let response = await env.ASSETS.fetch(request);
+  let response = await env.ASSETS.fetch(new Request(new URL(DIR + url.pathname + url.search, url), request));
   if (response.status === 404) {
     // Astro writes the 404 page to site/help/404.html, which the assets binding serves as /help/404.
-    const page = await env.ASSETS.fetch(new Request(new URL(`${HELP}404`, url), { method: request.method }));
+    const page = await env.ASSETS.fetch(new Request(new URL(`${DIR}/404`, url), { method: request.method }));
     response = page.ok
       ? new Response(page.body, { status: 404, headers: page.headers })
       : new Response('Not found', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
   } else {
     response = new Response(response.body, response);
+  }
+  // The assets binding sends /help/mail/write to /help/mail/write/; on this host that is /mail/write/.
+  const location = response.headers.get('Location');
+  if (location) {
+    const target = new URL(location, url);
+    if (target.host === url.host && isHelpPath(target.pathname)) {
+      response.headers.set('Location', (target.pathname.slice(DIR.length) || '/') + target.search + target.hash);
+    }
   }
   // site/_headers gives every site file the landing page's policy; both would be enforced, so this one replaces it.
   const page = /^text\/html\b/i.test(response.headers.get('Content-Type') || '');

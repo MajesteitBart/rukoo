@@ -5,7 +5,7 @@ name: Website
 # Rukoo in the browser (rukoo.io/app) is built from the desktop's renderer, catalogs and chat engine, so a change to
 # those is a change to the website too. A server change only runs the tests: the browser tests run against it, but
 # the server deploys separately. The tests also start the server from its wrangler.jsonc and seed it with
-# test/fixtures/real-server.js. The help center (rukoo.io/help) is built from website/help-center/ with its own
+# test/fixtures/real-server.js. The help center (help.rukoo.io) is built from website/help-center/ with its own
 # packages; its build validates the pages and checks every link before the deploy takes it.
 on:
   pull_request:
