@@ -1558,6 +1558,26 @@
     "message": "After this, Voice removes a meeting's audio, frames and video from the bucket. The transcript stays.",
     "description": "Settings > Storage: description of Keep in the bucket. voice/ui/settings.js (syncSection)."
   },
+  "settings.sync.cache": {
+    "message": "Fetched media on this computer",
+    "description": "Settings > Storage: row title with the limit on audio, frames and video that came back from the bucket. voice/ui/settings.js (cacheRow)."
+  },
+  "settings.sync.cacheHelp": {
+    "message": "Audio, frames and video that came back from your bucket use {size} now. Past the limit, what you used longest ago goes first. Meetings you keep on this computer in Rukoo don't count.",
+    "description": "Settings > Storage: description of the fetched media limit; size is how much the fetched media uses now, such as 1.3 GB. voice/ui/settings.js (cacheRow)."
+  },
+  "settings.sync.cache2": {
+    "message": "2 GB",
+    "description": "Settings > Storage: fetched media limit choice. voice/ui/settings.js (cacheRow)."
+  },
+  "settings.sync.cache5": {
+    "message": "5 GB",
+    "description": "Settings > Storage: fetched media limit choice, the default. voice/ui/settings.js (cacheRow)."
+  },
+  "settings.sync.cache20": {
+    "message": "20 GB",
+    "description": "Settings > Storage: fetched media limit choice. voice/ui/settings.js (cacheRow)."
+  },
   "settings.sync.pull": {
     "message": "Meetings from your other computers",
     "description": "Settings > Storage: row title about meetings that come from the user's other computers through the bucket. voice/ui/settings.js (pullRow)."

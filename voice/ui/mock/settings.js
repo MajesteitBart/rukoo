@@ -17,7 +17,8 @@
 //   waiting), unavailable (the switch is on but the sync store didn't open), key (the encryption key can't be opened),
 //   key-denied (macOS refused Voice the keychain item, with Try again), unlocking (waiting for the system to open the
 //   key, the keychain dialog on macOS), restore (two meetings to restore), restore-failed (a restore that stopped),
-//   pulled, pulling and pull-failed (the last look for meetings from the other computers).
+//   pulled, pulling and pull-failed (the last look for meetings from the other computers), cached (media fetched back
+//   from the bucket close to its limit).
 //   1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
@@ -133,7 +134,7 @@ function baseState() {
       ui: { language: 'system', theme: 'system', pillEdge: 'bottom', hidePillFromCapture: true },
       updates: { check: false },
       storage: {
-        sync: { enabled: false, service: 'upcloud', endpoint: '', region: '', bucket: '', prefix: '', accessKeyId: '', retention: 'keep', secretSaved: false, tested: false, secret: '' }
+        sync: { enabled: false, service: 'upcloud', endpoint: '', region: '', bucket: '', prefix: '', accessKeyId: '', retention: 'keep', cache: 'gb5', secretSaved: false, tested: false, secret: '' }
       }
     },
     providers: PROVIDERS,
@@ -167,7 +168,7 @@ function baseState() {
     },
     // Worked out from the rest on every state (speakersState below).
     speakers: null,
-    storage: { folder: 'C:\\Users\\you\\AppData\\Local\\Rukoo Voice\\meetings', usedBytes: 2.4e9, freeBytes: 182e9 },
+    storage: { folder: 'C:\\Users\\you\\AppData\\Local\\Rukoo Voice\\meetings', usedBytes: 2.4e9, freeBytes: 182e9, cacheBytes: 0 },
     screen: { available: true, hardwareEncoder: 'NVIDIA H.264 Encoder MFT', ocr: ['nl-NL', 'en-US'], monitors: 2 },
     updates: { state: 'idle', version: null },
     ownkey: {
@@ -337,6 +338,13 @@ const SYNC_SCENARIOS = {
   'pull-failed': (s) => {
     SYNC_SCENARIOS.on(s);
     s.sync.pull = { at: NOW - 9 * MIN, running: false, error: 'The bucket answered with 503 Service Unavailable.' };
+    return false;
+  },
+  // Media fetched back from the bucket close to a 20 GB limit.
+  cached: (s) => {
+    SYNC_SCENARIOS.pulled(s);
+    s.config.storage.sync.cache = 'gb20';
+    s.storage.cacheBytes = 18.4e9;
     return false;
   }
 };
@@ -851,6 +859,7 @@ export function createMock(params) {
     if (field === 'enabled' && value === true && !sync.tested) fail('needs_test', 'Test the connection before you turn sync on.');
     if (field === 'service' && !['upcloud', 'r2', 'other'].includes(value)) fail('invalid_value', `Unknown service ${value}.`);
     if (field === 'retention' && !['keep', 'days365', 'days90'].includes(value)) fail('invalid_value', `Unknown retention ${value}.`);
+    if (field === 'cache' && !['gb2', 'gb5', 'gb20'].includes(value)) fail('invalid_value', `Unknown cache limit ${value}.`);
     if (field === 'endpoint' && value && !value.startsWith('https://') && !LOOPBACK.test(value)) fail('invalid_value', 'The endpoint must start with https://, or http:// to this computer.');
     if (SYNC_FIELDS.includes(field) && sync[field] !== value) syncUntested();
     sync[field] = value;

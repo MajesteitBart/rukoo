@@ -84,6 +84,12 @@ const SYNC_RETENTION = [
   ['days365', 'settings.sync.retentionYear'],
   ['days90', 'settings.sync.retention90']
 ];
+// How much of this computer the media that came back from the bucket may use (storage.sync.cache, API.md).
+const SYNC_CACHE = [
+  ['gb2', 'settings.sync.cache2'],
+  ['gb5', 'settings.sync.cache5'],
+  ['gb20', 'settings.sync.cache20']
+];
 // Test connection's codes, also lastError.code, to their text. Written out in full: the i18n test can't see keys
 // built at run time.
 const SYNC_ERRORS = {
@@ -1120,7 +1126,17 @@ function syncBucketCard() {
     desc: t('settings.sync.retentionHelp'),
     side: segmented('storage.sync.retention', SYNC_RETENTION, sync.retention || 'keep', t('settings.sync.retention'))
   });
-  return card(retention + pullRow(state.sync) + restoreRow(state.sync?.restore || {}));
+  return card(retention + cacheRow(sync) + pullRow(state.sync) + restoreRow(state.sync?.restore || {}));
+}
+
+// Media fetched back from the bucket, for a meeting from another computer or a link: how much this computer keeps of
+// it, and how much it uses now. Meetings kept on this computer in Rukoo don't count.
+function cacheRow(sync) {
+  return row({
+    title: t('settings.sync.cache'),
+    desc: t('settings.sync.cacheHelp', { size: bytes(state.storage.cacheBytes ?? 0) }),
+    side: segmented('storage.sync.cache', SYNC_CACHE, sync.cache || 'gb5', t('settings.sync.cache'))
+  });
 }
 
 // Meetings from the user's other computers: they come by themselves once they finished.

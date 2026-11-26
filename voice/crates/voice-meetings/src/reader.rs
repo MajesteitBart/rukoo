@@ -81,6 +81,15 @@ impl TrackReader {
         TrackReader { pieces }
     }
 
+    /// What each segment file plays, in order: `(from, to, path)` in meeting samples, after the
+    /// overlap handling above, so a later segment starts where the earlier one ends and a segment
+    /// an earlier one covers whole is left out. [`read`](Self::read) opens these files only.
+    pub fn spans(&self) -> impl Iterator<Item = (u64, u64, &Path)> {
+        self.pieces
+            .iter()
+            .map(|p| (p.at, p.end(), p.path.as_path()))
+    }
+
     /// The meeting sample just after the last recorded sample, or 0 without audio.
     pub fn end(&self) -> u64 {
         self.pieces.last().map_or(0, Piece::end)

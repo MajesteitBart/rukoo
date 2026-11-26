@@ -166,6 +166,32 @@ pub fn sync_value(cfg: &Config) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+/// The cache limit's choices in Settings > Storage (`storage.sync.cache`) and their size in GB.
+pub const CACHE_LIMITS: [(&str, u64); 3] = [("gb2", 2), ("gb5", 5), ("gb20", 20)];
+/// The cache limit when Settings didn't choose one.
+pub const CACHE_DEFAULT: &str = "gb5";
+
+/// `storage.sync.cache`: one of [`CACHE_LIMITS`], else the default.
+pub fn cache_choice(cfg: &Config) -> &'static str {
+    let chosen = sync_value(cfg)["cache"].as_str().map(str::to_owned);
+    CACHE_LIMITS
+        .iter()
+        .map(|(name, _)| *name)
+        .find(|name| chosen.as_deref() == Some(*name))
+        .unwrap_or(CACHE_DEFAULT)
+}
+
+/// The cache limit in bytes: media fetched back from the bucket may use this much of the disk.
+/// `gb` is the bytes a GB stands for, [`voice_sync::SyncTiming::cache_gb`].
+pub fn cache_limit(cfg: &Config, gb: u64) -> u64 {
+    let choice = cache_choice(cfg);
+    let n = CACHE_LIMITS
+        .iter()
+        .find(|(name, _)| *name == choice)
+        .map_or(5, |(_, n)| *n);
+    n.saturating_mul(gb)
+}
+
 /// Whether the switch is on in Settings.
 pub fn switch_on(cfg: &Config) -> bool {
     sync_value(cfg)["enabled"].as_bool().unwrap_or(false)

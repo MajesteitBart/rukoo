@@ -180,7 +180,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
     "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "frames", "liveSpeakers": true },
     "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
     "updates": { "check": false },
-    "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "retention": "keep", "secretSaved": false, "tested": false, "secret": "" } }
+    "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "retention": "keep", "cache": "gb5", "secretSaved": false, "tested": false, "secret": "" } }
   },
   "providers": {
     "audio": [
@@ -193,7 +193,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "rukoo": { "state": "connected", "clientVersion": "2.2.0", "protocol": 1, "port": 49821, "discoveryPath": "C:\\Users\\…\\Rukoo Voice\\bridge.json", "behind": 0 },
   "models": { "orukeet": "ModelState", "nemotron": "ModelState" },
   "speakers": "SpeakersState",
-  "storage": { "folder": "C:\\Users\\…\\Rukoo Voice\\meetings", "usedBytes": 2400000000, "freeBytes": 182000000000 },
+  "storage": { "folder": "C:\\Users\\…\\Rukoo Voice\\meetings", "usedBytes": 2400000000, "freeBytes": 182000000000, "cacheBytes": 1300000000 },
   "screen": { "available": true, "hardwareEncoder": "NVIDIA H.264 Encoder MFT", "ocr": ["nl-NL"], "monitors": 2 },
   "updates": { "state": "idle", "version": null },
   "ownkey": "OwnkeyState",
@@ -237,7 +237,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
 | `models` | A `ModelState` for `orukeet` and one for `nemotron`, the speaker label model. |
 | `speakers` | A `SpeakersState`, below: whether new meetings get speaker labels, and why not. |
-| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. On macOS the free space is a `statvfs` reading of that drive's available bytes, the same number the recording floors and bucket sync compare against, in the decimal units `bytes()` shows. |
+| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive, and `cacheBytes`, the bytes of audio, frames and video that came back from the bucket and count against `storage.sync.cache`: not the media of meetings the user keeps on this computer in Rukoo (PROTOCOL.md, `media.keep`). In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. On macOS the free space is a `statvfs` reading of that drive's available bytes, the same number the recording floors and bucket sync compare against, in the decimal units `bytes()` shows. |
 | `screen` | What this computer can record of the screen, from the screen process's probe, or `null` until it answered. `available`: the screen program is there and this computer can capture the screen: Windows 10 2004 or later on Windows, and always on macOS, where `permissions.screenRecording` says whether Voice has the permission; `false` disables Screen recording. `hardwareEncoder`: the hardware H.264 encoder's name, or `null` when there is none and Video records frames only. `ocr`: the languages the system's text recognition reads, Windows' OCR on Windows and Vision on macOS, such as `nl-NL`; an empty list means frames are saved without their text. `monitors`: how many monitors there are. The page shows a note under Screen recording for each limit. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
@@ -300,6 +300,7 @@ Bucket sync, saved in `config.json` under `storage_sync`:
 | `storage.sync.endpoint` | `https://…`, or `http://` to this computer for tests; `""` | `""` | `storage_sync.endpoint` |
 | `storage.sync.region`, `bucket`, `prefix`, `accessKeyId` | string | `""` | `storage_sync.<field>` |
 | `storage.sync.retention` | `keep`, `days365`, `days90`: how long the bucket keeps a meeting's media | `keep` | `storage_sync.retention` |
+| `storage.sync.cache` | `gb2`, `gb5`, `gb20`: how much of this computer the media fetched back from the bucket may use, in GB of 10⁹ bytes. Past it, Voice removes what was used longest ago, after each fetch and at each retention sweep; never media used in the last 10 minutes, media that isn't in the bucket or media of a meeting the user keeps on this computer | `gb5` | `storage_sync.cache` |
 | `storage.sync.secret` | refused with `invalid_value`; use `settings_sync_save_secret` | | never stored here |
 
 Changing `service`, `endpoint`, `region`, `bucket`, `prefix` or `accessKeyId`, or saving or removing the secret, clears the passed test. The switch stays where the user put it: while it is on, `sync.state` is `paused` and nothing uploads until Test connection passes again, then uploads go on by themselves. Retention keeps holding media that hasn't uploaded meanwhile, so repairing a failing bucket never costs that media; only turning the switch off lets it go. Once a test passes for another endpoint, bucket or folder, everything still on this computer uploads again, `waiting` counts it, and retention holds its media until the new bucket has it. `secretSaved` and `tested` are read-only.

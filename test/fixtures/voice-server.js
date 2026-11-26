@@ -141,6 +141,14 @@ class FakeVoice {
     // media.open's files by id ({ file, ready }) and their ids by arguments.
     this.media = new Map();
     this.mediaIds = new Map();
+    // media.keep: each meeting's { keep, have, total, stalled }; a meeting without one has all its media here.
+    this.keeps = new Map();
+    // media.open with piece: audio ends at the next multiple of this many ms, as a segment from the bucket would; 0
+    // gives the whole range, as for audio on this computer.
+    this.pieceMs = 0;
+    // Where the recorded audio ends, in meeting ms: media.open cuts an audio range to it, as Voice does, and answers
+    // not_found from there on. null: the audio runs on past every range.
+    this.audioEndMs = null;
   }
 
   async listen(port = 0) {
@@ -332,6 +340,18 @@ const DEFAULTS = {
   'sync.pull'() {
     return {};
   },
+  // Voice fetches the frame images in the background; nothing here to fetch.
+  'media.prefetch'(args) {
+    if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    return {};
+  },
+  // Keeping a meeting downloads nothing here: a kept meeting has all of its media at once, unless a test set keeps.
+  'media.keep'(args) {
+    if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    const now = this.keeps.get(args.meeting) || { keep: false, have: 1000000, total: 1000000, stalled: false };
+    if (typeof args.keep === 'boolean') this.keeps.set(args.meeting, { ...now, keep: args.keep });
+    return { ...now, ...(this.keeps.get(args.meeting) || {}) };
+  },
   'meeting.get'(args) {
     const snap = this.snapshot(args.meeting);
     if (!snap) return { error: { code: 'not_found', message: 'No such meeting.' } };
@@ -392,9 +412,14 @@ const DEFAULTS = {
   // through Rukoo's polling. The same arguments keep their id; a frame ignores `end`.
   'media.open'(args) {
     if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
-    const file = syntheticMedia(args);
+    const audio = args.kind === 'audio' && Number.isInteger(args.end);
+    if (audio && this.audioEndMs !== null && args.start >= this.audioEndMs) return { error: { code: 'not_found', message: 'Nothing was recorded at that time.' } };
+    const end = audio && this.audioEndMs !== null ? Math.min(args.end, this.audioEndMs) : args.end;
+    const boundary = audio && args.piece === true && this.pieceMs > 0 ? (Math.floor(args.start / this.pieceMs) + 1) * this.pieceMs : null;
+    const cut = boundary !== null && boundary < end;
+    const file = syntheticMedia(audio ? { ...args, end: cut ? boundary : end } : args);
     if (file.error) return file;
-    const key = JSON.stringify([args.meeting, args.kind, args.start, args.kind === 'frame' || args.end === undefined ? null : args.end]);
+    const key = JSON.stringify([args.meeting, args.kind, args.start, args.kind === 'frame' || args.end === undefined ? null : args.end, args.piece === true]);
     const id = this.mediaIds.get(key);
     if (!id) {
       const media = `md-${b64u(16)}`;
@@ -404,7 +429,11 @@ const DEFAULTS = {
     }
     const prepared = this.media.get(id);
     prepared.ready = true;
-    return { media: id, ready: true, type: file.type, size: file.size, start: file.start, end: file.end };
+    const answer = { media: id, ready: true, type: file.type, size: file.size, start: file.start, end: file.end };
+    // more: the piece ended at a segment boundary and audio follows. When the asked range runs past the recording,
+    // the file ends with the recording and more is left out, as a real Voice does.
+    if (cut) answer.more = true;
+    return answer;
   },
   'media.read'(args) {
     const prepared = this.media.get(args.media);
@@ -480,4 +509,5 @@ async function startVoiceServer(options) {
   return new FakeVoice(options).listen();
 }
 
-module.exports = { FakeVoice, startVoiceServer, syntheticMedia };
+// DEFAULTS: what each command does unless a test sets its own handler, for a handler that changes some answers only.
+module.exports = { FakeVoice, startVoiceServer, syntheticMedia, DEFAULTS };

@@ -549,7 +549,24 @@ fn newer_text_a_crash_left_unnoted_is_noted_and_never_sent_back() {
             .iter()
             .any(|e| e.id == m.id && e.gen > gen))));
     let newer = manifest(&fake, &a.key(), &m.id).unwrap().gen;
-    // B crashed after the newer transcript was in place, before its version was noted.
+    // B crashed after the newer transcript was in place, before its version was noted. As in an
+    // install, the journal is there before the transcript moves: from then on B's worker leaves
+    // the meeting alone, once a scan that started before it is done.
+    let tmp = b.meetings().join(format!(".update-{}", m.id));
+    fs::create_dir_all(tmp.join("files")).unwrap();
+    let key = a.key();
+    let journal = serde_json::json!({
+        "paths": ["transcript.db"],
+        "manifest": manifest(&fake, &key, &m.id).unwrap(),
+        "manifestId": "f".repeat(64),
+        "mhash": voice_sync::names::meeting_hash(&key.name_key(), &m.id),
+        "target": config(&fake.endpoint()).target(),
+        "kid": key.kid(),
+        "transcriptDigest": voice_sync::digest::transcript_digest(&m.path("transcript.db")).unwrap(),
+    });
+    fs::write(tmp.join("install.json"), journal.to_string()).unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let before = puts(&fake).len();
     let _ = fs::remove_file(dir.join("transcript.db-wal"));
     let _ = fs::remove_file(dir.join("transcript.db-shm"));
     // On Windows not while B's sync still reads it.
@@ -565,20 +582,6 @@ fn newer_text_a_crash_left_unnoted_is_noted_and_never_sent_back() {
             [dir.join("transcript.db").to_str().unwrap()],
         )
         .unwrap();
-    let tmp = b.meetings().join(format!(".update-{}", m.id));
-    fs::create_dir_all(tmp.join("files")).unwrap();
-    let key = a.key();
-    let journal = serde_json::json!({
-        "paths": ["transcript.db"],
-        "manifest": manifest(&fake, &key, &m.id).unwrap(),
-        "manifestId": "f".repeat(64),
-        "mhash": voice_sync::names::meeting_hash(&key.name_key(), &m.id),
-        "target": config(&fake.endpoint()).target(),
-        "kid": key.kid(),
-        "transcriptDigest": voice_sync::digest::transcript_digest(&dir.join("transcript.db")).unwrap(),
-    });
-    fs::write(tmp.join("install.json"), journal.to_string()).unwrap();
-    let before = puts(&fake).len();
     // The worker's scans leave it alone meanwhile.
     std::thread::sleep(Duration::from_millis(800));
     b.sync.pull_now();
