@@ -366,9 +366,10 @@ class RunsBackend {
 // such as OpenClaw, so it is unique per trigger: the configured prefix and the trigger's id.
 //
 // Images go as image_url parts with data URLs, each after a text part with its label. A model or server that takes
-// no images refuses such a request; then the turn goes once more as text alone (prompt.plain), under a `user` of its
-// own, so a server that keeps sessions starts that one fresh too.
-const IMAGE_REFUSED = new Set([400, 413, 415, 422, 500]);
+// no images refuses such a request with one of IMAGE_REFUSED; then the turn goes once more as text alone
+// (prompt.plain), under a `user` of its own, so a server that keeps sessions starts that one fresh too. Both tries
+// share one timeout. A server error isn't among them: the first try may have run tools before it failed.
+const IMAGE_REFUSED = new Set([400, 413, 415, 422]);
 
 class OpenAiBackend {
   constructor(config) {
@@ -384,18 +385,19 @@ class OpenAiBackend {
   }
 
   async run(prompt, { id, signal } = {}) {
+    const deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs(this.config)), ...(signal ? [signal] : [])]);
     const images = Array.isArray(prompt.images) ? prompt.images : [];
-    if (!images.length || !prompt.plain) return this.complete(prompt, { id, signal });
+    if (!images.length || !prompt.plain) return this.complete(prompt, { id, deadline });
     try {
-      return await this.complete(prompt, { id, signal, images });
+      return await this.complete(prompt, { id, deadline, images });
     } catch (err) {
-      if (!(err instanceof BackendError && err.code === 'http' && IMAGE_REFUSED.has(err.status)) || (signal && signal.aborted)) throw err;
-      return this.complete(prompt.plain, { id: `${id}:text`, signal });
+      if (!(err instanceof BackendError && err.code === 'http' && IMAGE_REFUSED.has(err.status)) || deadline.aborted) throw err;
+      return this.complete(prompt.plain, { id: `${id}:text`, deadline });
     }
   }
 
-  async complete(prompt, { id, signal, images = [] } = {}) {
-    const deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs(this.config)), ...(signal ? [signal] : [])]);
+  // One request. deadline: the signal that ends it, the turn's timeout or the runner's stop.
+  async complete(prompt, { id, deadline, images = [] } = {}) {
     const user = `${String(this.config.user || 'rukoo-agent').trim()}:${id}`;
     const content = images.length
       ? [

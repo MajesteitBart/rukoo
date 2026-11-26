@@ -11,12 +11,11 @@
 // that its settings allow, with a reply in the message's thread. The server checks the same settings again and keeps
 // one reply per trigger, so a restart never posts twice.
 
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { Rukoo, RukooError, KeyRefused, uuidv7, retryAfter } = require('./rukoo');
 const { makeBackend, BackendError } = require('./backends');
-const { buildInput, cleanAnswer, convertMentions, splitReply, fileKind, imageType, isPdf, decodeText, FILE_TEXT_MAX, FILES_TEXT_MAX, IMAGE_MAX, IMAGES_MAX, IMAGES_BYTES, PDF_MAX } = require('./prompt');
+const { buildInput, cleanAnswer, convertMentions, splitReply, fileKind, imageType, isPdf, decodeText, escapedLength, escapedPrefix, FILE_TEXT_MAX, FILES_TEXT_MAX, IMAGE_MAX, IMAGES_MAX, IMAGES_BYTES, PDF_MAX, CONTEXT_SLACK } = require('./prompt');
 
 const DEFAULT_KEY_ENV = 'RUKOO_AGENT_KEY';
 // Version 2 keeps an answer being posted per channel; version 1 kept one for the whole workspace.
@@ -725,69 +724,87 @@ class Runner {
   // ---- Files ----
 
   // What comes of the files of the trigger and its context: Map of event id → one view per attachment (prompt.js
-  // fileNote). The trigger's files come first, within the chat panel's limits: each file's text up to FILE_TEXT_MAX,
-  // and all files' text up to FILES_TEXT_MAX or maxChars, whichever is smaller. Then those of the context messages the
-  // input keeps, the thread's first message and then the newest first, while the input stays within maxChars. Images go
-  // only to a backend that takes them (its images property), up to IMAGE_MAX each and IMAGES_MAX or IMAGES_BYTES in
-  // all. A file that can't go along keeps its name, type and size, and the reason.
+  // fileNote). The input stays within maxChars as the runtime gets it, with every file's text escaped and wrapped in
+  // its block. The trigger's files come first, in the room the input leaves with the trigger and no earlier message:
+  // each file's text up to FILE_TEXT_MAX, and all files' text up to FILES_TEXT_MAX. Then those of the context messages
+  // the input keeps, in the order buildInput keeps them (the thread's first message, then the newest first), each in
+  // the room the messages before it in that order leave. Images go only to a backend that takes them (its images
+  // property), up to IMAGE_MAX each and IMAGES_MAX or IMAGES_BYTES in all. A file that can't go along keeps its name,
+  // type and size, and the reason.
   async files(c, params) {
     const { trigger, context, threadStart } = params;
+    const maxChars = this.config.context.maxChars;
     const views = new Map();
     for (const ev of [trigger, ...context]) {
       const list = Array.isArray(ev.attachments) ? ev.attachments : [];
       if (list.length) views.set(ev.id, list.map((a) => ({ id: a && a.id, name: String((a && a.name) || ''), type: String((a && a.type) || ''), size: Number(a && a.size) || 0, kind: fileKind(a && a.name, a && a.type), state: 'other' })));
     }
     if (!views.size) return views;
-    const budget = { text: Math.min(FILES_TEXT_MAX, this.config.context.maxChars), images: 0, imageBytes: 0 };
-    if (views.has(trigger.id)) await this.fetchFiles(c, views.get(trigger.id), budget);
-    // The context the input keeps with the trigger's files in it, and the room left for the text of its own.
-    const base = buildInput({ ...params, files: views });
-    budget.text = Math.min(budget.text, Math.max(0, this.config.context.maxChars - base.input.length));
-    const kept = new Set(base.kept);
+    const budget = { text: FILES_TEXT_MAX, images: 0, imageBytes: 0 };
+    // maxChars 0 keeps no earlier message: the input as it reads when the trigger's files leave the context no room.
+    if (views.has(trigger.id)) await this.fetchFiles(c, views.get(trigger.id), budget, () => maxChars - buildInput({ ...params, files: views, maxChars: 0 }).input.length);
+    const kept = new Set(buildInput({ ...params, files: views }).kept);
     const order = [];
     if (threadStart && context.length && context[0].id === threadStart) order.push(context[0]);
     for (let i = context.length - 1; i >= 0; i--) if (!order.includes(context[i])) order.push(context[i]);
-    for (const ev of order) if (kept.has(ev.id) && views.has(ev.id)) await this.fetchFiles(c, views.get(ev.id), budget);
+    // buildInput keeps a context message while its own count of the input, which runs up to CONTEXT_SLACK characters
+    // over the input's length, stays within maxChars. So a message's files get the room that the input with the
+    // messages before it in the order leaves, less CONTEXT_SLACK.
+    const upTo = new Set();
+    for (const ev of order) {
+      upTo.add(ev.id);
+      if (!kept.has(ev.id) || !views.has(ev.id)) continue;
+      const room = () => maxChars - CONTEXT_SLACK - buildInput({ ...params, context: context.filter((e) => upTo.has(e.id)), files: views }).input.length;
+      await this.fetchFiles(c, views.get(ev.id), budget, room);
+    }
     return views;
   }
 
-  // Downloads what of each file can go along, and says what came of it in its state: text, pdf-text, image, or why
-  // not (prompt.js fileNote). A download that fails leaves the file by its name ('failed'); only a key that stopped
-  // working, or the runner's stop, ends the turn.
-  async fetchFiles(c, list, budget) {
+  // Downloads what of each file of one message can go along, and says what came of it in its state: text, pdf-text,
+  // image, or why not (prompt.js fileNote). room(): how many characters the input has left as it is now, which a file's
+  // text takes escaped. Once the message's files are done, the text of its last files is cut until room() is no longer
+  // below 0, since a file that went by its name can take more of the input than it did before. A download that fails
+  // leaves the file by its name ('failed'); only a key that stopped working, or the runner's stop, ends the turn.
+  async fetchFiles(c, list, budget, room) {
     const signal = this.abort.signal;
     const takesImages = Boolean(this.backend && this.backend.images === true);
     for (const f of list) {
       if (this.stopped) throw new Error('Stopped');
       try {
         if (f.kind === 'text') {
-          const room = Math.min(FILE_TEXT_MAX, budget.text);
-          if (room <= 0) {
+          const chars = Math.min(FILE_TEXT_MAX, budget.text);
+          // The room with the file's note and block in it, as for a file that is cut, the longest note.
+          const space = chars > 0 ? roomWith(f, { state: 'text', text: '', truncated: true }, room) : 0;
+          if (space <= 0) {
             f.state = 'left-out';
             continue;
           }
-          // Enough bytes for room characters in any encoding the runner reads, and a byte order mark.
-          const got = await this.download(c, f, room * 4 + 4);
+          // Enough bytes for that many characters in any encoding the runner reads, and a byte order mark.
+          const got = await this.download(c, f, Math.min(chars, space) * 4 + 4);
           const text = decodeText(got.bytes, { partial: got.over });
           if (text.slice(0, 8192).includes('\u0000')) {
             f.state = 'binary';
             continue;
           }
-          f.text = text.slice(0, room);
-          f.truncated = got.over || text.length > room;
+          f.text = escapedPrefix(text, space, chars);
+          f.truncated = got.over || f.text.length < text.length;
           f.state = 'text';
           budget.text -= f.text.length;
         } else if (f.kind === 'pdf') {
           if (!this.readPdf) f.state = 'no-pdf-reader';
           else if (f.size > PDF_MAX) f.state = 'pdf-too-large';
-          else if (Math.min(FILE_TEXT_MAX, budget.text) <= 0) f.state = 'left-out';
-          else await this.readPdfFile(c, f, budget);
+          else {
+            const chars = Math.min(FILE_TEXT_MAX, budget.text);
+            const space = chars > 0 ? roomWith(f, { state: 'pdf-text', text: '', truncated: true, partial: true }, room) : 0;
+            if (space <= 0) f.state = 'left-out';
+            else await this.readPdfFile(c, f, budget, Math.min(chars, space), space);
+          }
         } else if (f.kind === 'image') {
           if (!takesImages) f.state = 'no-images';
           else if (f.size > IMAGE_MAX) f.state = 'image-too-large';
           else if (budget.images >= IMAGES_MAX || budget.imageBytes + f.size > IMAGES_BYTES) f.state = 'too-many-images';
           else {
-            const got = await this.download(c, f, IMAGE_MAX);
+            const got = await this.download(c, f, IMAGE_MAX, { whole: true });
             const type = got.over ? null : imageType(got.bytes);
             if (got.over) f.state = 'image-too-large';
             else if (!type) f.state = 'not-image';
@@ -803,27 +820,29 @@ class Runner {
       } catch (err) {
         if (err instanceof KeyRefused || this.stopped || (signal && signal.aborted)) throw err;
         f.state = 'failed';
-        this.log('info', `Could not download a file of a message in ${c}: ${err instanceof RukooError ? (err.network ? 'no answer' : `HTTP ${err.status}`) : 'it did not match'}`);
+        delete f.text;
+        this.log('info', `Could not download a file of a message in ${c}: ${downloadFailure(err)}`);
       }
     }
+    fitFiles(list, budget, room);
   }
 
-  async readPdfFile(c, f, budget) {
-    const room = Math.min(FILE_TEXT_MAX, budget.text);
-    const got = await this.download(c, f, PDF_MAX);
+  // chars: the most characters of the PDF's text that go along; space: the most they may take escaped.
+  async readPdfFile(c, f, budget, chars, space) {
+    const got = await this.download(c, f, PDF_MAX, { whole: true });
     if (got.over) return void (f.state = 'pdf-too-large');
     if (!isPdf(got.bytes)) return void (f.state = 'binary');
     let read;
     try {
-      read = await this.readPdf(got.bytes, { maxChars: room, signal: this.abort.signal });
+      read = await this.readPdf(got.bytes, { maxChars: chars, signal: this.abort.signal });
     } catch {
       read = null;
     }
     if (this.stopped) throw new Error('Stopped');
     const text = read && typeof read.text === 'string' ? read.text : '';
     if (text.trim()) {
-      f.text = text.slice(0, room);
-      f.truncated = Boolean(read.truncated) || text.length > room;
+      f.text = escapedPrefix(text, space, chars);
+      f.truncated = Boolean(read.truncated) || f.text.length < text.length;
       f.partial = read.partial === true;
       f.state = 'pdf-text';
       budget.text -= f.text.length;
@@ -832,17 +851,23 @@ class Runner {
     else f.state = 'pdf-empty';
   }
 
-  // A file's bytes, at most max of them: { bytes, over }. The link comes with the agent's key; the bytes come from the
-  // link alone. A whole file must have the SHA-256 the server knows it by.
-  async download(c, f, max) {
-    if (typeof f.id !== 'string' || !f.id) throw new Error('A file without an id');
+  // The first keep bytes of a file: { bytes, over }, over when the file holds more. The link comes with the agent's key
+  // and must name the file's size and SHA-256; the bytes come from the link alone, and the whole file goes through
+  // SHA-256 to check both, also when only its start goes along. whole: only the whole file is any use (an image, a
+  // PDF), so one larger than keep isn't downloaded. A link without a size or digest, or bytes that don't match them,
+  // throw FileRefused, and the file goes by its name.
+  async download(c, f, keep, { whole = false } = {}) {
+    if (typeof f.id !== 'string' || !f.id) throw new FileRefused('it has no id');
     const link = await this.api.fileLink(c, f.id, { signal: this.abort.signal });
-    const got = await this.api.fetchFile(link && link.url, max, { signal: this.abort.signal });
-    if (!got.over && link && typeof link.sha256 === 'string' && /^[0-9a-f]{64}$/.test(link.sha256)) {
-      const sum = crypto.createHash('sha256').update(got.bytes).digest('hex');
-      if (sum !== link.sha256) throw new Error('The file did not match its SHA-256');
-    }
-    return got;
+    const size = link && link.size;
+    const sha256 = link && link.sha256;
+    if (!link || typeof link.url !== 'string' || typeof sha256 !== 'string' || !SHA256.test(sha256) || !Number.isSafeInteger(size) || size < 0) throw new FileRefused('the link named no size or SHA-256');
+    if (Number.isSafeInteger(this.api.fileLimit) && size > this.api.fileLimit) throw new FileRefused('the link named a size larger than the server takes');
+    if (whole && size > keep) return { bytes: Buffer.alloc(0), over: true };
+    const got = await this.api.fetchFile(link.url, { keep, limit: size, signal: this.abort.signal });
+    if (got.over || got.size !== size) throw new FileRefused('it did not match its size');
+    if (got.sha256 !== sha256) throw new FileRefused('it did not match its SHA-256');
+    return { bytes: got.bytes, over: size > keep };
   }
 
   // ---- Checking ----
@@ -1046,6 +1071,63 @@ class Runner {
       if (this.socket) this.socket.close(1000);
     } catch {}
     this.onStop();
+  }
+}
+
+// ---- Downloads ----
+
+const SHA256 = /^[0-9a-f]{64}$/;
+
+// A file the runner won't pass on: the link named no size or digest, or the bytes didn't match them. reason: the
+// runner's own words for the log.
+class FileRefused extends Error {
+  constructor(reason) {
+    super(`The file was refused: ${reason}`);
+    this.reason = reason;
+  }
+}
+
+// What the log says of a download that failed: the runner's own words and at most an HTTP status, never what a server
+// wrote.
+function downloadFailure(err) {
+  if (err instanceof FileRefused) return err.reason;
+  if (err instanceof RukooError) return err.network ? 'no answer' : err.refused ? 'the link points where the runner does not download from' : `HTTP ${err.status}`;
+  return 'it failed';
+}
+
+// room() while f is as probe says, and then f as it was.
+function roomWith(f, probe, room) {
+  const was = {};
+  for (const k of Object.keys(probe)) was[k] = f[k];
+  Object.assign(f, probe);
+  try {
+    return room();
+  } finally {
+    for (const [k, v] of Object.entries(was)) {
+      if (v === undefined) delete f[k];
+      else f[k] = v;
+    }
+  }
+}
+
+// Cuts the text of a message's files, the last one first, until room() is no longer below 0: each cut takes off as
+// many characters as the input is over, counted escaped, and a file left without text goes as left out. What is cut
+// goes back to the budget.
+function fitFiles(list, budget, room) {
+  for (let over = -room(); over > 0; over = -room()) {
+    const f = list.findLast((x) => typeof x.text === 'string' && (x.state === 'text' || x.state === 'pdf-text'));
+    if (!f) return;
+    const before = f.text.length;
+    const keep = escapedLength(f.text) - over;
+    f.text = keep > 0 ? escapedPrefix(f.text, keep) : '';
+    f.truncated = true;
+    if (!f.text) {
+      delete f.text;
+      delete f.truncated;
+      delete f.partial;
+      f.state = 'left-out';
+    }
+    budget.text += before - (f.text ? f.text.length : 0);
   }
 }
 

@@ -498,7 +498,7 @@ async function runWith(key, ws, backend, { readPdf, maxChars } = {}) {
   return { stats, lines, runner };
 }
 
-test("the files of the message to answer share the chat panel's limits: 20,000 characters each, and maxChars together", async (t) => {
+test("the files of the message to answer share the chat panel's limits: 20,000 characters each, and maxChars for the whole input", async (t) => {
   if (skipWithoutServer(t)) return;
   const { bart, ws, key, post } = await room();
   const files = ['a', 'b', 'c'].map((c) => ({ name: `${c}.txt`, type: 'text/plain', bytes: Buffer.from(c.repeat(25000)) }));
@@ -507,9 +507,12 @@ test("the files of the message to answer share the chat panel's limits: 20,000 c
   const { stats } = await runWith(key, ws, rec.backend);
   assert.equal(stats.answered, 1);
   const input = rec.prompts[0].input;
+  assert.ok(input.length <= 30000, `${input.length} characters`);
   assert.ok(input.includes(`<unsafe_content source="team chat file">\n${'a'.repeat(20000)}\n</unsafe_content>`), 'the first file: its first 20,000 characters');
-  assert.ok(input.includes(`<unsafe_content source="team chat file">\n${'b'.repeat(10000)}\n</unsafe_content>`), 'the second: what is left of 30,000');
+  const second = input.match(/<unsafe_content source="team chat file">\n(b+)\n<\/unsafe_content>/);
+  assert.ok(second && second[1].length > 8000 && second[1].length < 10000, `the second: what is left of the input's 30,000 characters (${second && second[1].length})`);
   assert.match(input, /a\.txt<\/unsafe_content> \(text\/plain, 24 KB\)\. The start of its text, the rest cut/);
+  assert.match(input, /b\.txt<\/unsafe_content> \(text\/plain, 24 KB\)\. The start of its text, the rest cut/);
   assert.match(input, /c\.txt<\/unsafe_content> \(text\/plain, 24 KB\)\. Its text was left out to keep this input short/);
   assert.ok(!input.includes('ccc'));
 });
@@ -577,85 +580,328 @@ test('a key someone posted in the message to answer never reaches the backend', 
   assert.ok(rec.prompts[0].input.includes('its key is [agent key removed]'));
 });
 
-// ---- Downloads that fail, from memory ----
+// ---- Downloads, from memory ----
 
-// The workspace API answering from memory: one channel, one mention with one text file. fileLink(c, f) is the test's.
-function memoryApi(fileLink) {
+// The workspace API answering from memory: one channel, a mention in it with attachments, and the messages before it
+// (context, oldest first). files: Map of file id → { bytes, served?, link? }: fileLink answers link, by default
+// { url, size, sha256 } of bytes, and the link serves served, by default bytes. fetchFile keeps to the contract of
+// rukoo.js fetchFile: what is served goes whole through SHA-256 up to limit, and the first keep bytes stay. fileLink
+// replaces the whole of fileLink.
+function memoryApi({ attachments = [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: 5 }], context = [], files = new Map([['f_1', { bytes: Buffer.from('hello') }]]), fileLink = null } = {}) {
   const me = { id: `u_${'M'.repeat(22)}`, name: 'Clark', sponsor: `u_${'S'.repeat(22)}`, answers: 'everyone', agents: false, members: [] };
-  const trigger = { seq: 1, id: 'e_1', kind: 'message.posted', actor: me.sponsor, text: '@Clark read it', mentions: [{ actor: me.id }], attachments: [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: 5 }] };
+  const other = `u_${'O'.repeat(22)}`;
+  const earlier = context.map((e, i) => ({ seq: i + 1, id: `e_${i + 1}`, kind: 'message.posted', actor: other, text: '', mentions: [], attachments: [], ...e }));
+  const trigger = { seq: earlier.length + 1, id: `e_${earlier.length + 1}`, kind: 'message.posted', actor: me.sponsor, text: '@Clark read it', mentions: [{ actor: me.id }], attachments };
+  const all = [...earlier, trigger];
   const posted = [];
+  const served = [];
   return {
     posted,
+    served,
     workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA',
     info: async () => ({ workspace: { capabilities: ['agents'], agents: { depth: 3 } } }),
     workspaceInfo: async () => ({ workspace: { id: 'w_AAAAAAAAAAAAAAAAAAAAAA', name: 'Acme', generation: 1, time: Date.now() } }),
     me: async () => me,
-    members: async () => [{ id: me.sponsor, name: 'Olga', kind: 'human', state: 'active' }],
-    changes: async () => ({ changes: [{ conversation: 'c_1', kind: 'channel', grant: 1, head: 1, read: 0, mentions: 1 }], evictions: [], next: 'n1', more: false }),
-    events: async (c, opts) => (opts.before !== undefined ? { events: [], more: false } : { events: [trigger], more: false }),
-    channelMembers: async () => [{ member: me.sponsor }],
-    read: async () => ({ read: 1 }),
-    post: async (c, body) => (posted.push(body), { status: 201, body: { messageId: 'e_2', seq: 2 }, headers: new Map() }),
-    fileLink,
-    fetchFile: async () => ({ bytes: Buffer.from('hello'), over: false })
+    members: async () => [
+      { id: me.sponsor, name: 'Olga', kind: 'human', state: 'active' },
+      { id: other, name: 'Eve', kind: 'human', state: 'active' }
+    ],
+    changes: async () => ({ changes: [{ conversation: 'c_1', kind: 'channel', grant: 1, head: trigger.seq, read: trigger.seq - 1, mentions: 1 }], evictions: [], next: 'n1', more: false }),
+    events: async (c, opts) => (opts.before !== undefined ? { events: all.filter((e) => e.seq < opts.before), more: false } : { events: all.filter((e) => e.seq > (opts.after || 0)), more: false }),
+    channelMembers: async () => [{ member: me.sponsor }, { member: other }],
+    read: async (c, seq) => ({ read: seq }),
+    post: async (c, body) => (posted.push(body), { status: 201, body: { messageId: 'e_99', seq: 99 }, headers: new Map() }),
+    fileLink:
+      fileLink ||
+      (async (c, id) => {
+        const f = files.get(id);
+        if (!f) throw new RukooError(404, { error: 'not_found' });
+        return f.link || { url: `https://files.example/${id}`, size: f.bytes.length, sha256: sha(f.bytes) };
+      }),
+    fetchFile: async (url, { keep = 0, limit = Infinity } = {}) => {
+      const f = files.get(String(url).split('/').pop());
+      const body = f.served || f.bytes;
+      served.push({ url, keep, limit });
+      if (body.length > limit) return { bytes: body.subarray(0, keep), size: body.length, sha256: null, over: true };
+      return { bytes: body.subarray(0, keep), size: body.length, sha256: sha(body), over: false };
+    }
   };
 }
 
-function memoryRunner(api, backend) {
+function memoryRunner(api, backend, { maxChars, channelMessages = 0, log = () => {} } = {}) {
   const key = `rka_${'M'.repeat(22)}.${'b'.repeat(43)}`;
-  const config = normalizeConfig({ server: 'https://rukoo.example', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: ['x'] }, state: false, context: { channelMessages: 0 } }, { env: {} });
-  const runner = new Runner(config, { log: () => {}, backend });
+  const config = normalizeConfig({ server: 'https://rukoo.example', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: ['x'] }, state: false, context: { channelMessages, ...(maxChars ? { maxChars } : {}) } }, { env: {} });
+  const runner = new Runner(config, { log, backend });
   runner.api = api;
   return runner;
 }
 
 test("a file that can't be downloaded goes by its name and the turn goes on; a key that stopped working ends it", async () => {
   const rec = recording();
-  const gone = memoryApi(async () => {
-    throw new RukooError(404, { error: 'not_found' });
+  const gone = memoryApi({
+    fileLink: async () => {
+      throw new RukooError(404, { error: 'not_found' });
+    }
   });
   const stats = await memoryRunner(gone, rec.backend).once();
   assert.equal(stats.answered, 1);
   assert.match(rec.prompts[0].input, /a\.txt<\/unsafe_content> \(text\/plain, 5 B\)\. The runner couldn't download it, so you can't open it\./);
 
   const refusedRec = recording();
-  const refused = memoryApi(async () => {
-    throw new KeyRefused(401, { scope: 'agent' });
+  const refused = memoryApi({
+    fileLink: async () => {
+      throw new KeyRefused(401, { scope: 'agent' });
+    }
   });
   await assert.rejects(memoryRunner(refused, refusedRec.backend).once(), (err) => err instanceof KeyRefused);
   assert.equal(refusedRec.prompts.length, 0, 'no turn with a key that stopped working');
   assert.equal(refused.posted.length, 0);
-
-  // A file whose bytes don't match the SHA-256 the server knows goes by its name too.
-  const changedRec = recording();
-  const changed = memoryApi(async () => ({ url: 'https://files.example/x', sha256: '0'.repeat(64) }));
-  await memoryRunner(changed, changedRec.backend).once();
-  assert.match(changedRec.prompts[0].input, /a\.txt<\/unsafe_content> \(text\/plain, 5 B\)\. The runner couldn't download it/);
 });
 
-test("a download link gets no key, stops at its limit, and only https or this computer's or the server's own http", async () => {
-  const seen = [];
+// RUK-294 review, P2: the runner checked a file's SHA-256 only when the link named one and only for a whole file, never
+// its size, and passed the start of a longer file on unchecked.
+test('a file goes along only when its link names its size and SHA-256 and the whole file matches both, also when only its start goes', async () => {
+  const bytes = Buffer.from('a'.repeat(30000));
+  const url = 'https://files.example/f_1';
+  const cases = [
+    ['a link without a digest', { link: { url, size: bytes.length } }, 'the link named no size or SHA-256'],
+    ['a link without a size', { link: { url, sha256: sha(bytes) } }, 'the link named no size or SHA-256'],
+    ['a digest in capitals', { link: { url, size: bytes.length, sha256: sha(bytes).toUpperCase() } }, 'the link named no size or SHA-256'],
+    ['a size that is no whole number', { link: { url, size: '30000', sha256: sha(bytes) } }, 'the link named no size or SHA-256'],
+    ['a file whose end is not what its digest says', { served: Buffer.from(`${'a'.repeat(29999)}b`) }, 'it did not match its SHA-256'],
+    ['a file longer than its size', { served: Buffer.concat([bytes, Buffer.from('a')]) }, 'it did not match its size'],
+    ['a file shorter than its size', { served: bytes.subarray(0, 29000) }, 'it did not match its size']
+  ];
+  for (const [what, file, reason] of cases) {
+    const rec = recording();
+    const lines = [];
+    const api = memoryApi({ attachments: [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: bytes.length }], files: new Map([['f_1', { bytes, ...file }]]) });
+    await memoryRunner(api, rec.backend, { log: (level, message) => lines.push(message) }).once();
+    assert.match(rec.prompts[0].input, /a\.txt<\/unsafe_content> \(text\/plain, 29 KB\)\. The runner couldn't download it, so you can't open it\./, what);
+    assert.ok(!rec.prompts[0].input.includes('aaaa'), `${what}: none of its text`);
+    assert.ok(lines.includes(`Could not download a file of a message in c_1: ${reason}`), `${what}: ${lines.join(' | ')}`);
+  }
+
+  // One that matches: the whole file is read and checked, and its start goes along.
+  const rec = recording();
+  const api = memoryApi({ attachments: [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: bytes.length }], files: new Map([['f_1', { bytes }]]) });
+  await memoryRunner(api, rec.backend).once();
+  assert.ok(rec.prompts[0].input.includes(`<unsafe_content source="team chat file">\n${'a'.repeat(20000)}\n</unsafe_content>`));
+  assert.match(rec.prompts[0].input, /The start of its text, the rest cut/);
+  assert.deepEqual(api.served, [{ url, keep: 80004, limit: 30000 }], 'read up to its size, the first 80,004 bytes kept');
+
+  // An image larger than the runner sends isn't downloaded at all.
+  const big = Buffer.alloc(4 * 1024 * 1024, 1);
+  const imageRec = recording({ images: true });
+  const imageApi = memoryApi({ attachments: [{ id: 'f_1', name: 'shot.png', type: 'image/png', size: 100 }], files: new Map([['f_1', { bytes: big }]]) });
+  await memoryRunner(imageApi, imageRec.backend).once();
+  assert.match(imageRec.prompts[0].input, /shot\.png<\/unsafe_content> \(image\/png, 100 B\)\. An image larger than 3\.8 MB/);
+  assert.deepEqual(imageApi.served, []);
+});
+
+// RUK-294 review, P2: with maxChars 2,000, a text file of 2,000 characters on the message to answer made an input of
+// 3,040 characters, and 11,040 when the file was all &.
+test("the input stays within maxChars as the runtime gets it, a file's text counted escaped and in its block", async () => {
+  for (const fill of ['x', '&', '<']) {
+    const bytes = Buffer.from(fill.repeat(2000));
+    const rec = recording();
+    const api = memoryApi({ attachments: [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: 2000 }], files: new Map([['f_1', { bytes }]]) });
+    await memoryRunner(api, rec.backend, { maxChars: 2000 }).once();
+    const input = rec.prompts[0].input;
+    assert.ok(input.length <= 2000, `${fill}: ${input.length} characters`);
+    const escaped = prompt.escapeText(fill);
+    assert.match(input, new RegExp(`a\\.txt</unsafe_content> \\(text/plain, 2 KB\\)\\. The start of its text, the rest cut to keep this short:\\n<unsafe_content source="team chat file">\\n(${escaped})+\\n</unsafe_content>`), fill);
+    assert.ok(input.length > 1990, `${fill}: the file takes the room there is (${input.length})`);
+  }
+
+  // A second file, left out for want of room, takes more of the input with that line than it did before it was tried:
+  // the first file's text is cut to make room for it.
+  const two = recording();
+  const twoApi = memoryApi({
+    attachments: [
+      { id: 'f_1', name: 'a.txt', type: 'text/plain', size: 2000 },
+      { id: 'f_2', name: 'b.txt', type: 'text/plain', size: 10 }
+    ],
+    files: new Map([['f_1', { bytes: Buffer.from('&'.repeat(2000)) }]])
+  });
+  await memoryRunner(twoApi, two.backend, { maxChars: 2000 }).once();
+  assert.ok(two.prompts[0].input.length <= 2000, `two files: ${two.prompts[0].input.length}`);
+  assert.match(two.prompts[0].input, /b\.txt<\/unsafe_content> \(text\/plain, 10 B\)\. Its text was left out to keep this input short/);
+  assert.match(two.prompts[0].input, /a\.txt<\/unsafe_content> \(text\/plain, 2 KB\)\. The start of its text/);
+
+  // A file in an earlier message: within maxChars too, with the start of its text.
+  const ctx = recording();
+  const ctxApi = memoryApi({
+    attachments: [],
+    context: [{ text: 'the notes', attachments: [{ id: 'f_1', name: 'notes.txt', type: 'text/plain', size: 3000 }] }],
+    files: new Map([['f_1', { bytes: Buffer.from('&<'.repeat(1500)) }]])
+  });
+  await memoryRunner(ctxApi, ctx.backend, { maxChars: 2000, channelMessages: 5 }).once();
+  const input = ctx.prompts[0].input;
+  assert.ok(input.length <= 2000, `context file: ${input.length}`);
+  assert.match(input, /notes\.txt<\/unsafe_content> \(text\/plain, 3 KB\)\. The start of its text, the rest cut to keep this short:\n<unsafe_content source="team chat file">\n(&amp;&lt;)+/);
+  assert.deepEqual(ctx.prompts[0].kept, ['e_1']);
+});
+
+test('text is cut where it fits once escaped, never inside a surrogate pair', () => {
+  assert.equal(prompt.escapedLength('a&<b'), 1 + 5 + 4 + 1);
+  assert.equal(prompt.escapedPrefix('a&<b', 6), 'a&');
+  assert.equal(prompt.escapedPrefix('a&<b', 5), 'a');
+  assert.equal(prompt.escapedPrefix('ab😀c', 3), 'ab');
+  assert.equal(prompt.escapedPrefix('ab😀c', 4), 'ab😀');
+  assert.equal(prompt.escapedPrefix('abcdef', 100, 3), 'abc');
+});
+
+// ---- Downloads over HTTP ----
+
+// A server on 127.0.0.1 that writes down each request in hits; handler(req, res) answers and returns true, or the
+// server answers 5,000 bytes.
+function listen(name, hits, handler = () => false) {
   const srv = http.createServer((req, res) => {
-    seen.push({ url: req.url, auth: req.headers.authorization || null });
-    if (req.url === '/redirect') return res.writeHead(302, { location: '/big' }).end();
+    hits.push({ at: name, url: req.url, auth: req.headers.authorization || null });
+    if (handler(req, res)) return;
     res.writeHead(200, { 'content-type': 'application/octet-stream' }).end(Buffer.alloc(5000, 0x61));
   });
-  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const close = () =>
+    new Promise((r) => {
+      srv.close(r);
+      srv.closeAllConnections();
+    });
+  return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${srv.address().port}`, close })));
+}
+
+test('a download is read whole through SHA-256, keeps only its start, and stops past its size; it gets no key and no redirect', async () => {
+  const hits = [];
+  const srv = await listen('server', hits, (req, res) => {
+    if (req.url !== '/redirect') return false;
+    res.writeHead(302, { location: '/big' }).end();
+    return true;
+  });
   try {
-    const base = `http://127.0.0.1:${srv.address().port}`;
-    const api = new Rukoo({ server: 'https://rukoo.example', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key: `rka_${'M'.repeat(22)}.${'b'.repeat(43)}` });
-    const got = await api.fetchFile(`${base}/big`, 1000);
-    assert.equal(got.over, true);
-    assert.equal(got.bytes.length, 1000);
-    assert.deepEqual(seen, [{ url: '/big', auth: null }]);
-    const whole = await api.fetchFile(`${base}/big`, 10000);
-    assert.equal(whole.over, false);
-    assert.equal(whole.bytes.length, 5000);
-    await assert.rejects(api.fetchFile(`${base}/redirect`, 10000), RukooError);
-    for (const link of ['http://203.0.113.9/f', 'ftp://files.example/f', 'https://user:pw@files.example/f', 'not a link']) {
-      await assert.rejects(api.fetchFile(link, 10), (err) => err instanceof RukooError && !err.network, link);
-    }
+    const api = new Rukoo({ server: srv.url, workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key: `rka_${'M'.repeat(22)}.${'b'.repeat(43)}` });
+    const whole = Buffer.alloc(5000, 0x61);
+    const got = await api.fetchFile(`${srv.url}/big`, { keep: 1000, limit: 5000 });
+    assert.deepEqual([got.bytes.length, got.size, got.sha256, got.over], [1000, 5000, sha(whole), false]);
+    assert.ok(got.bytes.equals(whole.subarray(0, 1000)));
+    const past = await api.fetchFile(`${srv.url}/big`, { keep: 10, limit: 4000 });
+    assert.equal(past.over, true);
+    assert.equal(past.sha256, null);
+    await assert.rejects(api.fetchFile(`${srv.url}/redirect`, { keep: 10, limit: 10000 }), RukooError);
+    assert.ok(hits.every((h) => h.auth === null), 'no key with a download');
   } finally {
-    srv.close();
+    await srv.close();
+  }
+});
+
+// RUK-294 review, P1: the runner followed a link to any https address and to plain http on this computer, so a server
+// could point it at another host or a service on the runner's computer.
+test("a download link goes only to the server's own origin or the files origin its /v1/info names; plain http to the files origin needs allowHttp", async () => {
+  const hits = [];
+  let filesOrigin = null;
+  const files = await listen('files', hits);
+  const other = await listen('other', hits);
+  const own = await listen('server', hits, (req, res) => {
+    if (req.url !== '/v1/info') return false;
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ workspace: { versions: [1, 2], files: { maxBytes: 1000000, origin: filesOrigin } } }));
+    return true;
+  });
+  const key = `rka_${'M'.repeat(22)}.${'b'.repeat(43)}`;
+  const refused = (err) => err instanceof RukooError && err.refused === true && !err.network;
+  try {
+    filesOrigin = files.url;
+    const api = new Rukoo({ server: own.url, workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key });
+    // Before /v1/info named it, the files origin is like any other.
+    await assert.rejects(api.fetchFile(`${files.url}/f`, { keep: 10, limit: 5000 }), refused);
+    await api.info();
+    assert.equal(api.filesOrigin, files.url);
+    assert.equal(api.fileLimit, 1000000);
+    // The server's own origin over plain http: it gets the key already.
+    assert.equal((await api.fetchFile(`${own.url}/f`, { keep: 10, limit: 5000 })).size, 5000);
+    // The files origin over plain http only with allowHttp.
+    await assert.rejects(api.fetchFile(`${files.url}/f`, { keep: 10, limit: 5000 }), refused);
+    const lax = new Rukoo({ server: own.url, workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, allowHttp: true });
+    await lax.info();
+    assert.equal((await lax.fetchFile(`${files.url}/f`, { keep: 10, limit: 5000 })).size, 5000);
+    // Anything else, on this computer or not, https or not, also with allowHttp.
+    for (const link of [`${other.url}/f`, 'http://localhost:1/f', 'https://unrelated.example/f', 'http://203.0.113.9/f', 'ftp://files.example/f', `http://user:pw@${new URL(own.url).host}/f`, 'not a link']) {
+      await assert.rejects(api.fetchFile(link, { keep: 10, limit: 5000 }), refused, link);
+      await assert.rejects(lax.fetchFile(link, { keep: 10, limit: 5000 }), refused, link);
+    }
+    assert.deepEqual(
+      hits.filter((h) => h.url !== '/v1/info').map((h) => h.at),
+      ['server', 'files'],
+      'only the two downloads that were allowed reached a server'
+    );
+    // An https files origin takes https links without allowHttp; an origin that is no address names none.
+    filesOrigin = 'https://files.rukoo.example/ignored/path';
+    await api.info();
+    assert.equal(api.filesOrigin, 'https://files.rukoo.example');
+    assert.equal(api.allowedLink(new URL('https://files.rukoo.example/v1/f?sig=1')), true);
+    assert.equal(api.allowedLink(new URL('http://files.rukoo.example/v1/f')), false);
+    assert.equal(api.allowedLink(new URL('https://rukoo.example/v1/f')), false);
+    filesOrigin = 'javascript:alert(1)';
+    await api.info();
+    assert.equal(api.filesOrigin, null);
+  } finally {
+    await Promise.all([own.close(), files.close(), other.close()]);
+  }
+});
+
+// ---- Chat Completions with images ----
+
+// The prompt of a mention with one image, which openai sends as an image part.
+function imagePrompt() {
+  const trigger = ev(1, 'u_sender', '@Clark look', { attachments: [{ id: 'f_1', name: 'one.png', type: 'image/png', size: 67 }] });
+  return prompt.buildInput({ ...place, trigger, files: new Map([['e_1', [view('one.png', 'image/png', { state: 'image', image: { type: 'image/png', data: PNG } })]]]) });
+}
+const hasImage = (body) => body.messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+
+// RUK-294 review, P2: a 500 to the request with images was sent again as text alone, though the first try may have run
+// tools; and the second try got a timeout of its own.
+test('openai: a server error to the turn with images is not tried again, and the text-only try shares the one timeout', async () => {
+  const failing = await fakeHttp((req, body, res) => res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'boom' } })));
+  try {
+    const backend = backends.makeBackend({ type: 'openai', url: failing.url, timeout: 10 });
+    await assert.rejects(backend.run(imagePrompt(), { id: 'e_1' }), (err) => err.code === 'http' && err.status === 500);
+    assert.equal(failing.seen.length, 1, 'one request');
+  } finally {
+    await failing.close();
+  }
+
+  // 400 after 700 ms to the request with the image, and the answer 700 ms after the text-only one: with one timeout of
+  // a second for both, the turn times out.
+  const slow = await fakeHttp((req, body, res) => {
+    const images = hasImage(body);
+    setTimeout(() => {
+      if (res.destroyed || res.writableEnded) return;
+      if (images) return res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'no images' } }));
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'late' } }] }));
+    }, 700);
+  });
+  try {
+    const backend = backends.makeBackend({ type: 'openai', url: slow.url, timeout: 1 });
+    const started = Date.now();
+    await assert.rejects(backend.run(imagePrompt(), { id: 'e_2' }), (err) => err.code === 'timeout');
+    assert.ok(Date.now() - started < 1400, `${Date.now() - started} ms`);
+    assert.deepEqual(
+      slow.seen.map((s) => hasImage(s.body)),
+      [true, false],
+      'the text-only try did start'
+    );
+  } finally {
+    await slow.close();
+  }
+
+  // 400, 413, 415 and 422 still get the text-only try.
+  for (const status of [400, 413, 415, 422]) {
+    const refusing = await fakeHttp((req, body, res) => {
+      if (hasImage(body)) return res.writeHead(status, { 'content-type': 'application/json' }).end('{}');
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'text only' } }] }));
+    });
+    try {
+      assert.equal(await backends.makeBackend({ type: 'openai', url: refusing.url, timeout: 10 }).run(imagePrompt(), { id: 'e_3' }), 'text only', String(status));
+    } finally {
+      await refusing.close();
+    }
   }
 });

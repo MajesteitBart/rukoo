@@ -12,6 +12,11 @@ const KEY = /^rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
 const VERSIONS = [2, 1];
 // The most of an answer the runner reads: a page of 100 events of 16 KiB each, with room to spare.
 const RESPONSE_MAX = 8 * 1024 * 1024;
+// The largest file when /v1/info names none (server/WORKSPACES.md, "Files": 25 MiB per file).
+const FILE_BYTES_DEFAULT = 25 * 1024 * 1024;
+// A download gets the request timeout and one second more for every DOWNLOAD_RATE bytes it may hold, so a whole file
+// of 25 MiB has 200 seconds on top.
+const DOWNLOAD_RATE = 128 * 1024;
 
 class RukooError extends Error {
   constructor(status, body, message) {
@@ -95,6 +100,10 @@ class Rukoo {
     this.key = key;
     this.timeout = timeout;
     this.version = 1;
+    // What /v1/info said of files (info()): the origin its download links use besides the server's own, and the largest
+    // file it takes.
+    this.filesOrigin = null;
+    this.fileLimit = FILE_BYTES_DEFAULT;
     // The agent's member id, from the key: u_ and the 22 characters after rka_.
     this.agentId = `u_${key.slice(4, 26)}`;
   }
@@ -162,13 +171,24 @@ class Rukoo {
     return `/v1/workspaces/${this.workspace}${rest}`;
   }
 
-  // The server's /v1/info, without the key: its wire versions and agent limits. signal, here and below: ends the
-  // request, as the runner's stop does.
+  // The server's /v1/info, without the key: its wire versions, agent limits, and the origin and size limit of its files.
+  // signal, here and below: ends the request, as the runner's stop does.
   async info({ signal } = {}) {
     const info = await this.ok('GET', '/v1/info', { auth: false, signal });
     const w = info && info.workspace;
     const versions = w && Array.isArray(w.versions) ? w.versions : [1];
     this.version = VERSIONS.find((v) => versions.includes(v)) || 1;
+    const files = w && w.files && typeof w.files === 'object' ? w.files : null;
+    this.filesOrigin = null;
+    if (files && typeof files.origin === 'string' && files.origin) {
+      try {
+        const u = new URL(files.origin);
+        if (u.protocol === 'https:' || u.protocol === 'http:') this.filesOrigin = u.origin;
+      } catch {
+        // Not an origin: links go only to the server's own.
+      }
+    }
+    this.fileLimit = files && Number.isSafeInteger(files.maxBytes) && files.maxBytes > 0 ? files.maxBytes : FILE_BYTES_DEFAULT;
     return info;
   }
 
@@ -211,22 +231,34 @@ class Rukoo {
     return this.ok('POST', this.ws(`/conversations/${conversation}/files/${encodeURIComponent(file)}/download`), { signal });
   }
 
-  // A file's bytes from a link fileLink() answered, at most max of them: { bytes, over }, over when the file holds
-  // more, which isn't read. The link is the only thing a download needs, so the key never goes with it. https, or
-  // plain http to this computer or to the server's own address (where the key goes already); no redirect.
-  async fetchFile(link, max, { signal, timeout = this.timeout } = {}) {
+  // Whether the runner downloads from url, a URL: the origins the desktop app takes links for
+  // (src/main/workspaces/files.js allowedLink), the configured server's own and the files origin its /v1/info
+  // advertises (info()), with no user name or password. Plain http only to the server's own origin, which gets the key
+  // already, or when the operator set allowHttp.
+  allowedLink(url) {
+    if (!(url instanceof URL) || url.username || url.password) return false;
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    const own = new URL(this.server).origin;
+    if (url.origin !== own && url.origin !== this.filesOrigin) return false;
+    return url.protocol === 'https:' || url.origin === own || this.allowHttp;
+  }
+
+  // A file from a link fileLink() answered, read whole through SHA-256 up to limit bytes, of which only the first keep
+  // stay in memory: { bytes, size, sha256, over }, with size and sha256 of everything that came, and over when more than
+  // limit came, of which the rest isn't read. The link is the only thing a download needs, so the key never goes with
+  // it; only to an origin allowedLink() takes, and no redirect.
+  async fetchFile(link, { keep = 0, limit = this.fileLimit, signal, timeout } = {}) {
     let url;
     try {
       url = new URL(String(link || ''));
     } catch {
-      throw new RukooError(0, null, 'The server answered a download link that is no address');
+      throw Object.assign(new RukooError(0, null, 'The server answered a download link that is no address'), { refused: true });
     }
-    const own = new URL(this.server).origin;
-    const plainOk = url.protocol === 'http:' && (LOOPBACK.test(url.hostname) || url.origin === own || this.allowHttp);
-    if (url.username || url.password || !(url.protocol === 'https:' || plainOk)) throw new RukooError(0, null, 'The server answered a download link the runner does not follow');
+    if (!this.allowedLink(url)) throw Object.assign(new RukooError(0, null, 'The server answered a download link the runner does not follow'), { refused: true });
+    const wait = timeout ?? this.timeout + Math.ceil(Math.max(0, limit) / DOWNLOAD_RATE) * 1000;
     let res;
     try {
-      res = await fetch(url, { method: 'GET', headers: { accept: '*/*' }, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(timeout), ...(signal ? [signal] : [])]) });
+      res = await fetch(url, { method: 'GET', headers: { accept: '*/*' }, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(wait), ...(signal ? [signal] : [])]) });
     } catch (err) {
       const e = new RukooError(0, null, `No answer from ${url.host}: ${err.cause ? err.cause.message || err.cause : err.message}`);
       e.network = true;
@@ -236,28 +268,35 @@ class Rukoo {
       res.body?.cancel().catch(() => {});
       throw new RukooError(res.status, null, `The download answered HTTP ${res.status}`);
     }
-    if (!res.body) return { bytes: Buffer.alloc(0), over: false };
-    const reader = res.body.getReader();
+    const hash = crypto.createHash('sha256');
     const chunks = [];
+    let kept = 0;
     let size = 0;
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (size + value.length > max) {
-          chunks.push(Buffer.from(value).subarray(0, max - size));
-          reader.cancel().catch(() => {});
-          return { bytes: Buffer.concat(chunks), over: true };
+    if (res.body) {
+      const reader = res.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (size + value.length > limit) {
+            reader.cancel().catch(() => {});
+            return { bytes: Buffer.concat(chunks), size: size + value.length, sha256: null, over: true };
+          }
+          size += value.length;
+          hash.update(value);
+          if (kept < keep) {
+            const part = Buffer.from(value).subarray(0, keep - kept);
+            chunks.push(part);
+            kept += part.length;
+          }
         }
-        size += value.length;
-        chunks.push(Buffer.from(value));
+      } catch (err) {
+        const e = new RukooError(0, null, `The download broke off: ${err.message}`);
+        e.network = true;
+        throw e;
       }
-    } catch (err) {
-      const e = new RukooError(0, null, `The download broke off: ${err.message}`);
-      e.network = true;
-      throw e;
     }
-    return { bytes: Buffer.concat(chunks), over: false };
+    return { bytes: Buffer.concat(chunks), size, sha256: hash.digest('hex'), over: false };
   }
 
   async ticket({ signal } = {}) {

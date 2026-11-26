@@ -28,6 +28,10 @@ const IMAGE_MAX = Math.floor(3.75 * 1024 * 1024);
 const IMAGES_MAX = 10;
 const IMAGES_BYTES = 20 * 1024 * 1024;
 const PDF_MAX = 10 * 1024 * 1024;
+// What buildInput counts on top of the head, the message to answer and the context it keeps, for the lines around
+// them: the intro to the earlier messages, the line before the message to answer, the last line and the breaks
+// between them, which take 176 characters at most.
+const CONTEXT_SLACK = 200;
 
 // An agent's key anywhere in a text: "rka_", the 22 characters of its member id, a dot and 43 characters of secret
 // (server/src/workspaces.js AGENT_KEY). Whoever holds one reads every channel that agent is in, so one that someone
@@ -44,6 +48,32 @@ const LABELS = {
 };
 
 const escapeText = (text) => String(text == null ? '' : text).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+// What one character of text takes once escaped.
+const escapedWidth = (ch) => (ch === '&' ? 5 : ch === '<' ? 4 : 1);
+// How long text is once escaped (escapeText).
+function escapedLength(text) {
+  const s = String(text == null ? '' : text);
+  let n = s.length;
+  for (let i = 0; i < s.length; i++) n += escapedWidth(s[i]) - 1;
+  return n;
+}
+// The longest start of text that takes at most max characters once escaped, and at most chars characters as it is,
+// without cutting a surrogate pair in two.
+function escapedPrefix(text, max, chars = Infinity) {
+  const s = String(text == null ? '' : text);
+  let used = 0;
+  let i = 0;
+  while (i < s.length && i < chars) {
+    const code = s.charCodeAt(i);
+    const pair = code >= 0xd800 && code <= 0xdbff && i + 1 < s.length && s.charCodeAt(i + 1) >= 0xdc00 && s.charCodeAt(i + 1) <= 0xdfff;
+    const step = pair ? 2 : 1;
+    const width = pair ? 2 : escapedWidth(s[i]);
+    if (used + width > max || i + step > chars) break;
+    used += width;
+    i += step;
+  }
+  return s.slice(0, i);
+}
 const oneLine = (text) => String(text == null ? '' : text).replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
 
 // A block of untrusted text, such as a message.
@@ -325,7 +355,7 @@ function build({ agent, workspace, channel, trigger, context = [], people = new 
   // text goes with their names alone when that fits.
   const listed = context.map((ev) => filesOf(ev));
   const rendered = context.map((ev, i) => messageText(ev, roleOf(ev, who), who, listed[i], draft));
-  const fixed = head.length + triggerDraft.length + 200;
+  const fixed = head.length + triggerDraft.length + CONTEXT_SLACK;
   let budget = Math.max(0, Number(maxChars) - fixed);
   const keep = new Array(rendered.length).fill(null);
   const order = [];
@@ -486,6 +516,8 @@ module.exports = {
   unsafeBlock,
   unsafeInline,
   escapeText,
+  escapedLength,
+  escapedPrefix,
   untag,
   cleanAnswer,
   convertMentions,
@@ -504,6 +536,7 @@ module.exports = {
   KEY_MARK,
   FILE_TEXT_MAX,
   FILES_TEXT_MAX,
+  CONTEXT_SLACK,
   IMAGE_MAX,
   IMAGES_MAX,
   IMAGES_BYTES,
