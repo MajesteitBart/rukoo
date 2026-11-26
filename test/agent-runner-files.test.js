@@ -628,10 +628,10 @@ function memoryApi({ attachments = [{ id: 'f_1', name: 'a.txt', type: 'text/plai
   };
 }
 
-function memoryRunner(api, backend, { maxChars, channelMessages = 0, log = () => {} } = {}) {
+function memoryRunner(api, backend, { maxChars, channelMessages = 0, log = () => {}, readPdf } = {}) {
   const key = `rka_${'M'.repeat(22)}.${'b'.repeat(43)}`;
   const config = normalizeConfig({ server: 'https://rukoo.example', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: ['x'] }, state: false, context: { channelMessages, ...(maxChars ? { maxChars } : {}) } }, { env: {} });
-  const runner = new Runner(config, { log, backend });
+  const runner = new Runner(config, { log, backend, readPdf });
   runner.api = api;
   return runner;
 }
@@ -817,11 +817,13 @@ test("a download link goes only to the server's own origin or the files origin i
     assert.equal(api.fileLimit, 1000000);
     // The server's own origin over plain http: it gets the key already.
     assert.equal((await api.fetchFile(`${own.url}/f`, { keep: 10, limit: 5000 })).size, 5000);
-    // The files origin over plain http only with allowHttp.
+    // The files origin over plain http only with allowHttp, and even then not on this computer: a server's files origin
+    // goes only to a public address (the next test).
     await assert.rejects(api.fetchFile(`${files.url}/f`, { keep: 10, limit: 5000 }), refused);
     const lax = new Rukoo({ server: own.url, workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, allowHttp: true });
     await lax.info();
-    assert.equal((await lax.fetchFile(`${files.url}/f`, { keep: 10, limit: 5000 })).size, 5000);
+    assert.equal(lax.allowedLink(new URL(`${files.url}/f`)), true);
+    await assert.rejects(lax.fetchFile(`${files.url}/f`, { keep: 10, limit: 5000 }), refused);
     // Anything else, on this computer or not, https or not, also with allowHttp.
     for (const link of [`${other.url}/f`, 'http://localhost:1/f', 'https://unrelated.example/f', 'http://203.0.113.9/f', 'ftp://files.example/f', `http://user:pw@${new URL(own.url).host}/f`, 'not a link']) {
       await assert.rejects(api.fetchFile(link, { keep: 10, limit: 5000 }), refused, link);
@@ -829,8 +831,8 @@ test("a download link goes only to the server's own origin or the files origin i
     }
     assert.deepEqual(
       hits.filter((h) => h.url !== '/v1/info').map((h) => h.at),
-      ['server', 'files'],
-      'only the two downloads that were allowed reached a server'
+      ['server'],
+      'only the download that was allowed reached a server'
     );
     // An https files origin takes https links without allowHttp; an origin that is no address names none.
     filesOrigin = 'https://files.rukoo.example/ignored/path';
@@ -844,6 +846,240 @@ test("a download link goes only to the server's own origin or the files origin i
     assert.equal(api.filesOrigin, null);
   } finally {
     await Promise.all([own.close(), files.close(), other.close()]);
+  }
+});
+
+// RUK-294 second review, P1: the runner took any files origin /v1/info advertised, so a remote server could point its
+// downloads at this computer or a private network.
+test("an advertised files origin goes only to public addresses, checked as the connection is made; the operator's privateFilesOrigin may be private", async () => {
+  const hits = [];
+  let filesOrigin = null;
+  const files = await listen('files', hits);
+  const own = await listen('server', hits, (req, res) => {
+    if (req.url !== '/v1/info') return false;
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ workspace: { versions: [1, 2], files: { maxBytes: 1000000, origin: filesOrigin } } }));
+    return true;
+  });
+  const key = `rka_${'M'.repeat(22)}.${'b'.repeat(43)}`;
+  const port = new URL(files.url).port;
+  const refused = (err) => err instanceof RukooError && err.refused === true && !err.network;
+  // A name the test resolves: files.example to this computer, and everything it was asked.
+  const asked = [];
+  const resolve = (hostname, options, callback) => {
+    asked.push({ hostname, all: Boolean(options && options.all) });
+    const list = [{ address: '127.0.0.1', family: 4 }];
+    if (options && options.all) callback(null, list);
+    else callback(null, list[0].address, list[0].family);
+  };
+  try {
+    // Addresses in the link and names that resolve to this computer, all refused before a byte goes out.
+    for (const origin of [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`, `http://[::ffff:127.0.0.1]:${port}`, `http://files.example:${port}`, `http://0.0.0.0:${port}`]) {
+      filesOrigin = origin;
+      const api = new Rukoo({ server: own.url, workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, allowHttp: true, resolve });
+      await api.info();
+      assert.equal(api.allowedLink(new URL(`${api.filesOrigin}/f`)), true, origin);
+      await assert.rejects(api.fetchFile(`${api.filesOrigin}/f`, { keep: 10, limit: 5000 }), refused, origin);
+    }
+    assert.deepEqual(hits.filter((h) => h.url !== '/v1/info'), [], 'no download reached the files server');
+    // The connection asked the test's lookup itself, in the form Node uses with autoSelectFamily.
+    assert.ok(asked.some((a) => a.hostname === 'files.example'), JSON.stringify(asked));
+
+    // The operator names the files origin of a private deployment: that one may be on a private address, also when
+    // the server advertises it. Plain http on this computer passes the config's check as "server" does.
+    filesOrigin = files.url;
+    const operator = new Rukoo({ server: own.url, workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, privateFilesOrigin: files.url, resolve });
+    await operator.info();
+    assert.equal((await operator.fetchFile(`${files.url}/f`, { keep: 10, limit: 5000 })).size, 5000);
+    assert.deepEqual(hits.filter((h) => h.url !== '/v1/info').map((h) => h.at), ['files']);
+    // An origin the server advertises can't take that place: the exception is the config's alone.
+    filesOrigin = `http://localhost:${port}`;
+    await operator.info();
+    await assert.rejects(operator.fetchFile(`http://localhost:${port}/f`, { keep: 10, limit: 5000 }), refused);
+    // The server's own origin still goes wherever it is, as before.
+    assert.equal((await operator.fetchFile(`${own.url}/f`, { keep: 10, limit: 5000 })).size, 5000);
+  } finally {
+    await Promise.all([own.close(), files.close()]);
+  }
+
+  // privateFilesOrigin is checked as "server" is: https, or http on this computer or with allowHttp; an origin alone.
+  const make = (privateFilesOrigin, allowHttp = false) => new Rukoo({ server: 'https://rukoo.example', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, privateFilesOrigin, allowHttp });
+  assert.equal(make('https://files.internal.example/').privateFilesOrigin, 'https://files.internal.example');
+  assert.equal(make('http://10.0.0.5:9000', true).privateFilesOrigin, 'http://10.0.0.5:9000');
+  assert.equal(make(null).privateFilesOrigin, null);
+  for (const [value, message] of [
+    ['http://10.0.0.5:9000', /must use https:\/\/ unless it is on this computer/],
+    ['ftp://files.example', /must start with https:\/\//],
+    ['https://files.example/v1', /an origin alone/],
+    ['https://user@files.example', /no user name/],
+    ['not an address', /is not an address/],
+    [true, /must be an address/]
+  ]) {
+    assert.throws(() => make(value), message, String(value));
+  }
+  // From the config, as the runner reads it.
+  const config = normalizeConfig({ server: 'https://rukoo.example', workspace: 'w_AAAAAAAAAAAAAAAAAAAAAA', key, backend: { type: 'command', command: ['x'] }, state: false, privateFilesOrigin: 'https://files.internal.example' }, { env: {} });
+  assert.equal(new Runner(config, { log: () => {} }).api.privateFilesOrigin, 'https://files.internal.example');
+  assert.throws(() => new Runner({ ...config, privateFilesOrigin: 'http://10.0.0.5' }, { log: () => {} }), /privateFilesOrigin/);
+});
+
+test('which addresses count as public, and the lookup answers in both forms Node asks for', async () => {
+  const { publicAddress, publicLookup } = require('../integrations/agent-runner/rukoo.js');
+  const notPublic = ['127.0.0.1', '127.255.0.9', '0.0.0.0', '0.1.2.3', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '100.64.0.1', '100.127.255.255', '169.254.169.254', '224.0.0.1', '239.1.1.1', '255.255.255.255', '::', '::1', 'fe80::1', 'fe80::1%eth0', 'fc00::1', 'fd12:3456::1', 'fec0::1', 'ff02::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:10.0.0.1', '::ffff:169.254.169.254', '::127.0.0.1', '64:ff9b::a00:1', '64:ff9b::7f00:1', 'not an address', ''];
+  const isPublic = ['8.8.8.8', '1.1.1.1', '100.63.255.255', '100.128.0.1', '172.15.255.255', '172.32.0.1', '192.167.1.1', '203.0.113.9', '2606:4700:4700::1111', '2001:db8::1', '::ffff:8.8.8.8', '64:ff9b::808:808', '[2606:4700::1]'];
+  for (const a of notPublic) assert.equal(publicAddress(a), false, a);
+  for (const a of isPublic) assert.equal(publicAddress(a), true, a);
+
+  const answers = { 'pub.example': [{ address: '93.184.216.34', family: 4 }], 'mixed.example': [{ address: '93.184.216.34', family: 4 }, { address: '10.0.0.1', family: 4 }], 'v6.example': [{ address: 'fd00::1', family: 6 }] };
+  const resolve = (hostname, options, callback) => {
+    const list = answers[hostname];
+    if (!list) return callback(Object.assign(new Error('not found'), { code: 'ENOTFOUND' }));
+    if (options.all) return callback(null, list);
+    callback(null, list[0].address, list[0].family);
+  };
+  const lookup = publicLookup(resolve);
+  const ask = (hostname, options) => new Promise((done) => lookup(hostname, options, (err, address, family) => done({ code: err ? err.code : undefined, address, family })));
+  assert.deepEqual(await ask('pub.example', {}), { code: undefined, address: '93.184.216.34', family: 4 });
+  assert.deepEqual(await ask('pub.example', { all: true }), { code: undefined, address: answers['pub.example'], family: undefined });
+  // One address that isn't public refuses the name, in either form.
+  assert.equal((await ask('mixed.example', { all: true })).code, 'ERR_RUKOO_NOT_PUBLIC');
+  assert.equal((await ask('v6.example', {})).code, 'ERR_RUKOO_NOT_PUBLIC');
+  assert.equal((await ask('v6.example', { all: true })).code, 'ERR_RUKOO_NOT_PUBLIC');
+  assert.equal((await ask('gone.example', { all: true })).code, 'ENOTFOUND');
+});
+
+// RUK-294 second review, P3: a link that named a size of 0 with the SHA-256 of nothing was taken for a file the event
+// listed with 12 bytes. The server takes no file of 0 bytes.
+test('a link that names a size of 0 bytes is refused before anything is fetched', async () => {
+  const rec = recording();
+  const lines = [];
+  const api = memoryApi({ attachments: [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: 12 }], files: new Map([['f_1', { bytes: Buffer.alloc(0), link: { url: 'https://files.example/f_1', size: 0, sha256: sha(Buffer.alloc(0)) } }]]) });
+  await memoryRunner(api, rec.backend, { log: (level, message) => lines.push(message) }).once();
+  assert.deepEqual(api.served, [], 'nothing fetched');
+  assert.match(rec.prompts[0].input, /a\.txt<\/unsafe_content> \(text\/plain, 12 B\)\. The runner couldn't download it/);
+  assert.ok(lines.includes('Could not download a file of a message in c_1: the link named a size of 0 bytes'), lines.join(' | '));
+});
+
+// RUK-294 second review, P1: the runner cut a file's text before it took the keys out, so a key that a cut fell in
+// reached the runtime without its last characters, which the key pattern no longer found: with maxChars 2,000, 42 of
+// a key's 43 secret characters.
+test("no cut of a file's text hands on part of a key: the first fit, the last trim, the end of a download, and a PDF reader's limit", async () => {
+  const KEY = `rka_${'Q'.repeat(22)}.${'z'.repeat(43)}`;
+  const leaked = (input) => input.includes('rka_');
+  const one = async (bytes, { maxChars = 2000, attachments, readPdf } = {}) => {
+    const rec = recording();
+    const list = attachments || [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: bytes.length }];
+    const api = memoryApi({ attachments: list, files: new Map([['f_1', { bytes }]]) });
+    await memoryRunner(api, rec.backend, { maxChars, readPdf }).once();
+    return rec.prompts[0].input;
+  };
+  const kept = (input, name = 'a.txt') => (input.match(new RegExp(`${name.replace('.', '\\.')}</unsafe_content>[^\\n]*\\n<unsafe_content source="team chat file">\\n([^<]*)\\n</unsafe_content>`)) || [])[1] || '';
+
+  // The first fit: the key at every place around where the file's text is cut.
+  const room = kept(await one(Buffer.from('x'.repeat(5000)))).length;
+  assert.ok(room > 500, `the file's room: ${room}`);
+  let whole = 0;
+  for (let at = room - KEY.length - 2; at <= room + 2; at++) {
+    const input = await one(Buffer.from(`${'x'.repeat(at)}${KEY}${'x'.repeat(3000)}`));
+    assert.ok(!leaked(input), `key at ${at}: ${input.slice(input.indexOf('rka_') - 10, input.indexOf('rka_') + 80)}`);
+    if (input.includes('[agent key removed]')) whole++;
+    assert.ok(input.length <= 2000, `${at}: ${input.length}`);
+  }
+  assert.ok(whole > 0, 'a key before the cut is replaced with the mark');
+
+  // The last trim: a second file left out takes room from the first file's text after both are done.
+  const two = (bytes) => one(bytes, { attachments: [{ id: 'f_1', name: 'a.txt', type: 'text/plain', size: bytes.length }, { id: 'f_2', name: 'b.txt', type: 'text/plain', size: 10 }] });
+  const trimmed = kept(await two(Buffer.from('x'.repeat(5000)))).length;
+  assert.ok(trimmed > 400 && trimmed < room, `trimmed: ${trimmed}`);
+  for (let at = trimmed - KEY.length - 2; at <= trimmed + 2; at++) {
+    const input = await two(Buffer.from(`${'x'.repeat(at)}${KEY}${'x'.repeat(3000)}`));
+    assert.ok(!leaked(input), `two files, key at ${at}`);
+  }
+
+  // The end of a download: a UTF-16 file of keys alone, whose keys take out so much that the text cut at the bytes the
+  // runner kept fits whole, so the key the download stopped in is at its end.
+  for (let pad = 0; pad < KEY.length + 1; pad += 5) {
+    const text = `${'x'.repeat(pad)}${`${KEY}\n`.repeat(400)}`;
+    const input = await one(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]));
+    assert.ok(!leaked(input), `UTF-16, pad ${pad}`);
+    assert.match(input, /\[agent key removed\]/);
+  }
+
+  // A PDF reader that cut its text at its limit, in a key or in a surrogate pair.
+  const { makePdf } = require('./fixtures/make-pdf');
+  const pdf = makePdf([['x']]);
+  const pdfFile = [{ id: 'f_1', name: 'doc.pdf', type: 'application/pdf', size: pdf.length }];
+  for (const [what, read] of [
+    ['a key the reader cut', { text: `${'x'.repeat(100)} ${KEY.slice(0, 60)}`, truncated: true }],
+    ['a key the reader stopped in', { text: `${'x'.repeat(100)} ${KEY.slice(0, 30)}`, partial: true }],
+    ['a whole key', { text: `before ${KEY} after`, truncated: false }]
+  ]) {
+    const input = await one(pdf, { attachments: pdfFile, readPdf: async () => ({ encrypted: false, failed: null, partial: false, ...read }) });
+    assert.ok(!leaked(input), what);
+    assert.match(input, /doc\.pdf<\/unsafe_content> \(application\/pdf, \d+ B\)\. The /, what);
+  }
+});
+
+// RUK-294 second review, P3: the PDF reader can stop between the two halves of a surrogate pair, and the runner handed
+// the lone half on.
+test("a PDF's text cut between the halves of a surrogate pair loses the half before it goes", async () => {
+  const { makePdf } = require('./fixtures/make-pdf');
+  const pdf = makePdf([['x']]);
+  for (const read of [{ text: 'Budget 😀😀\ud83d', truncated: true }, { text: 'Budget 😀😀\ud83d', partial: true }]) {
+    const rec = recording();
+    const api = memoryApi({ attachments: [{ id: 'f_1', name: 'doc.pdf', type: 'application/pdf', size: pdf.length }], files: new Map([['f_1', { bytes: pdf }]]) });
+    await memoryRunner(api, rec.backend, { readPdf: async () => ({ encrypted: false, failed: null, partial: false, ...read }) }).once();
+    const input = rec.prompts[0].input;
+    assert.ok(input.isWellFormed(), JSON.stringify(input.slice(input.indexOf('Budget'), input.indexOf('Budget') + 20)));
+    assert.ok(input.includes('Budget 😀😀\n</unsafe_content>'));
+  }
+});
+
+// RUK-294 second review, P2: a text file and an image fit maxChars as the input with the image, but the same input
+// without it (plain, which openai sends to a server that takes no images) ran 60 characters over with the longer note;
+// and the names of ten files with long names took 4,840 characters with no text left to cut.
+test('the input stays within maxChars without its images too, and many long file names make a shorter list that says how many it left off', async () => {
+  for (const fill of ['x', '&']) {
+    const rec = recording({ images: true });
+    const api = memoryApi({
+      attachments: [
+        { id: 'f_1', name: 'a.txt', type: 'text/plain', size: 3000 },
+        { id: 'f_2', name: 'one.png', type: 'image/png', size: PNG.length }
+      ],
+      files: new Map([
+        ['f_1', { bytes: Buffer.from(fill.repeat(3000)) }],
+        ['f_2', { bytes: PNG }]
+      ])
+    });
+    await memoryRunner(api, rec.backend, { maxChars: 2000 }).once();
+    const p = rec.prompts[0];
+    assert.equal(p.images.length, 1);
+    assert.ok(p.input.length <= 2000, `${fill}, with the image: ${p.input.length}`);
+    assert.ok(p.plain.input.length <= 2000, `${fill}, plain: ${p.plain.input.length}`);
+    assert.ok(p.plain.input.length > 1900, `${fill}, plain takes the room: ${p.plain.input.length}`);
+  }
+
+  // Ten files with names of 250 characters, two of them images.
+  const long = (i, ext) => `${String(i).padStart(2, '0')}-${'n'.repeat(244)}.${ext}`;
+  const attachments = [];
+  const files = new Map();
+  for (let i = 0; i < 10; i++) {
+    const image = i === 1 || i === 8;
+    attachments.push({ id: `f_${i}`, name: long(i, image ? 'png' : 'bin'), type: image ? 'image/png' : 'application/octet-stream', size: image ? PNG.length : 500 });
+    if (image) files.set(`f_${i}`, { bytes: PNG });
+  }
+  for (const maxChars of [2000, 3000]) {
+    const rec = recording({ images: true });
+    const api = memoryApi({ attachments, files });
+    await memoryRunner(api, rec.backend, { maxChars }).once();
+    const p = rec.prompts[0];
+    assert.ok(p.input.length <= maxChars, `${maxChars}, with images: ${p.input.length}`);
+    assert.ok(!p.plain || p.plain.input.length <= maxChars, `${maxChars}, plain: ${p.plain && p.plain.input.length}`);
+    const listed = (p.input.match(/^- <unsafe_content source="team chat">\d\d-n+\.(bin|png)<\/unsafe_content>/gm) || []).length;
+    assert.ok(listed >= 1 && listed < 10, `${maxChars}: ${listed} listed`);
+    assert.ok(p.input.includes(`[${10 - listed} more files left off this list to keep this input short, so you can't open them.]`), p.input.slice(-400));
+    assert.match(p.input, /\[message e_1 from u_S+, sender \(trusted\)[^\]]*, 10 files\]/);
+    // An image goes along only when its file is on the list, under the number the list gives it.
+    assert.equal(p.images.length, (p.input.match(/It comes with this input as image \d+\./g) || []).length);
   }
 });
 

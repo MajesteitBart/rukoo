@@ -4,6 +4,10 @@
 // use, with `Authorization: Bearer rka_…`. The key goes only to the configured server and never follows a redirect.
 
 const crypto = require('crypto');
+const dns = require('dns');
+const http = require('http');
+const https = require('https');
+const net = require('net');
 
 const PROTOCOL = 'rukoo.workspace.v1';
 const TICKET_PREFIX = 'rukoo.ticket.';
@@ -72,30 +76,202 @@ function retryAfter(headers) {
 
 const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
 
-// The server's address without a trailing slash. https, or http to this computer; other http only with allowHttp,
-// since the key would cross the network in the clear.
-function serverAddress(value, { allowHttp = false } = {}) {
+// An address from the config as a URL: https, or http to this computer; other http only with allowHttp. field: its
+// name in the config, for the errors. why: what plain http would do, for the error that refuses it.
+function configAddress(value, field, { allowHttp = false, why }) {
   let url;
   try {
     url = new URL(String(value || '').trim());
   } catch {
-    throw new Error(`"server" is not an address: ${value}`);
+    throw new Error(`"${field}" is not an address: ${value}`);
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('"server" must start with https://');
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error(`"${field}" must start with https://`);
   if (url.protocol === 'http:' && !LOOPBACK.test(url.hostname) && !allowHttp) {
-    throw new Error('"server" must use https:// unless it is on this computer; set "allowHttp": true to send the key unencrypted anyway');
+    throw new Error(`"${field}" must use https:// unless it is on this computer; set "allowHttp": true to ${why} anyway`);
   }
-  if (url.username || url.password || url.search || url.hash) throw new Error('"server" takes no user name, password, query or fragment');
+  if (url.username || url.password || url.search || url.hash) throw new Error(`"${field}" takes no user name, password, query or fragment`);
+  return url;
+}
+
+// The server's address without a trailing slash. Plain http would send the key in the clear.
+function serverAddress(value, { allowHttp = false } = {}) {
+  const url = configAddress(value, 'server', { allowHttp, why: 'send the key unencrypted' });
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
+// privateFilesOrigin from the config: the origin of the file links of a server on a private network, which the runner
+// downloads from at whatever address it has, as from the server itself. Checked as "server" is, and an origin alone.
+// null without one.
+function privateFilesOrigin(value, { allowHttp = false } = {}) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new Error('"privateFilesOrigin" must be an address, such as https://files.example.internal');
+  const url = configAddress(value, 'privateFilesOrigin', { allowHttp, why: 'download files unencrypted' });
+  if (url.pathname !== '/') throw new Error('"privateFilesOrigin" is an origin alone, without a path');
+  return url.origin;
+}
+
+// ---- Where downloads go ----
+//
+// A link to the server's own origin, or to privateFilesOrigin, goes to whatever address it has: the operator chose
+// both in the config. A link to the files origin a server advertises in /v1/info goes only to a public address
+// (server/WORKSPACES.md, "Files"), since a remote workspace can't grant more: never to this computer (loopback), an
+// unspecified, link-local, private (RFC 1918, fc00::/7), CGNAT (100.64.0.0/10) or multicast address, nor one of those
+// as IPv6 writes an IPv4 address. The connection checks the address it connects to in its own lookup (publicLookup),
+// so a name can't answer one address to a check and another to the connection.
+
+const NOT_PUBLIC = 'ERR_RUKOO_NOT_PUBLIC';
+
+function ipv4Parts(address) {
+  const parts = String(address).split('.');
+  if (parts.length !== 4 || !parts.every((p) => /^\d{1,3}$/.test(p))) return null;
+  const n = parts.map(Number);
+  return n.every((x) => x <= 255) ? n : null;
+}
+
+const publicIPv4 = ([a, b]) =>
+  !(
+    a === 0 || // "this network", 0.0.0.0 among it
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    a >= 224 // multicast, the reserved block and broadcast
+  );
+
+// An IPv6 address as its eight groups, or null. A zone (%eth0) and brackets go; an IPv4 address in the last 32 bits
+// becomes its two groups.
+function ipv6Groups(address) {
+  let s = String(address).toLowerCase();
+  if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1);
+  const zone = s.indexOf('%');
+  if (zone !== -1) s = s.slice(0, zone);
+  const last = s.lastIndexOf(':');
+  if (last === -1) return null;
+  if (s.includes('.', last)) {
+    const v4 = ipv4Parts(s.slice(last + 1));
+    if (!v4) return null;
+    s = `${s.slice(0, last + 1)}${((v4[0] << 8) | v4[1]).toString(16)}:${((v4[2] << 8) | v4[3]).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const groups = (part) => (part ? part.split(':') : []);
+  const head = groups(halves[0]);
+  const tail = halves.length === 2 ? groups(halves[1]) : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const all = [...head, ...new Array(halves.length === 2 ? missing : 0).fill('0'), ...tail];
+  return all.every((g) => /^[0-9a-f]{1,4}$/.test(g)) ? all.map((g) => parseInt(g, 16)) : null;
+}
+
+// Whether the runner may connect to address, an IP address, for a link a remote server named. Anything it can't read
+// as one isn't.
+function publicAddress(address) {
+  const v4 = ipv4Parts(address);
+  if (v4) return publicIPv4(v4);
+  const g = ipv6Groups(address);
+  if (!g) return false;
+  const embedded = () => [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff];
+  // ::ffff:a.b.c.d, the IPv4-mapped form: as the IPv4 address.
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return publicIPv4(embedded());
+  // :: (unspecified), ::1 (loopback) and the deprecated IPv4-compatible ::a.b.c.d.
+  if (g.slice(0, 6).every((x) => x === 0)) return false;
+  // 64:ff9b::a.b.c.d, NAT64's well-known prefix, reaches the IPv4 address through the network's gateway.
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return publicIPv4(embedded());
+  if ((g[0] & 0xfe00) === 0xfc00) return false; // unique local, fc00::/7
+  if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) return false; // link-local, and the old site-local
+  if ((g[0] & 0xff00) === 0xff00) return false; // multicast
+  return true;
+}
+
+const notPublic = () => Object.assign(new Error('The address is not a public one'), { code: NOT_PUBLIC });
+
+// A lookup for a connection (net.connect's lookup option) that answers only public addresses, in both forms Node asks
+// for: one address, (err, address, family), or with { all: true }, as Node 22 asks with autoSelectFamily, (err,
+// [{ address, family }]). A name with any address that isn't public is refused whole. resolve: dns.lookup, or a
+// stand-in for the tests.
+function publicLookup(resolve = dns.lookup) {
+  return (hostname, options, callback) => {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    resolve(hostname, options, (err, address, family) => {
+      if (err) return callback(err);
+      const list = Array.isArray(address) ? address : [{ address, family }];
+      if (!list.length || list.some((a) => !a || !publicAddress(a.address))) return callback(notPublic());
+      callback(null, address, family);
+    });
+  };
+}
+
+// GET url for fetchFile: on a connection of its own (agent: false, so no pooled socket and no cookie), without a
+// redirect (node's http follows none), through lookup when there is one. refused(message): the error for an address
+// the lookup turned down.
+async function getFile(url, { keep, limit, lookup, signal, refused }) {
+  let turnedDown = false;
+  const options = { method: 'GET', headers: { accept: '*/*', 'accept-encoding': 'identity' }, agent: false, signal };
+  if (lookup) {
+    options.lookup = (hostname, opts, callback) =>
+      lookup(hostname, opts, (err, ...rest) => {
+        if (err && err.code === NOT_PUBLIC) turnedDown = true;
+        callback(err, ...rest);
+      });
+  }
+  let res;
+  try {
+    res = await new Promise((resolve, reject) => {
+      const req = (url.protocol === 'https:' ? https : http).request(url, options, resolve);
+      req.on('error', reject);
+      req.end();
+    });
+  } catch (err) {
+    if (turnedDown) throw refused('The server answered a download link to a host whose address is not public');
+    const e = new RukooError(0, null, `No answer from ${url.host}: ${err.message}`);
+    e.network = true;
+    throw e;
+  }
+  if (res.statusCode !== 200) {
+    res.destroy();
+    throw new RukooError(res.statusCode, null, `The download answered HTTP ${res.statusCode}`);
+  }
+  const hash = crypto.createHash('sha256');
+  const chunks = [];
+  let kept = 0;
+  let size = 0;
+  try {
+    for await (const value of res) {
+      if (size + value.length > limit) {
+        res.destroy();
+        return { bytes: Buffer.concat(chunks), size: size + value.length, sha256: null, over: true };
+      }
+      size += value.length;
+      hash.update(value);
+      if (kept < keep) {
+        const part = Buffer.from(value.subarray(0, keep - kept));
+        chunks.push(part);
+        kept += part.length;
+      }
+    }
+  } catch (err) {
+    const e = new RukooError(0, null, `The download broke off: ${err.message}`);
+    e.network = true;
+    throw e;
+  }
+  return { bytes: Buffer.concat(chunks), size, sha256: hash.digest('hex'), over: false };
+}
+
 class Rukoo {
-  // server: the account server's address; workspace: w_…; key: rka_….
-  constructor({ server, workspace, key, allowHttp = false, timeout = 30000 }) {
+  // server: the account server's address; workspace: w_…; key: rka_…. privateFilesOrigin: the config's, see above.
+  // resolve: what looks up a name for a download from an advertised files origin, dns.lookup unless a test gives one.
+  constructor({ server, workspace, key, allowHttp = false, privateFilesOrigin: privateFiles = null, timeout = 30000, resolve = dns.lookup }) {
     if (!/^w_[A-Za-z0-9_-]{22}$/.test(String(workspace || ''))) throw new Error('"workspace" must be a workspace id (w_…)');
     if (!KEY.test(String(key || ''))) throw new Error('The key is not an agent key (rka_…)');
     this.server = serverAddress(server, { allowHttp });
     this.allowHttp = allowHttp === true;
+    this.privateFilesOrigin = privateFilesOrigin(privateFiles, { allowHttp });
+    this.lookup = publicLookup(resolve);
     this.workspace = workspace;
     this.key = key;
     this.timeout = timeout;
@@ -231,72 +407,44 @@ class Rukoo {
     return this.ok('POST', this.ws(`/conversations/${conversation}/files/${encodeURIComponent(file)}/download`), { signal });
   }
 
-  // Whether the runner downloads from url, a URL: the origins the desktop app takes links for
-  // (src/main/workspaces/files.js allowedLink), the configured server's own and the files origin its /v1/info
-  // advertises (info()), with no user name or password. Plain http only to the server's own origin, which gets the key
-  // already, or when the operator set allowHttp.
+  // Where the runner downloads url, a URL, from: { anyAddress } for an origin it takes links for, null for any other.
+  // The configured server's own origin and privateFilesOrigin go to whatever address they have (anyAddress true); the
+  // files origin /v1/info advertises (info()) goes only to a public address. No user name or password. Plain http to
+  // the advertised origin only when the operator set allowHttp; the other two passed the config's check for it.
+  linkRoute(url) {
+    if (!(url instanceof URL) || url.username || url.password) return null;
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    if (url.origin === new URL(this.server).origin || url.origin === this.privateFilesOrigin) return { anyAddress: true };
+    if (url.origin !== this.filesOrigin) return null;
+    return url.protocol === 'https:' || this.allowHttp ? { anyAddress: false } : null;
+  }
+
+  // Whether the runner downloads from url at all: the origins the desktop app takes links for
+  // (src/main/workspaces/files.js allowedLink), and privateFilesOrigin.
   allowedLink(url) {
-    if (!(url instanceof URL) || url.username || url.password) return false;
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-    const own = new URL(this.server).origin;
-    if (url.origin !== own && url.origin !== this.filesOrigin) return false;
-    return url.protocol === 'https:' || url.origin === own || this.allowHttp;
+    return Boolean(this.linkRoute(url));
   }
 
   // A file from a link fileLink() answered, read whole through SHA-256 up to limit bytes, of which only the first keep
   // stay in memory: { bytes, size, sha256, over }, with size and sha256 of everything that came, and over when more than
   // limit came, of which the rest isn't read. The link is the only thing a download needs, so the key never goes with
-  // it; only to an origin allowedLink() takes, and no redirect.
+  // it: only to an origin linkRoute() takes, at an address it allows, on a connection of its own without cookies, and
+  // no redirect.
   async fetchFile(link, { keep = 0, limit = this.fileLimit, signal, timeout } = {}) {
+    const refused = (message) => Object.assign(new RukooError(0, null, message), { refused: true });
     let url;
     try {
       url = new URL(String(link || ''));
     } catch {
-      throw Object.assign(new RukooError(0, null, 'The server answered a download link that is no address'), { refused: true });
+      throw refused('The server answered a download link that is no address');
     }
-    if (!this.allowedLink(url)) throw Object.assign(new RukooError(0, null, 'The server answered a download link the runner does not follow'), { refused: true });
+    const route = this.linkRoute(url);
+    if (!route) throw refused('The server answered a download link the runner does not follow');
+    // An address in the link itself is never looked up, so it is checked here.
+    const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
+    if (!route.anyAddress && net.isIP(host) && !publicAddress(host)) throw refused('The server answered a download link to an address that is not public');
     const wait = timeout ?? this.timeout + Math.ceil(Math.max(0, limit) / DOWNLOAD_RATE) * 1000;
-    let res;
-    try {
-      res = await fetch(url, { method: 'GET', headers: { accept: '*/*' }, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(wait), ...(signal ? [signal] : [])]) });
-    } catch (err) {
-      const e = new RukooError(0, null, `No answer from ${url.host}: ${err.cause ? err.cause.message || err.cause : err.message}`);
-      e.network = true;
-      throw e;
-    }
-    if (res.status !== 200) {
-      res.body?.cancel().catch(() => {});
-      throw new RukooError(res.status, null, `The download answered HTTP ${res.status}`);
-    }
-    const hash = crypto.createHash('sha256');
-    const chunks = [];
-    let kept = 0;
-    let size = 0;
-    if (res.body) {
-      const reader = res.body.getReader();
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (size + value.length > limit) {
-            reader.cancel().catch(() => {});
-            return { bytes: Buffer.concat(chunks), size: size + value.length, sha256: null, over: true };
-          }
-          size += value.length;
-          hash.update(value);
-          if (kept < keep) {
-            const part = Buffer.from(value).subarray(0, keep - kept);
-            chunks.push(part);
-            kept += part.length;
-          }
-        }
-      } catch (err) {
-        const e = new RukooError(0, null, `The download broke off: ${err.message}`);
-        e.network = true;
-        throw e;
-      }
-    }
-    return { bytes: Buffer.concat(chunks), size, sha256: hash.digest('hex'), over: false };
+    return getFile(url, { keep, limit, lookup: route.anyAddress ? null : this.lookup, signal: AbortSignal.any([AbortSignal.timeout(wait), ...(signal ? [signal] : [])]), refused });
   }
 
   async ticket({ signal } = {}) {
@@ -314,4 +462,4 @@ class Rukoo {
   }
 }
 
-module.exports = { Rukoo, RukooError, KeyRefused, uuidv7, serverAddress, retryAfter, bodyOf, KEY, PROTOCOL, RESPONSE_MAX };
+module.exports = { Rukoo, RukooError, KeyRefused, uuidv7, serverAddress, privateFilesOrigin, publicAddress, publicLookup, retryAfter, bodyOf, KEY, PROTOCOL, RESPONSE_MAX };

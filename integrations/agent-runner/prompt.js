@@ -39,6 +39,11 @@ const CONTEXT_SLACK = 200;
 const AGENT_KEY_ANYWHERE = /rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/g;
 const KEY_MARK = '[agent key removed]';
 const redactKeys = (text) => String(text == null ? '' : text).replace(AGENT_KEY_ANYWHERE, KEY_MARK);
+// What a cut can leave of a key at the end of a text: "rka_" and up to one character less than the rest of a key. The
+// pattern above no longer finds a key cut in two, so a text is cut only after its keys are out (clipText), and then
+// loses this too (dropKeyTail).
+const KEY_TAIL = /rka_(?:[A-Za-z0-9_-]{0,22}|[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{0,42})$/;
+const dropKeyTail = (text) => String(text == null ? '' : text).replace(KEY_TAIL, '');
 
 const LABELS = {
   sender: 'sender (trusted)',
@@ -74,6 +79,13 @@ function escapedPrefix(text, max, chars = Infinity) {
   }
   return s.slice(0, i);
 }
+// escapedPrefix of a text whose keys are out (redactKeys): where it cuts the text short, what is left of a key at the
+// cut goes too, so no cut hands on part of one.
+function clipText(text, max, chars = Infinity) {
+  const s = String(text == null ? '' : text);
+  const cut = escapedPrefix(s, max, chars);
+  return cut.length < s.length ? dropKeyTail(cut) : cut;
+}
 const oneLine = (text) => String(text == null ? '' : text).replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
 
 // A block of untrusted text, such as a message.
@@ -81,9 +93,10 @@ function unsafeBlock(text) {
   return `<unsafe_content source="${SOURCE}">\n${escapeText(text)}\n</unsafe_content>`;
 }
 
-// Untrusted text on one of the runner's own lines, such as a name: one line, cut, tagged.
+// Untrusted text on one of the runner's own lines, such as a name: one line, its keys out, cut to max characters,
+// tagged.
 function unsafeInline(text, max = 200) {
-  return `<unsafe_content source="${SOURCE}">${escapeText(oneLine(text).slice(0, max))}</unsafe_content>`;
+  return `<unsafe_content source="${SOURCE}">${escapeText(clipText(redactKeys(oneLine(text)), Infinity, max))}</unsafe_content>`;
 }
 
 // The tags an answer may carry when the model quotes what it read. Only real tags go.
@@ -206,13 +219,18 @@ function fileBlock(text) {
 }
 
 // The files of one message, each named (tagged: anyone can name a file) with its type, size and what came of it, and
-// the text of those that have one. imageNo(i): the number of the message's i-th file as an image of this input.
+// the text of those that have one. imageNo(i): the number of the message's i-th file as an image of this input. A file
+// the runner took off the list (unlisted: the names alone took more room than the input has) is counted in a line of
+// its own after the others.
 function filesText(ev, files, imageNo) {
   const lines = [`[Files attached to message ${ev.id}:]`];
+  let unlisted = 0;
   files.forEach((f, i) => {
+    if (f.unlisted) return void unlisted++;
     lines.push(`- ${unsafeInline(f.name, 255)} (${oneLine(f.type) || 'file'}, ${size(f.size)}). ${fileNote(f, imageNo(i))}`);
     if (typeof f.text === 'string' && (f.state === 'text' || f.state === 'pdf-text')) lines.push(fileBlock(f.text));
   });
+  if (unlisted) lines.push(`[${unlisted}${unlisted < files.length ? ' more' : ''} ${unlisted === 1 ? 'file' : 'files'} left off this list to keep this input short, so you can't open ${unlisted === 1 ? 'it' : 'them'}.]`);
   return lines.join('\n');
 }
 
@@ -287,8 +305,9 @@ function roleOf(ev, { me, sender, senderIsAgent }) {
 // entry has its files by name alone. Returns { instructions, input, text, images, plain, kept }: text is both joined,
 // for a runtime that takes one prompt. images: the images that go along, in the order the input names them, each
 // { index, name, type, data, message, label } with the label to put before it. plain: the same input for a runtime that
-// turns out to take no images, every image said to be out of reach; null without images. kept: the ids of the context
-// messages the input holds. Agent keys in the input and the labels are replaced (redactKeys).
+// turns out to take no images, every image said to be out of reach, which takes more room than the input with them;
+// null without images. kept: the ids of the context messages the input holds. Agent keys in the input and the labels
+// are replaced (redactKeys).
 function buildInput(params) {
   const full = build(params, true);
   if (!full.images.length) return { ...full, plain: null };
@@ -379,7 +398,7 @@ function build({ agent, workspace, channel, trigger, context = [], people = new 
   const images = [];
   const numbered = (ev, list) => {
     const numbers = list.map((f) => {
-      if (f.state !== 'image' || !f.image) return null;
+      if (f.state !== 'image' || !f.image || f.unlisted) return null;
       const index = images.length + 1;
       images.push({ index, name: f.name, type: f.image.type, data: f.image.data, message: ev.id, label: redactKeys(imageLabel(index, f, ev)) });
       return index;
@@ -518,6 +537,8 @@ module.exports = {
   escapeText,
   escapedLength,
   escapedPrefix,
+  clipText,
+  dropKeyTail,
   untag,
   cleanAnswer,
   convertMentions,

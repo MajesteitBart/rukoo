@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { Rukoo, RukooError, KeyRefused, uuidv7, retryAfter } = require('./rukoo');
 const { makeBackend, BackendError } = require('./backends');
-const { buildInput, cleanAnswer, convertMentions, splitReply, fileKind, imageType, isPdf, decodeText, escapedLength, escapedPrefix, FILE_TEXT_MAX, FILES_TEXT_MAX, IMAGE_MAX, IMAGES_MAX, IMAGES_BYTES, PDF_MAX, CONTEXT_SLACK } = require('./prompt');
+const { buildInput, cleanAnswer, convertMentions, splitReply, fileKind, imageType, isPdf, decodeText, escapedLength, clipText, dropKeyTail, redactKeys, FILE_TEXT_MAX, FILES_TEXT_MAX, IMAGE_MAX, IMAGES_MAX, IMAGES_BYTES, PDF_MAX, CONTEXT_SLACK } = require('./prompt');
 
 const DEFAULT_KEY_ENV = 'RUKOO_AGENT_KEY';
 // Version 2 keeps an answer being posted per channel; version 1 kept one for the whole workspace.
@@ -70,6 +70,9 @@ function normalizeConfig(raw, { dir = process.cwd(), name = 'agent', env = proce
     key,
     keyEnv,
     allowHttp: raw.allowHttp === true,
+    // The files origin of a server on a private network, which the runner may download from at a private address
+    // (rukoo.js linkRoute). The Rukoo constructor checks it as it checks "server".
+    privateFilesOrigin: raw.privateFilesOrigin === undefined || raw.privateFilesOrigin === null || raw.privateFilesOrigin === '' ? null : raw.privateFilesOrigin,
     backend: raw.backend,
     context: {
       threadMessages: int(context.threadMessages, 50, 1, 200),
@@ -161,7 +164,7 @@ class Runner {
         report(event);
       } catch {}
     };
-    this.api = new Rukoo({ server: config.server, workspace: config.workspace, key: config.key, allowHttp: config.allowHttp });
+    this.api = new Rukoo({ server: config.server, workspace: config.workspace, key: config.key, allowHttp: config.allowHttp, privateFilesOrigin: config.privateFilesOrigin });
     // Child processes never get the agent's key, or the backend's own secret, by name or by value.
     const b = config.backend && typeof config.backend === 'object' ? config.backend : {};
     const backendEnv = typeof b.keyEnv === 'string' ? b.keyEnv.trim() : '';
@@ -725,12 +728,14 @@ class Runner {
 
   // What comes of the files of the trigger and its context: Map of event id → one view per attachment (prompt.js
   // fileNote). The input stays within maxChars as the runtime gets it, with every file's text escaped and wrapped in
-  // its block. The trigger's files come first, in the room the input leaves with the trigger and no earlier message:
-  // each file's text up to FILE_TEXT_MAX, and all files' text up to FILES_TEXT_MAX. Then those of the context messages
-  // the input keeps, in the order buildInput keeps them (the thread's first message, then the newest first), each in
-  // the room the messages before it in that order leave. Images go only to a backend that takes them (its images
-  // property), up to IMAGE_MAX each and IMAGES_MAX or IMAGES_BYTES in all. A file that can't go along keeps its name,
-  // type and size, and the reason.
+  // its block, and so does the same input without images (buildInput's plain), whose notes for the images are longer.
+  // The trigger's files come first, in the room the input leaves with the trigger and no earlier message: each file's
+  // text up to FILE_TEXT_MAX, and all files' text up to FILES_TEXT_MAX; when even their names take more than that
+  // room, the last of them leave the list for a line that counts them. Then those of the context messages the input
+  // keeps, in the order buildInput keeps them (the thread's first message, then the newest first), each in the room
+  // the messages before it in that order leave. Images go only to a backend that takes them (its images property), up
+  // to IMAGE_MAX each and IMAGES_MAX or IMAGES_BYTES in all. A file that can't go along keeps its name, type and size,
+  // and the reason.
   async files(c, params) {
     const { trigger, context, threadStart } = params;
     const maxChars = this.config.context.maxChars;
@@ -742,7 +747,7 @@ class Runner {
     if (!views.size) return views;
     const budget = { text: FILES_TEXT_MAX, images: 0, imageBytes: 0 };
     // maxChars 0 keeps no earlier message: the input as it reads when the trigger's files leave the context no room.
-    if (views.has(trigger.id)) await this.fetchFiles(c, views.get(trigger.id), budget, () => maxChars - buildInput({ ...params, files: views, maxChars: 0 }).input.length);
+    if (views.has(trigger.id)) await this.fetchFiles(c, views.get(trigger.id), budget, () => maxChars - inputLength(buildInput({ ...params, files: views, maxChars: 0 })), { unlist: true });
     const kept = new Set(buildInput({ ...params, files: views }).kept);
     const order = [];
     if (threadStart && context.length && context[0].id === threadStart) order.push(context[0]);
@@ -754,7 +759,7 @@ class Runner {
     for (const ev of order) {
       upTo.add(ev.id);
       if (!kept.has(ev.id) || !views.has(ev.id)) continue;
-      const room = () => maxChars - CONTEXT_SLACK - buildInput({ ...params, context: context.filter((e) => upTo.has(e.id)), files: views }).input.length;
+      const room = () => maxChars - CONTEXT_SLACK - inputLength(buildInput({ ...params, context: context.filter((e) => upTo.has(e.id)), files: views }));
       await this.fetchFiles(c, views.get(ev.id), budget, room);
     }
     return views;
@@ -763,13 +768,17 @@ class Runner {
   // Downloads what of each file of one message can go along, and says what came of it in its state: text, pdf-text,
   // image, or why not (prompt.js fileNote). room(): how many characters the input has left as it is now, which a file's
   // text takes escaped. Once the message's files are done, the text of its last files is cut until room() is no longer
-  // below 0, since a file that went by its name can take more of the input than it did before. A download that fails
-  // leaves the file by its name ('failed'); only a key that stopped working, or the runner's stop, ends the turn.
-  async fetchFiles(c, list, budget, room) {
+  // below 0, since a file that went by its name can take more of the input than it did before. unlist: the message to
+  // answer, which the input can't leave out: while its files' names alone take more than room(), the last of them
+  // leave the list (unlistFiles), before the downloads and once more after them. A download that fails leaves the file
+  // by its name ('failed'); only a key that stopped working, or the runner's stop, ends the turn.
+  async fetchFiles(c, list, budget, room, { unlist = false } = {}) {
     const signal = this.abort.signal;
     const takesImages = Boolean(this.backend && this.backend.images === true);
+    if (unlist) unlistFiles(list, budget, room);
     for (const f of list) {
       if (this.stopped) throw new Error('Stopped');
+      if (f.unlisted) continue;
       try {
         if (f.kind === 'text') {
           const chars = Math.min(FILE_TEXT_MAX, budget.text);
@@ -781,15 +790,14 @@ class Runner {
           }
           // Enough bytes for that many characters in any encoding the runner reads, and a byte order mark.
           const got = await this.download(c, f, Math.min(chars, space) * 4 + 4);
-          const text = decodeText(got.bytes, { partial: got.over });
-          if (text.slice(0, 8192).includes('\u0000')) {
+          const decoded = decodeText(got.bytes, { partial: got.over });
+          if (decoded.slice(0, 8192).includes('\u0000')) {
             f.state = 'binary';
             continue;
           }
-          f.text = escapedPrefix(text, space, chars);
-          f.truncated = got.over || f.text.length < text.length;
-          f.state = 'text';
-          budget.text -= f.text.length;
+          // The keys come out of all that came before any of it is cut, and a key the download stopped in goes too.
+          const text = got.over ? dropKeyTail(redactKeys(decoded)) : redactKeys(decoded);
+          takeText(f, 'text', text, { space, chars, cut: got.over }, budget);
         } else if (f.kind === 'pdf') {
           if (!this.readPdf) f.state = 'no-pdf-reader';
           else if (f.size > PDF_MAX) f.state = 'pdf-too-large';
@@ -825,6 +833,7 @@ class Runner {
       }
     }
     fitFiles(list, budget, room);
+    if (unlist) unlistFiles(list, budget, room);
   }
 
   // chars: the most characters of the PDF's text that go along; space: the most they may take escaped.
@@ -839,29 +848,33 @@ class Runner {
       read = null;
     }
     if (this.stopped) throw new Error('Stopped');
-    const text = read && typeof read.text === 'string' ? read.text : '';
+    let text = read && typeof read.text === 'string' ? read.text : '';
+    // The reader stopped at its limit or cut its text there: a character it cut in two, and a key it cut, go.
+    const cut = Boolean(read && (read.truncated || read.partial === true));
+    if (cut) text = text.replace(/[\ud800-\udbff]$/, '');
+    text = cut ? dropKeyTail(redactKeys(text)) : redactKeys(text);
     if (text.trim()) {
-      f.text = escapedPrefix(text, space, chars);
-      f.truncated = Boolean(read.truncated) || f.text.length < text.length;
       f.partial = read.partial === true;
-      f.state = 'pdf-text';
-      budget.text -= f.text.length;
+      takeText(f, 'pdf-text', text, { space, chars, cut: Boolean(read.truncated) }, budget);
+      if (f.state !== 'pdf-text') delete f.partial;
     } else if (read && read.encrypted) f.state = 'pdf-encrypted';
     else if (!read || read.failed) f.state = 'pdf-failed';
     else f.state = 'pdf-empty';
   }
 
   // The first keep bytes of a file: { bytes, over }, over when the file holds more. The link comes with the agent's key
-  // and must name the file's size and SHA-256; the bytes come from the link alone, and the whole file goes through
-  // SHA-256 to check both, also when only its start goes along. whole: only the whole file is any use (an image, a
-  // PDF), so one larger than keep isn't downloaded. A link without a size or digest, or bytes that don't match them,
-  // throw FileRefused, and the file goes by its name.
+  // and must name the file's size, at least a byte as the server takes files (src/main/workspaces/wire.js
+  // checkDownload), and its SHA-256; the bytes come from the link alone, and the whole file goes through SHA-256 to
+  // check both, also when only its start goes along. whole: only the whole file is any use (an image, a PDF), so one
+  // larger than keep isn't downloaded. A link without a size or digest, or bytes that don't match them, throw
+  // FileRefused, and the file goes by its name.
   async download(c, f, keep, { whole = false } = {}) {
     if (typeof f.id !== 'string' || !f.id) throw new FileRefused('it has no id');
     const link = await this.api.fileLink(c, f.id, { signal: this.abort.signal });
     const size = link && link.size;
     const sha256 = link && link.sha256;
     if (!link || typeof link.url !== 'string' || typeof sha256 !== 'string' || !SHA256.test(sha256) || !Number.isSafeInteger(size) || size < 0) throw new FileRefused('the link named no size or SHA-256');
+    if (size === 0) throw new FileRefused('the link named a size of 0 bytes');
     if (Number.isSafeInteger(this.api.fileLimit) && size > this.api.fileLimit) throw new FileRefused('the link named a size larger than the server takes');
     if (whole && size > keep) return { bytes: Buffer.alloc(0), over: true };
     const got = await this.api.fetchFile(link.url, { keep, limit: size, signal: this.abort.signal });
@@ -1110,16 +1123,53 @@ function roomWith(f, probe, room) {
   }
 }
 
+// How long an input is (prompt.js buildInput): the longer of the input with images and the same without them (plain),
+// which a backend sends when its server takes no images.
+const inputLength = (built) => Math.max(built.input.length, built.plain ? built.plain.input.length : 0);
+
+// f as one with text: state, and the start of text, whose keys are out, that fits in space escaped and in chars
+// (clipText, which leaves no part of a key at the cut). cut: text is already short of the file's. A file whose cut
+// leaves nothing goes as left out.
+function takeText(f, state, text, { space, chars, cut }, budget) {
+  const kept = clipText(text, space, chars);
+  if (!kept && text) {
+    delete f.text;
+    f.state = 'left-out';
+    return;
+  }
+  f.text = kept;
+  f.truncated = cut || kept.length < text.length;
+  f.state = state;
+  budget.text -= kept.length;
+}
+
+// While room() is below 0, the last file still on the list leaves it, with its text and its image, and the input
+// counts it in a line of its own (prompt.js filesText). For the message to answer, which the input never leaves out:
+// otherwise the names of many files with long names can take more than maxChars by themselves.
+function unlistFiles(list, budget, room) {
+  for (let i = list.length - 1; i >= 0 && room() < 0; i--) {
+    const f = list[i];
+    if (f.unlisted) continue;
+    if (typeof f.text === 'string') budget.text += f.text.length;
+    if (f.image) {
+      budget.images -= 1;
+      budget.imageBytes -= f.image.data.length;
+    }
+    for (const k of ['text', 'truncated', 'partial', 'image']) delete f[k];
+    f.unlisted = true;
+  }
+}
+
 // Cuts the text of a message's files, the last one first, until room() is no longer below 0: each cut takes off as
-// many characters as the input is over, counted escaped, and a file left without text goes as left out. What is cut
-// goes back to the budget.
+// many characters as the input is over, counted escaped, and no part of a key at the cut (clipText); a file left
+// without text goes as left out. What is cut goes back to the budget.
 function fitFiles(list, budget, room) {
   for (let over = -room(); over > 0; over = -room()) {
     const f = list.findLast((x) => typeof x.text === 'string' && (x.state === 'text' || x.state === 'pdf-text'));
     if (!f) return;
     const before = f.text.length;
     const keep = escapedLength(f.text) - over;
-    f.text = keep > 0 ? escapedPrefix(f.text, keep) : '';
+    f.text = keep > 0 ? clipText(f.text, keep) : '';
     f.truncated = true;
     if (!f.text) {
       delete f.text;
