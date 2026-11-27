@@ -137,6 +137,10 @@ const KEYS = {
   invalid_state: 'chat.errors.failed',
   expired: 'chat.errors.failed',
   unreadable: 'chat.errors.fileUnreadable',
+  // Take the key out (files.js redactKeys): the bytes that uploaded aren't on this computer any more, or the file there
+  // changed since, so the person attaches it again.
+  file_gone: 'chat.errors.fileGone',
+  file_changed: 'chat.errors.fileChanged',
   // Agents in channels (server/WORKSPACES.md "Agents"): what the routes for people refuse about an agent.
   agent_limit: 'chat.errors.agentLimit',
   agent_in_dm: 'chat.errors.agentInDm',
@@ -1208,8 +1212,9 @@ function sideOf(v, field) {
   return v;
 }
 
-// A File object as the renderer hands it back in a draft: a ready file's ID and metadata, and when its upload
-// expires unsent.
+// A File object as the renderer hands it back in a draft: a ready file's ID and metadata, when its upload expires
+// unsent, and agentKey: true when main found an agent's key in it (files.js), so the composer asks again after a
+// restart, when the bytes aren't here to read any more.
 function fileObject(v, field = 'attachments') {
   plain(v, field);
   const out = { id: pattern(FILE_ID, field)(v.id), name: fileName(v.name, field), type: mimeType(v.type, field) };
@@ -1223,6 +1228,8 @@ function fileObject(v, field = 'attachments') {
     if (!Number.isSafeInteger(v.expiresAt) || v.expiresAt < 0 || v.expiresAt > TIME_MAX) throw invalid(field);
     out.expiresAt = v.expiresAt;
   }
+  if (v.agentKey !== undefined && typeof v.agentKey !== 'boolean') throw invalid(field);
+  if (v.agentKey === true) out.agentKey = true;
   return out;
 }
 
@@ -1446,6 +1453,7 @@ const ARGS = {
   chatStage: (w, conv, root, source) => [ws(w), c(conv), input.root(root), input.stageSource(source)],
   chatUnstage: (stage) => [input.stage(stage)],
   chatRetryStage: (stage) => [input.stage(stage)],
+  chatRedactStaged: (stage) => [input.stage(stage)],
   chatStaged: (w, conv, root) => [ws(w), c(conv), input.root(root)],
   chatFile: (w, conv, file, action) => [ws(w), c(conv), input.file(file), input.fileAction(action)],
   chatRemovePreview: (w, conv, message, url) => [ws(w), c(conv), input.message(message), input.previewUrl(url)]

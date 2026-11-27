@@ -271,7 +271,7 @@ test('a picked image and PDF are measured, reserved and uploaded, with their sta
   const b = await svc.files.stage(W, C, null, { path: picked[1].path });
   assert.equal(a.state, 'measuring');
   assert.match(a.stage, wire.patterns.LOCAL_ID);
-  assert.deepEqual(Object.keys(a).sort(), ['conversation', 'error', 'expiresAt', 'file', 'height', 'loaded', 'name', 'root', 'size', 'stage', 'state', 'thumb', 'type', 'width', 'ws']);
+  assert.deepEqual(Object.keys(a).sort(), ['agentKey', 'conversation', 'error', 'expiresAt', 'file', 'height', 'loaded', 'name', 'root', 'size', 'stage', 'state', 'thumb', 'type', 'width', 'ws']);
   const one = await ready(svc, a.stage);
   const two = await ready(svc, b.stage);
   assert.deepEqual([one.state, one.width, one.height, one.type, one.thumb], ['ready', 640, 480, 'image/png', 'data:image/png;base64,AAAA']);
@@ -330,6 +330,193 @@ test('pasted bytes go to a file in the profile first, and an image takes the typ
   // Removing it takes the temporary file with it.
   svc.files.unstage(s.stage);
   await until(() => !fs.existsSync(entry.path), 2000, 'the temporary file to go');
+});
+
+test('a text file with an agent key in it says so, and taking the key out uploads a copy without it in the same place', async (t) => {
+  const { svc, links, calls, uploads, pick, dir } = await setup(t);
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const config = Buffer.from(`{\n  "server": "https://rukoo.example",\n  "key": "${key}",\n  "note": "café"\n}\n`);
+  const [p] = await pick(writeFile(dir, 'agent.json', config));
+  const keyed = await svc.files.stage(W, C, null, { path: p.path });
+  const plain = await svc.files.stage(W, C, null, { name: 'notes.txt', type: 'text/plain', bytes: Buffer.from('no key here, rka_short.too') });
+  const wide = await svc.files.stage(W, C, null, { name: 'wide.txt', type: 'text/plain', bytes: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`key ${key}`, 'utf16le')]) });
+  const picture = await svc.files.stage(W, C, null, { name: 'shot.png', type: 'image/png', bytes: new Uint8Array(png(4, 4)) });
+  const first = await ready(svc, keyed.stage);
+  assert.equal(first.agentKey, true);
+  assert.equal((await ready(svc, plain.stage)).agentKey, false);
+  assert.equal((await ready(svc, wide.stage)).agentKey, true);
+  assert.equal((await ready(svc, picture.stage)).agentKey, false);
+  assert.equal(svc.files.list(W, C, null).find((s) => s.stage === keyed.stage).agentKey, true);
+  const oldFile = first.file;
+
+  const redacted = await svc.files.redactKeys(keyed.stage);
+  // The file keeps its key mark until the copy without the key is measured, and can't be sent meanwhile.
+  assert.deepEqual([redacted.state, redacted.agentKey, redacted.file], ['measuring', true, null]);
+  assert.equal(redacted.stage, keyed.stage);
+  const again = await ready(svc, keyed.stage);
+  assert.equal(again.state, 'ready');
+  assert.equal(again.agentKey, false);
+  assert.notEqual(again.file, oldFile);
+  const sent = links.put.get(again.file);
+  assert.equal(sent.toString('utf8'), config.toString('utf8').replace(key, '[agent key removed]'));
+  assert.ok(sent.toString('utf8').includes('café'), 'the rest of the file stays as it was');
+  // The upload with the key was cancelled on the server; the copy is the file's in the tray, in its place.
+  assert.ok(calls.some((c) => c.method === 'DELETE' && c.route.endsWith(`/uploads/${oldFile}`)));
+  assert.equal(uploads.has(oldFile), false);
+  assert.deepEqual(svc.files.list(W, C, null).map((s) => s.name), ['agent.json', 'notes.txt', 'wide.txt', 'shot.png']);
+  assert.ok(fs.existsSync(p.path), 'the file the person picked stays as it is');
+  assert.ok(fs.readFileSync(p.path, 'utf8').includes(key));
+
+  await svc.files.redactKeys(wide.stage);
+  const wideAgain = await ready(svc, wide.stage);
+  const wideSent = links.put.get(wideAgain.file);
+  assert.deepEqual([...wideSent.subarray(0, 2)], [0xff, 0xfe]);
+  assert.equal(wideSent.subarray(2).toString('utf16le'), 'key [agent key removed]');
+  // Only a text file that is ready or failed: an image is refused.
+  await assert.rejects(svc.files.redactKeys(picture.stage), (err) => err.code === 'invalid' && err.field === 'stage');
+  await assert.rejects(svc.files.redactKeys(wire.localId()), (err) => err.code === 'not_found');
+});
+
+// RUK-294 review, P1: a file edited on disk after its version with a key uploaded was read again for Take the key out,
+// found without the key, and kept its upload: the message then went with the key in its file.
+test('taking the key out works only from the bytes that uploaded: a file changed on disk since keeps its question and its upload', async (t) => {
+  const { svc, calls, uploads, links, pick, dir } = await setup(t);
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const original = `{\n  "key": "${key}"\n}\n`;
+  const file = writeFile(dir, 'agent.json', Buffer.from(original));
+  const [p] = await pick(file);
+  const s = await svc.files.stage(W, C, null, { path: p.path });
+  const first = { ...(await ready(svc, s.stage)) };
+  assert.deepEqual([first.state, first.agentKey], ['ready', true]);
+  const still = () => {
+    const now = svc.files.list(W, C, null)[0];
+    assert.deepEqual([now.state, now.file, now.agentKey], ['ready', first.file, true]);
+    assert.ok(uploads.has(first.file), 'the upload with the key stays, for Send anyway');
+    assert.ok(!calls.some((c) => c.method === 'DELETE'), 'nothing cancelled');
+  };
+  // Edited after it uploaded: the key is out of the file on disk, but not out of the upload.
+  fs.writeFileSync(file, '{\n  "key": "in the runner"\n}\n');
+  await assert.rejects(svc.files.redactKeys(s.stage), (err) => err.code === 'file_changed' && err.field === 'stage');
+  still();
+  // The same length with other bytes.
+  fs.writeFileSync(file, original.replace(key, 'x'.repeat(key.length)));
+  await assert.rejects(svc.files.redactKeys(s.stage), (err) => err.code === 'file_changed');
+  still();
+  // Gone from disk.
+  fs.rmSync(file);
+  await assert.rejects(svc.files.redactKeys(s.stage), (err) => err.code === 'file_gone');
+  still();
+  // Back as it uploaded: the key comes out of those bytes, and only a copy without it takes the upload's place.
+  fs.writeFileSync(file, original);
+  await svc.files.redactKeys(s.stage);
+  const again = await ready(svc, s.stage);
+  assert.equal(again.state, 'ready');
+  assert.notEqual(again.file, first.file);
+  assert.equal(again.agentKey, false);
+  assert.equal(links.put.get(again.file).toString('utf8'), original.replace(key, '[agent key removed]'));
+  assert.equal(uploads.has(first.file), false);
+});
+
+// The key scan and the SHA-256 come from one read of the file, so what the scan says is about the bytes that upload.
+test('a text file is read once to be measured, for its SHA-256 and the key scan both, and once more to upload', async (t) => {
+  const { svc, pick, dir } = await setup(t);
+  const fsp = require('fs/promises');
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const file = writeFile(dir, 'notes.txt', Buffer.from(`key ${key}\n`));
+  const reads = [];
+  const readFile = fsp.readFile;
+  const createReadStream = fs.createReadStream;
+  fsp.readFile = function (f, ...rest) {
+    if (String(f) === file) reads.push('read');
+    return readFile.call(this, f, ...rest);
+  };
+  fs.createReadStream = function (f, ...rest) {
+    if (String(f) === file) reads.push('stream');
+    return createReadStream.call(this, f, ...rest);
+  };
+  t.after(() => {
+    fsp.readFile = readFile;
+    fs.createReadStream = createReadStream;
+  });
+  const [p] = await pick(file);
+  const s = await svc.files.stage(W, C, null, { path: p.path });
+  const r = await ready(svc, s.stage);
+  assert.deepEqual([r.state, r.agentKey], ['ready', true]);
+  assert.deepEqual(reads, ['stream', 'stream'], 'one read to measure, one to upload');
+  assert.equal(svc.files.staged.get(s.stage).sha256, sha(fs.readFileSync(file)));
+});
+
+// RUK-294 second review, P1: the size a file had when it was attached chose whether it was scanned, so one attached at
+// over 1 MiB that held 80 bytes with a key by the time it was measured got agentKey false with the digest of those
+// bytes, and went without the question.
+test('whether a text file is scanned for a key goes by the size it is measured at, and a file that grew meanwhile is read in one bounded pass', async (t) => {
+  const { svc, links, pick, dir } = await setup(t);
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const small = Buffer.from(`{"key": "${key}"}\n`);
+  const file = writeFile(dir, 'agent.json', Buffer.alloc(1024 * 1024 + 100, 0x20));
+  // The file changes on disk as the first read after it was attached starts: the one that measures it.
+  let change = null;
+  const createReadStream = fs.createReadStream;
+  fs.createReadStream = function (f, ...rest) {
+    if (String(f) === file && change) {
+      fs.writeFileSync(file, change);
+      change = null;
+    }
+    return createReadStream.call(this, f, ...rest);
+  };
+  t.after(() => (fs.createReadStream = createReadStream));
+
+  const [p] = await pick(file);
+  change = small;
+  const s = await svc.files.stage(W, C, null, { path: p.path });
+  assert.equal(s.size, 1024 * 1024 + 100, 'attached at its size then');
+  const r = await ready(svc, s.stage);
+  assert.deepEqual([r.state, r.size, r.agentKey], ['ready', small.length, true]);
+  assert.equal(svc.files.staged.get(s.stage).sha256, sha(small));
+  assert.ok(links.put.get(r.file).equals(small), 'the bytes that upload are the ones scanned');
+
+  // The other way: attached small, measured at 2 MiB. Its digest is of all of it, and it is past what the scan reads.
+  const grown = Buffer.concat([small, Buffer.alloc(2 * 1024 * 1024, 0x20)]);
+  const other = writeFile(dir, 'notes.txt', small);
+  const [q] = await pick(other);
+  fs.createReadStream = function (f, ...rest) {
+    if (String(f) === other && !change) {
+      fs.writeFileSync(other, grown);
+      change = true;
+    }
+    return createReadStream.call(this, f, ...rest);
+  };
+  const s2 = await svc.files.stage(W, C, null, { path: q.path });
+  const r2 = await ready(svc, s2.stage);
+  assert.deepEqual([r2.state, r2.size, r2.agentKey], ['ready', grown.length, false]);
+  assert.equal(svc.files.staged.get(s2.stage).sha256, sha(grown));
+});
+
+// RUK-294 review, P1: a draft kept the upload of a file with a key but not what the scan found, so after a restart Send
+// posted it without asking.
+test('a draft keeps what the key scan found, its file comes back with it after a restart, and taking the key out then asks for the file again', async (t) => {
+  const { svc, store, uploads } = await setup(t);
+  const key = `rka_${'K'.repeat(22)}.${'s'.repeat(43)}`;
+  const s = await svc.files.stage(W, C, null, { name: 'agent.json', type: 'application/json', bytes: Buffer.from(`{"key": "${key}"}`) });
+  const r = await ready(svc, s.stage);
+  assert.equal(r.agentKey, true);
+  // The composer saves the draft with the file as chat-input.js fileOf has it, through chatSaveDraft's checks.
+  const [, , , draft] = wire.checkArgs('chatSaveDraft', [W, C, null, { text: 'the config', mentions: [], attachments: [{ id: r.file, name: r.name, type: r.type, size: r.size, expiresAt: r.expiresAt, agentKey: true }] }]);
+  store.putDraft(W, C, null, draft);
+  // Rukoo restarts: the staged files in memory are gone, and the draft is read again.
+  svc.files.close();
+  svc.files = new Files(svc);
+  const kept = store.getDraft(W, C, null).attachments;
+  assert.equal(kept[0].agentKey, true);
+  svc.files.restore(W, C, null, kept);
+  const [back] = svc.files.list(W, C, null);
+  assert.deepEqual([back.file, back.state, back.agentKey], [r.file, 'ready', true]);
+  // Its bytes aren't on this computer any more: the person attaches it again, and the upload with the key stays.
+  await assert.rejects(svc.files.redactKeys(back.stage), (err) => err.code === 'file_gone' && err.field === 'stage');
+  assert.equal(svc.files.list(W, C, null)[0].agentKey, true);
+  assert.ok(uploads.has(r.file));
+  // What goes to the server with the message is the File object alone.
+  assert.deepEqual(svc.files.forSend(W, C, null, [r.file]), [{ id: r.file, name: 'agent.json', type: 'application/json', size: r.size }]);
 });
 
 test('progress goes out at most every 100 ms, and Remove cancels the upload on its way and on the server', async (t) => {

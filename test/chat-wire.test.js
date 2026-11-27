@@ -424,7 +424,7 @@ const METHODS = [
   'chatAddToChannel', 'chatSetChannelRole', 'chatRemoveFromChannel', 'chatLeaveChannel', 'chatStartDm', 'chatLeaveDm',
   'chatBlock', 'chatUnblock',
   // Rich messages (rich contract 4.3).
-  'chatReact', 'chatMarkUnread', 'chatPickFiles', 'chatStage', 'chatUnstage', 'chatRetryStage', 'chatStaged', 'chatFile',
+  'chatReact', 'chatMarkUnread', 'chatPickFiles', 'chatStage', 'chatUnstage', 'chatRetryStage', 'chatRedactStaged', 'chatStaged', 'chatFile',
   'chatRemovePreview',
   // Agents in channels (server/WORKSPACES.md "Agents").
   'chatAgents', 'chatCreateAgent', 'chatUpdateAgent', 'chatNewAgentKey', 'chatRemoveAgent'
@@ -457,6 +457,11 @@ const CALLS = {
       [
         [W, C, null, { text: '', attachments: [{ id: F2, name: 'foto.png', type: 'image/png', size: 9, width: 4, height: 3, expiresAt: 5, extra: 1 }] }],
         [W, C, null, { text: '', mentions: [], attachments: [{ id: F2, name: 'foto.png', type: 'image/png', size: 9, width: 4, height: 3, expiresAt: 5 }] }]
+      ],
+      // RUK-294: a file main found an agent's key in keeps that in the draft; false is the same as leaving it out.
+      [
+        [W, C, null, { text: '', attachments: [{ id: F2, name: 'agent.json', type: 'application/json', size: 9, expiresAt: 5, agentKey: true }, { id: F, name: 'a.txt', type: 'text/plain', size: 1, agentKey: false }] }],
+        [W, C, null, { text: '', mentions: [], attachments: [{ id: F2, name: 'agent.json', type: 'application/json', size: 9, expiresAt: 5, agentKey: true }, { id: F, name: 'a.txt', type: 'text/plain', size: 1 }] }]
       ]
     ],
     bad: [
@@ -466,7 +471,8 @@ const CALLS = {
       [[W, C, null, 'draft'], 'draft'],
       [[W, C, null, { text: '', attachments: [{ id: E, name: 'a', type: 'text/plain', size: 1 }] }], 'attachments'],
       [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 0 }] }], 'attachments'],
-      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 1, width: 0 }] }], 'attachments']
+      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 1, width: 0 }] }], 'attachments'],
+      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 1, agentKey: 'yes' }] }], 'attachments']
     ]
   },
   chatDraft: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]], [[W, C], [W, C, null]]], bad: [[[W, C, 'e_x'], 'root'], [[W, E, null], 'conversation']] },
@@ -563,6 +569,7 @@ const CALLS = {
   },
   chatUnstage: { ok: [[[LOCAL], [LOCAL]]], bad: [[['x'], 'stage']] },
   chatRetryStage: { ok: [[[LOCAL], [LOCAL]]], bad: [[[null], 'stage']] },
+  chatRedactStaged: { ok: [[[LOCAL], [LOCAL]]], bad: [[[null], 'stage'], [['x'], 'stage']] },
   chatStaged: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]]], bad: [[[W, C, 'e_x'], 'root']] },
   chatFile: { ok: [[[W, C, F, 'view'], [W, C, F, 'view']], [[W, C, F, 'save'], [W, C, F, 'save']]], bad: [[[W, C, E, 'view'], 'file'], [[W, C, F, 'delete'], 'action']] },
   chatRemovePreview: { ok: [[[W, C, E, 'https://example.com/a'], [W, C, E, 'https://example.com/a']]], bad: [[[W, C, E, 'javascript:alert(1)'], 'url'], [[W, C, E, 5], 'url']] },

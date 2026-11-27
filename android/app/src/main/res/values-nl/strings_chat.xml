@@ -226,6 +226,11 @@
     <string name="chat_input_placeholder_thread">Antwoorden…</string>
     <string name="chat_input_send">Versturen (Enter)</string>
     <string name="chat_input_too_long">Dit bericht is te lang om te versturen. Splits het in tweeën.</string>
+    <string name="chat_input_key_title">Sleutel van een agent versturen?</string>
+    <string name="chat_input_key_in_text">Dit bericht bevat de sleutel van een agent.</string>
+    <string name="chat_input_key_body">Wie dit gesprek leest, kan met die sleutel elk kanaal lezen waarin de agent zit, en erin schrijven als de agent. De sleutel van een agent hoort in zijn runner, nooit in een bericht.</string>
+    <string name="chat_input_key_remove">Sleutel eruit halen</string>
+    <string name="chat_input_key_send_anyway">Toch versturen</string>
     <string name="chat_input_too_many_mentions">Een bericht kan hoogstens 32 mensen noemen.</string>
     <string name="chat_input_not_joined">Je doet nog niet mee in #%1$s.</string>
     <string name="chat_input_join">Deelnemen aan #%1$s</string>

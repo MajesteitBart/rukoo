@@ -26,7 +26,7 @@ process.stdin.on('data', (c) => (input += c));
 process.stdin.on('end', () => {
   const env = Object.entries(process.env);
   const leaked = env.some(([k, v]) => k.toUpperCase() === 'RUKOO_AGENT_KEY' || String(v).includes('rka_') || String(v).includes('backend-secret-value'));
-  if (process.env.FAKE_LOG) fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ leaked, pid: process.pid }) + '\\n');
+  if (process.env.FAKE_LOG) fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ leaked, pid: process.pid, input }) + '\\n');
   if (process.env.FAKE_WAIT) return setTimeout(() => process.stdout.write(process.env.FAKE_REPLY || 'Hello from here.'), Number(process.env.FAKE_WAIT));
   process.stdout.write(process.env.FAKE_REPLY || 'Hello from here.');
 });
@@ -185,6 +185,7 @@ function makeRuns(o = {}) {
     stopWait: o.stopWait || 2000,
     heldFor: o.heldFor,
     ...(o.fork ? { fork: o.fork } : {}),
+    ...(o.readPdf ? { readPdf: o.readPdf } : {}),
     log: (level, message) => lines.push(`${level} ${message}`)
   }).init();
   return { runs, dataDir, lines, asked, logFile, calls: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []) };
@@ -241,6 +242,46 @@ test('a second start while the first runner boots waits for its exit, and each r
   const files = fs.existsSync(path.join(a.dataDir, 'agent-runs')) ? fs.readdirSync(path.join(a.dataDir, 'agent-runs')) : [];
   assert.deepEqual(files.filter((f) => !f.endsWith('.state.json')), [], 'no config file on disk');
   assert.ok(!profileText(a.dataDir).includes(KEY) && !profileText(a.dataDir).includes('hermes-secret-value'));
+});
+
+test("a runner asks main for a PDF's text: main's reader reads it, and only that process gets the text, cut to one file's", async (t) => {
+  const forks = fakeForks();
+  const reads = [];
+  const readPdf = async (bytes, opts) => {
+    reads.push({ head: bytes.subarray(0, 5).toString('latin1'), size: bytes.length, maxChars: opts.maxChars });
+    return { text: 'p'.repeat(30000), pages: 3, truncated: true, partial: false, encrypted: false, failed: null, extra: 'not passed on' };
+  };
+  const a = makeRuns({ fork: forks, backendFor: fakeBackends(), readPdf });
+  t.after(() => a.runs.close());
+  a.runs.hold(W, A, KEY, 1);
+  await a.runs.start(W, A, { use: 'claude', owner: 1 });
+  const c = forks.all[0];
+  const ask = (msg) => {
+    for (const fn of c.msg) fn(msg);
+  };
+  const pdf = Buffer.from('%PDF-1.4 a small one');
+  ask({ type: 'pdf', id: 7, data: pdf.toString('base64'), maxChars: 50000 });
+  await until(() => c.posts.some((p) => p.type === 'pdf' && p.id === 7), 2000, 'the answer');
+  const answer = c.posts.find((p) => p.type === 'pdf' && p.id === 7);
+  assert.deepEqual(reads, [{ head: '%PDF-', size: pdf.length, maxChars: 20000 }]);
+  assert.deepEqual(Object.keys(answer.result).sort(), ['encrypted', 'failed', 'partial', 'text', 'truncated']);
+  assert.equal(answer.result.text.length, 20000);
+  assert.equal(answer.result.truncated, true);
+  // What isn't a request gets a PDF without text, and the reader isn't asked.
+  ask({ type: 'pdf', id: 8, data: 42, maxChars: 100 });
+  ask({ type: 'pdf', id: 9, data: 'A'.repeat(14 * 1024 * 1024), maxChars: 100 });
+  ask({ type: 'pdf', id: 10, data: pdf.toString('base64'), maxChars: 0 });
+  await until(() => [8, 9, 10].every((id) => c.posts.some((p) => p.type === 'pdf' && p.id === id)), 2000, 'the refusals');
+  for (const id of [8, 9, 10]) assert.deepEqual(c.posts.find((p) => p.type === 'pdf' && p.id === id).result, { text: '', truncated: false, partial: false, encrypted: false, failed: 'error' });
+  assert.equal(reads.length, 1);
+  // A process that was asked to stop gets nothing more.
+  const stopped = a.runs.stop(W, A);
+  await sleep(20);
+  ask({ type: 'pdf', id: 11, data: pdf.toString('base64'), maxChars: 100 });
+  await sleep(50);
+  assert.ok(!c.posts.some((p) => p.type === 'pdf' && p.id === 11));
+  c.exit(0);
+  await stopped;
 });
 
 test('stop while the runner boots ends it and nothing starts again', async (t) => {
@@ -1101,6 +1142,27 @@ test('Run on this computer answers a mention, keeps the key encrypted and out of
   await until(() => phaseOf(b.runs, ws.id, agent.id) === 'running', 20000, 'running after the restart');
   await ask(bart, ws, '@Clark still there?', agent);
   await until(async () => (await replies(bart, ws, agent.id)).some((e) => e.text === 'Back again.'), 20000, 'the reply after the restart', 250);
+});
+
+test("Run on this computer reads a PDF in a channel with Rukoo's own reader, which the runner on its own doesn't have", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { makePdf } = require('./fixtures/make-pdf');
+  const { PdfReader } = require('../src/main/pdfread.js');
+  const reader = new PdfReader();
+  t.after(() => reader.dispose());
+  const { bart, ws, agent, key } = await setup();
+  const a = makeRuns({ readPdf: (bytes, opts) => reader.read(bytes, opts) });
+  t.after(() => a.runs.close());
+  a.runs.takeKey(ws.id, { agent, key }, { owner: 1 });
+  await a.runs.start(ws.id, agent.id, { use: 'claude', owner: 1 });
+  await until(() => phaseOf(a.runs, ws.id, agent.id) === 'running', 20000, 'running');
+  const file = await server.upload(bart, ws.id, ws.general, { name: 'plan.pdf', type: 'application/pdf', bytes: makePdf([['Launch on the ninth of March.']]) });
+  const text = '@Clark when is the launch?';
+  await server.post(bart, ws.id, ws.general, text, { mentions: [mention(text, '@Clark', agent.id)], attachments: [file.id] });
+  await until(async () => (await replies(bart, ws, agent.id)).length === 1, 30000, 'the reply', 250);
+  const [call] = a.calls();
+  assert.match(call.input, /plan\.pdf<\/unsafe_content> \(application\/pdf, \d+ B\)\. The text the reader took from this PDF:\n<unsafe_content source="team chat file">\nLaunch on the ninth of March\./);
+  assert.equal(call.leaked, false);
 });
 
 test('New key replaces the stored key and the runner answers with it; Stop stops it and a mention gets no reply', async (t) => {

@@ -414,8 +414,9 @@ test('every chat*, account and host method answers; anything else says it is not
   const page = openPage();
   t.after(() => page.close());
   await page.ready();
-  // 55 before agents in channels, plus chatAgents, chatCreateAgent, chatUpdateAgent, chatNewAgentKey, chatRemoveAgent.
-  assert.equal(CHAT_METHODS.length, 60);
+  // 55 before agents in channels, plus chatAgents, chatCreateAgent, chatUpdateAgent, chatNewAgentKey, chatRemoveAgent,
+  // and chatRedactStaged, which takes an agent key out of a staged file.
+  assert.equal(CHAT_METHODS.length, 61);
   for (const name of CHAT_METHODS) {
     const res = await page.invoke(name);
     if (name === 'chatState') {

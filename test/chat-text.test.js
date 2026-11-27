@@ -239,3 +239,32 @@ test('Undo of Discard puts the message after a kept draft on a new line, its ran
   assert.deepEqual(appendToDraft({ text: '', mentions: [] }, 'Hoi', []), { text: 'Hoi', mentions: [] });
   assert.deepEqual(appendToDraft({ text: 'Zoë', mentions: [{ actor: ann, start: 0, end: 3 }] }, 'Hoi', undefined), { text: 'Zoë\nHoi', mentions: [] });
 });
+
+test('an agent key is found in a message and taken out of its text, never out of a mention', async () => {
+  const { hasAgentKey, withoutAgentKeys, KEY_MARK } = await import(moduleUrl('chat-text.js'));
+  const key = `rka_${'A'.repeat(22)}.${'b_-'.repeat(14)}c`;
+  assert.equal(hasAgentKey(`use ${key} please`), true);
+  assert.equal(hasAgentKey('rka_too.short'), false);
+  assert.equal(hasAgentKey(''), false);
+  const chip = { member: `u_${'a'.repeat(22)}`, label: '@Clark' };
+  assert.deepEqual(withoutAgentKeys([`key ${key}, and `, chip, ` again ${key}`]), [`key ${KEY_MARK}, and `, chip, ` again ${KEY_MARK}`]);
+  assert.equal(KEY_MARK, '[agent key removed]');
+});
+
+// PR #439 review: a member named after a key put it in a mention's label, which Take the key out left alone, so the
+// question came back for the same message.
+test('a key in a mention, or running into one, takes the mention out as plain text, and the other mentions stay', async () => {
+  const { hasAgentKey, withoutAgentKeys, toWire, KEY_MARK } = await import(moduleUrl('chat-text.js'));
+  const key = `rka_${'A'.repeat(22)}.${'b'.repeat(43)}`;
+  const named = { member: `u_${'n'.repeat(22)}`, label: `@${key}` };
+  const clark = { member: `u_${'a'.repeat(22)}`, label: '@Clark' };
+  const out = withoutAgentKeys(['hi ', named, ' and ', clark]);
+  assert.deepEqual(out, [`hi @${KEY_MARK} and `, clark]);
+  const wire = toWire(out);
+  assert.equal(hasAgentKey(wire.text), false);
+  assert.deepEqual(wire.mentions.map((m) => m.actor), [clark.member]);
+  // A key that starts in the text and ends in a chip's label.
+  const split = withoutAgentKeys([key.slice(0, 30), { member: clark.member, label: key.slice(30) }, '!']);
+  assert.deepEqual(split, [`${KEY_MARK}!`]);
+  assert.equal(hasAgentKey(toWire(split).text), false);
+});

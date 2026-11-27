@@ -336,3 +336,33 @@ test('an answer that arrives for what forgetSeen dropped is thrown away, as afte
   assert.equal((await next).get(AGENT), 2000);
   assert.equal(seenOf(W, AGENT), 2000);
 });
+
+test('Add an agent can start from an agent this computer runs in another workspace, without its chosen people', async () => {
+  const { agentCopies, copiedSettings } = await loading;
+  const W2 = 'w_ZyXwVuTsRqPoNmLkJiHgFe';
+  const W3 = 'w_GoneGoneGoneGoneGoneGo';
+  const A = `u_${'a'.repeat(22)}`;
+  const B = `u_${'b'.repeat(22)}`;
+  const runs = [
+    { ws: W, agent: A, name: 'Here', use: 'claude', on: true },
+    { ws: W2, agent: A, name: 'Clark', use: 'clark', on: true, key: 'never here' },
+    { ws: W2, agent: B, name: 'Bea', use: 'codex', on: false },
+    { ws: W3, agent: B, name: 'Gone', use: 'codex', on: true },
+    { ws: W2, agent: B, name: 'No backend', use: '' }
+  ];
+  const copies = agentCopies(runs, { ws: W, workspaces: [{ id: W, name: 'Acme' }, { id: W2, name: 'Beta' }] });
+  // Only setups in another workspace the session still has, with what answers for them; never anything else of the run.
+  assert.deepEqual(copies, [
+    { ws: W2, agent: B, name: 'Bea', use: 'codex', workspace: 'Beta' },
+    { ws: W2, agent: A, name: 'Clark', use: 'clark', workspace: 'Beta' }
+  ]);
+  assert.deepEqual(agentCopies(null, { ws: W }), []);
+
+  const clark = copies[1];
+  assert.deepEqual(copiedSettings(clark, { id: A, name: 'Clark', answers: 'everyone', agents: true }), { name: 'Clark', answers: 'everyone', agents: true, use: 'clark', chosenDropped: false, unread: false });
+  // Chosen people are members of the other workspace: the new agent starts on Only me, and the form says why.
+  assert.deepEqual(copiedSettings(clark, { id: A, name: 'Clark', answers: 'members', members: [B], agents: false }), { name: 'Clark', answers: 'sponsor', agents: false, use: 'clark', chosenDropped: true, unread: false });
+  // Settings that couldn't be read: its name and what answers for it, on Only me.
+  assert.deepEqual(copiedSettings(clark, null), { name: 'Clark', answers: 'sponsor', agents: false, use: 'clark', chosenDropped: false, unread: true });
+  assert.equal(copiedSettings(clark, { id: A, name: 'Clark', answers: 'someday' }).answers, 'sponsor');
+});

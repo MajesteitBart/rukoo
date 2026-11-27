@@ -37,6 +37,44 @@ data class WireText(val text: String, val mentions: List<Mention>, val bytes: In
 }
 
 /**
+ * An agent's key in the composer's text (desktop chat-text.js `hasAgentKey`, `withoutAgentKeys`): `rka_`, 22
+ * characters, a dot and 43, as the server makes them. Whoever has one reads every channel its agent is in and writes
+ * there as the agent, so the composer asks before such a message goes, and Take the key out puts [MARK] in its place,
+ * the mark the runner and desktop Rukoo use too.
+ */
+object AgentKeys {
+    private val KEY = Regex("rka_[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}")
+    const val MARK = "[agent key removed]"
+
+    fun has(text: String): Boolean = KEY.containsMatchIn(text)
+
+    /**
+     * [value] with every key in its text replaced with [MARK]. Mentions after a key move with the text; a mention a key
+     * sits inside (a member named after one) leaves its text behind as plain text. The caret goes to the end.
+     */
+    fun removed(value: ComposerValue): ComposerValue {
+        val found = KEY.findAll(value.text).toList()
+        if (found.isEmpty()) return value
+        var text = value.text
+        var spans = value.spans
+        for (m in found.asReversed()) {
+            val start = m.range.first
+            val end = m.range.last + 1
+            val delta = MARK.length - (end - start)
+            text = text.replaceRange(start, end, MARK)
+            spans = spans.mapNotNull { s ->
+                when {
+                    s.end <= start -> s
+                    s.start >= end -> s.copy(start = s.start + delta, end = s.end + delta)
+                    else -> null
+                }
+            }
+        }
+        return ComposerValue(TextFieldValue(text, TextRange(text.length)), spans)
+    }
+}
+
+/**
  * Editing text with mentions in it (android.md "Composer with mentions"), pure so MentionEditingTest covers it. A
  * picked mention is `@` and the member's name as one unit: an edit elsewhere moves it, Backspace at its end or Delete
  * at its start removes it whole, and any other edit that touches it leaves the text and drops the mention. Typing

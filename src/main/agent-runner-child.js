@@ -15,6 +15,10 @@
 // a server or a backend. What this process writes to stderr, for diagnostics, is local too: the time, the level and a
 // code or a number, never a message, which can quote a server or a backend. The exit code is the runner's own: 0
 // stopped, 1 a config or startup problem, 2 the key stopped working, 3 the program is no longer the approved one.
+//
+// PDFs. The runner has no reader for PDFs of its own; this process lends it Rukoo's: { type: 'pdf', id, data,
+// maxChars } asks main for a PDF's text, which main's reader reads in a process of its own with limits on its time and
+// memory (src/main/pdfread.js), and { type: 'pdf', id, result } is the answer.
 const path = require('path');
 const { Runner, normalizeConfig, DEFAULT_KEY_ENV } = require('../../integrations/agent-runner/runner.js');
 const { KeyRefused, RukooError } = require('../../integrations/agent-runner/rukoo.js');
@@ -26,6 +30,11 @@ let stopping = false;
 let exiting = false;
 // Log lines so far, by level: the only thing a line says about what the runner logged.
 const lines = { info: 0, warn: 0, error: 0 };
+// How long a PDF may wait for main's answer: its reader's time (pdfread.js TIMEOUT) and its wait for a free reader
+// (TURN_WAIT), with room to spare.
+const PDF_WAIT = 45000;
+const pdfWaits = new Map();
+let pdfSeq = 0;
 
 function post(msg) {
   try {
@@ -55,6 +64,36 @@ function errorEvent(err) {
   return { type: 'error', code: err && (err.code === 'config' || err.code === 'server') ? err.code : 'runner' };
 }
 
+// The runner's readPdf: a promise of { text, truncated, partial, encrypted, failed } from main's reader. It never
+// rejects: no answer within PDF_WAIT, or the runner's stop, is a PDF without text.
+function readPdf(bytes, { maxChars, signal } = {}) {
+  return new Promise((resolve) => {
+    const id = ++pdfSeq;
+    let timer = null;
+    const done = (result) => {
+      if (!pdfWaits.has(id)) return;
+      pdfWaits.delete(id);
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
+    const onAbort = () => done({ text: '', failed: 'stopped' });
+    pdfWaits.set(id, done);
+    if (signal && signal.aborted) return onAbort();
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => done({ text: '', failed: 'timeout' }), PDF_WAIT);
+    post({ type: 'pdf', id, data: Buffer.from(bytes).toString('base64'), maxChars });
+  });
+}
+
+// Main's answer to readPdf, with only what the runner reads of it.
+function pdfAnswer(msg) {
+  const done = pdfWaits.get(msg.id);
+  if (!done) return;
+  const r = msg.result && typeof msg.result === 'object' ? msg.result : {};
+  done({ text: typeof r.text === 'string' ? r.text : '', truncated: r.truncated === true, partial: r.partial === true, encrypted: r.encrypted === true, failed: typeof r.failed === 'string' ? r.failed : null });
+}
+
 // A short wait first, so the last report reaches Rukoo before the process ends.
 function exit(code) {
   if (exiting) return;
@@ -75,7 +114,7 @@ async function start({ config, key, backendKey }) {
     }
     if (typeof backendKey === 'string' && backendKey && cfg.backend && typeof cfg.backend === 'object') cfg.backend = { ...cfg.backend, key: backendKey };
     try {
-      runner = new Runner(cfg, { log, report: (event) => post({ type: 'report', event }) });
+      runner = new Runner(cfg, { log, report: (event) => post({ type: 'report', event }), readPdf });
     } catch (err) {
       throw Object.assign(err, { code: 'config' });
     }
@@ -122,6 +161,7 @@ function onMessage(msg) {
     start(msg);
   } else if (msg.type === 'stop') stop();
   else if (msg.type === 'wake') wake(Number.isSafeInteger(msg.seq) ? msg.seq : 0);
+  else if (msg.type === 'pdf') pdfAnswer(msg);
 }
 
 if (port) {

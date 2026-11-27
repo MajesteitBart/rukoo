@@ -28,7 +28,7 @@ import {
   agentsLeavingWith,
   leavingAgentsText
 } from './chat-model.js';
-import { runnerChoices, askedRunnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, sinceText, runStateText, ranElsewhere, useName, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL, KEY_MASK, keepsTools } from './chat-agents.js';
+import { runnerChoices, askedRunnerChoices, runnerConfig, runnerText, runnerEnv, agentSeenText, sinceText, runStateText, ranElsewhere, useName, agentCopies, copiedSettings, PLACEHOLDER_BACKEND, OWN_PROGRAM, RUNNER_COMMAND, RUNNER_URL, KEY_MASK, keepsTools } from './chat-agents.js';
 import { seenOf, loadSeen, rememberAgents, forgetSeen } from './chat-agent-seen.js';
 import { loadRuns, runsNow, runOf, onRuns } from './chat-agent-runs.js';
 
@@ -2351,11 +2351,14 @@ export async function addAgent() {
   const session = K.CH.state?.session;
   const choices = askRunnerChoices();
   const runs = WEB ? null : await loadRuns();
-  const made = await agentForm(null, { runsHere: Boolean(runs && runs.available) });
+  const runsHere = Boolean(runs && runs.available);
+  // On the computer: the agents it runs in other workspaces, which the form can start from.
+  const copies = runsHere ? agentCopies(runs.runs, { ws, workspaces: K.CH.state?.workspaces || [] }) : [];
+  const made = await agentForm(null, { runsHere, copies });
   if (made && (made.key || made.held)) {
     // The choices can still be waiting on a status check: the session is checked once they are in.
     const picked = await choices;
-    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: picked, room: channelToJoin(made.agent, ws) });
+    if (keyHolds(ws, session)) await showAgentKey(made, { ws, server, session, choices: picked, room: channelToJoin(made.agent, ws), use: made.copyUse || '' });
     else keyLost(made.agent);
   }
   return made ? made.agent : null;
@@ -2418,8 +2421,11 @@ export async function removeAgent(agent) {
 // The form of Add an agent and Edit: the name, whom it answers (everyone, only its sponsor, or its sponsor and people
 // picked here) and whether it answers other agents. agent: the AgentOut to edit, or null for a new one. Answers what
 // the server answered ({ agent, key } for a new one, or { agent, held } where main keeps the key; { agent } for a
-// change), or null. runsHere: this computer can run the new agent, which the note under the form says.
-async function agentForm(agent = null, { runsHere = false } = {}) {
+// change), or null. runsHere: this computer can run the new agent, which the note under the form says. copies: for a
+// new agent on the computer, the agents it runs in other workspaces (chat-agents.js agentCopies); picking one fills the
+// form from that agent's settings in its own workspace, and the answer carries copyUse, the Settings agent that answers
+// for it, which the key step picks. Only that id comes along: the key and any secret stay in main.
+async function agentForm(agent = null, { runsHere = false, copies = [] } = {}) {
   const ws = K.CH.ws;
   if (!ws || K.isGuest()) return null;
   const editing = Boolean(agent);
@@ -2433,6 +2439,13 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
   // The request Make or Save sent: an agent made after the dialog closed (the workspace on screen changed, or Escape)
   // still comes back, so its key is never dropped without a word.
   let inFlight = null;
+  // The agent the form was filled from (Copy an agent), the one whose settings are still loading, the agents of other
+  // workspaces read for it, and the number of the latest choice (copyFrom).
+  let copied = null;
+  let loading = null;
+  const copyAgents = new Map();
+  let copyTurn = 0;
+  const canCopy = !editing && !WEB && copies.length > 0;
   // The people it may answer besides its sponsor: active people, never an agent.
   const people = () => activeMembers().filter((m) => isPerson(m) && m.id !== sponsor).sort(byName);
   const sponsorName = () => nameOf(sponsor);
@@ -2443,8 +2456,9 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
     const live = new Set(people().map((m) => m.id));
     return [...chosen].filter((id) => live.has(id));
   };
-  // Chosen people with nobody picked can't be saved: the button stays off, and the line under the list says why.
-  const ready = () => agentFormReady({ answers, chosen: picked().length });
+  // Chosen people with nobody picked can't be saved: the button stays off, and the line under the list says why. It
+  // stays off too while a copied agent's settings load, which then fill the form.
+  const ready = () => !loading && agentFormReady({ answers, chosen: picked().length });
   const showReady = (body) => {
     const primary = body.closest('.dialog')?.querySelector('.buttons button:last-child');
     if (primary && !busy) primary.disabled = !ready();
@@ -2483,8 +2497,64 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
     showReady(body);
   };
 
+  // Copy an agent: the form takes the copied agent's name, whom it answers and whether it answers other agents, as its
+  // own workspace has them (GET /agents there), and the line under the choice says what didn't carry over. While they
+  // load, the line says so and Add agent stays off, so the agent is never made with what the form held before. Choosing
+  // Don't copy leaves what the form holds and forgets the agent that answers for it. Each choice has a turn of its own:
+  // only the latest one's read fills the form, also when an earlier choice of the same agent still has its read out.
+  // A read that failed isn't kept, so choosing the agent again reads it again, and neither is one an older choice
+  // made, which could be older than what a later read of the same workspace already keeps.
+  const copyFrom = async (body, copy) => {
+    const help = body.querySelector('[data-copy-help]');
+    const turn = ++copyTurn;
+    copied = copy;
+    loading = null;
+    if (!copy) {
+      help.textContent = t('chat.agents.copyHelp');
+      help.classList.remove('ch-warn');
+      return showReady(body);
+    }
+    let found = copyAgents.get(copy.ws);
+    let read = false;
+    if (found === undefined) {
+      loading = copy;
+      help.textContent = t('chat.agents.copyLoading', { name: copy.name || t('native.agentRuns.thisAgent'), workspace: copy.workspace });
+      help.classList.remove('ch-warn');
+      showReady(body);
+      try {
+        const res = await api('chatAgents', copy.ws);
+        found = (res && res.agents) || [];
+        read = true;
+      } catch (_) {
+        found = null;
+      }
+    }
+    // Another choice came in meanwhile, or the dialog went.
+    if (turn !== copyTurn || !body.isConnected) return;
+    if (read) copyAgents.set(copy.ws, found);
+    loading = null;
+    const settings = copiedSettings(copy, (found || []).find((a) => a.id === copy.agent) || null);
+    body.querySelector('[name="name"]').value = settings.name;
+    answers = settings.answers;
+    chosen.clear();
+    for (const r of body.querySelectorAll('[name="answers"]')) r.checked = r.value === answers;
+    body.querySelector('[name="agents"]').checked = settings.agents;
+    drawPeople(body);
+    const name = settings.name || copy.name;
+    help.textContent = settings.unread
+      ? t('chat.agents.copyUnread', { name, workspace: copy.workspace })
+      : settings.chosenDropped
+        ? t('chat.agents.copyChosen', { name, workspace: copy.workspace })
+        : t('chat.agents.copyHelp');
+    help.classList.toggle('ch-warn', settings.unread || settings.chosenDropped);
+  };
+
   const submit = async (scrim) => {
     if (busy || !ready()) return;
+    // The agent copied from, as the form is now: a choice made while the request is out changes nothing of this one.
+    // Its agent that answers comes with the answer, also when the dialog closed before it (inFlight).
+    const source = editing ? null : copied;
+    const withUse = (res) => (res ? { ...res, ...(source && source.use ? { copyUse: source.use } : {}) } : null);
     const body = scrim.querySelector('.dialog-body');
     const name = body.querySelector('[name="name"]').value.trim();
     if (!nameOk(name)) return showError(body, 'name', t('chat.errors.invalidName'));
@@ -2497,12 +2567,8 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
       const call = editing
         ? api('chatUpdateAgent', ws, agent.id, { name, answers, agents, ...(answers === 'members' ? { members } : {}) })
         : api('chatCreateAgent', ws, { name, answers, agents, ...(answers === 'members' ? { members } : {}) });
-      inFlight = call.then(
-        (res) => res || null,
-        () => null
-      );
-      const res = await call;
-      finish(res || null);
+      inFlight = call.then(withUse, () => null);
+      finish(withUse(await call));
     } catch (err) {
       busy = false;
       setBusy(scrim, false);
@@ -2522,7 +2588,14 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
     redraw: (body) => drawPeople(body),
     render(body, done) {
       finish = done;
+      const copyField = canCopy
+        ? `<label>${esc(t('chat.agents.copyLabel'))}<select name="copy" data-busy-off><option value="">${esc(t('chat.agents.copyNone'))}</option>${copies
+            .map((c, i) => `<option value="${i}">${esc(t('chat.agents.copyOption', { name: c.name || t('native.agentRuns.thisAgent'), workspace: c.workspace }))}</option>`)
+            .join('')}</select></label>
+        <p class="field-help" data-copy-help aria-live="polite">${esc(t('chat.agents.copyHelp'))}</p>`
+        : '';
       body.innerHTML = `<div class="form ch-form">
+        ${copyField}
         <label>${esc(t('chat.agents.name'))}<input type="text" name="name" autocomplete="off" spellcheck="false" maxlength="200" placeholder="${esc(t('chat.agents.namePlaceholder'))}" value="${esc(
           editing ? agent.name : ''
         )}"/></label>
@@ -2548,6 +2621,7 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
         <p class="error" data-error="" hidden></p>
       </div>`;
       body.addEventListener('change', (e) => {
+        if (e.target.name === 'copy') return void copyFrom(body, e.target.value === '' ? null : copies[Number(e.target.value)] || null);
         if (e.target.name === 'answers') {
           answers = e.target.value;
           drawPeople(body);
@@ -2591,7 +2665,7 @@ async function agentForm(agent = null, { runsHere = false } = {}) {
 // the key is for, which the step keeps when the workspace on screen changes, and the session that made it: the step
 // goes once that session ends or loses ws (keyHolds), and says so when the key wasn't kept. Closing lets go of the key
 // main holds.
-async function showAgentKey({ agent, key = null, held = false, runsHere = false, unsaved = false }, { ws = K.CH.ws, server = K.CH.state?.server || '', session = K.CH.state?.session, choices = [], room = null } = {}) {
+async function showAgentKey({ agent, key = null, held = false, runsHere = false, unsaved = false }, { ws = K.CH.ws, server = K.CH.state?.server || '', session = K.CH.state?.session, choices = [], room = null, use = '' } = {}) {
   if (!ws || !agent || !(key || held || runsHere)) return null;
   // On the computer: main has the key, for this window only.
   const desktop = !key && !WEB;
@@ -2600,8 +2674,10 @@ async function showAgentKey({ agent, key = null, held = false, runsHere = false,
   const before = desktop ? runOf(ws, agent.id) : null;
   let pick = choices.length ? choices[0].id : OWN_PROGRAM;
   const noneUsable = !choices.length;
-  // New key for an agent that runs here: it goes on with the agent it had, and with the new key already.
+  // New key for an agent that runs here: it goes on with the agent it had, and with the new key already. A new agent
+  // copied from one this computer runs in another workspace starts with the agent that answers for that one.
   if (before && choices.some((c) => c.id === before.use)) pick = before.use;
+  else if (use && choices.some((c) => c.id === use)) pick = use;
   let running = Boolean(runsHere && before && before.on);
   let kept = running || (desktop && runsHere);
   let join = Boolean(room);

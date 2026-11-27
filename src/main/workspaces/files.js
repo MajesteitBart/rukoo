@@ -3,7 +3,7 @@
 // Files in team chat (rich chat contract 3.5, 3.6 and 4.6): staging what the person attaches, measuring images,
 // uploading with progress, the files a draft keeps, downloads into a cache on this computer, and the links the
 // renderer shows a downloaded image with. ipc.js turns METHODS into chatPickFiles, chatStage, chatUnstage,
-// chatRetryStage, chatStaged and chatFile, each as (svc, ...checkedArgs) => result.
+// chatRetryStage, chatRedactStaged, chatStaged and chatFile, each as (svc, ...checkedArgs) => result.
 //
 // Staging. A file is staged the moment it is attached: chatStage answers at once with a Staged entry in state
 // measuring, and staged events follow it through uploading (with loaded, at most every 100 ms) to ready, or to failed
@@ -62,6 +62,47 @@ const VIEWS_MAX = 500;
 const VIEW_SCHEME = 'rukoo-chat-file';
 // Types the viewer may show as what they are; anything else is served as a download.
 const VIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
+// An agent's key (server/src/workspaces.js AGENT_KEY): "rka_", 22 characters, a dot and 43. Whoever has one reads every
+// channel its agent is in, so a text file that holds one gets agentKey: true in its staged entry, and the composer
+// asks before it goes (chat-input.js). Text files up to KEY_SCAN_MAX are read for it as they are measured, in the same
+// read that gives their SHA-256, so the answer is about the bytes that upload; a file of another kind, or with a NUL
+// byte in its start, isn't text. A draft keeps agentKey with the file, so the question comes again after a restart.
+const AGENT_KEY = /rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/;
+const AGENT_KEYS = new RegExp(AGENT_KEY.source, 'g');
+const KEY_MARK = '[agent key removed]';
+const KEY_SCAN_MAX = 1 * MiB;
+const NOT_TEXT = /^(image|audio|video)\/|^application\/(pdf|zip|gzip|x-7z-compressed|rtf|msword|vnd\.)/;
+
+// A file's text as the key check reads it, and how to write it back: UTF-16 by its byte order mark, else each byte as
+// one character (latin1), which keeps every byte of UTF-8 or any single-byte text as it was. null when it isn't text.
+// Plain typed arrays and TextDecoder, so the browser build's Buffer (src/web/engine/shims/buffer.js), which knows only
+// UTF-8 strings, runs it the same.
+function textOf(bytes) {
+  const bom = bytes.subarray(0, 2);
+  const units = (s, big) => {
+    const out = new Uint8Array(s.length * 2);
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      out[2 * i + (big ? 1 : 0)] = c & 0xff;
+      out[2 * i + (big ? 0 : 1)] = c >> 8;
+    }
+    return out;
+  };
+  const withBom = (body) => Buffer.concat([Buffer.from(bom), Buffer.from(body)]);
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return { text: new TextDecoder('utf-16le').decode(bytes.subarray(2)), encode: (s) => withBom(units(s, false)) };
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return { text: new TextDecoder('utf-16be').decode(bytes.subarray(2)), encode: (s) => withBom(units(s, true)) };
+  if (bytes.subarray(0, 8192).includes(0)) return null;
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return {
+    text,
+    encode: (s) => {
+      const out = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+      return Buffer.from(out);
+    }
+  };
+}
 
 // A type by extension, for a file attached from disk. Anything else is application/octet-stream.
 const TYPES = {
@@ -352,15 +393,31 @@ async function hashFile(file) {
   return { sha256: hash.digest('hex'), size };
 }
 
-async function readHead(file, bytes) {
-  const handle = await fsp.open(file, 'r');
-  try {
-    const buffer = Buffer.alloc(bytes);
-    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
-    return buffer.subarray(0, bytesRead);
-  } finally {
-    await handle.close();
+// hashFile, and the file's first keep bytes from the same read: { sha256, size, head }. However large the file has
+// grown since it was attached, no more than keep bytes stay in memory.
+async function hashAndKeep(file, keep) {
+  const hash = crypto.createHash('sha256');
+  const chunks = [];
+  let kept = 0;
+  let size = 0;
+  for await (const chunk of fs.createReadStream(file)) {
+    hash.update(chunk);
+    size += chunk.length;
+    if (kept < keep) {
+      const part = chunk.subarray(0, keep - kept);
+      chunks.push(part);
+      kept += part.length;
+    }
   }
+  return { sha256: hash.digest('hex'), size, head: Buffer.concat(chunks, kept) };
+}
+
+const sha256Of = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+
+// Whether bytes, a text file's, hold an agent's key.
+function holdsKey(bytes) {
+  const read = textOf(bytes);
+  return Boolean(read && AGENT_KEY.test(read.text));
 }
 
 const removeQuietly = (file) => fsp.rm(file, { force: true }).catch(() => {});
@@ -372,6 +429,7 @@ class Files {
     chatStage: (svc, ws, c, root, source) => svc.files.stage(ws, c, root, source),
     chatUnstage: (svc, stage) => svc.files.unstage(stage),
     chatRetryStage: (svc, stage) => svc.files.retry(stage),
+    chatRedactStaged: (svc, stage) => svc.files.redactKeys(stage),
     chatStaged: (svc, ws, c, root) => svc.files.list(ws, c, root),
     chatFile: (svc, ws, c, file, action) => svc.files.file(ws, c, file, action)
   };
@@ -494,7 +552,8 @@ class Files {
       file: entry.file,
       error: entry.error,
       thumb: entry.thumb,
-      expiresAt: entry.expiresAt
+      expiresAt: entry.expiresAt,
+      agentKey: entry.agentKey === true
     };
   }
 
@@ -658,13 +717,14 @@ class Files {
     }
   }
 
-  // Its SHA-256, and for an image its type, width, height and thumbnail.
+  // Its SHA-256, whether it holds an agent's key, and for an image its type, width, height and thumbnail, all from one
+  // read of the file. It keeps up to KEY_SCAN_MAX and a byte of a file that may be text, and the size that read
+  // measured says whether it is scanned: the size when it was attached may be another by now, either way.
   async measure(entry) {
     let digest;
-    let head;
+    const text = !NOT_TEXT.test(entry.type);
     try {
-      digest = await hashFile(entry.path);
-      head = await readHead(entry.path, Math.min(HEADER_BYTES, digest.size));
+      digest = await hashAndKeep(entry.path, text ? KEY_SCAN_MAX + 1 : HEADER_BYTES);
     } catch (err) {
       throw new ChatError('unreadable', { cause: err });
     }
@@ -673,6 +733,8 @@ class Files {
     if (digest.size < 1) throw new ChatError('unreadable');
     entry.size = digest.size;
     entry.sha256 = digest.sha256;
+    entry.agentKey = text && digest.size <= KEY_SCAN_MAX && holdsKey(digest.head);
+    const head = digest.head.subarray(0, HEADER_BYTES);
     const image = imageInfo(head);
     if (image) {
       entry.type = image.type;
@@ -690,6 +752,53 @@ class Files {
       }
       entry.thumb = await this.thumbnail(entry, image.type);
     }
+  }
+
+  // chatRedactStaged: the agent keys in a staged text file are replaced with KEY_MARK, in a copy that takes the file's
+  // place in the tray and uploads again. The upload with the key is cancelled on the server. Only a file that is
+  // ready or failed, so no measuring or upload of the old bytes is still under way. The copy is made from the bytes
+  // that were measured and uploaded, which the file on disk must still hold: a draft's file after a restart has no
+  // bytes here any more (file_gone), and a file that changed on disk since may hold the key where the edit doesn't
+  // (file_changed). Either way the person removes it and attaches it again, and the file keeps agentKey until then.
+  async redactKeys(stage) {
+    const entry = this.staged.get(stage);
+    if (!entry) throw new ChatError('not_found');
+    if (!['ready', 'failed'].includes(entry.state) || entry.size > KEY_SCAN_MAX || NOT_TEXT.test(entry.type)) throw new ChatError('invalid', { field: 'stage' });
+    if (!entry.path || !entry.sha256) throw new ChatError(entry.path ? 'file_changed' : 'file_gone', { field: 'stage' });
+    const epoch = this.svc.epoch;
+    let bytes;
+    try {
+      bytes = await fsp.readFile(entry.path);
+    } catch (err) {
+      throw new ChatError('file_gone', { field: 'stage', cause: err });
+    }
+    this.svc.guard(epoch);
+    if (bytes.length !== entry.size || sha256Of(bytes) !== entry.sha256) throw new ChatError('file_changed', { field: 'stage' });
+    const read = textOf(bytes);
+    // The bytes that uploaded hold no key: nothing to take out.
+    if (!read || !AGENT_KEY.test(read.text)) {
+      entry.agentKey = false;
+      this.emit(entry);
+      return this.view(entry);
+    }
+    const copy = read.encode(read.text.replace(AGENT_KEYS, KEY_MARK));
+    const dir = uploadsDir(this.store().file);
+    await fsp.mkdir(dir, { recursive: true });
+    const file = path.join(dir, crypto.randomBytes(16).toString('hex'));
+    await fsp.writeFile(file, copy);
+    this.svc.guard(epoch);
+    // Removed or sent meanwhile: the copy goes.
+    if (entry.gone || this.staged.get(stage) !== entry || !['ready', 'failed'].includes(entry.state)) {
+      await removeQuietly(file);
+      throw new ChatError('invalid', { field: 'stage' });
+    }
+    this.cancelOnServer(entry);
+    if (entry.temp) removeQuietly(entry.path);
+    // agentKey stays until the copy is measured: only a copy without the key takes the file's place.
+    Object.assign(entry, { path: file, temp: true, size: copy.length, sha256: null, file: null, put: null, expiresAt: null, state: 'measuring', loaded: 0, error: null, epoch: this.svc.epoch });
+    this.emit(entry);
+    this.run(entry);
+    return this.view(entry);
   }
 
   async thumbnail(entry, type) {
@@ -891,6 +1000,8 @@ class Files {
         error: null,
         thumb: null,
         expiresAt: f.expiresAt ?? null,
+        // What the scan said when it was attached: the bytes aren't here to scan again.
+        agentKey: f.agentKey === true,
         epoch: this.svc.epoch,
         path: null,
         temp: false,

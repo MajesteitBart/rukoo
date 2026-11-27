@@ -216,6 +216,10 @@ export function chatErrorText(err, context = {}) {
     }
     case 'unreadable':
       return WEB ? t('chat.errors.webFileUnreadable') : t('chat.errors.fileUnreadable');
+    case 'file_gone':
+      return t('chat.errors.fileGone');
+    case 'file_changed':
+      return t('chat.errors.fileChanged');
     case 'files_unavailable':
       return t('chat.errors.filesUnavailable');
     case 'invalid_state':

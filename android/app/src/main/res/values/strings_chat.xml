@@ -245,6 +245,12 @@
     <string name="chat_input_placeholder_thread">Reply…</string><!-- In a thread. -->
     <string name="chat_input_send">Send (Enter)</string><!-- Send button. Enter sends from the field on a hardware keyboard too (ChatComposer), so the hint stays. -->
     <string name="chat_input_too_long">This message is too long to send. Split it in two.</string><!-- Over 16 KB. -->
+    <!-- The question when a message holds an agent's key (desktop chat.input.key*): rka_ and 66 characters. -->
+    <string name="chat_input_key_title">Send an agent\'s key?</string>
+    <string name="chat_input_key_in_text">This message holds an agent\'s key.</string>
+    <string name="chat_input_key_body">Anyone who reads this conversation could use the key to read every channel the agent is in and write there as the agent. An agent\'s key belongs in its runner, never in a message.</string>
+    <string name="chat_input_key_remove">Take the key out</string><!-- Puts [agent key removed] in place of the key, then sends. -->
+    <string name="chat_input_key_send_anyway">Send anyway</string>
     <string name="chat_input_too_many_mentions">A message can mention 32 people at most.</string><!-- Over the mention limit. -->
     <string name="chat_input_not_joined">You\'re not in #%1$s yet.</string><!-- Bar instead of the composer. -->
     <string name="chat_input_join">Join #%1$s</string><!-- Its button. -->

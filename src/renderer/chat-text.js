@@ -19,6 +19,34 @@ const DRAFT = { maxBytes: DRAFT_TEXT_LIMIT, maxMentions: DRAFT_MENTION_LIMIT };
 // A member ID: u_ and 22 base64url characters.
 const MEMBER_ID = /^u_[A-Za-z0-9_-]{22}$/;
 
+// An agent's key as the server makes it (server/src/workspaces.js AGENT_KEY): "rka_", 22 characters, a dot and 43.
+// Whoever has one reads every channel its agent is in and posts there as the agent, so the composer asks before a
+// message with one goes (chat-input.js), and offers to put KEY_MARK in its place. The runner puts the same mark in
+// place of a key that reaches it anyway (integrations/agent-runner/prompt.js), and main in a file (workspaces/files.js).
+const AGENT_KEY = /rka_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/;
+const AGENT_KEYS = new RegExp(AGENT_KEY.source, 'g');
+export const KEY_MARK = '[agent key removed]';
+export const hasAgentKey = (text) => AGENT_KEY.test(String(text ?? ''));
+// The composer's parts with every key in their text replaced with KEY_MARK. A chip a key sits in or runs into (a member
+// named after one) becomes its label as plain text, as on Android (MentionEditing.kt AgentKeys.removed); the other
+// chips stay.
+export function withoutAgentKeys(parts) {
+  const list = Array.isArray(parts) ? parts : [];
+  const textOf = (p) => (typeof p === 'string' ? p : String((p && p.label) ?? ''));
+  const keys = [...list.map(textOf).join('').matchAll(AGENT_KEYS)].map((m) => [m.index, m.index + m[0].length]);
+  const out = [];
+  let at = 0;
+  for (const p of list) {
+    const s = textOf(p);
+    const from = at;
+    at += s.length;
+    if (typeof p !== 'string' && !keys.some(([a, b]) => a < at && b > from)) out.push(p);
+    else if (typeof out[out.length - 1] === 'string') out[out.length - 1] += s;
+    else out.push(s);
+  }
+  return out.map((p) => (typeof p === 'string' ? p.replace(AGENT_KEYS, KEY_MARK) : p));
+}
+
 // The UTF-8 length of a UTF-16 code unit at i of s, and how many code units it takes: a surrogate pair is one
 // 4-byte character, and a lone surrogate goes out as U+FFFD, 3 bytes.
 function unitAt(s, i) {

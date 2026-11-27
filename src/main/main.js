@@ -2840,6 +2840,8 @@ app.whenReady().then(() => {
       return found && typeof found.name === 'string' ? found.name : '';
     },
     ownerAlive: documentAlive,
+    // The text of a PDF in a channel, read as the chat panel reads one: in a process of its own, with its limits.
+    readPdf: (bytes, opts) => hub.pdf.read(bytes, opts),
     log: (level, message) => diag.write(level, 'agent-runs', message)
   }).init();
   if (process.env.SEM_HIDDEN) global.__semAgentRuns = agentRuns;

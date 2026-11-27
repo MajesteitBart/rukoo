@@ -168,6 +168,35 @@ export function useName(config, id) {
   return found ? found.name : String(id || '');
 }
 
+// An agent belongs to one workspace, so having Clark in a second one means a new agent there, with a key of its own.
+// On the computer, Add an agent can start from an agent this computer runs in another workspace (src/main/agent-runs.js):
+// its name, whom it answers, whether it answers other agents and the Settings agent that answers for it, whose own
+// secret stays where Run on this computer keeps it. runs: the setups as agentRuns lists them (never a key); ws: the
+// workspace the new agent is for; workspaces: [{ id, name }] of the session. Answers [{ ws, agent, name, use,
+// workspace }], one per setup in another workspace the session still has, by name and then workspace.
+export function agentCopies(runs, { ws, workspaces = [] } = {}) {
+  const names = new Map((Array.isArray(workspaces) ? workspaces : []).filter((w) => w && typeof w.id === 'string').map((w) => [w.id, String(w.name || '')]));
+  return (Array.isArray(runs) ? runs : [])
+    .filter((r) => r && r.ws !== ws && names.has(r.ws) && typeof r.agent === 'string' && text(r.use))
+    .map((r) => ({ ws: r.ws, agent: r.agent, name: text(r.name), use: text(r.use), workspace: names.get(r.ws) }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.workspace.localeCompare(b.workspace));
+}
+
+// What the form takes from a copied agent: agent is that agent as its workspace's GET /agents lists it, or null when
+// it couldn't be read; copy is agentCopies()'s entry. Chosen people become Only me, since the people picked are members
+// of the other workspace (chosenDropped says so). Unknown settings start on Only me without other agents.
+export function copiedSettings(copy, agent = null) {
+  const answers = agent && ['everyone', 'sponsor', 'members'].includes(agent.answers) ? agent.answers : 'sponsor';
+  return {
+    name: text((agent && agent.name) || (copy && copy.name)).slice(0, 200),
+    answers: answers === 'members' ? 'sponsor' : answers,
+    agents: Boolean(agent && agent.agents),
+    use: copy ? copy.use : '',
+    chosenDropped: answers === 'members',
+    unread: !agent
+  };
+}
+
 // The line about the last mention that got no answer, by the code the runner reported (integrations/agent-runner
 // backends.js BackendError): the catalogs' words, never the runner's.
 const FAILED = { timeout: 'failedTimeout', exit: 'failedExit', empty: 'failedEmpty', offline: 'failedOffline' };
