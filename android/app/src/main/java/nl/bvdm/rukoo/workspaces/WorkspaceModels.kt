@@ -26,10 +26,16 @@ data class WorkspaceServerInfo(
     val inviteSignupsNeedCode: Boolean = false,
     /** With the `agents` capability: how many agents a workspace may have and how deep they answer each other. */
     val agents: WorkspaceAgentLimits? = null,
+    /** With the `push-wake` capability: the server's VAPID key, which a push registration names (ChatPush). */
+    val push: WorkspacePushInfo? = null,
 ) {
     /** The server has agents in channels on (`capabilities` lists `agents`). */
     val agentsOn: Boolean get() = AGENTS_CAPABILITY in capabilities
 }
+
+/** `info.workspace.push`: [vapid], the server's VAPID public key in base64url (server/WORKSPACES.md "Push wakes"). */
+@Serializable
+data class WorkspacePushInfo(val vapid: String? = null)
 
 /** `info.workspace.agents`: [max] active agents per workspace, [depth] replies in a chain of agents, [repliesPerHour] per agent. */
 @Serializable

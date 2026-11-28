@@ -40,8 +40,9 @@ describe('turning team chat on', () => {
     expect(info.body.workspace).toMatchObject({
       versions: [1, 2],
       home: { origin: 'https://accounts.example' },
-      // The tests bind a files bucket; WORKSPACE_PREVIEWS is on, and agents are on unless WORKSPACE_AGENTS says off.
-      capabilities: ['reactions', 'unread', 'files', 'previews', 'agents'],
+      // The tests bind a files bucket; WORKSPACE_PREVIEWS is on, agents are on unless WORKSPACE_AGENTS says off, and
+      // push wakes unless WORKSPACE_PUSH does.
+      capabilities: ['reactions', 'unread', 'files', 'previews', 'agents', 'push-wake'],
       files: { maxBytes: 26214400, workspaceBytes: 5368709120, origin: 'https://accounts.example' },
       agents: { max: 20, depth: 3, repliesPerHour: 120 },
       recovery: 'basic',

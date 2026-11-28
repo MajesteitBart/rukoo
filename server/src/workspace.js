@@ -21,6 +21,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { blob, fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import { accountObject, agentLimits, filesOn, workspaceLimits } from './config.js';
 import { fileStore } from './filestore.js';
+import { pushSwitch } from './webpush.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
@@ -39,6 +40,10 @@ const TICKET_TIME = 30 * 1000;
 // A device woken less than this long ago gets its next wake at the end of the window, so a busy channel costs each
 // device at most two fetches a second.
 const WAKE_WINDOW = 500;
+// A socket counts as working for push wakes while it answered a ping, or opened, this recently. Rukoo for Android pings
+// every 30 seconds while the phone is awake. A phone that dozes stops pinging and doesn't read its socket, which can
+// stay open for minutes, so after this long its session gets a push wake instead (#push).
+const SOCKET_LIVE = 75 * 1000;
 const INVITE_TIME = DAY;
 const INVITE_TIME_MAX = 7 * DAY;
 const PENDING_INVITES = 100;
@@ -568,6 +573,8 @@ export class Workspace extends DurableObject {
     this.lastWake = new Map();
     this.trailing = new Map();
     this.wakes = new Set();
+    // Members a change gave something that notifies, for push wakes once it commits (#push).
+    this.pushes = new Set();
     this.key = null;
     this.checking = new Set();
     // A device's keepalive is answered without waking this object, and renews nothing.
@@ -980,7 +987,8 @@ export class Workspace extends DurableObject {
     }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [`m:${ticket.member}`, `s:${ticket.session}`]);
-    pair[1].serializeAttachment({ m: ticket.member, s: ticket.session, until: now + SOCKET_LEASE });
+    // at: when it opened, which counts as working for push wakes until it pings (#push).
+    pair[1].serializeAttachment({ m: ticket.member, s: ticket.session, until: now + SOCKET_LEASE, at: now });
     const headers = request.headers.get('x-protocol') ? { 'sec-websocket-protocol': PROTOCOL } : {};
     return new Response(null, { status: 101, webSocket: pair[0], headers });
   }
@@ -1075,6 +1083,7 @@ export class Workspace extends DurableObject {
   // it has committed, and what it asked to do afterwards (this.after) is done; a change that rolled back does neither.
   #write(fn) {
     this.wakes = new Set();
+    this.pushes = new Set();
     this.after = [];
     let result;
     try {
@@ -1085,13 +1094,17 @@ export class Workspace extends DurableObject {
       });
     } catch (err) {
       this.after = [];
+      this.pushes = new Set();
       throw err;
     }
     const wakes = this.wakes;
+    const pushes = this.pushes;
     const after = this.after;
     this.wakes = new Set();
+    this.pushes = new Set();
     this.after = [];
     this.#wake(wakes);
+    this.#push(pushes);
     for (const step of after) step();
     return result;
   }
@@ -1165,6 +1178,33 @@ export class Workspace extends DurableObject {
       } catch {
         // The socket is gone; the device catches up from its cursor.
       }
+    }
+  }
+
+  // Push wakes (webpush.js; WORKSPACES.md, Push wakes): each member's account sends a wake to the devices that
+  // registered a push endpoint, apart from the sessions whose socket to this workspace works (SOCKET_LIVE), which heard
+  // of it there. Not awaited: a post's answer never waits for a push service, and a failure only costs that wake.
+  // waitUntil keeps the object from being evicted before the account has answered.
+  #push(members) {
+    if (!members.size || !pushSwitch(this.env)) return;
+    const now = Date.now();
+    for (const n of members) {
+      const row = this.sql.exec("SELECT account, incarnation, kind FROM member WHERE n = ? AND state = 'active'", n).toArray()[0];
+      if (!row || row.kind === 'agent' || !row.account || !row.incarnation) continue;
+      const live = [];
+      for (const ws of this.ctx.getWebSockets(`m:${n}`)) {
+        try {
+          const state = ws.deserializeAttachment();
+          const pinged = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0;
+          if (state && state.until > now && Math.max(pinged, state.at ?? 0) > now - SOCKET_LIVE) live.push(state.s);
+        } catch {
+          // A socket that is gone counts as not working.
+        }
+      }
+      const asked = accountObject(this.env, row.account)
+        .wake(row.incarnation, live, this.wid)
+        .catch((err) => console.error('Could not ask an account to send a push wake:', err?.message || err));
+      this.ctx.waitUntil?.(asked);
     }
   }
 
@@ -2772,12 +2812,34 @@ export class Workspace extends DurableObject {
       for (const n of new Set(mentioned)) {
         if (n !== me.n && !blockers.has(n)) this.sql.exec('INSERT INTO mention (member, conversation, seq) VALUES (?, ?, ?)', n, c.n, seq);
       }
+      this.#notifies(me, c, mentioned, root, blockers);
       this.sql.exec('UPDATE workspace SET bytes = bytes + ? WHERE id = 1', a.size);
       // Whoever posts has the conversation in front of them, so it is read up to their own message.
       this.sql.exec('UPDATE grants SET readSeq = ?, rev = ? WHERE member = ? AND conversation = ?', seq, this.#rev(), me.n, c.n);
       this.#wakeRoom(c);
       return reply(201, { operationId: a.operationId, messageId: eventId(id), seq });
     });
+  }
+
+  // Who a message just posted gives something that notifies, as the apps decide it (docs/chat.md, Unread,
+  // notifications and mute): everyone else in a DM; in a channel, the people it mentions and the author of the message
+  // it replies to, unless they blocked the sender. They get a push wake once the post commits (#push). A device still
+  // decides for itself whether to show a notification, for one by what it muted.
+  #notifies(me, c, mentioned, root, blockers) {
+    const notify = new Set();
+    if (c.kind === 'dm') {
+      for (const row of this.sql.exec('SELECT member FROM grants WHERE conversation = ?', c.n)) notify.add(row.member);
+    } else {
+      for (const n of mentioned) notify.add(n);
+      if (root) {
+        const top = this.sql
+          .exec('SELECT e.actor FROM event e JOIN grants g ON g.member = e.actor AND g.conversation = e.conversation WHERE e.id = ? AND e.conversation = ?', blob(root), c.n)
+          .toArray()[0];
+        if (top) notify.add(top.actor);
+      }
+    }
+    notify.delete(me.n);
+    for (const n of notify) if (!blockers.has(n)) this.pushes.add(n);
   }
 
   // The rules an agent's reply follows, checked in the transaction that writes it. Returns where it goes: its root (the

@@ -47,6 +47,7 @@ import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
 import { DOMAIN_LIMIT, checkAlert, registrableDomain, untilTomorrow, verifiedSignup } from './signups.js';
 import { isPage } from './web.js';
+import { endpointInput, pushOn } from './webpush.js';
 import { inviteSignups, signupInvite, workspaceInfo, workspaces } from './workspaces.js';
 
 export { Account } from './account.js';
@@ -86,8 +87,8 @@ async function handle(request, env, ctx) {
   if (path === '/' && reading) return html(page(config(env, url)), method);
   if (path === '/privacy' && reading) {
     // The statement covers team chat only while the server runs it, with the retention it is set to, link previews
-    // while it makes them, files while it has a bucket for them, with their limits and the store that holds them, and
-    // agents unless WORKSPACE_AGENTS turns them off.
+    // while it makes them, files while it has a bucket for them, with their limits and the store that holds them,
+    // agents unless WORKSPACE_AGENTS turns them off, and push wakes unless WORKSPACE_PUSH does.
     const limits = workspaceLimits(env);
     const storage = filesStorage(env);
     const chat = workspacesOn(env)
@@ -96,7 +97,8 @@ async function handle(request, env, ctx) {
           inviteSignups: inviteSignups(env),
           previews: previewsOn(env),
           files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null,
-          agents: agentsOn(env)
+          agents: agentsOn(env),
+          push: pushOn(env)
         }
       : null;
     // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator
@@ -197,6 +199,10 @@ async function handle(request, env, ctx) {
       return owner.deleteBooking(request, env);
     case 'GET /v1/booking/bookings':
       return owner.listBookings(request, env, url);
+    case 'PUT /v1/push-endpoint':
+      return putPushEndpoint(request, env);
+    case 'DELETE /v1/push-endpoint':
+      return deletePushEndpoint(request, env);
   }
   const device = path.match(DEVICE_PATH);
   if (device && method === 'DELETE') {
@@ -394,6 +400,35 @@ async function deleteAccount(request, env) {
     await owner.wipeAfterDelete(env, token, result.handle, handleKey ? toBase64url(await sha256(handleKey)) : null);
   }
   return send(result);
+}
+
+// A session's push endpoint for team chat's wakes (webpush.js; WORKSPACES.md, Push wakes). The session is checked
+// first, with its own allowance of registrations, then the address against the push services this server posts to,
+// and the account checks the session again where it writes. A failure of the account object, which a client can't
+// tell from an outage, answers 503 so the device tries again; 400 is only for an endpoint that is wrong or not allowed.
+async function putPushEndpoint(request, env) {
+  if (!pushOn(env)) throw notFound();
+  const { stub, token } = session(request, env);
+  const allowed = await retryable(() => stub.checkWakeSession(token));
+  if (allowed.status !== 204) return send(allowed);
+  const fields = await endpointInput(await input.readJson(request), env);
+  return send(await retryable(() => stub.setWakeEndpoint(token, fields)));
+}
+
+// Taking an endpoint back works whatever the settings, so a device can still remove one after the operator turned push
+// wakes or team chat off.
+async function deletePushEndpoint(request, env) {
+  const { stub, token } = session(request, env);
+  return send(await retryable(() => stub.clearWakeEndpoint(token)));
+}
+
+async function retryable(call) {
+  try {
+    return await call();
+  } catch (err) {
+    console.error('A push endpoint request failed:', err?.message || err);
+    throw new HttpError(503, 'unavailable', 'The server could not save this right now. Try again shortly.', { 'retry-after': '30' });
+  }
 }
 
 async function pull(request, env, url) {

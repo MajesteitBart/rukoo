@@ -19,6 +19,8 @@ angus-mail = "2.0.5"
 angus-activation = "2.0.3"
 jsoup = "1.21.2"
 bouncycastle = "1.86"
+unifiedpush-connector = "3.3.6"
+unifiedpush-fcm = "3.1.0"
 junit = "4.13.2"
 androidx-test-runner = "1.6.2"
 
@@ -57,6 +59,8 @@ angus-mail = { module = "org.eclipse.angus:angus-mail", version.ref = "angus-mai
 angus-activation = { module = "org.eclipse.angus:angus-activation", version.ref = "angus-activation" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+unifiedpush-connector = { module = "org.unifiedpush.android:connector", version.ref = "unifiedpush-connector" }
+unifiedpush-fcm = { module = "org.unifiedpush.android:embedded-fcm-distributor", version.ref = "unifiedpush-fcm" }
 junit = { module = "junit:junit", version.ref = "junit" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test-runner" }
 

@@ -26,6 +26,7 @@ import { json, send } from './http.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
 import { schedulePreviews } from './previews.js';
+import { pushKey } from './webpush.js';
 
 // The wire versions this server speaks. A client names the one it uses in Rukoo-Workspace-Version; none means 1.
 // A reader of version 2 takes a message with files and no text; one of version 1 gets the files' names as its text.
@@ -76,13 +77,18 @@ export async function workspaceInfo(env, url) {
   const where = String(env.JURISDICTION ?? '');
   if (registry && !installations.has(where)) installations.set(where, await registry.installation());
   const limits = workspaceLimits(env);
+  // null when push wakes are off, or PEPPER is missing so there is no key: discovery still answers, without push-wake.
+  const vapid = await pushKey(env);
   return {
     versions: VERSIONS,
     home: { origin: workspaceOrigin(env) ?? url.origin, installation: installations.get(where) ?? null },
-    // Reactions and marking unread come with this server. files needs the bucket and previews the operator's
-    // WORKSPACE_PREVIEWS. runner, mcp, protected-recovery and push-wake are named here once this server has them.
-    capabilities: capabilities(env),
+    // Reactions and marking unread come with this server. files needs the bucket, previews the operator's
+    // WORKSPACE_PREVIEWS, and push-wake WORKSPACE_PUSH and a PEPPER. runner, mcp and protected-recovery are named here
+    // once this server has them.
+    capabilities: capabilities(env, { push: vapid !== null }),
     ...(filesOn(env) ? { files: { maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes, origin: filesOrigin(env, url) } } : {}),
+    // With push-wake: the VAPID public key a phone registers its push endpoint with (webpush.js).
+    ...(vapid !== null ? { push: { vapid } } : {}),
     // With the agents capability: how many agents a workspace may have, how deep agents answer each other, and how
     // many replies one agent posts in an hour.
     ...(agentsOn(env) ? { agents: agentInfo(env) } : {}),
@@ -106,8 +112,16 @@ export async function workspaceInfo(env, url) {
   };
 }
 
-export function capabilities(env) {
-  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : []), ...(agentsOn(env) ? ['agents'] : [])];
+// push: whether push wakes work on this server, which takes the VAPID key (pushKey).
+export function capabilities(env, { push = false } = {}) {
+  return [
+    'reactions',
+    'unread',
+    ...(filesOn(env) ? ['files'] : []),
+    ...(previewsOn(env) ? ['previews'] : []),
+    ...(agentsOn(env) ? ['agents'] : []),
+    ...(push ? ['push-wake'] : [])
+  ];
 }
 
 function agentInfo(env) {

@@ -37,6 +37,9 @@ const BINDINGS = {
   WORKSPACE_FILES_ORIGIN: '',
   WORKSPACE_PREVIEWS: 'on',
   WORKSPACE_PREVIEW_HOSTS: '',
+  WORKSPACE_PUSH: 'on',
+  // The fake push service of test/fixtures/fake-push.js, as an operator lists a self-hosted ntfy.
+  WORKSPACE_PUSH_ORIGINS: 'https://push.example,https://other-push.example',
   WORKSPACE_FILES_S3_ENDPOINT: '',
   WORKSPACE_FILES_S3_REGION: '',
   WORKSPACE_FILES_S3_BUCKET: '',

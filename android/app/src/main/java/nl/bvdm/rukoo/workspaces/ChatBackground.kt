@@ -53,6 +53,8 @@ class ChatBackground(
     private val service: () -> WorkspaceService,
     /** Whether Phone tools' foreground service runs: its server listens (McpStatus.running). */
     private val phoneTools: Flow<Boolean>,
+    /** A default network came up: push wakes try a failed registration again (ChatPush). */
+    private val networkBack: () -> Unit = {},
 ) {
     @Volatile private var started = false
 
@@ -114,6 +116,7 @@ class ChatBackground(
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 this@ChatBackground.network.available(network)
+                networkBack()
                 if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) service().nudge()
             }
 

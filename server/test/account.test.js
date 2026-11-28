@@ -595,8 +595,15 @@ describe('sessions', () => {
       'lockedUntil',
       'name',
       'platform',
-      'tokenHash'
+      'tokenHash',
+      // A push endpoint for team chat's wakes, empty until the device registers one (test/push-wake.test.js).
+      'wakeAt',
+      'wakeAuth',
+      'wakeEndpoint',
+      'wakeFailedSince',
+      'wakeKey'
     ]);
+    expect(stored[0].wakeEndpoint).toBeNull();
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(person.token)));
     expect(new Uint8Array(stored[0].tokenHash)).toEqual(hash);
   });

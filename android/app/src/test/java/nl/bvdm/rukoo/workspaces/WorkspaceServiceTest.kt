@@ -1208,6 +1208,40 @@ class WorkspaceServiceTest {
     }
 
     @Test
+    fun `a wake's workspaces run first in the background, also beyond the most recently active`() = runTest {
+        val h = Harness(this, db)
+        h.timing = ChatTiming(workerWorkspaces = 1)
+        h.seed {
+            syncedWs()
+            syncedWs(Ids.WS2, "Other")
+            sql.exec("UPDATE ws SET activeAt = 200 WHERE id = '${ws}'")
+            sql.exec("UPDATE ws SET activeAt = 100 WHERE id = '${Ids.WS2}'")
+        }
+        h.list(ws, Ids.WS2)
+        h.workspace(ws)
+        h.workspace(Ids.WS2)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+
+        assertEquals(1, s.backgroundCatchUp(60_000))
+        assertTrue("the older workspace waits without a wake", h.http.calls("GET", h.route(Ids.WS2, "/changes")).isEmpty())
+
+        val caught = mutableListOf<String>()
+        assertEquals(2, s.backgroundCatchUp(60_000, first = setOf(Ids.WS2)) { caught += it })
+        assertEquals(1, h.http.calls("GET", h.route(Ids.WS2, "/changes")).size)
+        val order = h.http.calls.filter { it.route.endsWith("/changes") }.map { it.route }
+        assertEquals("the named workspace goes first", h.route(Ids.WS2, "/changes"), order[order.size - 2])
+        assertEquals("and was caught up; the other wasn't named", listOf(Ids.WS2), caught)
+
+        // A named workspace whose feed fails, or that isn't cached yet, isn't caught up.
+        repeat(5) { h.http.once("GET", h.route(Ids.WS2, "/changes")) { throw WorkspaceError("network") } }
+        caught.clear()
+        s.backgroundCatchUp(60_000, first = setOf(Ids.WS2, "w_" + "N".repeat(22))) { caught += it }
+        assertEquals(emptyList<String>(), caught)
+    }
+
+    @Test
     fun `a process started in the background syncs only inside the worker's window, and its retries end with it`() = runTest {
         val h = Harness(this, db)
         h.seed { syncedWs() }

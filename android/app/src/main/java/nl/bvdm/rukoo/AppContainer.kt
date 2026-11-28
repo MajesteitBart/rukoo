@@ -3,6 +3,9 @@ package nl.bvdm.rukoo
 import android.content.Context
 import android.net.Uri
 import android.os.SystemClock
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.sqlite.driver.AndroidSQLiteDriver
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -57,8 +60,13 @@ import nl.bvdm.rukoo.workspaces.AccountChat
 import nl.bvdm.rukoo.workspaces.ChatBackground
 import nl.bvdm.rukoo.workspaces.ChatDb
 import nl.bvdm.rukoo.workspaces.ChatNotifier
+import nl.bvdm.rukoo.workspaces.ChatPush
+import nl.bvdm.rukoo.workspaces.ChatPushControl
+import nl.bvdm.rukoo.workspaces.ChatSyncWorker
 import nl.bvdm.rukoo.workspaces.OkHttpChatSockets
 import nl.bvdm.rukoo.workspaces.OkHttpWorkspaceHttp
+import nl.bvdm.rukoo.workspaces.PushRetryWorker
+import nl.bvdm.rukoo.workspaces.UnifiedPushDistributors
 import nl.bvdm.rukoo.workspaces.WorkspaceService
 import nl.bvdm.rukoo.workspaces.Workspaces
 import okhttp3.OkHttpClient
@@ -86,6 +94,9 @@ interface AppServices {
 
     /** Team chat (workspaces/); null in fakes, which then show no Chat mode. */
     val workspaces: Workspaces? get() = null
+
+    /** Push wakes for team chat (workspaces/ChatPush.kt); null in fakes, which then show no Delivery row. */
+    val chatPush: ChatPushControl? get() = null
 }
 
 /**
@@ -227,6 +238,26 @@ class AppContainer(context: Context) : AppServices {
         ).start()
     }
 
+    /**
+     * Push wakes for team chat through a UnifiedPush distributor: it follows the account, the server's push-wake and
+     * Team chat notifications, and a wake runs ChatSyncWorker's catch-up at once.
+     */
+    internal val push: ChatPush by lazy {
+        ChatPush(
+            account = AccountChat { account },
+            settings = settingsSnapshot,
+            distributors = UnifiedPushDistributors(appContext),
+            http = OkHttpAccountHttp(http),
+            file = File(appContext.filesDir, ChatPush.FILE_NAME),
+            scope = CoroutineScope(appScope.coroutineContext + Dispatchers.IO),
+            catchUp = { ChatSyncWorker.runNow(appContext) },
+            clock = clock,
+            retryLater = { wait -> PushRetryWorker.schedule(appContext, wait) },
+        )
+    }
+
+    override val chatPush: ChatPushControl get() = push
+
     /** OAuth returns that arrive as `rukoo-oauth:` deep links; the sign-in flow collects them. */
     val oauthReturns = MutableSharedFlow<Uri>(extraBufferCapacity = 1)
 
@@ -238,7 +269,15 @@ class AppContainer(context: Context) : AppServices {
         }
         // Team chat follows the account and runs while the app is in the foreground or Phone tools' foreground service
         // runs; ChatSyncWorker in the background.
-        ChatBackground(appContext, appScope, { workspaces }, mcp.status.map { it.running }).start()
+        ChatBackground(appContext, appScope, { workspaces }, mcp.status.map { it.running }, networkBack = { push.check(force = true) }).start()
+        // Push wakes follow the account from the start, and look again for a distributor whenever Rukoo comes to the
+        // foreground, as someone who just installed ntfy does.
+        if (!BuildConfig.USE_PREVIEW_MAIL) {
+            appScope.launch(Dispatchers.IO) { push.start() }
+            appScope.launch(Dispatchers.Main) {
+                ProcessLifecycleOwner.get().lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { push.check(force = true) }
+            }
+        }
         // The language the user picks in Rukoo; LocaleManager keeps it, so only changes are applied.
         appScope.launch {
             settings.flow.map { it.language }.distinctUntilChanged().drop(1).collect { Locales.apply(appContext, it) }

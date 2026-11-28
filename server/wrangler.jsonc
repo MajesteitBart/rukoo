@@ -128,6 +128,14 @@
     "WORKSPACE_FILES_ORIGIN": "",
     // For tests only: host:port pairs, comma-separated, that link cards may fetch although they are local. Leave empty.
     "WORKSPACE_PREVIEW_HOSTS": "",
+    // "on" or "off": push wakes for team chat (WORKSPACES.md, Push wakes). A phone that isn't connected registers the
+    // address its push service gave it, such as ntfy's or Google's FCM, and this server posts an encrypted wake there
+    // when a direct message, a mention or a reply comes for it. The wake carries no content. The VAPID key comes from
+    // PEPPER, so this needs no setting of its own. "off" sends nothing and takes no endpoints. Delivery is best effort.
+    "WORKSPACE_PUSH": "on",
+    // The server posts wakes only to Google's FCM, ntfy.sh and Mozilla's push service, and to the https origins listed
+    // here, comma-separated, such as "https://ntfy.example.org" for a self-hosted ntfy. "" for none besides those.
+    "WORKSPACE_PUSH_ORIGINS": "",
     // Files in a bucket of an S3-compatible service instead of R2 (README.md, "Files in an S3-compatible bucket"): the
     // service's https address without the bucket, the region it signs with, and the bucket's name, all three or none.
     // The access key goes in two Worker secrets, WORKSPACE_FILES_S3_ACCESS_KEY_ID and
@@ -254,6 +262,9 @@
         "WORKSPACE_PREVIEWS": "on",
         "WORKSPACE_FILES_ORIGIN": "",
         "WORKSPACE_PREVIEW_HOSTS": "",
+        // Push wakes to phones through Google's FCM, ntfy.sh and Mozilla's push service; /privacy covers them.
+        "WORKSPACE_PUSH": "on",
+        "WORKSPACE_PUSH_ORIGINS": "",
         "WORKSPACE_FILES_S3_ENDPOINT": "https://lqmo4.upcloudobjects.com",
         "WORKSPACE_FILES_S3_REGION": "europe-2",
         "WORKSPACE_FILES_S3_BUCKET": "rukoo-workspace-files",
